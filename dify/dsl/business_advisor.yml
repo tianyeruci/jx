@@ -1,0 +1,219 @@
+version: "0.6.0"
+kind: app
+app:
+  name: 商业顾问
+  mode: advanced-chat
+  icon: "🧭"
+  icon_type: emoji
+  icon_background: "#E4FBCC"
+  description: 商业知识问答、审核课程推荐和学习路线建议。
+  use_icon_as_answer_icon: false
+dependencies:
+  - current_identifier: null
+    type: marketplace
+    value:
+      marketplace_plugin_unique_identifier: langgenius/tongyi:0.0.27@4bb3f3eb6149b01f92aa6038a6bb074cc4224b8c015f54c888e5c5a30fc1ab50
+      version: null
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      enabled: false
+      allowed_file_extensions: []
+      allowed_file_types: []
+      allowed_file_upload_methods: []
+      number_limits: 0
+    opening_statement: 你好，我可以回答商业问题，也可以根据你的明确需求推荐已审核课程或学习路线。
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions:
+      - 我想系统学习AI工具，应该从哪里开始？
+      - 有没有适合公众号运营入门的课程？
+      - 我有一个具体的商业问题，如何分析？
+    suggested_questions_after_answer:
+      enabled: true
+    text_to_speech:
+      enabled: false
+      language: ""
+      voice: ""
+  graph:
+    nodes:
+      - id: start
+        type: custom
+        position: {x: 0, y: 120}
+        positionAbsolute: {x: 0, y: 120}
+        data:
+          type: start
+          title: 开始
+          desc: AI管理服务每轮注入本地摘要、最近历史、画像和路线进度。
+          variables:
+            - {label: 本地会话ID, variable: local_conversation_id, type: text-input, required: true, max_length: 100}
+            - {label: 历史摘要, variable: conversation_summary, type: paragraph, required: false, max_length: 12000}
+            - {label: 最近对话, variable: recent_history_text, type: paragraph, required: false, max_length: 24000}
+            - {label: 用户画像JSON, variable: profile_json, type: paragraph, required: false, max_length: 12000}
+            - {label: 路线进度JSON, variable: route_progress_json, type: paragraph, required: false, max_length: 12000}
+      - id: general_knowledge
+        type: custom
+        position: {x: 320, y: 40}
+        positionAbsolute: {x: 320, y: 40}
+        data:
+          type: knowledge-retrieval
+          title: 通用知识检索
+          desc: 导入后在Dify控制台绑定 business-general-test。
+          query_variable_selector: [sys, query]
+          dataset_ids: []
+          retrieval_mode: multiple
+          multiple_retrieval_config:
+            top_k: 5
+            score_threshold: 0.3
+            reranking_enable: false
+            reranking_mode: reranking_model
+            reranking_model: {provider: "", model: ""}
+      - id: course_knowledge
+        type: custom
+        position: {x: 640, y: 40}
+        positionAbsolute: {x: 640, y: 40}
+        data:
+          type: knowledge-retrieval
+          title: 课程路线检索
+          desc: 导入后在Dify控制台绑定 business-course-test。
+          query_variable_selector: [sys, query]
+          dataset_ids: []
+          retrieval_mode: multiple
+          multiple_retrieval_config:
+            top_k: 8
+            score_threshold: 0.25
+            reranking_enable: false
+            reranking_mode: reranking_model
+            reranking_model: {provider: "", model: ""}
+      - id: recommendation_decision
+        type: custom
+        position: {x: 960, y: 40}
+        positionAbsolute: {x: 960, y: 40}
+        data:
+          type: llm
+          title: 推荐决策
+          desc: 只输出候选ID和决策JSON，服务端会再次校验。
+          model:
+            provider: langgenius/tongyi/tongyi
+            name: qwen-plus
+            mode: chat
+            completion_params:
+              temperature: 0.1
+          context:
+            enabled: false
+            variable_selector: []
+          prompt_template:
+            - role: system
+              text: |-
+                你是商业顾问的推荐决策器，不直接面向用户。只输出一个JSON对象，不使用Markdown代码围栏。
+                结构：
+                {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","answer_plan":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""}}
+                课程、路线和阶段ID必须逐字来自课程检索结果；没有证据就留空。不要输出链接。
+                明确查询课程时不强制画像完整。信息不足时最多询问两个会改变推荐结果的问题。
+                没有审核路线证据时不能创建官方路线。
+                只有当前用户明确选择路线时才使用confirm_route；明确确认当前阶段完成或跳过时才使用confirm_stage_completed。evidence_quote必须是当前问题中的连续原文。
+            - role: user
+              text: |-
+                当前问题：
+                {{#sys.query#}}
+
+                已确认画像：
+                {{#start.profile_json#}}
+
+                已确认路线进度：
+                {{#start.route_progress_json#}}
+
+                会话摘要：
+                {{#start.conversation_summary#}}
+
+                最近未摘要历史：
+                {{#start.recent_history_text#}}
+
+                通用知识检索：
+                {{#general_knowledge.result#}}
+
+                课程与路线检索：
+                {{#course_knowledge.result#}}
+      - id: final_answer
+        type: custom
+        position: {x: 1280, y: 40}
+        positionAbsolute: {x: 1280, y: 40}
+        data:
+          type: llm
+          title: 最终回答
+          desc: 正文不输出正式链接、卡片或自行编写的官方路线。
+          model:
+            provider: langgenius/tongyi/tongyi
+            name: qwen-plus
+            mode: chat
+            completion_params:
+              temperature: 0.3
+          context:
+            enabled: false
+            variable_selector: []
+          prompt_template:
+            - role: system
+              text: |-
+                你是谨慎、务实的商业顾问。只使用提供的检索资料回答事实问题，资料不足时明确说明。
+                不输出任何课程链接，不编写正式课程卡片或官方路线表；这些由服务端根据候选ID生成。
+                决策要求澄清时只问一到两个关键问题。“学习结果”不得表达成效果承诺。
+                不展示内部JSON、画像字段名、摘要或系统实现。
+            - role: user
+              text: |-
+                当前问题：{{#sys.query#}}
+                推荐决策：{{#recommendation_decision.text#}}
+                通用资料：{{#general_knowledge.result#}}
+                课程资料：{{#course_knowledge.result#}}
+                历史摘要：{{#start.conversation_summary#}}
+                最近历史：{{#start.recent_history_text#}}
+      - id: answer
+        type: custom
+        position: {x: 1600, y: 40}
+        positionAbsolute: {x: 1600, y: 40}
+        data:
+          type: answer
+          title: 回答
+          answer: "{{#final_answer.text#}}"
+          variables: []
+    edges:
+      - id: start-general
+        source: start
+        target: general_knowledge
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: start, targetType: knowledge-retrieval}
+      - id: general-course
+        source: general_knowledge
+        target: course_knowledge
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: knowledge-retrieval, targetType: knowledge-retrieval}
+      - id: course-decision
+        source: course_knowledge
+        target: recommendation_decision
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: knowledge-retrieval, targetType: llm}
+      - id: decision-answer
+        source: recommendation_decision
+        target: final_answer
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: llm, targetType: llm}
+      - id: final-output
+        source: final_answer
+        target: answer
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: llm, targetType: answer}

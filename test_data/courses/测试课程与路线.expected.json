@@ -1,0 +1,22 @@
+{
+  "courses": 9,
+  "enabled_courses": 8,
+  "routes": 2,
+  "enabled_routes": 2,
+  "course_ids": [
+    "course_ai_001",
+    "course_ai_002",
+    "course_ai_003",
+    "course_wechat_001",
+    "course_wechat_002",
+    "course_wechat_003",
+    "course_business_001",
+    "course_business_002",
+    "course_ai_legacy"
+  ],
+  "route_ids": [
+    "route_ai_basic",
+    "route_wechat_operation"
+  ]
+}
+

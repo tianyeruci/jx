@@ -1,0 +1,87 @@
+version: "0.6.0"
+kind: app
+app:
+  name: 日常写作
+  mode: workflow
+  icon: "✍️"
+  icon_type: emoji
+  icon_background: "#FCE7F3"
+  description: 单次无状态的日常写作、改写、总结和校对。
+  use_icon_as_answer_icon: false
+dependencies:
+  - current_identifier: null
+    type: marketplace
+    value:
+      marketplace_plugin_unique_identifier: langgenius/tongyi:0.0.27@4bb3f3eb6149b01f92aa6038a6bb074cc4224b8c015f54c888e5c5a30fc1ab50
+      version: null
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  graph:
+    nodes:
+      - id: start
+        type: custom
+        position: {x: 0, y: 0}
+        positionAbsolute: {x: 0, y: 0}
+        data:
+          type: start
+          title: 开始
+          variables:
+            - {label: 写作要求, variable: request, type: paragraph, required: true, max_length: 12000}
+            - {label: 原文, variable: source_text, type: paragraph, required: false, max_length: 30000}
+            - {label: 受众, variable: audience, type: text-input, required: false, max_length: 500}
+            - {label: 语气, variable: tone, type: text-input, required: false, max_length: 500}
+            - {label: 格式, variable: format, type: text-input, required: false, max_length: 500}
+            - {label: 其他限制, variable: constraints, type: paragraph, required: false, max_length: 3000}
+      - id: llm
+        type: custom
+        position: {x: 320, y: 0}
+        positionAbsolute: {x: 320, y: 0}
+        data:
+          type: llm
+          title: 生成写作结果
+          model:
+            provider: langgenius/tongyi/tongyi
+            name: qwen-plus
+            mode: chat
+            completion_params: {temperature: 0.4}
+          context: {enabled: false, variable_selector: []}
+          prompt_template:
+            - role: system
+              text: |-
+                你是日常写作助手。信息足够时直接给出成稿，不先复述要求。
+                保留用户事实，不增加姓名、数字、事件、引用或结论。严格遵守格式、语气和字数。
+                无法确认的事实使用中性占位或提醒补充。只输出最终内容，除非用户要求解释。
+            - role: user
+              text: |-
+                要求：{{#start.request#}}
+                原文：{{#start.source_text#}}
+                受众：{{#start.audience#}}
+                语气：{{#start.tone#}}
+                格式：{{#start.format#}}
+                限制：{{#start.constraints#}}
+      - id: end
+        type: custom
+        position: {x: 640, y: 0}
+        positionAbsolute: {x: 640, y: 0}
+        data:
+          type: end
+          title: 结束
+          outputs:
+            - variable: text
+              value_selector: [llm, text]
+    edges:
+      - id: start-llm
+        source: start
+        target: llm
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: start, targetType: llm}
+      - id: llm-end
+        source: llm
+        target: end
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: llm, targetType: end}

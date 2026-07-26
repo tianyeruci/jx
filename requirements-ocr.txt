@@ -1,0 +1,4 @@
+-e .[test,ocr]
+
+# Optional local OCR/layout backend for scan-only Chinese consultation PDFs.
+# Models are downloaded and cached on first use.
