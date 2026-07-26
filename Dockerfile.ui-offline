@@ -9,7 +9,7 @@ COPY ui-wheelhouse-linux /ui-wheelhouse
 RUN pip install --no-cache-dir --no-index \
     --find-links=/wheelhouse \
     --find-links=/ui-wheelhouse \
-    "jx-now-ai-management[ui]==0.1.0" \
+    "jx-now-ai-management[ui]==0.2.0" \
     && rm -rf /wheelhouse /ui-wheelhouse
 
 COPY ai_management/test_ui.py /app/ai_management/test_ui.py
