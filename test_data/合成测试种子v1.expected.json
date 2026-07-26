@@ -1,0 +1,26 @@
+{
+  "seed_id": "synthetic_seed_v1",
+  "test_only": true,
+  "synthetic": true,
+  "business_commitment": "none",
+  "course_catalog": {
+    "file": "courses/测试课程与路线.md",
+    "courses": 9,
+    "routes": 2
+  },
+  "knowledge_samples": [
+    {"file": "knowledge/公众号文章_合成测试样本.md", "source_type": "公众号文章"},
+    {"file": "knowledge/小报童文章_合成测试样本.md", "source_type": "小报童文章"},
+    {"file": "knowledge/成长笔记_合成测试样本.md", "source_type": "成长笔记"},
+    {"file": "knowledge/SOP_合成测试样本.md", "source_type": "SOP"},
+    {"file": "knowledge/课程讲义_合成测试样本.md", "source_type": "课程讲义"},
+    {"file": "knowledge/课程文字稿_合成测试样本.md", "source_type": "课程文字稿"}
+  ],
+  "suggested_questions_count": 6,
+  "required_dsl_boundaries": [
+    "课程、路线和阶段ID必须逐字来自课程检索结果",
+    "没有审核路线证据时不能创建官方路线",
+    "不输出任何课程链接",
+    "“学习结果”不得表达成效果承诺"
+  ]
+}

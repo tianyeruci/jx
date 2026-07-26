@@ -17,6 +17,7 @@ from .courses import rebuild_snapshot
 from .db import SessionLocal
 from .models import Course, ExternalDeletionTask, LearningRoute
 from .schemas import CourseRecord, RouteRecord
+from .services.observability import record_event
 
 
 @dataclass(slots=True)
@@ -253,6 +254,12 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
             existing_routes = {item.route_id: item for item in session.scalars(select(LearningRoute))}
 
         for course in catalog.courses:
+            previous = existing_courses.get(course.course_id)
+            if previous and previous.dify_document_id:
+                old_ids.append(previous.dify_document_id)
+            if not course.enabled or course.review_status != "approved":
+                replacements[("course", course.course_id)] = ""
+                continue
             document_id, batch = client.create_document(
                 _catalog_document_name(course.name, course.course_id),
                 _course_text(course),
@@ -272,11 +279,14 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
                 fields,
             )
             replacements[("course", course.course_id)] = document_id
-            previous = existing_courses.get(course.course_id)
-            if previous and previous.dify_document_id:
-                old_ids.append(previous.dify_document_id)
 
         for route in catalog.routes:
+            previous = existing_routes.get(route.route_id)
+            if previous and previous.dify_document_id:
+                old_ids.append(previous.dify_document_id)
+            if not route.enabled or route.review_status != "approved":
+                replacements[("route", route.route_id)] = ""
+                continue
             document_id, batch = client.create_document(
                 _catalog_document_name(route.name, route.route_id),
                 _route_text(route),
@@ -296,13 +306,21 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
                 fields,
             )
             replacements[("route", route.route_id)] = document_id
-            previous = existing_routes.get(route.route_id)
-            if previous and previous.dify_document_id:
-                old_ids.append(previous.dify_document_id)
+
+        incoming_course_ids = {item.course_id for item in catalog.courses}
+        incoming_route_ids = {item.route_id for item in catalog.routes}
+        old_ids.extend(
+            item.dify_document_id
+            for course_id, item in existing_courses.items()
+            if course_id not in incoming_course_ids and item.dify_document_id
+        )
+        old_ids.extend(
+            item.dify_document_id
+            for route_id, item in existing_routes.items()
+            if route_id not in incoming_route_ids and item.dify_document_id
+        )
 
         with SessionLocal() as session:
-            incoming_course_ids = {item.course_id for item in catalog.courses}
-            incoming_route_ids = {item.route_id for item in catalog.routes}
             for row in session.scalars(select(Course)):
                 if row.course_id not in incoming_course_ids:
                     row.enabled = False
@@ -329,7 +347,7 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
                     "stage_tags": item.stage_tags,
                 }
                 row.source_file = source_file.name
-                row.dify_document_id = replacements[("course", item.course_id)]
+                row.dify_document_id = replacements[("course", item.course_id)] or None
 
             for item in catalog.routes:
                 row = session.get(LearningRoute, item.route_id)
@@ -343,7 +361,7 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
                 row.review_status = item.review_status
                 row.stages = [stage.model_dump(mode="json") for stage in item.stages]
                 row.source_file = source_file.name
-                row.dify_document_id = replacements[("route", item.route_id)]
+                row.dify_document_id = replacements[("route", item.route_id)] or None
             session.commit()
             rebuild_snapshot(session)
 
@@ -353,13 +371,40 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
                     _remove_or_disable(client, old_id)
                 except Exception as exc:
                     _queue_cleanup(old_id, client.dataset_id, exc)
-        return catalog_summary(catalog)
-    except Exception:
+        summary = catalog_summary(catalog)
+        record_event(
+            level="INFO",
+            category="operation",
+            component="course_catalog",
+            event_code="COURSE_CATALOG_PUBLISHED",
+            status="succeeded",
+            message="课程与路线目录发布完成",
+            resource_type="source_file",
+            resource_id=source_file.name,
+            details={
+                **summary,
+                "created_documents": len(created_ids),
+                "retired_documents": len(set(old_ids)),
+            },
+        )
+        return summary
+    except Exception as exc:
         for document_id in created_ids:
             try:
                 _remove_or_disable(client, document_id)
-            except Exception as exc:
-                _queue_cleanup(document_id, client.dataset_id, exc)
+            except Exception as cleanup_exc:
+                _queue_cleanup(document_id, client.dataset_id, cleanup_exc)
+        record_event(
+            level="ERROR",
+            category="error",
+            component="course_catalog",
+            event_code="COURSE_CATALOG_PUBLISH_FAILED",
+            status="failed",
+            message=f"{type(exc).__name__}: {str(exc)[:800]}",
+            resource_type="source_file",
+            resource_id=source_file.name,
+            details={"created_documents": len(created_ids)},
+        )
         raise
     finally:
         client.close()

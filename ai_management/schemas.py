@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 
 class BusinessChatRequest(BaseModel):
@@ -19,8 +19,33 @@ class FeedbackRequest(BaseModel):
     content: str = Field(default="", max_length=1000)
 
 
-class ToolRunRequest(BaseModel):
-    inputs: dict[str, Any] = Field(default_factory=dict)
+class MomentsInputs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request: str = Field(min_length=1, max_length=12000)
+    source_material: str = Field(default="", max_length=24000)
+    audience: str = Field(default="", max_length=500)
+    tone: str = Field(default="", max_length=500)
+    constraints: str = Field(default="", max_length=3000)
+
+
+class MomentsRunRequest(BaseModel):
+    inputs: MomentsInputs
+
+
+class WritingInputs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request: str = Field(min_length=1, max_length=12000)
+    source_text: str = Field(default="", max_length=30000)
+    audience: str = Field(default="", max_length=500)
+    tone: str = Field(default="", max_length=500)
+    format: str = Field(default="", max_length=500)
+    constraints: str = Field(default="", max_length=3000)
+
+
+class WritingRunRequest(BaseModel):
+    inputs: WritingInputs
 
 
 class CourseRecord(BaseModel):

@@ -32,7 +32,7 @@ services:
     restart: unless-stopped
 
   api:
-    image: jx-now-ai-management:0.1.0
+    image: ${AI_IMAGE:-jx-now-ai-management:0.2.0}
     build: .
     env_file: .env
     command: uvicorn ai_management.main:app --host 0.0.0.0 --port 8000
@@ -51,7 +51,7 @@ services:
     restart: unless-stopped
 
   worker:
-    image: jx-now-ai-management:0.1.0
+    image: ${AI_IMAGE:-jx-now-ai-management:0.2.0}
     build: .
     env_file: .env
     command: celery -A ai_management.tasks.celery_app worker -l INFO -Q default,cleaning --concurrency=2
@@ -68,7 +68,7 @@ services:
     restart: unless-stopped
 
   scheduler:
-    image: jx-now-ai-management:0.1.0
+    image: ${AI_IMAGE:-jx-now-ai-management:0.2.0}
     build: .
     env_file: .env
     command: celery -A ai_management.tasks.celery_app beat -l INFO

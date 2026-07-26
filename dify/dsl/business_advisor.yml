@@ -35,6 +35,9 @@ workflow:
       - 我想系统学习AI工具，应该从哪里开始？
       - 有没有适合公众号运营入门的课程？
       - 我有一个具体的商业问题，如何分析？
+      - 我是新手，应该先学习哪些课程？
+      - 我已经有一些基础，如何选择进阶课程？
+      - 课程应该按什么顺序学习？
     suggested_questions_after_answer:
       enabled: true
     text_to_speech:

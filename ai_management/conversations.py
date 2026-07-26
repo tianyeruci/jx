@@ -265,6 +265,13 @@ def prepare_business_chat(
         task_announced = False
         url_redactor = StreamingUrlRedactor()
 
+        if enqueue_summary and final_status == "completed":
+            try:
+                from .tasks import summarize_conversation
+
+                summarize_conversation.delay(prepared["conversation_id"])
+            except Exception:
+                logger.exception("failed to enqueue summary task")
         yield event(
             "request_started",
             {
@@ -460,13 +467,6 @@ def prepare_business_chat(
                 "token_usage": usage_metadata,
             },
         )
-        if enqueue_summary and final_status == "completed":
-            try:
-                from .tasks import summarize_conversation
-
-                summarize_conversation.delay(prepared["conversation_id"])
-            except Exception:
-                logger.exception("failed to enqueue summary task")
 
     return stream()
 

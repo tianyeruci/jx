@@ -10,11 +10,14 @@ import streamlit as st
 
 API_BASE = os.getenv("AI_MANAGEMENT_BASE_URL", "http://api:8000").rstrip("/")
 INTERNAL_TOKEN = os.getenv("INTERNAL_API_TOKEN", "change-me")
+ADMIN_TOKEN = os.getenv("ADMIN_API_TOKEN", "change-me")
 DEFAULT_USER = os.getenv("TEST_USER_ID", "test-user-001")
 
 
-def headers(user_id: str | None = None) -> dict[str, str]:
+def headers(user_id: str | None = None, *, admin: bool = False) -> dict[str, str]:
     result = {"X-Internal-Token": INTERNAL_TOKEN}
+    if admin:
+        result["X-Admin-Token"] = ADMIN_TOKEN
     if user_id:
         result["X-User-Id"] = user_id
     return result
@@ -25,13 +28,14 @@ def api_json(
     path: str,
     *,
     user_id: str | None = None,
+    admin: bool = False,
     **kwargs: Any,
 ) -> Any:
     with httpx.Client(timeout=60) as client:
         response = client.request(
             method,
             f"{API_BASE}{path}",
-            headers=headers(user_id),
+            headers=headers(user_id, admin=admin),
             **kwargs,
         )
         response.raise_for_status()
@@ -321,6 +325,86 @@ def diagnostics_tab() -> None:
         st.json(api_json("GET", "/internal/v1/entry-config"))
 
 
+def course_clicks_tab() -> None:
+    st.subheader("课程链接点击")
+    st.caption("点击次数（PV）是课程链接被有效打开的总次数；点击人数（UV）用于辅助判断。")
+    course_id = st.text_input("课程 ID（可选）", key="click_course_id")
+    col1, col2 = st.columns(2)
+    from_date = col1.date_input("开始日期", value=None, key="click_from_date")
+    to_date = col2.date_input("结束日期", value=None, key="click_to_date")
+    if st.button("查询点击统计"):
+        params: dict[str, Any] = {"page": 1, "limit": 100}
+        if course_id.strip():
+            params["course_id"] = course_id.strip()
+        if from_date:
+            params["from_date"] = from_date.isoformat()
+        if to_date:
+            params["to_date"] = to_date.isoformat()
+        payload = api_json(
+            "GET",
+            "/internal/v1/admin/course-clicks",
+            admin=True,
+            params=params,
+        )
+        if isinstance(payload, list):
+            items = payload
+            total_clicks = sum(int(item.get("clicks") or 0) for item in items)
+            total_users = sum(int(item.get("unique_users") or 0) for item in items)
+        else:
+            items = payload.get("items") or []
+            total_clicks = int(payload.get("total_clicks") or 0)
+            total_users = int(payload.get("total_unique_users") or 0)
+        metric1, metric2 = st.columns(2)
+        metric1.metric("累计点击次数", total_clicks)
+        metric2.metric("累计点击人数", total_users)
+        st.dataframe(items, use_container_width=True, hide_index=True)
+
+
+def logs_tab() -> None:
+    st.subheader("必要操作与错误日志")
+    st.caption("这里只展示脱敏后的必要操作和错误；完整容器诊断日志仍由服务器保留。")
+    col1, col2, col3 = st.columns(3)
+    level = col1.selectbox("等级", ["", "ERROR", "WARNING", "INFO"])
+    component = col2.text_input("组件")
+    request_id = col3.text_input("Request ID")
+    if st.button("查询日志"):
+        params = {"page": 1, "limit": 100}
+        if level:
+            params["level"] = level
+        if component.strip():
+            params["component"] = component.strip()
+        if request_id.strip():
+            params["request_id"] = request_id.strip()
+        payload = api_json(
+            "GET",
+            "/internal/v1/admin/logs",
+            admin=True,
+            params=params,
+        )
+        st.session_state["system_logs"] = payload.get("items") or []
+        st.caption(f"共 {payload.get('total', 0)} 条")
+    rows = st.session_state.get("system_logs", [])
+    if rows:
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+        selected = st.selectbox(
+            "查看日志详情",
+            [item["log_id"] for item in rows],
+            format_func=lambda log_id: next(
+                f"{item['occurred_at']} · {item['level']} · {item['event_code']}"
+                for item in rows
+                if item["log_id"] == log_id
+            ),
+        )
+        if st.button("打开详情"):
+            st.json(
+                api_json(
+                    "GET",
+                    f"/internal/v1/admin/logs/{selected}",
+                    admin=True,
+                )
+            )
+
+
 def main() -> None:
     st.set_page_config(page_title="AI管理服务测试页", layout="wide")
     st.title("AI管理服务极简测试页")
@@ -333,6 +417,8 @@ def main() -> None:
             "日常写作",
             "课程测试",
             "文件清洗",
+            "点击统计",
+            "日志",
             "诊断",
         ]
     )
@@ -347,6 +433,10 @@ def main() -> None:
     with tabs[4]:
         cleaning_tab()
     with tabs[5]:
+        course_clicks_tab()
+    with tabs[6]:
+        logs_tab()
+    with tabs[7]:
         diagnostics_tab()
 
 

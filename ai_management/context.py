@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from .cache import cache
@@ -24,33 +24,44 @@ class BuiltContext:
     body_chars: int
 
 
-def _messages_after_summary(
+def messages_after_summary(
     session: Session,
     conversation: BusinessConversation,
     *,
     exclude_message_id: str | None = None,
+    limit: int | None = None,
+    newest: bool = False,
 ) -> list[BusinessMessage]:
-    messages = list(
-        session.scalars(
-            select(BusinessMessage)
-            .where(
-                BusinessMessage.conversation_id == conversation.id,
-                BusinessMessage.status.in_(["completed", "stopped"]),
-            )
-            .order_by(BusinessMessage.created_at.asc())
-        )
-    )
+    conditions = [
+        BusinessMessage.conversation_id == conversation.id,
+        BusinessMessage.status.in_(["completed", "stopped"]),
+    ]
+    cursor = None
     if conversation.summary_through_message_id:
-        found = False
-        remaining: list[BusinessMessage] = []
-        for message in messages:
-            if found:
-                remaining.append(message)
-            elif message.id == conversation.summary_through_message_id:
-                found = True
-        messages = remaining if found else messages
+        cursor = session.get(BusinessMessage, conversation.summary_through_message_id)
+    if cursor is not None and cursor.conversation_id == conversation.id:
+        conditions.append(
+            or_(
+                BusinessMessage.created_at > cursor.created_at,
+                and_(
+                    BusinessMessage.created_at == cursor.created_at,
+                    BusinessMessage.id > cursor.id,
+                ),
+            )
+        )
     if exclude_message_id:
-        messages = [message for message in messages if message.id != exclude_message_id]
+        conditions.append(BusinessMessage.id != exclude_message_id)
+    order = (
+        (BusinessMessage.created_at.desc(), BusinessMessage.id.desc())
+        if newest
+        else (BusinessMessage.created_at.asc(), BusinessMessage.id.asc())
+    )
+    statement = select(BusinessMessage).where(*conditions).order_by(*order)
+    if limit is not None:
+        statement = statement.limit(limit)
+    messages = list(session.scalars(statement))
+    if newest:
+        messages.reverse()
     return messages
 
 
@@ -62,7 +73,13 @@ def build_context(
     exclude_message_id: str | None = None,
 ) -> BuiltContext:
     settings = get_settings()
-    messages = _messages_after_summary(session, conversation, exclude_message_id=exclude_message_id)
+    messages = messages_after_summary(
+        session,
+        conversation,
+        exclude_message_id=exclude_message_id,
+        limit=settings.context_max_messages,
+        newest=True,
+    )
     rendered = [f"{'用户' if item.role == 'user' else '助手'}：{item.content}" for item in messages]
     total = 0
     kept: list[str] = []

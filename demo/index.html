@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="觉醒 AI 管理服务 V2 静态产品流程 Demo">
+  <title>觉醒 AI · 产品流程 Demo</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#app-main">跳到主要内容</a>
+  <div class="ambient-grid" aria-hidden="true"></div>
+
+  <header class="demo-bar">
+    <div class="demo-brand" aria-label="觉醒 AI 产品流程 Demo">
+      <span class="brand-mark" aria-hidden="true"><span>醒</span></span>
+      <span><strong>觉醒 AI</strong><small>V2 产品流程 Demo</small></span>
+    </div>
+    <div class="mode-switch" role="group" aria-label="切换演示端">
+      <button class="mode-button is-active" type="button" data-mode="user" aria-pressed="true">用户体验</button>
+      <button class="mode-button" type="button" data-mode="ops" aria-pressed="false">运营流程</button>
+    </div>
+    <p class="demo-note"><span aria-hidden="true">●</span> 本地静态演示 · 不连接 API 或 Dify</p>
+  </header>
+
+  <main id="app-main" tabindex="-1">
+    <section class="user-stage" data-stage="user" aria-label="用户侧产品演示">
+      <aside class="stage-copy">
+        <p class="eyebrow">PRODUCT WALKTHROUGH / 用户侧</p>
+        <h1>让问题先被<br><em>看清楚</em>。</h1>
+        <p class="stage-lead">面向个体创业者与内容创作者的 AI 决策入口。它先理解现状，再给建议；需要学习时，才给出经过审核的课程与路线。</p>
+        <div class="walkthrough-steps" aria-label="演示流程">
+          <button class="step-button is-active" type="button" data-nav="home"><span>起点</span><strong>选择一件现在要解决的事</strong></button>
+          <button class="step-button" type="button" data-nav="business"><span>对话</span><strong>澄清目标，形成可执行路线</strong></button>
+          <button class="step-button" type="button" data-nav="history"><span>续聊</span><strong>从七天内的摘要继续</strong></button>
+        </div>
+        <div class="state-preview">
+          <span>界面状态</span>
+          <button type="button" class="text-button" data-state="empty">预览空状态</button>
+          <button type="button" class="text-button" data-state="error">预览错误状态</button>
+        </div>
+      </aside>
+
+      <div class="phone-wrap">
+        <div class="phone" aria-label="手机端产品界面">
+          <div class="phone-status" aria-hidden="true"><span>9:41</span><span>● ● ▰</span></div>
+          <div id="phone-screen" class="phone-screen" aria-live="polite"></div>
+          <nav class="phone-nav" aria-label="手机端主要导航">
+            <button type="button" data-nav="home" class="is-active"><span class="nav-icon">◆</span><span>首页</span></button>
+            <button type="button" data-nav="courses"><span class="nav-icon">▤</span><span>课程</span></button>
+            <button type="button" data-nav="business" class="ai-nav" aria-label="打开 AI 对话">
+              <span class="beacon"><span>醒</span></span><span>AI</span>
+            </button>
+            <button type="button" data-nav="history"><span class="nav-icon">◷</span><span>历史</span></button>
+          </nav>
+        </div>
+        <p class="phone-caption">可点击演示 · 三个 AI 入口、课程路线、历史与反馈</p>
+      </div>
+    </section>
+
+    <section class="ops-stage" data-stage="ops" hidden aria-label="运营侧流程演示">
+      <aside class="ops-rail">
+        <div>
+          <p class="eyebrow">INTERNAL FLOW / 运营侧</p>
+          <h2>AI 运行台</h2>
+          <p>只呈现首版必要操作与可观测流程。</p>
+        </div>
+        <nav class="ops-nav" aria-label="运营流程导航">
+          <button type="button" class="is-active" data-ops="publish"><span>01</span>课程校验与发布</button>
+          <button type="button" data-ops="cleaning"><span>02</span>知识清洗批次</button>
+          <button type="button" data-ops="logs"><span>03</span>必要操作与错误日志</button>
+          <button type="button" data-ops="clicks"><span>04</span>课程点击次数</button>
+        </nav>
+        <div class="rail-warning"><strong>流程预览</strong><span>不是正式管理后台，不会修改真实数据。</span></div>
+      </aside>
+      <div class="ops-workspace">
+        <div class="ops-topline">
+          <div><span class="health-dot"></span>测试环境流程预览</div>
+          <div class="utility-text">build demo-v2 · 数据均为 test_only</div>
+        </div>
+        <div id="ops-content" class="ops-content" aria-live="polite"></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <dialog id="demo-dialog" class="demo-dialog">
+    <form method="dialog">
+      <button class="dialog-close" value="cancel" aria-label="关闭">×</button>
+      <div id="dialog-content"></div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

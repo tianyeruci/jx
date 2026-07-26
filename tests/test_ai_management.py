@@ -296,7 +296,7 @@ def test_seven_day_cleanup_keeps_active_summary_and_profile(
     service_db,
     monkeypatch,
 ):
-    import ai_management.tasks as task_module
+    from ai_management.workers.tasks import maintenance as task_module
 
     now = datetime.now(timezone.utc)
     with service_db() as session:
@@ -347,7 +347,21 @@ def test_seven_day_cleanup_keeps_active_summary_and_profile(
         active_id = active.id
         inactive_id = inactive.id
 
-    monkeypatch.setattr(task_module, "_summarize_sync", lambda _: True)
+    def advance_summary_cursor(conversation_id: str) -> bool:
+        with service_db() as session:
+            conversation = session.get(BusinessConversation, conversation_id)
+            latest_id = session.scalar(
+                select(BusinessMessage.id)
+                .where(BusinessMessage.conversation_id == conversation_id)
+                .order_by(BusinessMessage.created_at.desc(), BusinessMessage.id.desc())
+                .limit(1)
+            )
+            assert conversation is not None
+            conversation.summary_through_message_id = latest_id
+            session.commit()
+        return True
+
+    monkeypatch.setattr(task_module, "_summarize_sync", advance_summary_cursor)
     task_module._cleanup_history()
 
     with service_db() as session:

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import secrets
+import threading
+import time
 import uuid
 from datetime import date, datetime, timezone
 from typing import Any
@@ -10,6 +13,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -19,9 +23,35 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
 
+_uuid7_lock = threading.Lock()
+_uuid7_last_ms = -1
+_uuid7_random = 0
+
 
 def new_id() -> str:
-    return str(uuid.uuid4())
+    """Return a lexicographically sortable, monotonic UUIDv7 string.
+
+    Ordering by ``(created_at, id)`` must preserve insertion order even when a
+    database driver gives all rows in one batch the same timestamp.
+    """
+    global _uuid7_last_ms, _uuid7_random
+    now_ms = time.time_ns() // 1_000_000
+    with _uuid7_lock:
+        if now_ms > _uuid7_last_ms:
+            _uuid7_last_ms = now_ms
+            _uuid7_random = secrets.randbits(74)
+        else:
+            _uuid7_random = (_uuid7_random + 1) & ((1 << 74) - 1)
+            if _uuid7_random == 0:
+                _uuid7_last_ms += 1
+        random_bits = _uuid7_random
+        timestamp_ms = _uuid7_last_ms
+    value = (timestamp_ms & ((1 << 48) - 1)) << 80
+    value |= 0x7 << 76
+    value |= ((random_bits >> 62) & 0xFFF) << 64
+    value |= 0b10 << 62
+    value |= random_bits & ((1 << 62) - 1)
+    return str(uuid.UUID(int=value))
 
 
 def utcnow() -> datetime:
@@ -78,6 +108,15 @@ class BusinessConversationSegment(Base, TimestampMixin):
 
 class BusinessMessage(Base, TimestampMixin):
     __tablename__ = "business_message"
+    __table_args__ = (
+        Index(
+            "ix_business_message_context_cursor",
+            "conversation_id",
+            "status",
+            "created_at",
+            "id",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     conversation_id: Mapped[str] = mapped_column(
@@ -220,3 +259,24 @@ class ExternalDeletionTask(Base, TimestampMixin):
     next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
 
+
+class SystemEventLog(Base):
+    __tablename__ = "system_event_log"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    level: Mapped[str] = mapped_column(String(16), index=True)
+    category: Mapped[str] = mapped_column(String(32), index=True)
+    component: Mapped[str] = mapped_column(String(64), index=True)
+    event_code: Mapped[str] = mapped_column(String(100), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    request_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    actor_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    resource_type: Mapped[str] = mapped_column(String(64), default="", index=True)
+    resource_id: Mapped[str] = mapped_column(String(100), default="", index=True)
+    message: Mapped[str] = mapped_column(String(1000), default="")
+    details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    build_version: Mapped[str] = mapped_column(String(100), default="development")

@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import unicodedata
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from typing import Any, Protocol
@@ -19,6 +20,7 @@ from .db import get_session
 from .errors import ServiceError
 from .models import CleaningBatch, CleaningFile
 from .security import require_internal_token
+from .services.observability import record_event
 
 router = APIRouter(
     prefix="/internal/v1/knowledge",
@@ -150,6 +152,49 @@ SYSTEM_METADATA_FIELDS = {
 }
 ALLOWED_COMMON_METADATA = {"document_type", "review_status", "course_id", "route_id", "direction"}
 
+_ALLOWED_CONTENT_TYPES = {
+    ".pdf": {"application/pdf", "application/octet-stream"},
+    ".docx": {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/zip",
+        "application/octet-stream",
+    },
+    ".md": {"text/markdown", "text/plain", "application/octet-stream"},
+    ".markdown": {"text/markdown", "text/plain", "application/octet-stream"},
+    ".txt": {"text/plain", "application/octet-stream"},
+}
+
+
+def validate_uploaded_file(path: Path, suffix: str, content_type: str | None) -> None:
+    normalized_type = (content_type or "").split(";", 1)[0].strip().lower()
+    allowed_types = _ALLOWED_CONTENT_TYPES.get(suffix, set())
+    if normalized_type and allowed_types and normalized_type not in allowed_types:
+        raise ValueError(f"声明的MIME类型 {normalized_type} 与扩展名 {suffix} 不匹配")
+    if suffix == ".pdf":
+        with path.open("rb") as handle:
+            header = handle.read(5)
+        if header != b"%PDF-":
+            raise ValueError("PDF文件头无效")
+        return
+    if suffix == ".docx":
+        try:
+            with zipfile.ZipFile(path) as archive:
+                names = set(archive.namelist())
+                if "[Content_Types].xml" not in names or "word/document.xml" not in names:
+                    raise ValueError("DOCX内部结构无效")
+        except zipfile.BadZipFile as exc:
+            raise ValueError("DOCX不是有效ZIP文档") from exc
+        return
+    if suffix in {".md", ".markdown", ".txt"}:
+        with path.open("rb") as handle:
+            sample = handle.read(64 * 1024)
+        if b"\x00" in sample:
+            raise ValueError("文本文件包含二进制空字节")
+        try:
+            sample.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise ValueError("文本文件不是UTF-8编码") from exc
+
 
 def cleaning_batch_cache_key(batch_id: str) -> str:
     return f"ai:cleaning:batch:{batch_id}"
@@ -262,6 +307,7 @@ async def create_cleaning_batch(
     for upload in files:
         original = normalized_original_filename(upload.filename or "未命名文件")
         suffix = Path(original).suffix.lower()
+        declared_content_type = upload.content_type
         row = CleaningFile(
             batch_id=batch.id,
             original_filename=original,
@@ -305,7 +351,15 @@ async def create_cleaning_batch(
             row.error_message = f"策略 {strategy_code} 不支持 {suffix or '无扩展名'}"
             target.unlink(missing_ok=True)
         else:
-            pending_ids.append(row.id)
+            try:
+                validate_uploaded_file(target, suffix, declared_content_type)
+            except ValueError as exc:
+                row.status = "failed"
+                row.error_code = "FILE_SIGNATURE_INVALID"
+                row.error_message = str(exc)
+                target.unlink(missing_ok=True)
+            else:
+                pending_ids.append(row.id)
 
     if not pending_ids:
         batch.status = "completed"
@@ -333,6 +387,22 @@ async def create_cleaning_batch(
         select(CleaningBatch)
         .where(CleaningBatch.id == batch.id)
         .options(selectinload(CleaningBatch.files))
+    )
+    record_event(
+        level="INFO",
+        category="operation",
+        component="cleaning",
+        event_code="CLEANING_BATCH_CREATED",
+        status="accepted",
+        message="清洗批次已创建",
+        resource_type="cleaning_batch",
+        resource_id=batch.id,
+        details={
+            "strategy_code": strategy_code,
+            "knowledge_base_code": knowledge_base_code,
+            "total_files": len(files),
+            "queued_files": len(pending_ids),
+        },
     )
     return _serialize_batch(loaded)
 
@@ -386,4 +456,15 @@ def retry_cleaning_file(
     from .tasks import process_cleaning_file
 
     process_cleaning_file.apply_async(args=[file_id], queue="cleaning")
+    record_event(
+        level="INFO",
+        category="operation",
+        component="cleaning",
+        event_code="CLEANING_FILE_RETRIED",
+        status="accepted",
+        message="失败清洗文件已重新提交",
+        resource_type="cleaning_file",
+        resource_id=file_id,
+        details={"batch_id": batch_id},
+    )
     return {"file_id": file_id, "status": "pending"}

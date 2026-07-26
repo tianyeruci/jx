@@ -89,6 +89,9 @@ class Cache:
         token = uuid.uuid4().hex
         acquired = False
         redis_acquired = False
+        renewal_stop = threading.Event()
+        renewal_thread: threading.Thread | None = None
+        production = get_settings().app_env == "production"
         use_memory = not bool(self.client)
         try:
             if self.client:
@@ -96,15 +99,38 @@ class Cache:
                     acquired = bool(self.client.set(key, token, nx=True, ex=ttl))
                     redis_acquired = acquired
                 except Exception:
-                    use_memory = True
-            if use_memory:
+                    use_memory = not production
+            if use_memory and not production:
                 with self._memory_lock:
                     existing = self._memory.get(key)
                     if not existing or (existing[0] and existing[0] <= time.time()):
                         self._memory[key] = (time.time() + ttl, token)
                         acquired = True
+            if redis_acquired:
+                def renew() -> None:
+                    interval = max(1.0, ttl / 3)
+                    while not renewal_stop.wait(interval):
+                        try:
+                            renewed = self.client.eval(
+                                "if redis.call('get', KEYS[1]) == ARGV[1] "
+                                "then return redis.call('expire', KEYS[1], ARGV[2]) else return 0 end",
+                                1,
+                                key,
+                                token,
+                                ttl,
+                            )
+                            if not renewed:
+                                return
+                        except Exception:
+                            return
+
+                renewal_thread = threading.Thread(target=renew, daemon=True)
+                renewal_thread.start()
             yield acquired
         finally:
+            renewal_stop.set()
+            if renewal_thread is not None:
+                renewal_thread.join(timeout=1)
             if acquired:
                 try:
                     if redis_acquired and self.client:
@@ -125,13 +151,17 @@ class Cache:
     def increment_click(self, course_id: str, day: str, user_hash: str) -> None:
         count_key = f"ai:clicks:{day}:{course_id}"
         users_key = f"ai:click-users:{day}:{course_id}"
+        dirty_key = "ai:click-dirty"
+        dirty_member = f"{day}|{course_id}"
+        ttl = 60 * 60 * 24 * get_settings().click_counter_retention_days
         try:
             if self.client:
                 pipe = self.client.pipeline()
                 pipe.incr(count_key)
                 pipe.sadd(users_key, user_hash)
-                pipe.expire(count_key, 60 * 60 * 24 * 14)
-                pipe.expire(users_key, 60 * 60 * 24 * 14)
+                pipe.sadd(dirty_key, dirty_member)
+                pipe.expire(count_key, ttl)
+                pipe.expire(users_key, ttl)
                 pipe.execute()
                 return
         except Exception:
@@ -141,6 +171,8 @@ class Cache:
             users = self._memory.get(users_key, (None, set()))[1]
             self._memory[count_key] = (None, int(count) + 1)
             self._memory[users_key] = (None, set(users) | {user_hash})
+            dirty = self._memory.get(dirty_key, (None, set()))[1]
+            self._memory[dirty_key] = (None, set(dirty) | {dirty_member})
 
     def click_counts(self, course_id: str, day: str) -> tuple[int, int]:
         count_key = f"ai:clicks:{day}:{course_id}"
@@ -156,6 +188,39 @@ class Cache:
                 int(self._memory.get(count_key, (None, 0))[1]),
                 len(self._memory.get(users_key, (None, set()))[1]),
             )
+
+    def dirty_click_counters(self) -> list[tuple[str, str]]:
+        dirty_key = "ai:click-dirty"
+        values: set[str]
+        try:
+            if self.client:
+                values = {str(item) for item in self.client.smembers(dirty_key)}
+            else:
+                values = set()
+        except Exception:
+            values = set()
+        if not values:
+            with self._memory_lock:
+                values = set(self._memory.get(dirty_key, (None, set()))[1])
+        result: list[tuple[str, str]] = []
+        for value in values:
+            day, separator, course_id = value.partition("|")
+            if separator and day and course_id:
+                result.append((day, course_id))
+        return sorted(result)
+
+    def mark_click_counter_flushed(self, day: str, course_id: str) -> None:
+        dirty_key = "ai:click-dirty"
+        member = f"{day}|{course_id}"
+        try:
+            if self.client:
+                self.client.srem(dirty_key, member)
+        except Exception:
+            pass
+        with self._memory_lock:
+            dirty = set(self._memory.get(dirty_key, (None, set()))[1])
+            dirty.discard(member)
+            self._memory[dirty_key] = (None, dirty)
 
 
 cache = Cache()

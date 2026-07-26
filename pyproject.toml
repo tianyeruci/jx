@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jx-now-ai-management"
-version = "0.1.0"
+version = "0.2.0"
 description = "Small modular AI management service for Dify 1.13.3"
 requires-python = ">=3.11"
 dependencies = [

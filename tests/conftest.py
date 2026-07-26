@@ -6,9 +6,11 @@ from pathlib import Path
 import pytest
 
 os.environ["APP_ENV"] = "test"
-os.environ["DATABASE_URL"] = "sqlite:///./test_ai_management.db"
+TEST_DATABASE_PATH = Path(os.environ.get("TEST_DATABASE_PATH", "test_ai_management.db"))
+os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DATABASE_PATH.as_posix()}"
 os.environ["REDIS_URL"] = "redis://127.0.0.1:6399/15"
 os.environ["INTERNAL_API_TOKEN"] = "test-internal-token"
+os.environ["ADMIN_API_TOKEN"] = "test-admin-token"
 os.environ["USER_HMAC_SECRET"] = "test-user-secret-with-enough-entropy"
 os.environ["DIFY_BUSINESS_APP_API_KEY"] = "test-business-key"
 os.environ["DIFY_MOMENTS_APP_API_KEY"] = "test-moments-key"
@@ -37,4 +39,4 @@ def pytest_sessionfinish(session, exitstatus):
     from ai_management.db import engine
 
     engine.dispose()
-    Path("test_ai_management.db").unlink(missing_ok=True)
+    TEST_DATABASE_PATH.unlink(missing_ok=True)

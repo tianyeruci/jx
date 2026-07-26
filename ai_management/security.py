@@ -17,6 +17,14 @@ def require_internal_token(
         raise ServiceError("UNAUTHORIZED", "内部服务鉴权失败", 401, False)
 
 
+def require_admin_token(
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+) -> None:
+    expected = get_settings().admin_api_token
+    if not x_admin_token or not hmac.compare_digest(x_admin_token, expected):
+        raise ServiceError("UNAUTHORIZED", "管理员鉴权失败", 401, False)
+
+
 def require_user_id(
     x_user_id: str | None = Header(default=None, alias="X-User-Id"),
 ) -> str:
@@ -34,4 +42,3 @@ def user_hash(user_id: str) -> str:
 
 def dify_user(user_id: str) -> str:
     return f"u_{user_hash(user_id)[:40]}"
-

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     app_env: Literal["development", "test", "production"] = "development"
     internal_api_token: str = "development-internal-token"
+    admin_api_token: str = "development-admin-token"
     user_hmac_secret: str = "development-user-hmac-secret"
     public_base_url: str = "http://127.0.0.1:8000"
 
@@ -39,14 +40,19 @@ class Settings(BaseSettings):
     cleanup_minute: int = Field(default=30, ge=0, le=59)
     summary_user_turns: int = Field(default=6, ge=1, le=100)
     summary_approx_chars: int = Field(default=6000, ge=100)
+    summary_batch_max_chars: int = Field(default=40000, ge=1000, le=55000)
+    summary_batch_max_messages: int = Field(default=100, ge=2, le=500)
     context_max_chars: int = Field(default=24000, ge=1000)
+    context_max_messages: int = Field(default=50, ge=4, le=500)
     max_query_chars: int = Field(default=12000, ge=100)
 
-    max_upload_file_mb: int = Field(default=200, ge=1)
+    max_upload_file_mb: int = Field(default=50, ge=1)
     max_upload_files: int = Field(default=10, ge=1, le=100)
     max_upload_batch_mb: int = Field(default=500, ge=1)
     failed_file_retention_hours: int = Field(default=24, ge=1)
     cleaning_status_retention_days: int = Field(default=7, ge=1)
+    system_log_retention_days: int = Field(default=30, ge=1, le=3650)
+    click_counter_retention_days: int = Field(default=30, ge=2, le=365)
     upload_root: Path = Path("var/uploads")
     build_version: str = "development"
 
@@ -73,6 +79,8 @@ class Settings(BaseSettings):
             or len(self.user_hmac_secret) < 32
         ):
             missing.append("USER_HMAC_SECRET")
+        if self.admin_api_token.startswith("development-") or len(self.admin_api_token) < 32:
+            missing.append("ADMIN_API_TOKEN")
         if not self.database_url.startswith("postgresql"):
             missing.append("DATABASE_URL(生产必须使用PostgreSQL)")
         for field_name in (
