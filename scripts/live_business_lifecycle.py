@@ -5,7 +5,6 @@ import os
 from urllib.parse import urlsplit
 
 import httpx
-
 from live_business_scenarios import stream
 
 
