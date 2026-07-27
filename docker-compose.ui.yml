@@ -1,6 +1,6 @@
 services:
   test-ui:
-    image: jx-now-ai-management-ui:0.1.0
+    image: ${AI_UI_IMAGE:-jx-now-ai-management-ui:0.2.0}
     build:
       context: .
       dockerfile: Dockerfile.ui-offline
