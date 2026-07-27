@@ -12,7 +12,5 @@ RUN pip install --no-cache-dir --no-index \
     "jx-now-ai-management[ui]==0.2.0" \
     && rm -rf /wheelhouse /ui-wheelhouse
 
-COPY ai_management/test_ui.py /app/ai_management/test_ui.py
-
 EXPOSE 8501
 CMD ["streamlit", "run", "ai_management/test_ui.py", "--server.address", "0.0.0.0", "--server.port", "8501", "--server.headless", "true"]
