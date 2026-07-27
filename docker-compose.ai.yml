@@ -84,21 +84,6 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  test-ui:
-    build:
-      context: .
-      args:
-        INSTALL_TARGET: .[ui]
-    env_file: .env
-    environment:
-      AI_MANAGEMENT_BASE_URL: http://api:8000
-    command: streamlit run ai_management/test_ui.py --server.address 0.0.0.0 --server.port 8501
-    ports:
-      - "127.0.0.1:8501:8501"
-    depends_on:
-      - api
-    profiles: ["test"]
-
 volumes:
   ai_uploads:
   ai_postgres_data:

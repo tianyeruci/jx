@@ -9,7 +9,9 @@ services:
       AI_MANAGEMENT_BASE_URL: http://api:8000
     command: streamlit run ai_management/test_ui.py --server.address 0.0.0.0 --server.port 8501 --server.headless true
     ports:
-      - "127.0.0.1:8501:8501"
+      # 默认仅本机访问；临时公网测试必须显式设置 AI_UI_BIND_ADDRESS=0.0.0.0，
+      # 并在服务器防火墙中仅放行获授权的来源 IP。
+      - "${AI_UI_BIND_ADDRESS:-127.0.0.1}:8501:8501"
     depends_on:
       - api
     profiles: ["test"]
