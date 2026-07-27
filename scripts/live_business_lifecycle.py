@@ -56,9 +56,13 @@ def main() -> None:
             redirect.raise_for_status()
         click_stats = client.get(
             f"{base_url}/internal/v1/admin/course-clicks",
-            headers={"X-Internal-Token": os.environ["INTERNAL_API_TOKEN"]},
+            headers={
+                "X-Internal-Token": os.environ["INTERNAL_API_TOKEN"],
+                "X-Admin-Token": os.environ["ADMIN_API_TOKEN"],
+            },
         )
         click_stats.raise_for_status()
+        click_items = click_stats.json()["items"]
         deleted = client.delete(
             f"{base_url}/internal/v1/business/conversations/{conversation_id}",
             headers=owner_headers,
@@ -81,7 +85,7 @@ def main() -> None:
                     "redirect_location": redirect.headers.get("location"),
                     "course_ai_001_click_stat_present": any(
                         row.get("course_id") == "course_ai_001"
-                        for row in click_stats.json()
+                        for row in click_items
                     ),
                     "deleted": deleted.json().get("deleted"),
                     "conversation_absent_after_delete": all(
