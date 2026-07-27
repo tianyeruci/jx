@@ -4,8 +4,10 @@ from celery import Celery
 from celery.schedules import crontab
 
 from ..config import get_settings
+from ..services.observability.logging_config import configure_logging
 
 settings = get_settings()
+configure_logging()
 
 celery_app = Celery(
     "ai_management",
@@ -26,6 +28,7 @@ celery_app.conf.update(
     task_acks_late=True,
     task_default_queue="default",
     worker_prefetch_multiplier=1,
+    worker_hijack_root_logger=False,
     beat_schedule={
         "nightly-maintenance": {
             "task": "ai_management.nightly_maintenance",

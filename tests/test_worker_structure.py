@@ -20,6 +20,7 @@ def test_legacy_celery_entrypoint_reexports_registered_tasks():
     assert celery_app.conf.beat_schedule["nightly-maintenance"]["task"] == (
         "ai_management.nightly_maintenance"
     )
+    assert celery_app.conf.worker_hijack_root_logger is False
 
 
 def test_system_event_log_cleanup_uses_configured_retention(monkeypatch):
