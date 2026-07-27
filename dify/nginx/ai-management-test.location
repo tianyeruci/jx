@@ -1,0 +1,16 @@
+# Streamlit 临时测试页：通过 Dify 已有的 80/443 Nginx 入口访问。
+# 此文件由 default.conf.template 在 server 块内 include，不能作为独立 *.conf 放入 conf.d。
+location = /ai-management-test {
+  return 302 /ai-management-test/;
+}
+
+location ^~ /ai-management-test/ {
+  # Docker 内置 DNS：UI 容器重建后仍可重新解析稳定别名。
+  resolver 127.0.0.11 ipv6=off valid=10s;
+  set $streamlit_upstream ai-management-test-ui:8501;
+
+  proxy_pass http://$streamlit_upstream;
+  include proxy.conf;
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection "upgrade";
+}

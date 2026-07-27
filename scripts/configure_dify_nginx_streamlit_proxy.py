@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Idempotently add or remove the Streamlit include from Dify's Nginx server block."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+
+BEGIN = "    # BEGIN ai-management-test proxy"
+INCLUDE = "    include /etc/nginx/conf.d/ai-management-test.location;"
+END = "    # END ai-management-test proxy"
+BLOCK = f"{BEGIN}\n{INCLUDE}\n{END}"
+ANCHOR = "    # placeholder for acme challenge location"
+
+
+def update(path: Path, mode: str) -> bool:
+    content = path.read_text(encoding="utf-8")
+    start = content.find(BEGIN)
+    if start != -1:
+        end = content.find(END, start)
+        if end == -1:
+            raise ValueError(f"Unclosed proxy block in {path}")
+        end += len(END)
+        content = content[:start] + content[end:].lstrip("\r\n")
+
+    if mode == "enable":
+        if ANCHOR not in content:
+            raise ValueError(f"Expected Nginx anchor missing from {path}")
+        content = content.replace(ANCHOR, f"{BLOCK}\n\n{ANCHOR}", 1)
+
+    path.write_text(content, encoding="utf-8", newline="\n")
+    return True
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mode", choices=("enable", "disable"), required=True)
+    parser.add_argument("--template", type=Path, required=True)
+    parser.add_argument("--active", type=Path, required=True)
+    args = parser.parse_args()
+
+    for path in (args.template, args.active):
+        if not path.is_file():
+            raise SystemExit(f"Nginx config not found: {path}")
+        update(path, args.mode)
+        print(f"{args.mode}: {path}")
+
+
+if __name__ == "__main__":
+    main()
