@@ -11,7 +11,6 @@ import httpx
 
 from .markdown import write_text_atomic
 
-
 # These are deliberately document-level fields only.  Chunk boundaries and local
 # audit data stay in the offline manifest instead of being copied into every
 # remote document.
@@ -218,6 +217,34 @@ class DifyKnowledgeClient:
         total = int(data.get("total") or len(data.get("data") or []))
         if total <= 0:
             raise RuntimeError("Dify索引完成但文档分块数为0")
+        return total
+
+    def ensure_document_has_child_chunks(self, document_id: str) -> int:
+        segments = self._request(
+            "GET",
+            f"datasets/{self.dataset_id}/documents/{document_id}/segments",
+            params={"page": 1, "limit": 1},
+        )
+        entries = segments.get("data") or []
+        if isinstance(entries, dict):
+            entries = entries.get("data") or entries.get("segments") or []
+        if not isinstance(entries, list) or not entries:
+            raise RuntimeError("Dify父子模式索引完成但找不到父块")
+        segment_id = str(entries[0].get("id") or "")
+        if not segment_id:
+            raise RuntimeError("Dify父块响应缺少segment id")
+        children = self._request(
+            "GET",
+            (
+                f"datasets/{self.dataset_id}/documents/{document_id}/segments/"
+                f"{segment_id}/child_chunks"
+            ),
+            params={"page": 1, "limit": 1},
+        )
+        child_entries = children.get("data") or []
+        total = int(children.get("total") or len(child_entries))
+        if total <= 0:
+            raise RuntimeError("Dify父子模式索引完成但子块数为0")
         return total
 
     def list_documents(self, *, page: int = 1, limit: int = 100) -> dict[str, Any]:

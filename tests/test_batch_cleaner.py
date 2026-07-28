@@ -1,8 +1,17 @@
 import json
 
+import httpx
+
 from knowledge_cleaner.batch_pipeline import BatchCleaningPipeline, BatchOptions
-from knowledge_cleaner.chunking import prepare_chunks, render_dify_text
+from knowledge_cleaner.chunking import (
+    DIFY_CHILD_SEPARATOR,
+    DIFY_PARENT_SEPARATOR,
+    prepare_chunks,
+    render_dify_text,
+    render_hierarchical_dify_text,
+)
 from knowledge_cleaner.classifier import parse_classification
+from knowledge_cleaner.dify import DifyKnowledgeClient
 from knowledge_cleaner.pdf_convert import scan_residual_pii, table_to_markdown
 from knowledge_cleaner.semantics import classify_text
 from knowledge_cleaner.sources import parse_markdown_posts, parse_wechat_public_account
@@ -25,6 +34,20 @@ def test_wechat_parser_restores_literal_newlines_and_strict_metadata(tmp_path):
     assert units[0].published_at == "2026-01-02 03:04:05"
 
 
+def test_wechat_parser_prefers_longer_near_duplicate_body(tmp_path):
+    source = tmp_path / "account.txt"
+    shared = "先访谈客户，再调整产品定位，最后复盘成交结果。" * 8
+    text = (
+        f"【文章1】定位复盘\\n{shared}\n"
+        "2026-01-02 03:04:05  测试账号\n"
+        f"定位复盘原创作者测试账号2026-01-02 03:04:05北京{shared}补充适用条件。\n"
+    )
+    source.write_bytes(text.encode("gb18030"))
+    unit = parse_wechat_public_account(source)[0]
+    assert unit.body.endswith("补充适用条件。")
+    assert unit.metadata["body_origin"] == "deduplicated_longer_after"
+
+
 def test_markdown_course_uses_lesson_h2_not_part_h1(tmp_path):
     source = tmp_path / "course.md"
     source.write_text(
@@ -44,6 +67,70 @@ def test_chunker_never_exposes_frontmatter_and_repeats_context():
     assert rendered.count("【上下文】商业课｜定位方法") == len(chunks)
     assert "---" not in rendered
     assert all(chunk.char_count <= 1200 for chunk in chunks)
+
+
+def test_hierarchical_renderer_uses_explicit_separators_without_overlap():
+    body = "\n\n".join(f"第{i}段讨论客户、产品与成交方法。" for i in range(1, 10))
+    chunks = prepare_chunks(
+        body,
+        title="定位方法",
+        topics=("产品与客户",),
+        target=55,
+        hard_max=80,
+        overlap=0,
+    )
+    rendered = render_hierarchical_dify_text(chunks)
+    assert DIFY_PARENT_SEPARATOR in rendered
+    assert DIFY_CHILD_SEPARATOR not in {
+        rendered.strip().splitlines()[0],
+        rendered.strip().splitlines()[-1],
+    }
+    for index in range(1, 10):
+        assert rendered.count(f"第{index}段讨论") == 1
+
+
+def test_dify_hierarchical_contract_and_child_verification():
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/document/create-by-text"):
+            captured["payload"] = json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={"document": {"id": "doc-1"}, "batch": "batch-1"},
+            )
+        if path.endswith("/segments/segment-1/child_chunks"):
+            return httpx.Response(200, json={"data": [{"id": "child-1"}], "total": 1})
+        if path.endswith("/segments"):
+            return httpx.Response(200, json={"data": [{"id": "segment-1"}], "total": 1})
+        raise AssertionError(path)
+
+    client = DifyKnowledgeClient(
+        "https://dify.example/v1",
+        "secret",
+        "dataset-1",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        client.create_document(
+            "doc.md",
+            "正文",
+            parent_separator=DIFY_PARENT_SEPARATOR,
+            child_separator=DIFY_CHILD_SEPARATOR,
+            child_max_tokens=350,
+        )
+        assert client.ensure_document_has_child_chunks("doc-1") == 1
+    finally:
+        client.close()
+    rules = captured["payload"]["process_rule"]["rules"]
+    assert captured["payload"]["doc_form"] == "hierarchical_model"
+    assert rules["parent_mode"] == "paragraph"
+    assert rules["segmentation"]["separator"] == DIFY_PARENT_SEPARATOR
+    assert rules["subchunk_segmentation"] == {
+        "separator": DIFY_CHILD_SEPARATOR,
+        "max_tokens": 350,
+    }
 
 
 def test_semantic_rules_keep_transferable_experience_and_exclude_securities():

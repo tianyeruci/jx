@@ -3,8 +3,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-
 SENTENCE_END = re.compile(r"(?<=[。！？；!?;])")
+DIFY_PARENT_SEPARATOR = "<<<DIFY_PARENT>>>"
+DIFY_CHILD_SEPARATOR = "<<<DIFY_CHILD>>>"
 
 
 @dataclass(slots=True)
@@ -115,14 +116,18 @@ def prepare_chunks(
         extra = len(block) + (2 if current else 0)
         if current and size + extra > target:
             parents.append("\n\n".join(current))
-            previous_sentences = _sentences(current[-1])
-            tail = ""
-            for sentence in reversed(previous_sentences):
-                if tail and len(sentence) + len(tail) > overlap:
-                    break
-                tail = sentence + tail
-            current = [tail] if tail else []
-            size = len(tail)
+            if overlap > 0:
+                previous_sentences = _sentences(current[-1])
+                tail = ""
+                for sentence in reversed(previous_sentences):
+                    if tail and len(sentence) + len(tail) > overlap:
+                        break
+                    tail = sentence + tail
+                current = [tail] if tail else []
+                size = len(tail)
+            else:
+                current = []
+                size = 0
         current.append(block)
         size += len(block) + (2 if len(current) > 1 else 0)
     if current:
@@ -143,3 +148,34 @@ def prepare_chunks(
 
 def render_dify_text(chunks: list[PreparedChunk]) -> str:
     return "\n\n".join(chunk.content for chunk in chunks).strip() + ("\n" if chunks else "")
+
+
+def render_hierarchical_dify_text(
+    chunks: list[PreparedChunk],
+    *,
+    parent_separator: str = DIFY_PARENT_SEPARATOR,
+    child_separator: str = DIFY_CHILD_SEPARATOR,
+) -> str:
+    """Render explicit parent/child boundaries for Dify hierarchical indexing.
+
+    Separators are never emitted at the document or parent edges.  The context
+    line is repeated in each parent and stays attached to the first child so a
+    parent cannot degrade into a title-only chunk.
+    """
+
+    if not chunks:
+        return ""
+    rendered_parents: list[str] = []
+    for chunk in chunks:
+        context, _, fallback = chunk.content.partition("\n")
+        children = [part.strip() for part in chunk.children if part.strip()]
+        if children:
+            child_text = f"\n\n{child_separator}\n\n".join(children)
+            parent = f"{context.strip()}\n\n{child_text}".strip()
+        else:
+            parent = (fallback or context).strip()
+        if parent:
+            rendered_parents.append(parent)
+    if not rendered_parents:
+        return ""
+    return f"\n\n{parent_separator}\n\n".join(rendered_parents).strip() + "\n"

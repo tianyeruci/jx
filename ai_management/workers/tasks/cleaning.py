@@ -176,6 +176,8 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     "source_sha256": row.source_sha256,
                     "upload_batch_id": batch.id,
                     "cleaning_strategy": batch.strategy_code,
+                    "source_document_index": sequence,
+                    "build_version": batch.build_version,
                 }
                 if not strategy.sensitive:
                     metadata["source_filename"] = row.original_filename
@@ -186,7 +188,19 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     for key, value in metadata.items()
                     if value not in (None, "", [], {})
                 }
-                field_names.update(metadata)
+                allowed_remote_fields = getattr(strategy, "dify_metadata_fields", None)
+                remote_metadata = (
+                    {
+                        key: value
+                        for key, value in metadata.items()
+                        if key in allowed_remote_fields
+                    }
+                    if allowed_remote_fields is not None
+                    else metadata
+                )
+                if not remote_metadata:
+                    raise ValueError(f"第 {sequence} 个清洗文档没有可写入Dify的Metadata")
+                field_names.update(remote_metadata)
                 record = CleaningDocument(
                     file_id=row.id,
                     sequence=sequence,
@@ -195,7 +209,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     metadata_json=metadata,
                 )
                 session.add(record)
-                prepared.append((record, document, metadata))
+                prepared.append((record, document, remote_metadata))
             session.commit()
 
         field_ids = client.ensure_metadata_names(sorted(field_names))
@@ -219,6 +233,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
             _set_file_state(file_id, status="processing", stage="dify_indexing")
             client.wait_for_indexing(dify_batch, timeout_seconds=1800, interval=2)
             client.ensure_document_has_segments(document_id)
+            client.ensure_document_has_child_chunks(document_id)
             _set_file_state(file_id, status="processing", stage="metadata")
             client.set_document_metadata(document_id, metadata, field_ids)
             with SessionLocal() as session:
@@ -229,7 +244,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
         with SessionLocal() as session:
             row = session.get(CleaningFile, file_id)
             row.status = "succeeded"
-            row.stage = "metadata"
+            row.stage = "completed"
             row.error_code = None
             row.error_message = None
             _finish_batch(session, row.batch_id)

@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Literal
-
 
 SourceType = Literal["wechat_public_account", "markdown_post", "markdown_course"]
 
@@ -71,15 +71,23 @@ _SEPARATOR = re.compile(r"^\s*(?:[-—_=*•·.．…]\s*){3,}$")
 _BOUNDARY_CTA = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
-        r"^(?:END|THE END|完|全文完)[。.!！ ]*$",
+        r"^(?:[-·\s]*)(?:END|THE END|完|全文完)(?:[-·\s。.!！]*)$",
         r"^(?:点击|长按|扫描|扫码).{0,30}(?:关注|识别|加入|报名|查看|阅读)",
         r"^(?:关注|回复).{0,35}(?:公众号|读书|资料|领取|获取|加入)",
         r"^(?:点赞|点个赞|在看|转发|收藏).{0,25}$",
         r"^(?:阅读原文|原文链接|推荐阅读|往期推荐|往期回顾|猜你喜欢).{0,30}$",
         r"^您已关注.{0,80}(?:免费领取|门票|福利)",
         r"^(?:加我微信|添加微信|进群|加入群聊|报名链接|点击报名).{0,50}$",
+        r"^如果你想.{0,120}(?:欢迎加入|点击.{0,20}阅读原文|查看加入方式)",
+        r"^[↑⬆]{2,}.{0,40}(?:关注|名片)",
+        r"^回复【?.{1,12}】?.{0,80}(?:微信|读书群|领取|获取|加入)",
+        r"^点击关注下方账号.{0,100}(?:回复|领取|获取)",
+        r"^(?:阿猫|鱼堂主).{0,100}(?:免费领|扫码加入|加.{0,10}小号)",
         r"^(?:作者[丨|｜].{0,30}[丨|｜].{0,30}|作者简介[：:].*)$",
     )
+)
+_BOUNDARY_NAV_START = re.compile(
+    r"^(?:你还会喜欢|更多文章|必看文章|推荐阅读|往期推荐|往期回顾)[：:]?\s*$"
 )
 
 
@@ -88,7 +96,7 @@ def _is_boundary_noise(line: str) -> bool:
     if not stripped or _SEPARATOR.fullmatch(stripped):
         return True
     # A long paragraph that happens to mention "关注" is正文, not a CTA line.
-    if len(stripped) > 120:
+    if len(stripped) > 240:
         return False
     return any(pattern.search(stripped) for pattern in _BOUNDARY_CTA)
 
@@ -110,6 +118,16 @@ def clean_structural_text(text: str) -> str:
     lines = [line.rstrip() for line in text.split("\n")]
     while lines and _is_boundary_noise(lines[0]):
         lines.pop(0)
+    while lines and _is_boundary_noise(lines[-1]):
+        lines.pop()
+    # Recommendation menus often contain ordinary-looking titles that are not
+    # individually CTA lines.  Remove the whole menu only when its explicit
+    # heading occurs close to the document tail.
+    tail_start = max(0, len(lines) - 40)
+    for index in range(tail_start, len(lines)):
+        if _BOUNDARY_NAV_START.fullmatch(lines[index].strip()):
+            del lines[index:]
+            break
     while lines and _is_boundary_noise(lines[-1]):
         lines.pop()
     result = "\n".join(lines)
@@ -157,6 +175,38 @@ def _third_line_body(section: str, published_at: str) -> str:
     return "\n".join(recovered).strip()
 
 
+def _normalized_comparison(value: str) -> str:
+    return re.sub(r"\s+", "", value)
+
+
+def _choose_wechat_body(embedded_body: str, physical_body: str) -> tuple[str, str, list[str]]:
+    """Choose between the two repeated export representations conservatively."""
+
+    embedded = clean_structural_text(embedded_body)
+    physical = clean_structural_text(physical_body)
+    if not embedded:
+        return physical, "third_line_suffix", []
+    if not physical:
+        return embedded, "escaped_header", []
+
+    left = _normalized_comparison(embedded)
+    right = _normalized_comparison(physical)
+    similarity = SequenceMatcher(None, left, right, autojunk=False).ratio()
+    containment = bool(left and right and (left in right or right in left))
+    if containment or similarity >= 0.9:
+        if len(right) > len(left):
+            return physical, "deduplicated_longer_after", []
+        return embedded, "deduplicated_longer_before", []
+
+    shorter_ratio = min(len(left), len(right)) / max(len(left), len(right))
+    warnings: list[str] = []
+    if min(len(left), len(right)) >= 200 and shorter_ratio >= 0.5:
+        warnings.append("body_candidate_conflict")
+    # In the established export profile, an escaped multi-line header is the
+    # canonical body and a dissimilar physical suffix is a packed preview.
+    return embedded, "escaped_header", warnings
+
+
 def parse_wechat_public_account(path: Path | str) -> list[ParsedSourceUnit]:
     """Split one GB18030 public-account export into individual articles.
 
@@ -187,11 +237,7 @@ def parse_wechat_public_account(path: Path | str) -> list[ParsedSourceUnit]:
         embedded_body = "\n".join(exported_lines[1:]).strip()
         physical_body = _third_line_body(text[match.end() : end], match.group("published"))
 
-        # When the header carries multiple restored lines it is the lossless
-        # source. The physical third line is normally only a truncated preview.
-        body = embedded_body if embedded_body else physical_body
-        body = clean_structural_text(body)
-        warnings: list[str] = []
+        body, body_origin, warnings = _choose_wechat_body(embedded_body, physical_body)
         if not body:
             warnings.append("content_missing")
         if index and int(match.group("number")) == int(boundaries[index - 1].group("number")):
@@ -211,7 +257,7 @@ def parse_wechat_public_account(path: Path | str) -> list[ParsedSourceUnit]:
                     "account": match.group("account").strip(),
                     "article_number": int(match.group("number")),
                     "parser_profile": "wechat_numbered_export",
-                    "body_origin": "escaped_header" if embedded_body else "third_line_suffix",
+                    "body_origin": body_origin,
                 },
                 warnings=warnings,
             )

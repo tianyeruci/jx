@@ -14,6 +14,15 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from knowledge_cleaner.chunking import (
+    DIFY_CHILD_SEPARATOR,
+    DIFY_PARENT_SEPARATOR,
+    prepare_chunks,
+    render_hierarchical_dify_text,
+)
+from knowledge_cleaner.semantics import SemanticDecision, classify_text
+from knowledge_cleaner.sources import parse_wechat_public_account
+
 from .cache import cache
 from .config import get_settings
 from .db import get_session
@@ -129,11 +138,134 @@ class PersonalBusinessConsultationStrategy:
         ]
 
 
+_ADVISOR_TOPIC_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
+    (
+        "战略与商业模式",
+        frozenset({"创业", "一人公司", "商业模式", "定位", "品牌", "职业发展", "选择"}),
+    ),
+    (
+        "产品与客户",
+        frozenset({"产品", "定价", "交付", "客户", "用户需求", "咨询"}),
+    ),
+    (
+        "市场销售与增长",
+        frozenset(
+            {
+                "营销",
+                "销售",
+                "成交",
+                "获客",
+                "私域",
+                "流量",
+                "自媒体",
+                "公众号",
+                "小红书",
+                "朋友圈",
+                "内容创作",
+                "变现",
+            }
+        ),
+    ),
+    ("组织与管理", frozenset({"团队管理", "目标管理", "时间管理"})),
+    ("财务与风险", frozenset({"收入", "盈利"})),
+    (
+        "学习与成长",
+        frozenset({"学习方法", "读书", "写作", "能力", "成长", "习惯", "心理韧性"}),
+    ),
+    (
+        "决策与执行",
+        frozenset({"决策", "效率", "执行力", "认知", "行动", "复盘"}),
+    ),
+    ("AI与智能体", frozenset({"ai商业", "智能体", "提示词"})),
+)
+
+
+def _advisor_topic(decision: SemanticDecision) -> str:
+    topic_terms = set(decision.topics)
+    for topic, terms in _ADVISOR_TOPIC_GROUPS:
+        if topic_terms & terms:
+            return topic
+    return "决策与执行"
+
+
+class WechatPublicAccountCognitionStrategy:
+    code = "wechat_public_account_cognition"
+    display_name = "微信公众号认知分享"
+    supported_extensions = {".txt"}
+    sensitive = False
+    knowledge_base_code = "general"
+    # The full internal record keeps source lineage.  Only the business fields
+    # defined by the advisor RAG plan are written to Dify for this strategy.
+    dify_metadata_fields = frozenset(
+        {"record_type", "topic", "source_title", "industry", "business_stage"}
+    )
+
+    def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
+        units = parse_wechat_public_account(file_path)
+        documents: list[CleanedDocument] = []
+        seen_bodies: set[str] = set()
+        for unit in units:
+            body = unit.body.strip()
+            if not body or "body_candidate_conflict" in unit.warnings:
+                continue
+            if DIFY_PARENT_SEPARATOR in body or DIFY_CHILD_SEPARATOR in body:
+                raise ValueError(f"文章 {unit.sequence} 正文与Dify分隔符碰撞")
+
+            decision = classify_text(unit.title, body)
+            if decision.disposition != "keep":
+                continue
+            fingerprint = hashlib.sha256(
+                re.sub(r"\s+", "", body).lower().encode("utf-8")
+            ).hexdigest()
+            if fingerprint in seen_bodies:
+                continue
+            seen_bodies.add(fingerprint)
+
+            topic = _advisor_topic(decision)
+            source_body = body
+            if decision.time_sensitive and unit.published_at:
+                attribution = unit.author or "该公众号"
+                source_body = (
+                    f"> 来源语境：{attribution}于{unit.published_at}发布。"
+                    "以下为当时观点，不代表当前状态。\n\n"
+                    f"{body}"
+                )
+            chunks = prepare_chunks(
+                source_body,
+                title=unit.title,
+                content_type="article",
+                topics=(topic,),
+                overlap=0,
+            )
+            markdown = render_hierarchical_dify_text(chunks)
+            if not markdown:
+                continue
+            documents.append(
+                CleanedDocument(
+                    markdown=markdown,
+                    title=unit.title,
+                    metadata={
+                        "record_type": "article",
+                        "topic": topic,
+                        "source_title": unit.title,
+                    },
+                    parent_separator=DIFY_PARENT_SEPARATOR,
+                    parent_max_tokens=1000,
+                    child_separator=DIFY_CHILD_SEPARATOR,
+                    child_max_tokens=350,
+                )
+            )
+        if not documents:
+            raise ValueError(f"{original_filename} 没有通过自动门禁的可入库商业知识")
+        return documents
+
+
 STRATEGY_REGISTRY: dict[str, CleaningStrategy] = {
     strategy.code: strategy
     for strategy in (
         TestDocumentStrategy(),
         PersonalBusinessConsultationStrategy(),
+        WechatPublicAccountCognitionStrategy(),
     )
 }
 
@@ -144,11 +276,18 @@ SYSTEM_METADATA_FIELDS = {
     "source_sha256",
     "upload_batch_id",
     "cleaning_strategy",
+    "source_document_index",
+    "build_version",
     "document_type",
     "review_status",
     "course_id",
     "route_id",
     "direction",
+    "record_type",
+    "topic",
+    "source_title",
+    "industry",
+    "business_stage",
 }
 ALLOWED_COMMON_METADATA = {"document_type", "review_status", "course_id", "route_id", "direction"}
 
@@ -190,14 +329,24 @@ def validate_uploaded_file(path: Path, suffix: str, content_type: str | None) ->
             sample = handle.read(64 * 1024)
         if b"\x00" in sample:
             raise ValueError("文本文件包含二进制空字节")
-        try:
-            sample.decode("utf-8-sig")
-        except UnicodeDecodeError as exc:
-            raise ValueError("文本文件不是UTF-8编码") from exc
+        encodings = ("utf-8-sig", "gb18030") if suffix == ".txt" else ("utf-8-sig",)
+        for encoding in encodings:
+            try:
+                sample.decode(encoding, errors="strict")
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            names = "UTF-8或GB18030" if suffix == ".txt" else "UTF-8"
+            raise ValueError(f"文本文件不能按{names}无损解码")
 
 
 def cleaning_batch_cache_key(batch_id: str) -> str:
     return f"ai:cleaning:batch:{batch_id}"
+
+
+def cleaning_batch_files_cache_key(batch_id: str) -> str:
+    return f"ai:cleaning:batch:{batch_id}:files"
 
 
 def normalized_original_filename(value: str) -> str:
@@ -253,6 +402,7 @@ def cleaning_strategies() -> list[dict[str, Any]]:
             "code": item.code,
             "display_name": item.display_name,
             "supported_extensions": sorted(item.supported_extensions),
+            "knowledge_base_code": getattr(item, "knowledge_base_code", None),
         }
         for item in STRATEGY_REGISTRY.values()
     ]
@@ -272,6 +422,14 @@ async def create_cleaning_batch(
         raise ServiceError("VALIDATION_ERROR", "未注册的清洗策略", 422, False)
     if knowledge_base_code not in {"general", "course"}:
         raise ServiceError("VALIDATION_ERROR", "目标知识库代码无效", 422, False)
+    required_knowledge_base = getattr(strategy, "knowledge_base_code", None)
+    if required_knowledge_base and knowledge_base_code != required_knowledge_base:
+        raise ServiceError(
+            "VALIDATION_ERROR",
+            f"策略 {strategy_code} 只能写入 {required_knowledge_base} 知识库",
+            422,
+            False,
+        )
     if not files or len(files) > settings.max_upload_files:
         raise ServiceError(
             "VALIDATION_ERROR",
@@ -364,6 +522,22 @@ async def create_cleaning_batch(
     if not pending_ids:
         batch.status = "completed"
     session.commit()
+    manifest_batch = session.scalar(
+        select(CleaningBatch)
+        .where(CleaningBatch.id == batch.id)
+        .options(selectinload(CleaningBatch.files))
+    )
+    cache.set_json(
+        cleaning_batch_files_cache_key(batch.id),
+        {
+            "batch_id": batch.id,
+            "files": [
+                {"file_id": item.id, "original_filename": item.original_filename}
+                for item in manifest_batch.files
+            ],
+        },
+        ttl=settings.cleaning_status_retention_days * 24 * 60 * 60,
+    )
     for file_id in pending_ids:
         try:
             from .tasks import process_cleaning_file

@@ -10,8 +10,10 @@ import yaml
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from ai_management.cache import cache
 from ai_management.cleaning import (
     STRATEGY_REGISTRY,
+    cleaning_batch_files_cache_key,
     dify_document_name,
     normalized_original_filename,
 )
@@ -473,7 +475,11 @@ stages:
 
 
 def test_cleaning_strategy_and_filename_rules(tmp_path):
-    assert {"test_markdown", "personal_business_consultation"} <= set(
+    assert {
+        "test_markdown",
+        "personal_business_consultation",
+        "wechat_public_account_cognition",
+    } <= set(
         STRATEGY_REGISTRY
     )
     original = normalized_original_filename(
@@ -488,6 +494,26 @@ def test_cleaning_strategy_and_filename_rules(tmp_path):
     source.write_text("# 标题\n\n正文", encoding="utf-8")
     result = STRATEGY_REGISTRY["test_markdown"].clean(source, "原始文档.md")
     assert result[0].markdown.startswith("# 标题")
+
+    wechat = tmp_path / "公众号.txt"
+    wechat.write_bytes(
+        (
+            "【文章1】定位复盘\\n"
+            "我先访谈客户，再调整产品定位和交付方式，最终成交率提高，并总结了复盘步骤。\n"
+            "2026-01-02 03:04:05  测试账号\n"
+            "定位复盘原创作者测试账号2026-01-02 03:04:05北京预览\n"
+        ).encode("gb18030")
+    )
+    cleaned = STRATEGY_REGISTRY["wechat_public_account_cognition"].clean(
+        wechat, "公众号.txt"
+    )
+    assert cleaned[0].metadata == {
+        "record_type": "article",
+        "topic": "战略与商业模式",
+        "source_title": "定位复盘",
+    }
+    assert cleaned[0].parent_separator == "<<<DIFY_PARENT>>>"
+    assert cleaned[0].child_separator == "<<<DIFY_CHILD>>>"
 
 
 def test_cleaning_batch_upload_reports_each_file(
@@ -525,6 +551,11 @@ def test_cleaning_batch_upload_reports_each_file(
     assert len(queued) == 1
     statuses = {item["original_filename"]: item["status"] for item in payload["files"]}
     assert statuses == {"原始名称.md": "pending", "不支持.exe": "failed"}
+    cached_files = cache.get_json(cleaning_batch_files_cache_key(payload["batch_id"]))
+    assert {item["original_filename"] for item in cached_files["files"]} == {
+        "原始名称.md",
+        "不支持.exe",
+    }
 
 
 def test_dsl_and_gold_data_are_complete():
