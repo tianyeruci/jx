@@ -203,6 +203,7 @@ class CleaningBatch(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(16), default="processing", index=True)
     common_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     build_version: Mapped[str] = mapped_column(String(100), default="development")
+    spec_revision: Mapped[str] = mapped_column(String(64), default="cleaning-v2")
 
     files: Mapped[list["CleaningFile"]] = relationship(
         back_populates="batch", cascade="all, delete-orphan"
@@ -227,6 +228,9 @@ class CleaningFile(Base, TimestampMixin):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     replace_document_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    source_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     batch: Mapped[CleaningBatch] = relationship(back_populates="files")
     documents: Mapped[list["CleaningDocument"]] = relationship(
@@ -246,8 +250,22 @@ class CleaningDocument(Base, TimestampMixin):
     dify_document_name: Mapped[str] = mapped_column(String(300))
     dify_document_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     dify_batch_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    status: Mapped[str] = mapped_column(String(16), default="pending")
+    document_key: Mapped[str] = mapped_column(String(120), default="", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    stage: Mapped[str] = mapped_column(String(32), default="pending")
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    content_sha256: Mapped[str] = mapped_column(String(64), default="")
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    chunking_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    audit_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    warnings_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    cleaned_markdown: Mapped[str] = mapped_column(Text, default="")
+    review_revision: Mapped[int] = mapped_column(Integer, default=0)
+    retryable: Mapped[bool] = mapped_column(Boolean, default=False)
+    remote_parent_count: Mapped[int] = mapped_column(Integer, default=0)
+    remote_child_count: Mapped[int] = mapped_column(Integer, default=0)
 
     file: Mapped[CleaningFile] = relationship(back_populates="documents")
 

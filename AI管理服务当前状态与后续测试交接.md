@@ -1,6 +1,6 @@
 # AI 管理服务当前状态与后续测试交接
 
-> 更新时间：2026-07-23  
+> 更新时间：2026-07-28  
 > 用途：新开 Codex 对话后，先完整阅读本文，再继续联调、测试和修复。  
 > 业务与实现边界仍以 `AI管理服务快速落地与测试计划.md` 为准。
 
@@ -15,6 +15,59 @@ AI 管理服务的代码、Dify 应用、测试知识库和服务器基础部署
 - 发布后的真实 API 调用已确认两个节点分别召回对应知识库。
 
 当前仍不是“全部验收完成”状态。已进入发布后的契约、业务集成、摘要画像、清洗、RAG、并发和故障测试阶段。
+
+### 1.1 2026-07-28 文档清洗链路最新状态
+
+文档清洗策略与入库链路已经完成代码实现、服务器发布和真实链路验收。
+
+当前线上版本：
+
+- 核心镜像：`jx-now-ai-management:0.2.1-cleaning-27a8bc0-r7`
+- 测试页镜像：`jx-now-ai-management-ui:0.2.1-cleaning-27a8bc0`
+- Alembic 版本：`6a5f9e2b1c44 (head)`
+- 离线 wheel：`jx_now_ai_management-0.2.1-py3-none-any.whl`
+- 离线 wheel SHA256：`1f26e3920051afd046840b8716691aed17497b08095c900b8d4bd2edd116f3d1`
+
+本轮新增并已验证：
+
+- 六类正式清洗策略可从 AI 管理页读取。
+- 上传批次支持文件级状态、条目级状态、单文件重试、单条目重试和人工复核。
+- 成功条目会验证 Dify 索引状态、父子块数量和 Metadata 写入结果。
+- Redis 可查询批次状态与文件清单。
+- 成功源文件会删除；失败文件按保留期暂存。
+
+2026-07-28 线上真实验收结果：
+
+- `/health/live`、`/health/ready` 均通过。
+- AI 管理页测试路径 `/ai-management-test` 可访问，`/ai-management-test/_stcore/health` 返回 `ok`。
+- `scripts/dify_contract_check.py`、`scripts/live_business_lifecycle.py`、`scripts/live_stop_check.py` 均通过。
+- 真实上传“1 个有效 Markdown + 1 个非法 EXE”批次后：
+  - 批次状态 `completed`
+  - 成功文件 `succeeded`
+  - 非法文件 `failed`
+  - `all_succeeded=false`
+  - `all_processed_without_error=false`
+  - 成功条目远端父块数 `1`、子块数 `1`
+  - 成功源文件已删除
+  - 验收生成的测试知识库文档已删除
+- 真实待复核链路补测后：
+  - 正式策略列表返回 6 个策略
+  - 纯待复核文件终态稳定为 `review_required`
+  - 待复核条目直接重试返回 `409`
+  - 纯待复核文件直接重试返回 `409`
+  - `replace_and_approve` 可成功入库并回读远端父子块计数 `1/1`
+  - `exclude` 后文件终态为 `excluded`，批次聚合状态同步刷新
+
+本轮发布中修复过 4 个真实缺陷：
+
+1. 待复核条目可被直接重试并发布，绕过人工复核。
+2. 纯待复核文件在条目生成完成后状态未落到终态，仍停在 `processing` / `cleaning`。
+3. `exclude` 复核后文件和批次聚合状态未即时刷新。
+4. 服务器 `Dockerfile.offline` 实际运行代码来自 `wheelhouse`；只同步源码再重建镜像不会带上本地修复，必须先替换 wheel 再重建。
+
+对应本地回归结果：
+
+- `python -m pytest tests -q`：`55 passed`
 
 ## 2. 已完成并验证的工作
 

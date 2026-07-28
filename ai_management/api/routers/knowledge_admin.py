@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
@@ -7,11 +8,20 @@ from sqlalchemy.orm import Session
 
 from knowledge_cleaner.dify import DifyKnowledgeClient
 
-from ...cleaning import create_cleaning_batch, get_cleaning_batch, retry_cleaning_file
+from ...cleaning import (
+    STRATEGY_REGISTRY,
+    create_cleaning_batch,
+    get_cleaning_batch,
+    get_cleaning_item,
+    get_cleaning_items,
+    retry_cleaning_file,
+    retry_cleaning_item,
+    review_cleaning_item,
+)
 from ...config import get_settings
 from ...db import get_session
 from ...errors import ServiceError
-from ...schemas import DeleteDocumentRequest, DocumentStatusRequest
+from ...schemas import CleaningReviewDecisionRequest, DeleteDocumentRequest, DocumentStatusRequest
 from ...security import require_admin_token, require_internal_token
 from ...services.observability import record_event
 
@@ -124,6 +134,27 @@ def list_documents(kb_code: str) -> dict[str, list[dict[str, Any]]]:
     return {"items": [_serialize_document(item) for item in _documents(kb_code)]}
 
 
+@router.get("/{kb_code}/cleaning-strategies")
+def list_cleaning_strategies(kb_code: str) -> dict[str, list[dict[str, Any]]]:
+    _dataset_id(kb_code)
+    items = []
+    for item in STRATEGY_REGISTRY.values():
+        required = getattr(item, "knowledge_base_code", None)
+        if required and required != kb_code:
+            continue
+        if item.code in {"standard_document", "test_markdown"}:
+            continue
+        items.append(
+            {
+                "code": item.code,
+                "display_name": item.display_name,
+                "supported_extensions": sorted(item.supported_extensions),
+                "knowledge_base_code": getattr(item, "knowledge_base_code", None),
+            }
+        )
+    return {"items": items}
+
+
 @router.post("/{kb_code}/upload-batches")
 async def upload_batch(
     kb_code: str,
@@ -164,6 +195,102 @@ def retry_upload_file(
     if payload["knowledge_base_code"] != kb_code:
         raise ServiceError("VALIDATION_ERROR", "上传批次不属于该知识库", 404, False)
     return retry_cleaning_file(batch_id, file_id, session)
+
+
+@router.get("/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items")
+def list_upload_items(
+    kb_code: str,
+    batch_id: str,
+    file_id: str,
+    status: str | None = None,
+    cursor: str | None = None,
+    limit: int = 50,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _dataset_id(kb_code)
+    payload = get_cleaning_batch(batch_id, session)
+    if payload["knowledge_base_code"] != kb_code:
+        raise ServiceError("VALIDATION_ERROR", "上传批次不属于该知识库", 404, False)
+    return get_cleaning_items(
+        batch_id,
+        file_id,
+        status=status,
+        cursor=cursor,
+        limit=max(1, min(limit, 200)),
+        session=session,
+    )
+
+
+@router.get("/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}")
+def upload_item_detail(
+    kb_code: str,
+    batch_id: str,
+    file_id: str,
+    item_id: str,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _dataset_id(kb_code)
+    payload = get_cleaning_batch(batch_id, session)
+    if payload["knowledge_base_code"] != kb_code:
+        raise ServiceError("VALIDATION_ERROR", "上传批次不属于该知识库", 404, False)
+    return get_cleaning_item(batch_id, file_id, item_id, session)
+
+
+@router.post("/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}/retry")
+def retry_upload_item(
+    kb_code: str,
+    batch_id: str,
+    file_id: str,
+    item_id: str,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _dataset_id(kb_code)
+    payload = get_cleaning_batch(batch_id, session)
+    if payload["knowledge_base_code"] != kb_code:
+        raise ServiceError("VALIDATION_ERROR", "上传批次不属于该知识库", 404, False)
+    return retry_cleaning_item(batch_id, file_id, item_id, session)
+
+
+@router.post("/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}/review-decisions")
+async def review_upload_item(
+    kb_code: str,
+    batch_id: str,
+    file_id: str,
+    item_id: str,
+    action: str = Form(...),
+    expected_revision: int = Form(...),
+    reason: str = Form(default=""),
+    metadata_patch: str = Form(default="{}"),
+    markdown_file: UploadFile | None = File(default=None),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _dataset_id(kb_code)
+    payload = get_cleaning_batch(batch_id, session)
+    if payload["knowledge_base_code"] != kb_code:
+        raise ServiceError("VALIDATION_ERROR", "上传批次不属于该知识库", 404, False)
+    try:
+        parsed = CleaningReviewDecisionRequest(
+            action=action,
+            expected_revision=expected_revision,
+            reason=reason,
+            metadata_patch=json.loads(metadata_patch or "{}"),
+        )
+    except ValueError as exc:
+        raise ServiceError("VALIDATION_ERROR", "复核参数无效", 422, False) from exc
+    markdown_text = None
+    if markdown_file is not None:
+        markdown_text = (await markdown_file.read()).decode("utf-8-sig")
+    return review_cleaning_item(
+        batch_id,
+        file_id,
+        item_id,
+        action=parsed.action,
+        expected_revision=parsed.expected_revision,
+        reason=parsed.reason,
+        metadata_patch=parsed.metadata_patch,
+        markdown_text=markdown_text,
+        session=session,
+    )
 
 
 @router.patch("/{kb_code}/documents/{document_id}/status")

@@ -52,9 +52,13 @@ class Settings(BaseSettings):
     max_upload_batch_mb: int = Field(default=500, ge=1)
     failed_file_retention_hours: int = Field(default=24, ge=1)
     cleaning_status_retention_days: int = Field(default=7, ge=1)
+    cleaning_source_error_retention_days: int = Field(default=7, ge=0, le=30)
+    cleaning_markdown_split_bytes: int = Field(default=10 * 1024 * 1024, ge=1024)
     system_log_retention_days: int = Field(default=30, ge=1, le=3650)
     click_counter_retention_days: int = Field(default=30, ge=2, le=365)
     upload_root: Path = Path("var/uploads")
+    cleaned_root: Path = Path("var/cleaned")
+    audit_root: Path = Path("var/audit")
     build_version: str = "development"
 
     @property

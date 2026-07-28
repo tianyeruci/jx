@@ -1,24 +1,26 @@
 from __future__ import annotations
 
+from dataclasses import asdict
+import hashlib
+import json
 import logging
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from knowledge_cleaner.dify import DifyKnowledgeClient
 
 from ...cache import cache
-from ...cleaning import STRATEGY_REGISTRY, cleaning_batch_cache_key, dify_document_name
-from ...config import get_settings
-from ...db import SessionLocal
-from ...models import (
-    CleaningBatch,
-    CleaningDocument,
-    CleaningFile,
-    ExternalDeletionTask,
+from ...cleaning import (
+    ChunkingConfig,
+    STRATEGY_REGISTRY,
+    cleaning_batch_cache_key,
+    get_settings,
 )
+from ...db import SessionLocal
+from ...models import CleaningBatch, CleaningDocument, CleaningFile, ExternalDeletionTask, utcnow
 from ...services.observability.events import record_event
 from ..celery_app import celery_app
 
@@ -42,10 +44,7 @@ def _knowledge_client(batch: CleaningBatch) -> DifyKnowledgeClient:
     )
 
 
-def _remove_or_disable_document(
-    client: DifyKnowledgeClient,
-    document_id: str,
-) -> bool:
+def _remove_or_disable_document(client: DifyKnowledgeClient, document_id: str) -> bool:
     try:
         client.delete_document(document_id)
         return True
@@ -73,6 +72,112 @@ def _queue_document_cleanup(document_id: str, dataset_id: str) -> None:
         session.commit()
 
 
+def _chunking_from_json(payload: dict[str, Any] | None) -> ChunkingConfig:
+    if not payload:
+        return ChunkingConfig()
+    return ChunkingConfig(
+        doc_form=str(payload.get("doc_form") or "hierarchical_model"),
+        process_mode=str(payload.get("process_mode") or "hierarchical"),
+        parent_mode=str(payload.get("parent_mode") or "paragraph"),
+        parent_separator=payload.get("parent_separator"),
+        parent_max_tokens=int(payload.get("parent_max_tokens") or 1000),
+        child_separator=payload.get("child_separator"),
+        child_max_tokens=int(payload.get("child_max_tokens") or 350),
+        parent_chunk_overlap=int(payload.get("parent_chunk_overlap") or 0),
+        child_chunk_overlap=int(payload.get("child_chunk_overlap") or 0),
+    )
+
+
+def _content_sha(markdown: str, metadata: dict[str, Any], chunking: dict[str, Any]) -> str:
+    payload = {
+        "markdown": markdown,
+        "metadata": metadata,
+        "chunking": chunking,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _finish_batch(session, batch_id: str) -> None:
+    batch = session.scalar(
+        select(CleaningBatch)
+        .where(CleaningBatch.id == batch_id)
+        .options(selectinload(CleaningBatch.files).selectinload(CleaningFile.documents))
+    )
+    if batch is None:
+        return
+    statuses = []
+    for file_row in batch.files:
+        statuses.append(_refresh_file_state(session, file_row.id, commit=False))
+    batch.status = "completed" if statuses and all(status in {"succeeded", "excluded", "review_required", "failed", "mixed"} for status in statuses) else "processing"
+    cache.delete(cleaning_batch_cache_key(batch_id))
+
+
+def _refresh_file_state(session, file_id: str, *, commit: bool = True) -> str:
+    row = session.get(CleaningFile, file_id)
+    if row is None:
+        return "failed"
+    documents = list(
+        session.scalars(
+            select(CleaningDocument)
+            .where(CleaningDocument.file_id == file_id)
+            .order_by(CleaningDocument.sequence)
+        )
+    )
+    if not documents:
+        if row.status in {"failed", "review_required", "succeeded", "excluded"}:
+            row.outcome = row.status
+            if row.status in {"succeeded", "excluded"} and row.source_deleted_at is None:
+                row.source_deleted_at = utcnow()
+        elif row.status == "processing":
+            row.outcome = "processing"
+        if commit:
+            cache.delete(cleaning_batch_cache_key(row.batch_id))
+            session.commit()
+        return row.outcome or row.status
+
+    pending = sum(item.status == "pending" for item in documents)
+    processing = sum(item.status == "processing" for item in documents)
+    succeeded = sum(item.status == "succeeded" for item in documents)
+    excluded = sum(item.status == "excluded" for item in documents)
+    review_required = sum(item.status == "review_required" for item in documents)
+    failed = sum(item.status == "failed" for item in documents)
+    total = len(documents)
+    if pending or processing:
+        row.status = "processing"
+        row.outcome = "processing"
+        row.stage = "publishing"
+    elif succeeded == total:
+        row.status = "succeeded"
+        row.outcome = "succeeded"
+        row.stage = "completed"
+    elif excluded == total:
+        row.status = "excluded"
+        row.outcome = "excluded"
+        row.stage = "completed"
+    elif review_required == total:
+        row.status = "review_required"
+        row.outcome = "review_required"
+        row.stage = "review"
+    elif failed == total:
+        row.status = "failed"
+        row.outcome = "failed"
+        row.stage = "failed"
+    else:
+        row.status = "mixed"
+        row.outcome = "mixed"
+        row.stage = "completed"
+    if row.outcome in {"succeeded", "excluded"}:
+        target = settings.upload_root.resolve() / row.batch_id / row.storage_filename
+        target.unlink(missing_ok=True)
+        row.source_deleted_at = utcnow()
+    if commit:
+        cache.delete(cleaning_batch_cache_key(row.batch_id))
+        session.commit()
+    return row.outcome
+
+
 def _set_file_state(
     file_id: str,
     *,
@@ -91,23 +196,126 @@ def _set_file_state(
             row.stage = stage
         row.error_code = error_code
         row.error_message = error_message
-        batch_id = row.batch_id
+        _finish_batch(session, row.batch_id)
         session.commit()
-        cache.delete(cleaning_batch_cache_key(batch_id))
 
 
-def _finish_batch(session, batch_id: str) -> None:
-    batch = session.get(CleaningBatch, batch_id)
-    if batch is None:
-        return
-    non_terminal = session.scalar(
-        select(func.count(CleaningFile.id)).where(
-            CleaningFile.batch_id == batch_id,
-            CleaningFile.status.in_(["pending", "processing"]),
+def _set_document_state(
+    document_id: str,
+    *,
+    status: str | None = None,
+    stage: str | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+    retryable: bool | None = None,
+) -> None:
+    with SessionLocal() as session:
+        row = session.get(CleaningDocument, document_id)
+        if row is None:
+            return
+        if status is not None:
+            row.status = status
+        if stage is not None:
+            row.stage = stage
+        row.error_code = error_code
+        row.error_message = error_message
+        if retryable is not None:
+            row.retryable = retryable
+        _refresh_file_state(session, row.file_id, commit=False)
+        _finish_batch(session, row.file.batch_id)
+        session.commit()
+
+
+def _publish_document(session, row: CleaningDocument, batch: CleaningBatch, file_row: CleaningFile) -> bool:
+    client: DifyKnowledgeClient | None = None
+    created_remote_id = ""
+    try:
+        client = _knowledge_client(batch)
+        row.status = "processing"
+        row.stage = "dify_upload"
+        row.attempts += 1
+        row.error_code = None
+        row.error_message = None
+        session.commit()
+        if row.dify_document_id:
+            if not _remove_or_disable_document(client, row.dify_document_id):
+                _queue_document_cleanup(row.dify_document_id, client.dataset_id)
+            row.dify_document_id = None
+            row.dify_batch_id = None
+            session.commit()
+
+        if batch.upload_mode == "raw":
+            target = settings.upload_root.resolve() / batch.id / file_row.storage_filename
+            document_id, dify_batch_id = client.create_document_by_file(target)
+            expected_parent_count = 0
+            expected_child_counts: list[int] = []
+        else:
+            chunking = _chunking_from_json(row.chunking_json)
+            document_id, dify_batch_id = client.create_document(
+                row.dify_document_name,
+                row.cleaned_markdown,
+                doc_form=chunking.doc_form,
+                process_mode=chunking.process_mode,
+                parent_mode=chunking.parent_mode,
+                parent_separator=chunking.parent_separator,
+                parent_max_tokens=chunking.parent_max_tokens,
+                child_separator=chunking.child_separator,
+                child_max_tokens=chunking.child_max_tokens,
+                parent_chunk_overlap=chunking.parent_chunk_overlap,
+                child_chunk_overlap=chunking.child_chunk_overlap,
+            )
+            expected_parent_count = 1 if chunking.parent_mode == "full-doc" else None
+            expected_child_counts = []
+        created_remote_id = document_id
+        row.dify_document_id = document_id
+        row.dify_batch_id = dify_batch_id
+        row.stage = "dify_indexing"
+        session.commit()
+
+        client.wait_for_indexing(dify_batch_id, timeout_seconds=1800, interval=2)
+        structure = client.verify_document_structure(
+            document_id,
+            parent_mode=_chunking_from_json(row.chunking_json).parent_mode if batch.upload_mode != "raw" else "paragraph",
+            expected_parent_count=expected_parent_count,
+            expected_child_counts=expected_child_counts or None,
         )
-    )
-    batch.status = "completed" if not non_terminal else "processing"
-    cache.delete(cleaning_batch_cache_key(batch_id))
+        row.remote_parent_count = int(structure["parent_count"])
+        row.remote_child_count = int(structure["child_count"])
+        row.stage = "metadata"
+        session.commit()
+
+        allowed_remote_fields = getattr(STRATEGY_REGISTRY.get(batch.strategy_code), "dify_metadata_fields", None)
+        remote_metadata = {
+            key: value
+            for key, value in (row.metadata_json or {}).items()
+            if allowed_remote_fields is None or key in allowed_remote_fields
+        }
+        field_ids = client.ensure_metadata_names(sorted(remote_metadata))
+        client.set_document_metadata(document_id, remote_metadata, field_ids)
+        client.verify_document_metadata(document_id, remote_metadata)
+        row.status = "succeeded"
+        row.stage = "completed"
+        row.retryable = False
+        session.commit()
+        return True
+    except Exception as exc:
+        logger.exception("cleaning document publish failed", extra={"document_id": row.id})
+        if client and created_remote_id:
+            if not _remove_or_disable_document(client, created_remote_id):
+                _queue_document_cleanup(created_remote_id, client.dataset_id)
+        retry = row.attempts < 2
+        row.status = "pending" if retry else "failed"
+        row.stage = "retrying" if retry else "failed"
+        row.error_code = "CLEANING_FAILED"
+        row.error_message = str(exc)[:2000]
+        row.retryable = not retry
+        session.commit()
+        if retry:
+            raise
+        return False
+    finally:
+        if client:
+            client.close()
 
 
 @celery_app.task(
@@ -117,12 +325,7 @@ def _finish_batch(session, batch_id: str) -> None:
     acks_late=True,
 )
 def process_cleaning_file(self, file_id: str) -> bool:
-    created_remote_ids: list[str] = []
-    replacement_document_id = ""
-    client: DifyKnowledgeClient | None = None
-    target: Path | None = None
     try:
-        upload_mode = "cleaned"
         with SessionLocal() as session:
             row = session.scalar(
                 select(CleaningFile)
@@ -135,36 +338,28 @@ def process_cleaning_file(self, file_id: str) -> bool:
             if row is None or row.status not in {"pending", "processing"}:
                 return False
             batch = row.batch
-            upload_mode = batch.upload_mode
-            replacement_document_id = row.replace_document_id or ""
             strategy = STRATEGY_REGISTRY.get(batch.strategy_code)
-            if upload_mode != "raw" and strategy is None:
+            if batch.upload_mode != "raw" and strategy is None:
                 raise ValueError("清洗策略已从当前代码中移除")
-            row.status = "processing"
-            row.stage = "cleaning"
-            row.attempts += 1
-            row.error_code = None
-            row.error_message = None
             target = settings.upload_root.resolve() / batch.id / row.storage_filename
             if not target.exists():
                 raise FileNotFoundError("临时源文件不存在或已经过期")
 
-            client = _knowledge_client(batch)
-            # Retry cleanup only documents created by an incomplete earlier
-            # attempt.  Do not delete a completed document before its
-            # replacement has indexed successfully.
-            for old in list(row.documents):
-                if old.status != "succeeded" and old.dify_document_id:
-                    if not _remove_or_disable_document(client, old.dify_document_id):
-                        _queue_document_cleanup(old.dify_document_id, client.dataset_id)
-                if old.status != "succeeded":
-                    session.delete(old)
+            row.status = "processing"
+            row.outcome = "processing"
+            row.stage = "cleaning"
+            row.attempts += 1
+            row.error_code = None
+            row.error_message = None
+            for existing in list(row.documents):
+                if existing.status != "succeeded":
+                    session.delete(existing)
             session.commit()
 
-            if upload_mode == "raw":
+            if batch.upload_mode == "raw":
                 from ...cleaning import CleanedDocument
 
-                documents = [
+                cleaned_documents = [
                     CleanedDocument(
                         markdown="__raw_upload__",
                         title=row.original_filename,
@@ -173,23 +368,11 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 ]
             else:
                 assert strategy is not None
-                documents = strategy.clean(target, row.original_filename)
-            if not documents:
+                cleaned_documents = strategy.clean(target, row.original_filename)
+            if not cleaned_documents:
                 raise ValueError("策略没有生成任何可入库文档")
 
-            field_names: set[str] = set()
-            prepared: list[tuple[CleaningDocument, Any, dict[str, Any]]] = []
-            for sequence, document in enumerate(documents, start=1):
-                if not document.markdown.strip():
-                    raise ValueError(f"第 {sequence} 个清洗文档正文为空")
-                source_name = (
-                    f"anonymous_{row.id[:8]}.md"
-                    if strategy and strategy.sensitive
-                    else row.original_filename
-                )
-                remote_name = (
-                    source_name if upload_mode == "raw" else dify_document_name(source_name, row.source_sha256, sequence)
-                )
+            for sequence, document in enumerate(cleaned_documents, start=1):
                 metadata = {
                     **(batch.common_metadata or {}),
                     **(document.metadata or {}),
@@ -201,132 +384,79 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     "source_document_index": sequence,
                     "build_version": batch.build_version,
                 }
-                if not strategy or not strategy.sensitive:
+                if not getattr(strategy, "sensitive", False):
                     metadata["source_filename"] = row.original_filename
-                else:
-                    metadata.pop("source_filename", None)
                 metadata = {
                     key: value
                     for key, value in metadata.items()
                     if value not in (None, "", [], {})
                 }
-                allowed_remote_fields = getattr(strategy, "dify_metadata_fields", None) if strategy else None
-                remote_metadata = (
-                    {
-                        key: value
-                        for key, value in metadata.items()
-                        if key in allowed_remote_fields
-                    }
-                    if allowed_remote_fields is not None
-                    else metadata
-                )
-                if not remote_metadata:
-                    raise ValueError(f"第 {sequence} 个清洗文档没有可写入Dify的Metadata")
-                field_names.update(remote_metadata)
-                record = CleaningDocument(
+                chunking = document.chunking or ChunkingConfig()
+                status = document.disposition or "pending"
+                item = CleaningDocument(
                     file_id=row.id,
                     sequence=sequence,
                     title=document.title[:300],
-                    dify_document_name=remote_name,
+                    dify_document_name=row.original_filename if batch.upload_mode == "raw" else row.original_filename,
+                    document_key=f"{row.id}:{sequence}:{row.source_sha256[:12]}",
+                    status=status,
+                    stage="review" if status == "review_required" else ("excluded" if status == "excluded" else "pending"),
+                    error_code=document.error_code,
+                    error_message=document.error_message,
                     metadata_json=metadata,
+                    chunking_json=asdict(chunking),
+                    audit_json=document.audit or {},
+                    warnings_json=document.warnings or [],
+                    cleaned_markdown=document.markdown,
+                    retryable=status == "failed",
                 )
-                session.add(record)
-                prepared.append((record, document, remote_metadata))
+                item.dify_document_name = (
+                    row.original_filename
+                    if batch.upload_mode == "raw"
+                    else f"{Path(row.original_filename).stem}__{row.source_sha256[:8]}__{sequence}.md"
+                )
+                item.content_sha256 = _content_sha(item.cleaned_markdown, item.metadata_json, item.chunking_json)
+                session.add(item)
             session.commit()
 
-        field_ids = client.ensure_metadata_names(sorted(field_names))
-        for record, document, metadata in prepared:
-            _set_file_state(file_id, status="processing", stage="dify_upload")
-            if upload_mode == "raw":
-                document_id, dify_batch = client.create_document_by_file(target)
-            else:
-                document_id, dify_batch = client.create_document(
-                    record.dify_document_name,
-                    document.markdown,
-                    parent_separator=document.parent_separator,
-                    parent_max_tokens=document.parent_max_tokens,
-                    child_separator=document.child_separator,
-                    child_max_tokens=document.child_max_tokens,
+            pending_items = list(
+                session.scalars(
+                    select(CleaningDocument.id).where(
+                        CleaningDocument.file_id == row.id,
+                        CleaningDocument.status == "pending",
+                    )
                 )
-            created_remote_ids.append(document_id)
-            with SessionLocal() as session:
-                current = session.get(CleaningDocument, record.id)
-                current.dify_document_id = document_id
-                current.dify_batch_id = dify_batch
-                current.status = "processing"
-                session.commit()
-            _set_file_state(file_id, status="processing", stage="dify_indexing")
-            client.wait_for_indexing(dify_batch, timeout_seconds=1800, interval=2)
-            client.ensure_document_has_segments(document_id)
-            client.ensure_document_has_child_chunks(document_id)
-            _set_file_state(file_id, status="processing", stage="metadata")
-            client.set_document_metadata(document_id, metadata, field_ids)
-            with SessionLocal() as session:
-                current = session.get(CleaningDocument, record.id)
-                current.status = "succeeded"
-                session.commit()
-
-        if replacement_document_id and replacement_document_id not in created_remote_ids:
-            # New content is fully indexed and has metadata at this point.
-            # Only now remove the old document, so a failed replacement never
-            # destroys the last known-good version.
-            if not _remove_or_disable_document(client, replacement_document_id):
-                raise RuntimeError("新文档已索引，但旧同名文档无法删除或停用")
-
-        with SessionLocal() as session:
-            row = session.get(CleaningFile, file_id)
-            row.status = "succeeded"
-            row.stage = "completed"
-            row.error_code = None
-            row.error_message = None
-            row.replace_document_id = None
+            )
+            for item_id in pending_items:
+                process_cleaning_document.apply_async(args=[item_id], queue="ai_cleaning")
+            _refresh_file_state(session, row.id, commit=False)
             _finish_batch(session, row.batch_id)
             session.commit()
-        if target:
-            target.unlink(missing_ok=True)
         record_event(
             level="INFO",
             category="task",
             component="cleaning_worker",
-            event_code="CLEANING_FILE_COMPLETED",
+            event_code="CLEANING_FILE_PARSED",
             status="succeeded",
-            message="清洗文件任务完成",
+            message="清洗文件解析完成",
             resource_type="cleaning_file",
             resource_id=file_id,
         )
         return True
     except Exception as exc:
         logger.exception("cleaning file failed", extra={"file_id": file_id})
-        if client:
-            for document_id in created_remote_ids:
-                if not _remove_or_disable_document(client, document_id):
-                    _queue_document_cleanup(document_id, client.dataset_id)
         with SessionLocal() as session:
             row = session.get(CleaningFile, file_id)
             if row:
                 retry = row.attempts < 2
-                if retry:
-                    row.status = "pending"
-                    row.error_code = "CLEANING_FAILED"
-                    row.error_message = str(exc)[:2000]
-                else:
-                    row.status = "failed"
-                    row.error_code = "CLEANING_FAILED"
-                    row.error_message = str(exc)[:2000]
+                row.status = "pending" if retry else "failed"
+                row.outcome = "pending" if retry else "failed"
+                row.stage = "retrying" if retry else "failed"
+                row.error_code = "CLEANING_FAILED"
+                row.error_message = str(exc)[:2000]
                 _finish_batch(session, row.batch_id)
                 session.commit()
                 if retry:
-                    record_event(
-                        level="WARNING",
-                        category="task",
-                        component="cleaning_worker",
-                        event_code="CLEANING_FILE_RETRYING",
-                        status="retrying",
-                        message="清洗文件任务失败，等待自动重试",
-                        resource_type="cleaning_file",
-                        resource_id=file_id,
-                        details={"error_type": type(exc).__name__, "attempt": row.attempts},
-                    )
                     raise self.retry(exc=exc, countdown=10, max_retries=1)
         record_event(
             level="ERROR",
@@ -340,16 +470,63 @@ def process_cleaning_file(self, file_id: str) -> bool:
             details={"error_type": type(exc).__name__},
         )
         return False
-    finally:
-        if client:
-            client.close()
+
+
+@celery_app.task(
+    name="ai_management.process_cleaning_document",
+    bind=True,
+    autoretry_for=(),
+    acks_late=True,
+)
+def process_cleaning_document(self, document_id: str) -> bool:
+    try:
+        with SessionLocal() as session:
+            row = session.scalar(
+                select(CleaningDocument)
+                .where(CleaningDocument.id == document_id)
+                .options(
+                    selectinload(CleaningDocument.file).selectinload(CleaningFile.batch)
+                )
+            )
+            if row is None or row.status not in {"pending", "processing"}:
+                return False
+            batch = row.file.batch
+            file_row = row.file
+            result = _publish_document(session, row, batch, file_row)
+            _refresh_file_state(session, file_row.id, commit=False)
+            _finish_batch(session, file_row.batch_id)
+            session.commit()
+            return result
+    except Exception as exc:
+        with SessionLocal() as session:
+            row = session.get(CleaningDocument, document_id)
+            if row is not None and row.attempts < 2:
+                _refresh_file_state(session, row.file_id, commit=False)
+                _finish_batch(session, row.file.batch_id)
+                session.commit()
+                raise self.retry(exc=exc, countdown=10, max_retries=1)
+        record_event(
+            level="ERROR",
+            category="task",
+            component="cleaning_worker",
+            event_code="CLEANING_DOCUMENT_FAILED",
+            status="failed",
+            message="清洗条目入库失败",
+            resource_type="cleaning_document",
+            resource_id=document_id,
+            details={"error_type": type(exc).__name__},
+        )
+        return False
 
 
 __all__ = [
     "_finish_batch",
     "_knowledge_client",
     "_queue_document_cleanup",
+    "_refresh_file_state",
     "_remove_or_disable_document",
+    "_set_document_state",
     "_set_file_state",
+    "process_cleaning_document",
     "process_cleaning_file",
 ]

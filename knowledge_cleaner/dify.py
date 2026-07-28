@@ -85,30 +85,48 @@ class DifyKnowledgeClient:
         name: str,
         text: str,
         *,
-        parent_separator: str = "\n\n",
+        doc_form: str = "hierarchical_model",
+        process_mode: str = "hierarchical",
+        parent_separator: str | None = "\n\n",
         parent_max_tokens: int = 1000,
-        child_separator: str = "\n",
+        child_separator: str | None = "\n",
         child_max_tokens: int = 200,
         parent_mode: str = "paragraph",
+        parent_chunk_overlap: int = 0,
+        child_chunk_overlap: int = 0,
     ) -> tuple[str, str]:
+        rules: dict[str, Any] = {
+            "pre_processing_rules": [
+                {"id": "remove_extra_spaces", "enabled": False},
+                {"id": "remove_urls_emails", "enabled": False},
+            ],
+            "parent_mode": parent_mode,
+        }
+        if parent_separator is not None:
+            segmentation = {
+                "separator": parent_separator,
+                "max_tokens": parent_max_tokens,
+            }
+            if parent_chunk_overlap:
+                segmentation["chunk_overlap"] = parent_chunk_overlap
+            rules["segmentation"] = segmentation
+        if child_separator is not None:
+            subchunk_segmentation = {
+                "separator": child_separator,
+                "max_tokens": child_max_tokens,
+            }
+            if child_chunk_overlap:
+                subchunk_segmentation["chunk_overlap"] = child_chunk_overlap
+            rules["subchunk_segmentation"] = subchunk_segmentation
         payload = {
             "name": name,
             "text": text,
             "indexing_technique": "high_quality",
-            "doc_form": "hierarchical_model",
+            "doc_form": doc_form,
             "doc_language": "Chinese",
             "process_rule": {
-                "mode": "hierarchical",
-                "rules": {
-                    "pre_processing_rules": [
-                        {"id": "remove_extra_spaces", "enabled": True},
-                        # Course links are authoritative fields, so URL removal stays disabled.
-                        {"id": "remove_urls_emails", "enabled": False},
-                    ],
-                    "parent_mode": parent_mode,
-                    "segmentation": {"separator": parent_separator, "max_tokens": parent_max_tokens},
-                    "subchunk_segmentation": {"separator": child_separator, "max_tokens": child_max_tokens},
-                },
+                "mode": process_mode,
+                "rules": rules,
             },
         }
         data = self._request(
@@ -265,22 +283,14 @@ class DifyKnowledgeClient:
         )
 
     def ensure_document_has_segments(self, document_id: str) -> int:
-        data = self._request(
-            "GET",
-            f"datasets/{self.dataset_id}/documents/{document_id}/segments",
-            params={"page": 1, "limit": 1},
-        )
+        data = self.list_segments(document_id, page=1, limit=1)
         total = int(data.get("total") or len(data.get("data") or []))
         if total <= 0:
             raise RuntimeError("Dify索引完成但文档分块数为0")
         return total
 
     def ensure_document_has_child_chunks(self, document_id: str) -> int:
-        segments = self._request(
-            "GET",
-            f"datasets/{self.dataset_id}/documents/{document_id}/segments",
-            params={"page": 1, "limit": 1},
-        )
+        segments = self.list_segments(document_id, page=1, limit=1)
         entries = segments.get("data") or []
         if isinstance(entries, dict):
             entries = entries.get("data") or entries.get("segments") or []
@@ -289,19 +299,92 @@ class DifyKnowledgeClient:
         segment_id = str(entries[0].get("id") or "")
         if not segment_id:
             raise RuntimeError("Dify父块响应缺少segment id")
-        children = self._request(
-            "GET",
-            (
-                f"datasets/{self.dataset_id}/documents/{document_id}/segments/"
-                f"{segment_id}/child_chunks"
-            ),
-            params={"page": 1, "limit": 1},
-        )
+        children = self.list_child_chunks(document_id, segment_id, page=1, limit=1)
         child_entries = children.get("data") or []
         total = int(children.get("total") or len(child_entries))
         if total <= 0:
             raise RuntimeError("Dify父子模式索引完成但子块数为0")
         return total
+
+    def get_document(self, document_id: str) -> dict[str, Any]:
+        data = self._request("GET", f"datasets/{self.dataset_id}/documents/{document_id}")
+        if isinstance(data.get("data"), dict):
+            return data["data"]
+        if isinstance(data.get("document"), dict):
+            return data["document"]
+        return data
+
+    def list_segments(self, document_id: str, *, page: int = 1, limit: int = 100) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"datasets/{self.dataset_id}/documents/{document_id}/segments",
+            params={"page": page, "limit": limit},
+        )
+
+    def list_child_chunks(
+        self,
+        document_id: str,
+        segment_id: str,
+        *,
+        page: int = 1,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"datasets/{self.dataset_id}/documents/{document_id}/segments/{segment_id}/child_chunks",
+            params={"page": page, "limit": limit},
+        )
+
+    def verify_document_structure(
+        self,
+        document_id: str,
+        *,
+        parent_mode: str,
+        expected_parent_count: int | None = None,
+        expected_child_counts: list[int] | None = None,
+    ) -> dict[str, int]:
+        parents: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            response = self.list_segments(document_id, page=page, limit=100)
+            data = response.get("data") or []
+            if isinstance(data, dict):
+                data = data.get("data") or data.get("segments") or []
+            if not isinstance(data, list):
+                raise RuntimeError("Dify父块响应格式无效")
+            parents.extend(item for item in data if isinstance(item, dict))
+            if not response.get("has_more") and len(data) < 100:
+                break
+            page += 1
+        parent_count = len(parents)
+        if parent_count <= 0:
+            raise RuntimeError("Dify索引完成但找不到父块")
+        if expected_parent_count is not None and parent_count != expected_parent_count:
+            raise RuntimeError(f"Dify父块数量不符合预期：{parent_count} != {expected_parent_count}")
+        child_total = 0
+        if parent_mode in {"paragraph", "full-doc"}:
+            counts: list[int] = []
+            for parent in parents:
+                segment_id = str(parent.get("id") or "")
+                children_page = self.list_child_chunks(document_id, segment_id, page=1, limit=100)
+                child_entries = children_page.get("data") or []
+                if isinstance(child_entries, dict):
+                    child_entries = child_entries.get("data") or child_entries.get("segments") or []
+                count = int(children_page.get("total") or len(child_entries))
+                if count <= 0:
+                    raise RuntimeError("Dify父子模式索引完成但子块数为0")
+                counts.append(count)
+                child_total += count
+            if expected_child_counts is not None and counts != expected_child_counts:
+                raise RuntimeError(f"Dify子块数量不符合预期：{counts} != {expected_child_counts}")
+        return {"parent_count": parent_count, "child_count": child_total}
+
+    def verify_document_metadata(self, document_id: str, expected: dict[str, Any]) -> None:
+        document = self.get_document(document_id)
+        metadata = _remote_metadata(document)
+        for key, value in expected.items():
+            if metadata.get(str(key), "") != _scalar(value):
+                raise RuntimeError(f"Dify metadata 回读不一致：{key}")
 
     def list_documents(self, *, page: int = 1, limit: int = 100) -> dict[str, Any]:
         return self._request(

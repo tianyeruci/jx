@@ -260,20 +260,165 @@ def course_tab(user_id: str) -> None:
 
 
 def cleaning_tab() -> None:
-    st.subheader("文件清洗状态（只读）")
-    st.caption("公网临时页面不提供上传、重试、启停或删除。管理写操作仅由服务器内网命令和自动化验收执行。")
+    st.subheader("文件清洗管理")
+    st.caption("此页直接调用 AI 管理服务的双 Token 管理接口，仅用于受控测试环境。")
     knowledge_base = st.selectbox("目标知识库", ["general", "course"])
+    try:
+        strategies_payload = api_json(
+            "GET",
+            f"/internal/v1/admin/knowledge-bases/{knowledge_base}/cleaning-strategies",
+            admin=True,
+        )
+        strategies = strategies_payload.get("items") or []
+    except httpx.HTTPError as exc:
+        st.error(str(exc))
+        strategies = []
+    strategy_options = {
+        f"{item['display_name']} ({item['code']})": item["code"]
+        for item in strategies
+    }
+    strategy_label = st.selectbox("清洗策略", list(strategy_options) or ["无可用策略"])
+    common_metadata = st.text_area(
+        "公共 Metadata(JSON)",
+        value="{}",
+        height=100,
+        key="cleaning_common_metadata",
+    )
+    uploads = st.file_uploader(
+        "选择文件",
+        accept_multiple_files=True,
+        key="cleaning_uploads",
+    )
+    if st.button("提交上传", disabled=not uploads or not strategy_options):
+        files = [
+            (
+                "files",
+                (item.name, item.getvalue(), item.type or "application/octet-stream"),
+            )
+            for item in uploads
+        ]
+        try:
+            payload = api_json(
+                "POST",
+                f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches",
+                admin=True,
+                data={
+                    "upload_mode": "cleaned",
+                    "strategy_code": strategy_options[strategy_label],
+                    "common_metadata": common_metadata,
+                },
+                files=files,
+            )
+            st.session_state["cleaning_batch_id"] = payload["batch_id"]
+            st.json(payload)
+        except httpx.HTTPError as exc:
+            st.error(str(exc))
+
     batch_id = st.text_input(
         "批次 ID", value=st.session_state.get("cleaning_batch_id", "")
     )
     if st.button("查询批次") and batch_id:
-        st.json(
-            api_json(
-                "GET",
-                f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}",
-                admin=True,
-            )
+        payload = api_json(
+            "GET",
+            f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}",
+            admin=True,
         )
+        st.json(payload)
+        files = payload.get("files") or []
+        if files:
+            labels = {
+                f"{item['original_filename']} · {item['outcome']}": item["file_id"]
+                for item in files
+            }
+            selected_label = st.selectbox("批次文件", list(labels), key="cleaning_selected_file")
+            selected_file_id = labels[selected_label]
+            if st.button("读取条目"):
+                st.session_state["cleaning_items"] = api_json(
+                    "GET",
+                    f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}/files/{selected_file_id}/items",
+                    admin=True,
+                )
+            items_payload = st.session_state.get("cleaning_items", {})
+            items = items_payload.get("items") or []
+            if items:
+                item_labels = {
+                    f"{item['sequence']}. {item['title']} · {item['status']}": item["item_id"]
+                    for item in items
+                }
+                selected_item_label = st.selectbox("条目", list(item_labels), key="cleaning_selected_item")
+                selected_item_id = item_labels[selected_item_label]
+                if st.button("读取条目详情"):
+                    st.session_state["cleaning_item_detail"] = api_json(
+                        "GET",
+                        f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}/files/{selected_file_id}/items/{selected_item_id}",
+                        admin=True,
+                    )
+                detail = st.session_state.get("cleaning_item_detail")
+                if isinstance(detail, dict):
+                    st.json(detail)
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("重试条目"):
+                            st.json(
+                                api_json(
+                                    "POST",
+                                    f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}/files/{selected_file_id}/items/{selected_item_id}/retry",
+                                    admin=True,
+                                )
+                            )
+                    with col2:
+                        if st.button("重试文件"):
+                            st.json(
+                                api_json(
+                                    "POST",
+                                    f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}/files/{selected_file_id}/retry",
+                                    admin=True,
+                                )
+                            )
+                    review_action = st.selectbox(
+                        "复核动作",
+                        ["approve", "replace_and_approve", "exclude"],
+                        key="cleaning_review_action",
+                    )
+                    review_reason = st.text_input("复核说明", key="cleaning_review_reason")
+                    metadata_patch = st.text_area(
+                        "metadata_patch(JSON)",
+                        value="{}",
+                        height=80,
+                        key="cleaning_review_metadata_patch",
+                    )
+                    replacement = st.file_uploader(
+                        "替换 Markdown",
+                        type=["md", "markdown", "txt"],
+                        key="cleaning_replacement_markdown",
+                    )
+                    if st.button("提交复核决定"):
+                        files_payload = None
+                        if replacement is not None:
+                            files_payload = [
+                                (
+                                    "markdown_file",
+                                    (
+                                        replacement.name,
+                                        replacement.getvalue(),
+                                        replacement.type or "text/markdown",
+                                    ),
+                                )
+                            ]
+                        st.json(
+                            api_json(
+                                "POST",
+                                f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}/files/{selected_file_id}/items/{selected_item_id}/review-decisions",
+                                admin=True,
+                                data={
+                                    "action": review_action,
+                                    "expected_revision": str(detail.get("review_revision", 0)),
+                                    "reason": review_reason,
+                                    "metadata_patch": metadata_patch,
+                                },
+                                files=files_payload,
+                            )
+                        )
 
 
 def management_readonly_tab() -> None:

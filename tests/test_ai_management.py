@@ -32,6 +32,7 @@ from ai_management.models import (
     BusinessMessage,
     BusinessProfile,
     CleaningBatch,
+    CleaningDocument,
     CleaningFile,
     Course,
     LearningRoute,
@@ -661,6 +662,453 @@ def test_admin_knowledge_batch_status_and_retry_handle_datetime_cache(
         assert refreshed is not None
         assert refreshed.status == "pending"
         assert refreshed.stage == "cleaning"
+
+
+def test_batch_summary_marks_file_level_failures(service_db):
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="lead_magnet",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="processing",
+            build_version="test-build",
+        )
+        session.add(batch)
+        session.flush()
+        good_file = CleaningFile(
+            batch_id=batch.id,
+            original_filename="成功.md",
+            storage_filename="ok.md",
+            extension=".md",
+            source_sha256="a" * 64,
+            size_bytes=10,
+            status="succeeded",
+            outcome="succeeded",
+            stage="completed",
+        )
+        bad_file = CleaningFile(
+            batch_id=batch.id,
+            original_filename="失败.exe",
+            storage_filename="bad.exe",
+            extension=".exe",
+            source_sha256="b" * 64,
+            size_bytes=10,
+            status="failed",
+            outcome="failed",
+            stage="upload",
+            error_code="UNSUPPORTED_FILE_TYPE",
+            error_message="不支持",
+        )
+        session.add_all([good_file, bad_file])
+        session.flush()
+        session.add(
+            CleaningDocument(
+                file_id=good_file.id,
+                sequence=1,
+                title="成功",
+                dify_document_name="成功__aaaaaaaa__1.md",
+                document_key="good:1",
+                status="succeeded",
+                stage="completed",
+                cleaned_markdown="# 成功\n\n正文",
+                metadata_json={"record_type": "article", "source_title": "成功"},
+                chunking_json={"parent_mode": "paragraph"},
+            )
+        )
+        session.commit()
+        batch_id = batch.id
+
+    admin_headers = {
+        "X-Internal-Token": "test-internal-token",
+        "X-Admin-Token": "test-admin-token",
+    }
+    with TestClient(app) as client:
+        response = client.get(
+            f"/internal/v1/admin/knowledge-bases/general/upload-batches/{batch_id}",
+            headers=admin_headers,
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "completed"
+    assert payload["file_counts"] == {
+        "succeeded": 1,
+        "failed": 1,
+        "excluded": 0,
+        "review_required": 0,
+        "mixed": 0,
+    }
+    assert payload["all_succeeded"] is False
+    assert payload["all_processed_without_error"] is False
+
+
+def test_admin_knowledge_item_endpoints(service_db, monkeypatch):
+    from ai_management.tasks import process_cleaning_document
+
+    queued: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        process_cleaning_document,
+        "apply_async",
+        lambda args, queue: queued.append((args[0], queue)),
+    )
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="processing",
+        )
+        session.add(batch)
+        session.flush()
+        row = CleaningFile(
+            batch_id=batch.id,
+            original_filename="星球帖子.md",
+            storage_filename="zsxq.md",
+            extension=".md",
+            source_sha256="1" * 64,
+            size_bytes=100,
+            status="mixed",
+            outcome="mixed",
+            stage="review",
+        )
+        session.add(row)
+        session.flush()
+        item = CleaningDocument(
+            file_id=row.id,
+            sequence=1,
+            title="如何做定位",
+            dify_document_name="如何做定位__11111111__1.md",
+            document_key="doc-key-1",
+            status="failed",
+            stage="failed",
+            error_code="CLEANING_FAILED",
+            error_message="boom",
+            retryable=True,
+            cleaned_markdown="# 如何做定位\n\n正文",
+            metadata_json={"record_type": "article", "source_title": "如何做定位"},
+            chunking_json={"parent_mode": "paragraph"},
+            audit_json={"notes": ["需要复核"]},
+        )
+        session.add(item)
+        session.commit()
+        batch_id = batch.id
+        file_id = row.id
+        item_id = item.id
+
+    admin_headers = {
+        "X-Internal-Token": "test-internal-token",
+        "X-Admin-Token": "test-admin-token",
+    }
+    with TestClient(app) as client:
+        listing = client.get(
+            f"/internal/v1/admin/knowledge-bases/general/upload-batches/{batch_id}/files/{file_id}/items",
+            headers=admin_headers,
+        )
+        detail = client.get(
+            f"/internal/v1/admin/knowledge-bases/general/upload-batches/{batch_id}/files/{file_id}/items/{item_id}",
+            headers=admin_headers,
+        )
+        retry = client.post(
+            f"/internal/v1/admin/knowledge-bases/general/upload-batches/{batch_id}/files/{file_id}/items/{item_id}/retry",
+            headers=admin_headers,
+        )
+
+    assert listing.status_code == 200
+    assert listing.json()["items"][0]["item_id"] == item_id
+    assert detail.status_code == 200
+    assert detail.json()["cleaned_markdown"].startswith("# 如何做定位")
+    assert retry.status_code == 200
+    assert retry.json() == {"item_id": item_id, "status": "pending"}
+    assert queued == [(item_id, "ai_cleaning")]
+
+    with service_db() as session:
+        refreshed = session.get(CleaningDocument, item_id)
+        assert refreshed is not None
+        refreshed.status = "review_required"
+        refreshed.stage = "review"
+        refreshed.retryable = False
+        refreshed.review_revision = 0
+        session.commit()
+
+    queued.clear()
+    with TestClient(app) as client:
+        retry_review_required = client.post(
+            f"/internal/v1/admin/knowledge-bases/general/upload-batches/{batch_id}/files/{file_id}/items/{item_id}/retry",
+            headers=admin_headers,
+        )
+        review = client.post(
+            f"/internal/v1/admin/knowledge-bases/general/upload-batches/{batch_id}/files/{file_id}/items/{item_id}/review-decisions",
+            headers=admin_headers,
+            data={
+                "action": "replace_and_approve",
+                "expected_revision": "0",
+                "reason": "人工修订",
+                "metadata_patch": '{"topic":"AI与智能体"}',
+            },
+            files=[
+                ("markdown_file", ("patched.md", "# 如何做定位\n\n修订后的正文", "text/markdown")),
+            ],
+        )
+
+    assert retry_review_required.status_code == 409
+    assert retry_review_required.json()["message"] == "只有失败条目可以重试；待复核条目请先执行人工复核"
+    assert review.status_code == 200
+    assert review.json()["status"] == "pending"
+    assert review.json()["review_revision"] == 1
+    assert queued == [(item_id, "ai_cleaning")]
+    with service_db() as session:
+        refreshed = session.get(CleaningDocument, item_id)
+        assert refreshed is not None
+        assert refreshed.cleaned_markdown.endswith("修订后的正文")
+        assert refreshed.metadata_json["topic"] == "AI与智能体"
+
+
+def test_review_required_file_retry_is_rejected(service_db):
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="book",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="completed",
+        )
+        session.add(batch)
+        session.flush()
+        row = CleaningFile(
+            batch_id=batch.id,
+            original_filename="城市散步随笔.md",
+            storage_filename="walk.md",
+            extension=".md",
+            source_sha256="2" * 64,
+            size_bytes=100,
+            status="review_required",
+            outcome="review_required",
+            stage="review",
+        )
+        session.add(row)
+        session.flush()
+        session.add(
+            CleaningDocument(
+                file_id=row.id,
+                sequence=1,
+                title="城市散步随笔",
+                dify_document_name="城市散步随笔__22222222__1.md",
+                document_key="walk:1",
+                status="review_required",
+                stage="review",
+                error_code="TOPIC_REVIEW_REQUIRED",
+                error_message="书籍主题无法稳定归入受控词表，需要人工确认",
+                retryable=False,
+                cleaned_markdown="# 城市散步随笔\n\n正文",
+                metadata_json={"record_type": "book", "source_title": "城市散步随笔"},
+                chunking_json={"parent_mode": "paragraph"},
+            )
+        )
+        session.commit()
+        batch_id = batch.id
+        file_id = row.id
+
+    admin_headers = {
+        "X-Internal-Token": "test-internal-token",
+        "X-Admin-Token": "test-admin-token",
+    }
+    with TestClient(app) as client:
+        response = client.post(
+            f"/internal/v1/admin/knowledge-bases/general/upload-batches/{batch_id}/files/{file_id}/retry",
+            headers=admin_headers,
+        )
+
+    assert response.status_code == 409
+    assert response.json()["message"] == "待复核条目不能直接重试，请先执行人工复核"
+
+
+def test_review_exclude_refreshes_file_and_batch_state(service_db):
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="book",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="processing",
+        )
+        session.add(batch)
+        session.flush()
+        row = CleaningFile(
+            batch_id=batch.id,
+            original_filename="城市散步随笔.md",
+            storage_filename="walk.md",
+            extension=".md",
+            source_sha256="3" * 64,
+            size_bytes=100,
+            status="review_required",
+            outcome="review_required",
+            stage="review",
+        )
+        session.add(row)
+        session.flush()
+        item = CleaningDocument(
+            file_id=row.id,
+            sequence=1,
+            title="城市散步随笔",
+            dify_document_name="城市散步随笔__33333333__1.md",
+            document_key="walk:1",
+            status="review_required",
+            stage="review",
+            error_code="TOPIC_REVIEW_REQUIRED",
+            error_message="书籍主题无法稳定归入受控词表，需要人工确认",
+            retryable=False,
+            review_revision=0,
+            cleaned_markdown="# 城市散步随笔\n\n正文",
+            metadata_json={"record_type": "book", "source_title": "城市散步随笔"},
+            chunking_json={"parent_mode": "paragraph"},
+        )
+        session.add(item)
+        session.commit()
+        batch_id = batch.id
+        file_id = row.id
+        item_id = item.id
+
+    admin_headers = {
+        "X-Internal-Token": "test-internal-token",
+        "X-Admin-Token": "test-admin-token",
+    }
+    with TestClient(app) as client:
+        response = client.post(
+            f"/internal/v1/admin/knowledge-bases/general/upload-batches/{batch_id}/files/{file_id}/items/{item_id}/review-decisions",
+            headers=admin_headers,
+            data={
+                "action": "exclude",
+                "expected_revision": "0",
+                "reason": "人工排除",
+                "metadata_patch": "{}",
+            },
+        )
+        batch_detail = client.get(
+            f"/internal/v1/admin/knowledge-bases/general/upload-batches/{batch_id}",
+            headers=admin_headers,
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "excluded"
+    assert batch_detail.status_code == 200
+    payload = batch_detail.json()
+    assert payload["status"] == "completed"
+    assert payload["file_counts"]["excluded"] == 1
+    assert payload["files"][0]["status"] == "excluded"
+    assert payload["files"][0]["outcome"] == "excluded"
+
+
+def test_cleaning_worker_enqueues_pending_items(service_db, monkeypatch, tmp_path):
+    from ai_management.tasks import process_cleaning_document, process_cleaning_file
+
+    monkeypatch.setattr(get_settings(), "upload_root", tmp_path)
+    queued: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        process_cleaning_document,
+        "apply_async",
+        lambda args, queue: queued.append((args[0], queue)),
+    )
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="lead_magnet",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="processing",
+            build_version="test-build",
+        )
+        session.add(batch)
+        session.flush()
+        storage_dir = tmp_path / batch.id
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        file_name = "lead.md"
+        (storage_dir / file_name).write_text(
+            "# 私域成交复盘\n\n通过微信私域获客、优化成交话术和交付流程，最终提升成交率。",
+            encoding="utf-8",
+        )
+        row = CleaningFile(
+            batch_id=batch.id,
+            original_filename="资料钩子.md",
+            storage_filename=file_name,
+            extension=".md",
+            source_sha256=hashlib.sha256(
+                "# 私域成交复盘\n\n通过微信私域获客、优化成交话术和交付流程，最终提升成交率。".encode("utf-8")
+            ).hexdigest(),
+            size_bytes=(storage_dir / file_name).stat().st_size,
+            status="pending",
+            stage="upload",
+        )
+        session.add(row)
+        session.commit()
+        file_id = row.id
+
+    assert process_cleaning_file.run(file_id) is True
+    assert len(queued) == 1
+    assert queued[0][1] == "ai_cleaning"
+
+    with service_db() as session:
+        items = list(
+            session.scalars(
+                select(CleaningDocument).where(CleaningDocument.file_id == file_id)
+            )
+        )
+        assert len(items) == 1
+        assert items[0].status == "pending"
+        assert items[0].chunking_json["parent_separator"] == "<<<DIFY_PARENT>>>"
+
+
+def test_cleaning_worker_marks_review_required_files_terminal(service_db, monkeypatch, tmp_path):
+    from ai_management.tasks import process_cleaning_file
+
+    monkeypatch.setattr(get_settings(), "upload_root", tmp_path)
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="book",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="processing",
+            build_version="test-build",
+        )
+        session.add(batch)
+        session.flush()
+        storage_dir = tmp_path / batch.id
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        file_name = "book.md"
+        content = "# 城市散步随笔\n\n这是一本关于散步和观察城市天气的随笔。记录不同季节的光线、河流、树木和街道声音，也记录一些不成体系的个人感受。"
+        (storage_dir / file_name).write_text(content, encoding="utf-8")
+        row = CleaningFile(
+            batch_id=batch.id,
+            original_filename="城市散步随笔.md",
+            storage_filename=file_name,
+            extension=".md",
+            source_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            size_bytes=(storage_dir / file_name).stat().st_size,
+            status="pending",
+            stage="upload",
+        )
+        session.add(row)
+        session.commit()
+        batch_id = batch.id
+        file_id = row.id
+
+    assert process_cleaning_file.run(file_id) is True
+
+    with service_db() as session:
+        batch = session.get(CleaningBatch, batch_id)
+        row = session.get(CleaningFile, file_id)
+        items = list(
+            session.scalars(
+                select(CleaningDocument).where(CleaningDocument.file_id == file_id)
+            )
+        )
+        assert batch is not None
+        assert row is not None
+        assert batch.status == "completed"
+        assert row.status == "review_required"
+        assert row.outcome == "review_required"
+        assert row.stage == "review"
+        assert len(items) == 1
+        assert items[0].status == "review_required"
+        assert items[0].retryable is False
 
 
 def test_dsl_and_gold_data_are_complete():

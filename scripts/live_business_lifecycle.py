@@ -17,7 +17,8 @@ def main() -> None:
             "",
         )
         message_end = next(item for item in events if item.get("event") == "message_end")
-        cards = next(item["data"] for item in events if item.get("event") == "course_cards")
+        cards_event = next(item for item in events if item.get("event") == "course_cards")
+        cards = cards_event.get("items") or cards_event.get("data") or []
         message_id = message_end["message_id"]
 
         # stream() uses the fixed scenario user so repeat lifecycle calls with
@@ -31,6 +32,9 @@ def main() -> None:
             headers=owner_headers,
         )
         messages.raise_for_status()
+        message_payload = messages.json()
+        message_items = message_payload.get("items") if isinstance(message_payload, dict) else message_payload
+        message_items = message_items or []
         like = client.post(
             f"{base_url}/internal/v1/business/messages/{message_id}/feedback",
             headers=owner_headers,
@@ -72,11 +76,14 @@ def main() -> None:
             headers=owner_headers,
         )
         remaining.raise_for_status()
+        remaining_payload = remaining.json()
+        remaining_items = remaining_payload.get("items") if isinstance(remaining_payload, dict) else remaining_payload
+        remaining_items = remaining_items or []
         print(
             json.dumps(
                 {
                     "conversation_id": conversation_id,
-                    "message_count": len(messages.json()),
+                    "message_count": len(message_items),
                     "feedback_like": like.status_code,
                     "feedback_dislike_with_reason": dislike.status_code,
                     "renamed_title": renamed.json()["title"],
@@ -89,7 +96,7 @@ def main() -> None:
                     "deleted": deleted.json().get("deleted"),
                     "conversation_absent_after_delete": all(
                         row.get("conversation_id") != conversation_id
-                        for row in remaining.json()
+                        for row in remaining_items
                     ),
                 },
                 ensure_ascii=False,

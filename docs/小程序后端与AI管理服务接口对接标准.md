@@ -9,6 +9,12 @@
 
 本文只写当前代码中已经实现的接口。未实现的能力不写成既有标准。
 
+2026-07-28 文档清洗链路补充结论：
+
+- 第 3 章“小程序后端对接接口”本轮无协议变更。
+- 本轮新增内容只影响第 4 章“AI 管理页对接接口”中的知识库清洗管理能力。
+- 小程序前端依旧不能直接持有管理 Token，也不直接调用清洗管理接口。
+
 ## 1. 基本约定
 
 ### 1.1 鉴权
@@ -1007,7 +1013,43 @@ GET /internal/v1/admin/knowledge-bases/{kb_code}/documents
 }
 ```
 
-### 4.10 知识库上传批次
+### 4.10 文档清洗管理能力
+
+#### 4.10.1 获取可用清洗策略
+
+```http
+GET /internal/v1/admin/knowledge-bases/{kb_code}/cleaning-strategies
+```
+
+`kb_code` 只允许：
+
+- `general`
+- `course`
+
+当前正式文档清洗策略都在 `general` 知识库下使用。
+
+返回示例：
+
+```json
+{
+  "items": [
+    {
+      "code": "lead_magnet",
+      "display_name": "资料钩子",
+      "supported_extensions": [".docx", ".markdown", ".md", ".pdf", ".txt"],
+      "knowledge_base_code": "general"
+    },
+    {
+      "code": "book",
+      "display_name": "书籍",
+      "supported_extensions": [".docx", ".markdown", ".md", ".pdf", ".txt"],
+      "knowledge_base_code": "general"
+    }
+  ]
+}
+```
+
+#### 4.10.2 创建知识库上传批次
 
 ```http
 POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches
@@ -1026,8 +1068,8 @@ Content-Type: multipart/form-data
 ```text
 kb_code=general
 upload_mode=cleaned
-strategy_code=standard_document
-common_metadata={"document_type":"standard_document","review_status":"approved"}
+strategy_code=lead_magnet
+common_metadata={"document_type":"lead_magnet","review_status":"approved"}
 files=<文件1>
 files=<文件2>
 ```
@@ -1037,22 +1079,51 @@ files=<文件2>
 ```json
 {
   "batch_id": "batch_001",
-  "strategy_code": "standard_document",
+  "strategy_code": "lead_magnet",
   "knowledge_base_code": "general",
   "upload_mode": "cleaned",
   "status": "processing",
+  "progress": 0,
+  "next_poll_after_seconds": 2,
   "all_succeeded": false,
+  "all_processed_without_error": false,
   "total": 2,
   "succeeded": 0,
   "failed": 1,
+  "file_counts": {
+    "succeeded": 0,
+    "failed": 1,
+    "excluded": 0,
+    "review_required": 0,
+    "mixed": 0
+  },
+  "item_counts": {
+    "pending": 0,
+    "processing": 0,
+    "succeeded": 0,
+    "excluded": 0,
+    "review_required": 0,
+    "failed": 0
+  },
   "files": [
     {
       "file_id": "file_001",
       "original_filename": "测试文档.md",
       "status": "pending",
       "stage": "upload",
+      "outcome": "pending",
       "error_code": null,
       "error_message": null,
+      "source_deleted_at": null,
+      "source_expires_at": "2026-08-04T10:00:00Z",
+      "item_counts": {
+        "pending": 0,
+        "processing": 0,
+        "succeeded": 0,
+        "excluded": 0,
+        "review_required": 0,
+        "failed": 0
+      },
       "updated_at": "2026-07-28T10:00:00Z"
     },
     {
@@ -1060,15 +1131,34 @@ files=<文件2>
       "original_filename": "不支持.exe",
       "status": "failed",
       "stage": "upload",
+      "outcome": "failed",
       "error_code": "UNSUPPORTED_FILE_TYPE",
-      "error_message": "策略 standard_document 不支持 .exe",
+      "error_message": "策略 lead_magnet 不支持 .exe",
+      "source_deleted_at": null,
+      "source_expires_at": "2026-08-04T10:00:00Z",
+      "item_counts": {
+        "pending": 0,
+        "processing": 0,
+        "succeeded": 0,
+        "excluded": 0,
+        "review_required": 0,
+        "failed": 0
+      },
       "updated_at": "2026-07-28T10:00:00Z"
     }
   ]
 }
 ```
 
-### 4.11 查询上传批次状态
+补充约束：
+
+- `common_metadata` 必须是 JSON 对象。
+- 不允许写入未受控的公共 Metadata 字段。
+- `.txt` 以文本读取；其余支持格式进入 Markdown 清洗链路。
+- 当前正式清洗策略都在 `general` 知识库下使用。
+- `book` 策略在 Markdown 成品超过 `10MB` 时会拆分后再入库。
+
+#### 4.10.3 查询上传批次状态
 
 ```http
 GET /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}
@@ -1076,7 +1166,90 @@ GET /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}
 
 返回示例：同上传批次返回结构。
 
-### 4.12 重试失败文件
+#### 4.10.4 查询文件条目列表
+
+```http
+GET /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items?status=<status>&cursor=<cursor>&limit=50
+```
+
+返回示例：
+
+```json
+{
+  "file_id": "file_001",
+  "items": [
+    {
+      "item_id": "item_001",
+      "sequence": 1,
+      "title": "测试文档",
+      "document_key": "file_001:1:abcdef123456",
+      "status": "succeeded",
+      "stage": "completed",
+      "error_code": null,
+      "error_message": null,
+      "retryable": false,
+      "review_revision": 0,
+      "warnings": [],
+      "metadata": {
+        "record_type": "article",
+        "source_title": "测试文档"
+      },
+      "chunking": {
+        "parent_mode": "paragraph",
+        "parent_separator": "<<<DIFY_PARENT>>>",
+        "child_separator": "<<<DIFY_CHILD>>>"
+      },
+      "dify_document_id": "doc_001",
+      "remote_parent_count": 1,
+      "remote_child_count": 1,
+      "updated_at": "2026-07-28T10:00:05Z"
+    }
+  ],
+  "next_cursor": null,
+  "total": 1
+}
+```
+
+#### 4.10.5 查询条目详情
+
+```http
+GET /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}
+```
+
+返回示例：
+
+```json
+{
+  "item_id": "item_001",
+  "sequence": 1,
+  "title": "测试文档",
+  "document_key": "file_001:1:abcdef123456",
+  "status": "succeeded",
+  "stage": "completed",
+  "error_code": null,
+  "error_message": null,
+  "retryable": false,
+  "review_revision": 0,
+  "warnings": [],
+  "metadata": {
+    "record_type": "article",
+    "source_title": "测试文档"
+  },
+  "chunking": {
+    "parent_mode": "paragraph",
+    "parent_separator": "<<<DIFY_PARENT>>>",
+    "child_separator": "<<<DIFY_CHILD>>>"
+  },
+  "dify_document_id": "doc_001",
+  "remote_parent_count": 1,
+  "remote_child_count": 1,
+  "cleaned_markdown": "# 测试文档\n\n正文",
+  "audit": {},
+  "updated_at": "2026-07-28T10:00:05Z"
+}
+```
+
+#### 4.10.6 重试失败文件
 
 ```http
 POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/retry
@@ -1091,7 +1264,87 @@ POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/file
 }
 ```
 
-### 4.13 启用或停用知识库文档
+说明：
+
+- 该接口只用于：
+  - 文件级失败；
+  - 文件下存在失败条目。
+- 如果文件下全部条目都处于 `review_required`，返回 `409 CONFLICT`，必须先对条目执行复核。
+
+冲突示例：
+
+```json
+{
+  "code": "VALIDATION_ERROR",
+  "message": "待复核条目不能直接重试，请先执行人工复核"
+}
+```
+
+#### 4.10.7 重试单条目
+
+```http
+POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}/retry
+```
+
+返回示例：
+
+```json
+{
+  "item_id": "item_001",
+  "status": "pending"
+}
+```
+
+说明：
+
+- 该接口只允许 `failed` 条目调用。
+- `review_required` 条目调用时返回 `409 CONFLICT`，必须先执行复核。
+
+冲突示例：
+
+```json
+{
+  "code": "VALIDATION_ERROR",
+  "message": "只有失败条目可以重试；待复核条目请先执行人工复核"
+}
+```
+
+#### 4.10.8 条目复核
+
+```http
+POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}/review-decisions
+Content-Type: multipart/form-data
+```
+
+表单字段：
+
+- `action`
+  - `approve`
+  - `replace_and_approve`
+  - `exclude`
+- `expected_revision`
+- `reason`
+- `metadata_patch`
+- `markdown_file`（仅 `replace_and_approve` 时必传）
+
+返回示例：
+
+```json
+{
+  "item_id": "item_001",
+  "status": "pending",
+  "review_revision": 1
+}
+```
+
+说明：
+
+- `expected_revision` 是并发保护字段，版本不一致返回 `409 CONFLICT`。
+- `status=review_required` 且 `retryable=false` 表示必须先走复核接口，不能直接调用重试接口。
+- `exclude` 不再入库；其余动作会重新提交条目级任务。
+- `exclude` 完成后，文件和批次聚合状态会立即刷新。
+
+### 4.11 启用或停用知识库文档
 
 ```http
 PATCH /internal/v1/admin/knowledge-bases/{kb_code}/documents/{document_id}/status
@@ -1114,7 +1367,7 @@ PATCH /internal/v1/admin/knowledge-bases/{kb_code}/documents/{document_id}/statu
 }
 ```
 
-### 4.14 删除知识库文档
+### 4.12 删除知识库文档
 
 ```http
 DELETE /internal/v1/admin/knowledge-bases/{kb_code}/documents/{document_id}
@@ -1137,7 +1390,7 @@ DELETE /internal/v1/admin/knowledge-bases/{kb_code}/documents/{document_id}
 }
 ```
 
-### 4.15 日志列表
+### 4.13 日志列表
 
 ```http
 GET /internal/v1/admin/logs?page=1&limit=50
@@ -1184,7 +1437,7 @@ GET /internal/v1/admin/logs?page=1&limit=50
 }
 ```
 
-### 4.16 日志详情
+### 4.14 日志详情
 
 ```http
 GET /internal/v1/admin/logs/{log_id}

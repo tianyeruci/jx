@@ -44,7 +44,9 @@ def stream(client: httpx.Client, query: str, conversation_id: str = "") -> tuple
 
 def cleanup(client: httpx.Client) -> int:
     headers = {"X-Internal-Token": os.environ["INTERNAL_API_TOKEN"], "X-User-Id": "live-test-20260723"}
-    rows = client.get("http://127.0.0.1:8000/internal/v1/business/conversations", headers=headers).json()
+    payload = client.get("http://127.0.0.1:8000/internal/v1/business/conversations", headers=headers).json()
+    rows = payload.get("items") if isinstance(payload, dict) else payload
+    rows = rows or []
     for row in rows:
         response = client.delete(
             f"http://127.0.0.1:8000/internal/v1/business/conversations/{row['conversation_id']}",
@@ -74,7 +76,10 @@ def main() -> None:
             results.append({
                 "query": query,
                 "events": [item.get("event") for item in events],
-                "course_cards": next((item.get("data", []) for item in events if item.get("event") == "course_cards"), []),
+                "course_cards": next(
+                    ((item.get("items") or item.get("data") or []) for item in events if item.get("event") == "course_cards"),
+                    [],
+                ),
                 "learning_route": next(
                     (
                         item.get("data")
@@ -93,7 +98,9 @@ def main() -> None:
             headers={"X-Internal-Token": os.environ["INTERNAL_API_TOKEN"], "X-User-Id": "live-test-20260723"},
         )
         conversations.raise_for_status()
-        rows = conversations.json()
+        payload = conversations.json()
+        rows = payload.get("items") if isinstance(payload, dict) else payload
+        rows = rows or []
         results.append({"conversation_count": len(rows), "conversation_id": conversation_id})
         print(json.dumps(results, ensure_ascii=False, indent=2))
         cleanup(client)

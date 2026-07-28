@@ -704,3 +704,148 @@ Dify 父子上传需要同时提供 `segmentation`、`parent_mode` 和 `subchunk
 - 统一使用 `<<<DIFY_PARENT>>>` 和 `<<<DIFY_CHILD>>>`。
 - 回答采用自然融合。
 - 清洗验收后删除原文件，并接受无法恢复逐字原文的风险。
+
+## 十五、六类文档清洗策略与入库链路实施、部署及验收定稿（2026-07-28）
+
+### 15.1 本次实施边界
+
+- 只实现 AI 智能体与知识库相关的文档清洗、入库、状态查询和复核能力。
+- 小程序用户侧对话接口不改协议；新增内容只面向 AI 管理页和后台运维。
+- 原始文件在成功入库后删除；失败文件按保留期暂存，便于人工重试。
+
+### 15.2 已落地的六类正式清洗策略
+
+| 策略代码 | 展示名 | 支持格式 | 目标知识库 | 分块方式 |
+|---|---|---|---|---|
+| `wechat_public_account_cognition` | 微信公众号认知分享 | `.txt` | `general` | 父子块 |
+| `personal_business_consultation` | 个人商业咨询案例总结 | `.pdf` | `general` | 整篇单父块 + 子块 |
+| `zsxq_post` | 知识星球帖子 | `.md` / `.markdown` | `general` | 父子块 |
+| `xiaobot_post` | 小报童帖子 | `.md` / `.markdown` | `general` | 父子块 |
+| `lead_magnet` | 资料钩子 | `.md` / `.markdown` / `.txt` / `.docx` / `.pdf` | `general` | 父子块 |
+| `book` | 书籍 | `.md` / `.markdown` / `.txt` / `.docx` / `.pdf` | `general` | 父子块，超大文件拆分 |
+
+### 15.3 文件进入系统后的固定处理规则
+
+1. 用户上传 `.txt` 时保留文本语义读取；其余支持格式统一转为 Markdown 后进入清洗。
+2. 清洗正文必须遵守本计划前文的删改边界、主题归类、敏感信息处理和父子块规则。
+3. `book` 策略在 Markdown 成品超过 `10MB` 时按章节/自然段拆成多份文档再入库。
+4. 父子块不是强制项；只有策略显式返回 `ChunkingConfig` 时才写入 Dify 分层分块参数。
+5. 入库成功判定不是“HTTP 200”，而是：
+   - Dify 文档创建成功；
+   - 索引完成；
+   - 父子块结构验证通过；
+   - Metadata 写入并回读校验通过。
+6. 不论成功、失败、复核中或重复跳过，Redis 都保留批次和文件状态，供批量查询。
+
+### 15.4 已落地的后台接口变化
+
+小程序用户侧接口不变；AI 管理页新增或扩展以下管理接口：
+
+- `GET /internal/v1/admin/knowledge-bases/{kb_code}/cleaning-strategies`
+  - 返回当前知识库可用的正式清洗策略列表。
+- `POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches`
+  - 创建上传批次并返回每个文件的初始状态。
+- `GET /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}`
+  - 返回批次总状态、`progress`、`file_counts`、`item_counts`、`all_succeeded`、`all_processed_without_error`。
+- `POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/retry`
+  - 重试整个失败文件，或重新触发该文件下失败条目；不能借此绕过待复核流程。
+- `GET /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items`
+  - 查看文件拆出的子条目。
+- `GET /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}`
+  - 查看条目详情、清洗正文、Metadata、分块参数、Dify 文档 ID 和远端父子块计数。
+- `POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}/retry`
+  - 仅失败条目可重试；待复核条目必须先走人工复核接口。
+- `POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}/review-decisions`
+  - 复核时支持：
+    - `approve`
+    - `replace_and_approve`
+    - `exclude`
+  - 采用 `expected_revision` 做乐观锁，避免多人覆盖。
+
+### 15.5 代码与数据结构变化
+
+已在 AI 管理服务中实现以下核心变更：
+
+- 数据库
+  - `CleaningBatch` 增加 `spec_revision`。
+  - `CleaningFile` 增加 `outcome`、`source_expires_at`、`source_deleted_at`。
+  - `CleaningDocument` 增加 `document_key`、`chunking_json`、`audit_json`、`warnings_json`、`cleaned_markdown`、`review_revision`、`retryable`、`remote_parent_count`、`remote_child_count` 等字段。
+- Worker
+  - 文件级任务负责“解析源文件并生成条目”。
+  - 条目级任务负责“把单条清洗结果写入 Dify 并校验远端状态”。
+  - 文件和条目都支持失败重试；待复核条目只能通过人工复核进入下一步，不能直接重试。
+- Dify 适配
+  - 支持显式传入父子块分隔符、父子块 token 上限和 overlap。
+  - 增加文档状态、段落结构和 Metadata 回读校验。
+- 状态缓存
+  - Redis 缓存键：
+    - `ai:cleaning:batch:{batch_id}`
+    - `ai:cleaning:batch:{batch_id}:files`
+  - 只缓存非敏感状态摘要，不缓存密钥。
+
+### 15.6 本次实现中确认的注意事项
+
+- `common_metadata` 不是任意透传；未允许字段直接拒绝，避免把无用或不受控字段写进知识库。
+- 正式六类策略都带 `ChunkingConfig`，因此文件级 Worker 和条目级 Worker 必须分别验证：
+  - 条目是否成功生成；
+  - 条目是否成功入队；
+  - 条目是否成功入库。
+- `review_required` 是终态，不是“可直接重试态”；文件重试和条目重试都只面向 `failed`。
+- 纯待复核文件在条目生成完成后，文件状态必须稳定落到 `review_required`，不能停留在 `processing`。
+- `exclude` 复核完成后，文件和批次聚合统计必须立即刷新，避免页面继续显示旧的 `processing` / `review_required` 口径。
+- 批次口径必须以文件级终态为准；不能只看条目级统计，否则“上传前即失败”的文件会被误报为“无错误处理完成”。
+- 测试页配置了 `baseUrlPath=ai-management-test`，验收路径必须使用 `/ai-management-test`，不能直接探 `/`。
+- 服务器离线构建继续使用 wheelhouse；每次发布清洗链路代码都要先替换 `wheelhouse` 中的 wheel，再重建核心镜像。只把源码拷到 `/opt/ai-management` 不会改变实际运行代码。
+
+### 15.7 测试范围与当前验收结果
+
+本次应覆盖的测试分为四层：
+
+1. 本地单元与接口测试
+   - 清洗策略解析；
+   - 批次创建；
+   - 文件重试；
+   - 条目列表、详情、重试、复核；
+   - 文件级 Worker 入队条目；
+   - 批次状态聚合口径；
+   - `review_required` 条目 / 文件直重试拦截；
+   - 纯待复核文件终态刷新；
+   - `exclude` 后文件 / 批次聚合刷新。
+2. 本地全量回归
+   - `python -m pytest tests -q`
+3. 服务器部署验证
+   - 核心镜像重建；
+   - Alembic 迁移到 `6a5f9e2b1c44`；
+   - API / Worker / Scheduler 同版本运行；
+   - 测试页可通过 `/ai-management-test` 访问。
+4. 线上真实清洗验收
+   - 同一批次 1 个成功 Markdown + 1 个失败非法文件；
+   - 成功条目真实写入 Dify，并验证父子块数量；
+   - 失败文件保留失败状态；
+   - Redis 能查询到批次和文件状态；
+   - 成功源文件被删除；
+   - 验收生成的测试文档已从知识库删除。
+
+2026-07-28 的实际结果：
+
+- 本地全量测试：`55 passed`。
+- 服务器核心镜像：`jx-now-ai-management:0.2.1-cleaning-27a8bc0-r7`。
+- 服务器 UI 镜像：`jx-now-ai-management-ui:0.2.1-cleaning-27a8bc0`。
+- 数据库迁移：`6a5f9e2b1c44 (head)`。
+- 离线 wheel：`jx_now_ai_management-0.2.1-py3-none-any.whl`
+- 离线 wheel SHA256：`1f26e3920051afd046840b8716691aed17497b08095c900b8d4bd2edd116f3d1`
+- 线上验收批次证明：
+  - 批次 `completed`；
+  - 成功文件 `succeeded`，失败文件 `failed`；
+  - `all_succeeded=false`；
+  - `all_processed_without_error=false`；
+  - 成功条目 `remote_parent_count=1`、`remote_child_count=1`；
+  - 成功源文件已删除，失败非法文件未落盘。
+- 线上复核链路证明：
+  - 正式清洗策略列表返回 6 个策略；
+  - 纯待复核文件终态为 `review_required`，`stage=review`；
+  - 待复核条目直接重试返回 `409`，提示“只有失败条目可以重试；待复核条目请先执行人工复核”；
+  - 纯待复核文件直接重试返回 `409`，提示“待复核条目不能直接重试，请先执行人工复核”；
+  - `replace_and_approve` 后条目成功入库，远端父块 / 子块数为 `1/1`；
+  - `exclude` 后文件终态为 `excluded`，批次 `all_processed_without_error=true`；
+  - 验收产生的临时知识库文档已删除。
