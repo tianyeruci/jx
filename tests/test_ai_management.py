@@ -31,6 +31,8 @@ from ai_management.models import (
     BusinessConversation,
     BusinessMessage,
     BusinessProfile,
+    CleaningBatch,
+    CleaningFile,
     Course,
     LearningRoute,
     LearningRouteProgress,
@@ -91,6 +93,8 @@ def test_business_chat_stream_and_history(service_db, monkeypatch):
             "recent_history_text",
             "profile_json",
             "route_progress_json",
+            "business_output_style",
+            "expert_insight_style",
         }
         yield {"event": "workflow_started", "task_id": "task-001"}
         yield {
@@ -141,14 +145,15 @@ def test_business_chat_stream_and_history(service_db, monkeypatch):
         conversations = client.get(
             "/internal/v1/business/conversations", headers=HEADERS
         ).json()
-        assert len(conversations) == 1
-        conversation_id = conversations[0]["conversation_id"]
+        assert len(conversations["items"]) == 1
+        assert conversations["next_cursor"] is None
+        conversation_id = conversations["items"][0]["conversation_id"]
         messages = client.get(
             f"/internal/v1/business/conversations/{conversation_id}/messages",
             headers=HEADERS,
         ).json()
-        assert [item["role"] for item in messages] == ["user", "assistant"]
-        assert messages[1]["content"] == "这是测试回答。"
+        assert [item["role"] for item in messages["items"]] == ["user", "assistant"]
+        assert messages["items"][1]["content"] == "这是测试回答。"
 
 
 def _seed_catalog(session):
@@ -216,9 +221,29 @@ def test_recommendation_filters_and_progress_requires_evidence(service_db):
             query="我确认选择这条路线",
         )
         session.commit()
-        assert [item["course_id"] for item in result["course_cards"]] == ["course_1"]
+        assert result["course_cards"] == []
         assert result["progress_applied"] is True
         progress = session.scalar(select(LearningRouteProgress))
+        assert progress.current_stage_id is None
+        assert progress.status == "pending_stage"
+
+        confirm_stage = RecommendationDecision(
+            intent="route_recommendation",
+            candidate_route_id="route_1",
+            progress_action={
+                "type": "confirm_current_stage",
+                "route_id": "route_1",
+                "stage_id": "stage_1",
+                "evidence_quote": "我确认从入门阶段开始",
+            },
+        )
+        confirmed = validate_recommendation(
+            session,
+            confirm_stage,
+            user_hash="hashed-user",
+            query="我确认从入门阶段开始",
+        )
+        assert [item["course_id"] for item in confirmed["course_cards"]] == ["course_1", "course_2"]
         assert progress.current_stage_id == "stage_1"
 
         advance = RecommendationDecision(
@@ -266,7 +291,7 @@ def test_streaming_url_redactor_handles_split_url():
     assert result.endswith("后续说明")
 
 
-def test_context_summary_trigger_and_no_overlap(service_db):
+def test_context_includes_all_today_messages_despite_summary_cursor(service_db):
     with service_db() as session:
         conversation = BusinessConversation(
             user_hash="u",
@@ -288,8 +313,8 @@ def test_context_summary_trigger_and_no_overlap(service_db):
         session.flush()
         conversation.summary_through_message_id = messages[1].id
         context = build_context(session, conversation, "u")
-        assert "消息0" not in context.inputs["recent_history_text"]
-        assert "消息1" not in context.inputs["recent_history_text"]
+        assert "消息0" in context.inputs["recent_history_text"]
+        assert "消息1" in context.inputs["recent_history_text"]
         assert "消息2" in context.inputs["recent_history_text"]
         assert should_summarize(context) is False
 
@@ -476,6 +501,7 @@ stages:
 
 def test_cleaning_strategy_and_filename_rules(tmp_path):
     assert {
+        "standard_document",
         "test_markdown",
         "personal_business_consultation",
         "wechat_public_account_cognition",
@@ -522,8 +548,10 @@ def test_cleaning_batch_upload_reports_each_file(
     tmp_path,
 ):
     from ai_management.tasks import process_cleaning_file
+    from ai_management import cleaning as cleaning_module
 
     monkeypatch.setattr(get_settings(), "upload_root", tmp_path)
+    monkeypatch.setattr(cleaning_module, "_preflight_remote_duplicates", lambda **_: None)
     queued: list[str] = []
     monkeypatch.setattr(
         process_cleaning_file,
@@ -533,7 +561,7 @@ def test_cleaning_batch_upload_reports_each_file(
     with TestClient(app) as client:
         response = client.post(
             "/internal/v1/knowledge/cleaning-batches",
-            headers={"X-Internal-Token": "test-internal-token"},
+            headers={"X-Internal-Token": "test-internal-token", "X-Admin-Token": "test-admin-token"},
             data={
                 "strategy_code": "test_markdown",
                 "knowledge_base_code": "general",
@@ -556,6 +584,83 @@ def test_cleaning_batch_upload_reports_each_file(
         "原始名称.md",
         "不支持.exe",
     }
+
+
+def test_admin_knowledge_batch_status_and_retry_handle_datetime_cache(
+    service_db,
+    monkeypatch,
+    tmp_path,
+):
+    from ai_management.tasks import process_cleaning_file
+
+    monkeypatch.setattr(get_settings(), "upload_root", tmp_path)
+    queued: list[tuple[list[str], str]] = []
+    monkeypatch.setattr(
+        process_cleaning_file,
+        "apply_async",
+        lambda args, queue: queued.append((args, queue)),
+    )
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="standard_document",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="processing",
+        )
+        session.add(batch)
+        session.flush()
+        storage_dir = tmp_path / batch.id
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        file_name = "failed.md"
+        (storage_dir / file_name).write_text("# failed", encoding="utf-8")
+        row = CleaningFile(
+            batch_id=batch.id,
+            original_filename="失败样本.md",
+            storage_filename=file_name,
+            extension=".md",
+            source_sha256="0" * 64,
+            size_bytes=8,
+            status="failed",
+            stage="cleaning",
+            error_code="CLEANING_FAILED",
+            error_message="boom",
+        )
+        session.add(row)
+        session.commit()
+        batch_id = batch.id
+        file_id = row.id
+
+    admin_headers = {
+        "X-Internal-Token": "test-internal-token",
+        "X-Admin-Token": "test-admin-token",
+    }
+    with TestClient(app) as client:
+        first = client.get(
+            f"/internal/v1/admin/knowledge-bases/general/upload-batches/{batch_id}",
+            headers=admin_headers,
+        )
+        second = client.get(
+            f"/internal/v1/admin/knowledge-bases/general/upload-batches/{batch_id}",
+            headers=admin_headers,
+        )
+        retry = client.post(
+            f"/internal/v1/admin/knowledge-bases/general/upload-batches/{batch_id}/files/{file_id}/retry",
+            headers=admin_headers,
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    payload = first.json()
+    assert payload["batch_id"] == batch_id
+    assert payload["files"][0]["updated_at"]
+    assert retry.status_code == 200
+    assert retry.json() == {"file_id": file_id, "status": "pending"}
+    assert queued == [([file_id], "ai_cleaning")]
+    with service_db() as session:
+        refreshed = session.get(CleaningFile, file_id)
+        assert refreshed is not None
+        assert refreshed.status == "pending"
+        assert refreshed.stage == "cleaning"
 
 
 def test_dsl_and_gold_data_are_complete():

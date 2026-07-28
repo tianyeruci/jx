@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import re
+import shutil
 import unicodedata
 import zipfile
 from dataclasses import dataclass, field
@@ -20,6 +22,7 @@ from knowledge_cleaner.chunking import (
     prepare_chunks,
     render_hierarchical_dify_text,
 )
+from knowledge_cleaner.dify import DifyKnowledgeClient
 from knowledge_cleaner.semantics import SemanticDecision, classify_text
 from knowledge_cleaner.sources import parse_wechat_public_account
 
@@ -28,13 +31,13 @@ from .config import get_settings
 from .db import get_session
 from .errors import ServiceError
 from .models import CleaningBatch, CleaningFile
-from .security import require_internal_token
+from .security import require_admin_token, require_internal_token
 from .services.observability import record_event
 
 router = APIRouter(
     prefix="/internal/v1/knowledge",
     tags=["knowledge-cleaning"],
-    dependencies=[Depends(require_internal_token)],
+    dependencies=[Depends(require_internal_token), Depends(require_admin_token)],
 )
 
 
@@ -111,6 +114,44 @@ class TestDocumentStrategy:
         ]
 
 
+class StandardDocumentStrategy:
+    """Safe general-purpose cleaner for the two fixed knowledge bases."""
+
+    code = "standard_document"
+    display_name = "标准文档清洗"
+    supported_extensions = {".md", ".markdown", ".txt", ".docx", ".pdf"}
+    sensitive = False
+
+    def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
+        suffix = file_path.suffix.lower()
+        if suffix == ".pdf":
+            from knowledge_cleaner.pdf_convert import convert_pdf
+
+            result = convert_pdf(file_path, enable_ocr=False)
+            if result.needs_review or not result.markdown.strip():
+                reason = "；".join(result.review_reasons[:3]) or "没有可提取正文"
+                raise ValueError(f"PDF不支持清洗入库：{reason}")
+            markdown = result.markdown
+        elif suffix == ".docx":
+            markdown = _docx_markdown(file_path)
+        else:
+            encoding = "gb18030" if suffix == ".txt" else "utf-8-sig"
+            markdown = file_path.read_text(encoding=encoding)
+        markdown = markdown.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not markdown:
+            raise ValueError("文档没有可入库正文")
+        title = PurePath(original_filename).stem.strip() or "未命名文档"
+        if not markdown.lstrip().startswith("#"):
+            markdown = f"# {title}\n\n{markdown}"
+        return [
+            CleanedDocument(
+                markdown=markdown,
+                title=title,
+                metadata={"document_type": "standard_document", "review_status": "approved"},
+            )
+        ]
+
+
 class PersonalBusinessConsultationStrategy:
     code = "personal_business_consultation"
     display_name = "个人商业咨询案例总结"
@@ -120,7 +161,9 @@ class PersonalBusinessConsultationStrategy:
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
         from knowledge_cleaner.pdf_convert import convert_consultation_pdf
 
-        result = convert_consultation_pdf(file_path, enable_ocr=True)
+        # OCR and image content recognition are explicitly out of scope.  A
+        # scanned PDF must fail visibly instead of silently producing guesses.
+        result = convert_consultation_pdf(file_path, enable_ocr=False)
         if result.needs_review or result.residual_pii:
             raise ValueError("隐私或版面检查未通过，需要人工处理后重试")
         if not result.markdown.strip():
@@ -263,6 +306,7 @@ class WechatPublicAccountCognitionStrategy:
 STRATEGY_REGISTRY: dict[str, CleaningStrategy] = {
     strategy.code: strategy
     for strategy in (
+        StandardDocumentStrategy(),
         TestDocumentStrategy(),
         PersonalBusinessConsultationStrategy(),
         WechatPublicAccountCognitionStrategy(),
@@ -375,6 +419,7 @@ def _serialize_batch(batch: CleaningBatch) -> dict[str, Any]:
         "batch_id": batch.id,
         "strategy_code": batch.strategy_code,
         "knowledge_base_code": batch.knowledge_base_code,
+        "upload_mode": batch.upload_mode,
         "status": status,
         "all_succeeded": bool(files) and succeeded == len(files),
         "total": len(files),
@@ -395,6 +440,89 @@ def _serialize_batch(batch: CleaningBatch) -> dict[str, Any]:
     }
 
 
+def _remote_metadata(document: dict[str, Any]) -> dict[str, str]:
+    raw = document.get("doc_metadata") or document.get("metadata") or []
+    if isinstance(raw, dict):
+        return {str(key): str(value) for key, value in raw.items()}
+    if not isinstance(raw, list):
+        return {}
+    return {
+        str(item.get("name")): str(item.get("value") or "")
+        for item in raw
+        if isinstance(item, dict) and item.get("name")
+    }
+
+
+def _remote_source_name(document: dict[str, Any]) -> str:
+    metadata = _remote_metadata(document)
+    details = document.get("data_source_info") or document.get("data_source_detail_dict") or {}
+    return str(
+        metadata.get("source_filename")
+        or document.get("name")
+        or details.get("upload_file")
+        or details.get("file_name")
+        or ""
+    )
+
+
+def _preflight_remote_duplicates(
+    *,
+    knowledge_base_code: str,
+    rows: list[CleaningFile],
+) -> None:
+    """Apply the documented duplicate rules before any Worker task is queued."""
+    settings = get_settings()
+    dataset_id = (
+        settings.dify_general_dataset_id
+        if knowledge_base_code == "general"
+        else settings.dify_course_dataset_id
+    )
+    if not settings.dify_knowledge_api_key or not dataset_id:
+        if settings.app_env == "test":
+            return
+        raise ServiceError("DIFY_UNAVAILABLE", "知识库服务尚未配置", 503, True)
+    client = DifyKnowledgeClient(
+        settings.knowledge_base_url,
+        settings.dify_knowledge_api_key,
+        dataset_id,
+        timeout=60,
+    )
+    try:
+        remote_by_name: dict[str, list[dict[str, Any]]] = {}
+        for document in client.iter_documents():
+            remote_by_name.setdefault(_remote_source_name(document), []).append(document)
+        for row in rows:
+            same_name = remote_by_name.get(row.original_filename, [])
+            if len(same_name) > 1:
+                raise ServiceError(
+                    "CONFLICT",
+                    f"Dify 中存在多个同名文档：{row.original_filename}，请先由管理员处理",
+                    409,
+                    False,
+                )
+            if not same_name:
+                continue
+            existing = same_name[0]
+            existing_hash = _remote_metadata(existing).get("source_sha256", "")
+            if existing_hash and hmac.compare_digest(existing_hash, row.source_sha256):
+                row.status = "succeeded"
+                row.stage = "duplicate_noop"
+                row.error_code = None
+                row.error_message = "同名且内容未变化，未重复索引"
+            else:
+                remote_id = str(existing.get("id") or "")
+                if not remote_id:
+                    raise ServiceError("DIFY_UNAVAILABLE", "Dify 文档缺少 ID，无法安全替换", 502, True)
+                row.replace_document_id = remote_id
+                row.stage = "replace_pending"
+    except ServiceError:
+        raise
+    except Exception as exc:
+        raise ServiceError("DIFY_UNAVAILABLE", "知识库重复校验失败，已停止上传", 502, True) from exc
+    finally:
+        client.close()
+
+
 @router.get("/cleaning-strategies")
 def cleaning_strategies() -> list[dict[str, Any]]:
     return [
@@ -412,17 +540,21 @@ def cleaning_strategies() -> list[dict[str, Any]]:
 async def create_cleaning_batch(
     strategy_code: str = Form(...),
     knowledge_base_code: str = Form(...),
+    upload_mode: str = Form(default="cleaned"),
     common_metadata: str = Form(default="{}"),
     files: list[UploadFile] = File(...),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     settings = get_settings()
+    upload_mode = upload_mode.strip().lower()
+    if upload_mode not in {"cleaned", "raw"}:
+        raise ServiceError("VALIDATION_ERROR", "上传方式只能是 cleaned 或 raw", 422, False)
     strategy = STRATEGY_REGISTRY.get(strategy_code)
-    if strategy is None:
+    if upload_mode == "cleaned" and strategy is None:
         raise ServiceError("VALIDATION_ERROR", "未注册的清洗策略", 422, False)
     if knowledge_base_code not in {"general", "course"}:
         raise ServiceError("VALIDATION_ERROR", "目标知识库代码无效", 422, False)
-    required_knowledge_base = getattr(strategy, "knowledge_base_code", None)
+    required_knowledge_base = getattr(strategy, "knowledge_base_code", None) if strategy else None
     if required_knowledge_base and knowledge_base_code != required_knowledge_base:
         raise ServiceError(
             "VALIDATION_ERROR",
@@ -448,8 +580,9 @@ async def create_cleaning_batch(
     }
 
     batch = CleaningBatch(
-        strategy_code=strategy_code,
+        strategy_code=strategy_code if upload_mode == "cleaned" else "raw_upload",
         knowledge_base_code=knowledge_base_code,
+        upload_mode=upload_mode,
         common_metadata=parsed_metadata,
         build_version=settings.build_version,
     )
@@ -503,10 +636,10 @@ async def create_cleaning_batch(
         row.source_sha256 = digest.hexdigest()
         if row.status == "failed":
             target.unlink(missing_ok=True)
-        elif suffix not in strategy.supported_extensions:
+        elif suffix not in (_ALLOWED_CONTENT_TYPES if upload_mode == "raw" else strategy.supported_extensions):
             row.status = "failed"
             row.error_code = "UNSUPPORTED_FILE_TYPE"
-            row.error_message = f"策略 {strategy_code} 不支持 {suffix or '无扩展名'}"
+            row.error_message = f"{'原样上传' if upload_mode == 'raw' else f'策略 {strategy_code}'} 不支持 {suffix or '无扩展名'}"
             target.unlink(missing_ok=True)
         else:
             try:
@@ -519,6 +652,21 @@ async def create_cleaning_batch(
             else:
                 pending_ids.append(row.id)
 
+    try:
+        pending_rows = [session.get(CleaningFile, file_id) for file_id in pending_ids]
+        _preflight_remote_duplicates(
+            knowledge_base_code=knowledge_base_code,
+            rows=[item for item in pending_rows if item is not None],
+        )
+    except ServiceError:
+        session.rollback()
+        shutil.rmtree(batch_dir, ignore_errors=True)
+        raise
+    pending_ids = [
+        file_id
+        for file_id in pending_ids
+        if (row := session.get(CleaningFile, file_id)) is not None and row.status == "pending"
+    ]
     if not pending_ids:
         batch.status = "completed"
     session.commit()
@@ -542,7 +690,7 @@ async def create_cleaning_batch(
         try:
             from .tasks import process_cleaning_file
 
-            process_cleaning_file.apply_async(args=[file_id], queue="cleaning")
+            process_cleaning_file.apply_async(args=[file_id], queue="ai_cleaning")
         except Exception as exc:
             row = session.get(CleaningFile, file_id)
             if row:
@@ -572,8 +720,9 @@ async def create_cleaning_batch(
         resource_type="cleaning_batch",
         resource_id=batch.id,
         details={
-            "strategy_code": strategy_code,
+            "strategy_code": batch.strategy_code,
             "knowledge_base_code": knowledge_base_code,
+            "upload_mode": upload_mode,
             "total_files": len(files),
             "queued_files": len(pending_ids),
         },
@@ -629,7 +778,7 @@ def retry_cleaning_file(
     cache.delete(cleaning_batch_cache_key(batch_id))
     from .tasks import process_cleaning_file
 
-    process_cleaning_file.apply_async(args=[file_id], queue="cleaning")
+    process_cleaning_file.apply_async(args=[file_id], queue="ai_cleaning")
     record_event(
         level="INFO",
         category="operation",

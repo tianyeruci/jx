@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -20,7 +20,13 @@ from ...dify import DifyAppClient
 from ...errors import ServiceError
 from ...models import BusinessConversation, BusinessMessage
 from ...schemas import BusinessChatRequest, FeedbackRequest, RenameConversationRequest
-from ...security import dify_user, require_internal_token, require_user_id, user_hash
+from ...security import (
+    dify_user,
+    optional_user_name,
+    require_internal_token,
+    require_user_id,
+    user_hash,
+)
 from ...services.observability import record_event
 
 SSE_HEADERS = {
@@ -40,6 +46,7 @@ def business_chat(
     payload: BusinessChatRequest,
     request: Request,
     raw_user_id: str = Depends(require_user_id),
+    user_display_name: str = Depends(optional_user_name),
     session: Session = Depends(get_session),
 ) -> StreamingResponse:
     stream = prepare_business_chat(
@@ -49,6 +56,7 @@ def business_chat(
         query=payload.query,
         conversation_id=payload.conversation_id,
         request_id=request.state.request_id,
+        user_display_name=user_display_name,
     )
     return StreamingResponse(stream, media_type="text/event-stream", headers=SSE_HEADERS)
 
@@ -87,18 +95,24 @@ def stop_business_chat(
 @router.get("/conversations")
 def conversations(
     raw_user_id: str = Depends(require_user_id),
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
     session: Session = Depends(get_session),
-) -> list[dict[str, Any]]:
-    return list_user_conversations(session, user_hash(raw_user_id))
+) -> dict[str, Any]:
+    return list_user_conversations(session, user_hash(raw_user_id), cursor=cursor, limit=limit)
 
 
 @router.get("/conversations/{conversation_id}/messages")
 def conversation_messages(
     conversation_id: str,
     raw_user_id: str = Depends(require_user_id),
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
     session: Session = Depends(get_session),
-) -> list[dict[str, Any]]:
-    return list_conversation_messages(session, user_hash(raw_user_id), conversation_id)
+) -> dict[str, Any]:
+    return list_conversation_messages(
+        session, user_hash(raw_user_id), conversation_id, cursor=cursor, limit=limit
+    )
 
 
 @router.patch("/conversations/{conversation_id}")
@@ -192,6 +206,12 @@ def feedback(
         payload.rating,
         payload.content,
     )
+    message.feedback = {
+        "rating": payload.rating,
+        "content": payload.content,
+        "updated_at": request.state.request_id,
+    }
+    session.commit()
     record_event(
         level="INFO",
         category="operation",

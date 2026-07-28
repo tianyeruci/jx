@@ -1,6 +1,6 @@
 services:
   test-ui:
-    image: ${AI_UI_IMAGE:-jx-now-ai-management-ui:0.2.0}
+    image: ${AI_UI_IMAGE:-jx-now-ai-management-ui:0.2.1}
     build:
       context: .
       dockerfile: Dockerfile.ui-offline
@@ -13,7 +13,6 @@ services:
     depends_on:
       - api
     networks:
-      default:
       dify:
         aliases:
           - ai-management-test-ui

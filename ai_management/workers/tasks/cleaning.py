@@ -118,9 +118,11 @@ def _finish_batch(session, batch_id: str) -> None:
 )
 def process_cleaning_file(self, file_id: str) -> bool:
     created_remote_ids: list[str] = []
+    replacement_document_id = ""
     client: DifyKnowledgeClient | None = None
     target: Path | None = None
     try:
+        upload_mode = "cleaned"
         with SessionLocal() as session:
             row = session.scalar(
                 select(CleaningFile)
@@ -133,8 +135,10 @@ def process_cleaning_file(self, file_id: str) -> bool:
             if row is None or row.status not in {"pending", "processing"}:
                 return False
             batch = row.batch
+            upload_mode = batch.upload_mode
+            replacement_document_id = row.replace_document_id or ""
             strategy = STRATEGY_REGISTRY.get(batch.strategy_code)
-            if strategy is None:
+            if upload_mode != "raw" and strategy is None:
                 raise ValueError("清洗策略已从当前代码中移除")
             row.status = "processing"
             row.stage = "cleaning"
@@ -146,14 +150,30 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 raise FileNotFoundError("临时源文件不存在或已经过期")
 
             client = _knowledge_client(batch)
+            # Retry cleanup only documents created by an incomplete earlier
+            # attempt.  Do not delete a completed document before its
+            # replacement has indexed successfully.
             for old in list(row.documents):
-                if old.dify_document_id:
+                if old.status != "succeeded" and old.dify_document_id:
                     if not _remove_or_disable_document(client, old.dify_document_id):
                         _queue_document_cleanup(old.dify_document_id, client.dataset_id)
-                session.delete(old)
+                if old.status != "succeeded":
+                    session.delete(old)
             session.commit()
 
-            documents = strategy.clean(target, row.original_filename)
+            if upload_mode == "raw":
+                from ...cleaning import CleanedDocument
+
+                documents = [
+                    CleanedDocument(
+                        markdown="__raw_upload__",
+                        title=row.original_filename,
+                        metadata={"document_type": "raw_upload", "review_status": "approved"},
+                    )
+                ]
+            else:
+                assert strategy is not None
+                documents = strategy.clean(target, row.original_filename)
             if not documents:
                 raise ValueError("策略没有生成任何可入库文档")
 
@@ -164,10 +184,12 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     raise ValueError(f"第 {sequence} 个清洗文档正文为空")
                 source_name = (
                     f"anonymous_{row.id[:8]}.md"
-                    if strategy.sensitive
+                    if strategy and strategy.sensitive
                     else row.original_filename
                 )
-                remote_name = dify_document_name(source_name, row.source_sha256, sequence)
+                remote_name = (
+                    source_name if upload_mode == "raw" else dify_document_name(source_name, row.source_sha256, sequence)
+                )
                 metadata = {
                     **(batch.common_metadata or {}),
                     **(document.metadata or {}),
@@ -179,7 +201,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     "source_document_index": sequence,
                     "build_version": batch.build_version,
                 }
-                if not strategy.sensitive:
+                if not strategy or not strategy.sensitive:
                     metadata["source_filename"] = row.original_filename
                 else:
                     metadata.pop("source_filename", None)
@@ -188,7 +210,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     for key, value in metadata.items()
                     if value not in (None, "", [], {})
                 }
-                allowed_remote_fields = getattr(strategy, "dify_metadata_fields", None)
+                allowed_remote_fields = getattr(strategy, "dify_metadata_fields", None) if strategy else None
                 remote_metadata = (
                     {
                         key: value
@@ -215,14 +237,17 @@ def process_cleaning_file(self, file_id: str) -> bool:
         field_ids = client.ensure_metadata_names(sorted(field_names))
         for record, document, metadata in prepared:
             _set_file_state(file_id, status="processing", stage="dify_upload")
-            document_id, dify_batch = client.create_document(
-                record.dify_document_name,
-                document.markdown,
-                parent_separator=document.parent_separator,
-                parent_max_tokens=document.parent_max_tokens,
-                child_separator=document.child_separator,
-                child_max_tokens=document.child_max_tokens,
-            )
+            if upload_mode == "raw":
+                document_id, dify_batch = client.create_document_by_file(target)
+            else:
+                document_id, dify_batch = client.create_document(
+                    record.dify_document_name,
+                    document.markdown,
+                    parent_separator=document.parent_separator,
+                    parent_max_tokens=document.parent_max_tokens,
+                    child_separator=document.child_separator,
+                    child_max_tokens=document.child_max_tokens,
+                )
             created_remote_ids.append(document_id)
             with SessionLocal() as session:
                 current = session.get(CleaningDocument, record.id)
@@ -241,12 +266,20 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 current.status = "succeeded"
                 session.commit()
 
+        if replacement_document_id and replacement_document_id not in created_remote_ids:
+            # New content is fully indexed and has metadata at this point.
+            # Only now remove the old document, so a failed replacement never
+            # destroys the last known-good version.
+            if not _remove_or_disable_document(client, replacement_document_id):
+                raise RuntimeError("新文档已索引，但旧同名文档无法删除或停用")
+
         with SessionLocal() as session:
             row = session.get(CleaningFile, file_id)
             row.status = "succeeded"
             row.stage = "completed"
             row.error_code = None
             row.error_message = None
+            row.replace_document_id = None
             _finish_batch(session, row.batch_id)
             session.commit()
         if target:

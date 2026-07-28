@@ -10,9 +10,11 @@ from fastapi.responses import JSONResponse
 
 from .api.routers.admin import router as admin_router
 from .api.routers.admin_logs import router as admin_logs_router
+from .api.routers.admin_management import router as admin_management_router
 from .api.routers.business import router as business_router
 from .api.routers.entry import router as entry_router
 from .api.routers.health import router as health_router
+from .api.routers.knowledge_admin import router as knowledge_admin_router
 from .api.routers.tools import router as tools_router
 from .cleaning import router as cleaning_router
 from .config import get_settings
@@ -108,7 +110,7 @@ async def request_id_middleware(request: Request, call_next):
 def create_app() -> FastAPI:
     application = FastAPI(
         title="jx-now AI Management Service",
-        version="0.2.0",
+        version="0.2.1",
         lifespan=lifespan,
     )
     application.add_exception_handler(ServiceError, service_error_handler)
@@ -118,8 +120,10 @@ def create_app() -> FastAPI:
         tools_router,
         entry_router,
         admin_router,
+        admin_management_router,
         admin_logs_router,
         cleaning_router,
+        knowledge_admin_router,
         health_router,
     ):
         application.include_router(router)

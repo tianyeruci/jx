@@ -15,7 +15,7 @@
 - FastAPI API、SSE、内部 Token、匿名用户 HMAC。
 - PostgreSQL 模型和 Alembic 初始迁移。
 - Redis 缓存、会话锁、课程快照和点击计数；Redis 不作为业务事实唯一存储。
-- Celery Worker 和凌晨 03:30 定时维护。
+- Celery Worker 和北京时间凌晨 02:00 定时维护。
 - 商业会话、本地历史、每日 Dify 会话段、摘要游标和画像证据保护。
 - 课程/路线 Markdown 导入 CLI、候选 ID 校验、签名跳转和路线进度。
 - 朋友圈、写作 Workflow 代理。
@@ -43,8 +43,12 @@
 - [V2 从开发到服务器部署与回滚手册](docs/V2从开发到服务器部署与回滚手册.md)：jx 测试服务器的可执行发布、验证和回滚流程。
 - [V2 小程序后端集成与全链路测试指南](docs/V2小程序后端集成与全链路测试指南.md)：模拟小程序后端、Dify、课程、清洗和验收测试。
 - [V2 部署检查点](docs/V2部署检查点-2026-07-27.md)：本次服务器发布版本、备份和已验证结果。
+- [V2 本次缺口修复与服务器发布记录](docs/V2本次缺口修复与服务器发布记录-2026-07-28.md)：本次代码修复、数据清理边界、jx 发布结果与待补齐验收。
+- [V2 Dify 联调问题与修复记录](docs/V2-Dify联调问题与修复记录-2026-07-28.md)：本次 Dify Key、Sandbox、Workflow 分支和本地测试工具问题的根因、修复、验证与防踩坑清单。
+- [Dify 1.13.3 DSL 编写技巧与并发优化备忘录](docs/Dify1.13.3-DSL编写技巧与并发优化备忘录.md)：后续编写和调整 DSL 时优先复用的模式、版本边界、并发优化和防踩坑规则。
+- [V2 修改说明](docs/V2修改说明-2026-07-28.md)：本次代码改动、部署版本、数据边界与交接注意事项。
 
-旧部署/联调手册保留作为历史参考；日常交接、发布和测试以本节三份 V2 文档与部署检查点为准。
+旧部署/联调手册保留作为历史参考；日常交接、发布和测试以本节 V2 文档、部署检查点及 Dify 联调问题记录为准。
 
 点击统计口径：每次通过有效签名课程链接跳转，Redis 中的当日 PV 加 1；匿名 UV 去重。定时任务将累计绝对值幂等写入每日汇总表，不创建逐次点击事件表。
 
@@ -76,7 +80,7 @@
 
    ```powershell
    uvicorn ai_management.main:app --host 0.0.0.0 --port 8000
-   celery -A ai_management.tasks.celery_app worker -l INFO -Q default,cleaning --concurrency=2
+   celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_default,ai_cleaning --concurrency=2
    celery -A ai_management.tasks.celery_app beat -l INFO
    ```
 
@@ -84,7 +88,7 @@
 
    ```powershell
    $env:AI_MANAGEMENT_BASE_URL="http://127.0.0.1:8000"
-   $env:AI_MANAGEMENT_ADMIN_TOKEN="<与 ADMIN_API_TOKEN 一致>"
+   $env:ADMIN_API_TOKEN="<与 .env 中 ADMIN_API_TOKEN 一致>"
    streamlit run ai_management/test_ui.py
    ```
 

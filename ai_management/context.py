@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
@@ -14,6 +16,7 @@ from .models import (
     BusinessProfile,
     LearningRouteProgress,
 )
+from .timeutil import BUSINESS_TIMEZONE, business_today
 
 
 @dataclass(slots=True)
@@ -73,13 +76,25 @@ def build_context(
     exclude_message_id: str | None = None,
 ) -> BuiltContext:
     settings = get_settings()
-    messages = messages_after_summary(
-        session,
-        conversation,
-        exclude_message_id=exclude_message_id,
-        limit=settings.context_max_messages,
-        newest=True,
+    # The model only receives today's raw turns.  Older material is represented
+    # by the verified rolling summary, not a seven-day transcript.
+    today_start = datetime.combine(business_today(), time.min, tzinfo=BUSINESS_TIMEZONE)
+    today_start_utc = today_start.astimezone(ZoneInfo("UTC"))
+    conditions = [
+        BusinessMessage.conversation_id == conversation.id,
+        BusinessMessage.status.in_(["completed", "stopped"]),
+        BusinessMessage.created_at >= today_start_utc,
+    ]
+    if exclude_message_id:
+        conditions.append(BusinessMessage.id != exclude_message_id)
+    statement = (
+        select(BusinessMessage)
+        .where(*conditions)
+        .order_by(BusinessMessage.created_at.desc(), BusinessMessage.id.desc())
+        .limit(settings.context_max_messages)
     )
+    messages = list(session.scalars(statement))
+    messages.reverse()
     rendered = [f"{'用户' if item.role == 'user' else '助手'}：{item.content}" for item in messages]
     total = 0
     kept: list[str] = []
@@ -102,7 +117,7 @@ def build_context(
             session.scalars(
                 select(LearningRouteProgress).where(
                     LearningRouteProgress.user_hash == user_hash,
-                    LearningRouteProgress.status.in_(["active", "paused"]),
+                    LearningRouteProgress.status.in_(["pending_stage", "active"]),
                 )
             )
         )

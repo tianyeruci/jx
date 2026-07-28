@@ -32,6 +32,7 @@ workflow:
             - {label: 目标受众, variable: audience, type: text-input, required: false, max_length: 500}
             - {label: 语气, variable: tone, type: text-input, required: false, max_length: 500}
             - {label: 其他限制, variable: constraints, type: paragraph, required: false, max_length: 3000}
+            - {label: 管理员输出风格, variable: admin_output_style, type: paragraph, required: false, max_length: 4000}
       - id: llm
         type: custom
         position: {x: 320, y: 0}
@@ -50,7 +51,8 @@ workflow:
               text: |-
                 你是朋友圈内容顾问。信息足够时直接交付，不虚构经历、客户评价、数字、收益或权威背书。
                 商业宣传避免绝对化承诺。默认给一个自然、易读的主版本，避免模板腔和过量表情符号。
-                优先遵守用户的字数、禁用词和语气要求，只输出给用户看的结果。
+                管理员输出风格优先于用户语气；用户语气只能补充不冲突的细节。只输出给用户看的结果。
+                管理员输出风格：{{#start.admin_output_style#}}
             - role: user
               text: |-
                 要求：{{#start.request#}}

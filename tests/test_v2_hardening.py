@@ -16,9 +16,12 @@ from ai_management.models import (
     BusinessMessage,
     Course,
     CourseClickDaily,
+    LearningRouteProgress,
 )
 from ai_management.schemas import MomentsRunRequest, WritingRunRequest
+from ai_management.security import user_hash
 from ai_management.services.observability import record_event, sanitize_details
+from ai_management.timeutil import business_today
 from ai_management.workers.tasks.maintenance import _cleanup_history, _flush_clicks
 
 
@@ -165,3 +168,60 @@ def test_admin_log_api_is_separately_protected_and_redacted(service_db):
     assert allowed.status_code == 200
     assert allowed.json()["total"] == 1
     assert detail.json()["details"]["token"] == "[redacted]"
+
+
+def test_admin_style_and_retention_settings_are_protected_and_persist(service_db):
+    headers = {
+        "X-Internal-Token": "test-internal-token",
+        "X-Admin-Token": "test-admin-token",
+    }
+    with TestClient(app) as client:
+        denied = client.get("/internal/v1/admin/style-settings")
+        initial = client.get("/internal/v1/admin/style-settings", headers=headers)
+        updated = client.put(
+            "/internal/v1/admin/style-settings/moments",
+            headers=headers,
+            json={"enabled": True, "style_prompt": "自然、克制、避免夸张表达。"},
+        )
+        retention = client.put(
+            "/internal/v1/admin/settings/retention",
+            headers=headers,
+            json={"history_retention_days": 14},
+        )
+    assert denied.status_code == 401
+    assert initial.status_code == 200
+    assert {item["code"] for item in initial.json()["items"]} == {
+        "business_answer", "business_expert_insight", "moments", "writing"
+    }
+    assert updated.json()["version"] == 2
+    assert retention.json()["history_retention_days"] == 14
+    assert retention.json()["cleanup_hour"] == 2
+
+
+def test_admin_delete_user_ai_data_keeps_course_aggregates(service_db):
+    from ai_management.models import BusinessProfile
+
+    raw_user_id = "delete-me"
+    subject_hash = user_hash(raw_user_id)
+    with service_db() as session:
+        conversation = BusinessConversation(user_hash=subject_hash, title="delete")
+        session.add_all(
+            [
+                conversation,
+                BusinessProfile(user_hash=subject_hash, confirmed={"business_goal": "test"}),
+                LearningRouteProgress(user_hash=subject_hash, route_id="route", status="active", current_stage_id="one"),
+                CourseClickDaily(course_id="course", click_date=business_today(), clicks=3, unique_users=2),
+            ]
+        )
+        session.flush()
+        session.add(BusinessMessage(conversation_id=conversation.id, role="user", content="secret", status="completed"))
+        session.commit()
+    headers = {"X-Internal-Token": "test-internal-token", "X-Admin-Token": "test-admin-token"}
+    with TestClient(app) as client:
+        response = client.delete(f"/internal/v1/admin/users/{raw_user_id}/ai-data", headers=headers)
+    assert response.status_code == 200
+    with service_db() as session:
+        assert session.scalar(select(BusinessConversation).where(BusinessConversation.user_hash == subject_hash)) is None
+        assert session.get(BusinessProfile, subject_hash) is None
+        assert session.scalar(select(LearningRouteProgress).where(LearningRouteProgress.user_hash == subject_hash)) is None
+        assert session.scalar(select(CourseClickDaily).where(CourseClickDaily.course_id == "course")) is not None

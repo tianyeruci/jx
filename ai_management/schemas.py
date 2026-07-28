@@ -10,6 +10,27 @@ class BusinessChatRequest(BaseModel):
     conversation_id: str | None = None
 
 
+class CursorPage(BaseModel):
+    next_cursor: str | None = None
+
+
+class RetentionSettingsRequest(BaseModel):
+    history_retention_days: int = Field(ge=1, le=365)
+
+
+class StyleSettingUpdateRequest(BaseModel):
+    enabled: bool
+    style_prompt: str = Field(default="", max_length=4000)
+
+
+class DocumentStatusRequest(BaseModel):
+    enabled: bool
+
+
+class DeleteDocumentRequest(BaseModel):
+    confirm_name: str = Field(min_length=1, max_length=500)
+
+
 class RenameConversationRequest(BaseModel):
     title: str = Field(min_length=1, max_length=120)
 

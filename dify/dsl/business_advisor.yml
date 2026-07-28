@@ -60,6 +60,87 @@ workflow:
             - {label: 最近对话, variable: recent_history_text, type: paragraph, required: false, max_length: 24000}
             - {label: 用户画像JSON, variable: profile_json, type: paragraph, required: false, max_length: 12000}
             - {label: 路线进度JSON, variable: route_progress_json, type: paragraph, required: false, max_length: 12000}
+            - {label: 商业回答输出风格, variable: business_output_style, type: paragraph, required: false, max_length: 4000}
+            - {label: 专家见解输出风格, variable: expert_insight_style, type: paragraph, required: false, max_length: 4000}
+      - id: question_split
+        type: custom
+        position: {x: 300, y: 240}
+        positionAbsolute: {x: 300, y: 240}
+        data:
+          type: llm
+          title: 问题结构化拆分
+          desc: 输出两个可独立检索的子问题；失败时由后续代码回退双检索。
+          model:
+            provider: langgenius/tongyi/tongyi
+            name: qwen-plus
+            mode: chat
+            completion_params:
+              temperature: 0
+          context: {enabled: false, variable_selector: []}
+          prompt_template:
+            - role: system
+              text: |-
+                只输出一个严格JSON对象，不使用Markdown。把用户问题拆成可独立检索的子问题：
+                {"general_query":"","course_query":"","question_type":"general|course|mixed"}
+                通用商业知识填general_query；课程、课程路线、课程适合谁、课程内容填course_query。普通问题只填general_query，明确课程问题只填course_query，混合问题两个都填。不要编造信息。
+            - role: user
+              text: "{{#sys.query#}}"
+      - id: query_split_normalize
+        type: custom
+        position: {x: 600, y: 240}
+        positionAbsolute: {x: 600, y: 240}
+        data:
+          type: code
+          title: 解析并兜底问题拆分
+          desc: 解析失败时使用原问题分别检索，保证不返回空回答。
+          code_language: python3
+          variables:
+            - {variable: split_json, value_selector: [question_split, text]}
+            - {variable: original_query, value_selector: [sys, query]}
+          outputs:
+            general_query: {type: string, children: null}
+            course_query: {type: string, children: null}
+            question_type: {type: string, children: null}
+            fallback_used: {type: string, children: null}
+          code: |-
+            import json
+
+            def main(split_json: str, original_query: str) -> dict:
+                try:
+                    value = json.loads(split_json)
+                    general = str(value.get("general_query") or "").strip()
+                    course = str(value.get("course_query") or "").strip()
+                    kind = str(value.get("question_type") or "").strip()
+                    if kind not in {"general", "course", "mixed"}:
+                        raise ValueError("invalid question_type")
+                    if kind == "general" and not general:
+                        raise ValueError("empty general query")
+                    if kind == "course" and not course:
+                        raise ValueError("empty course query")
+                    if kind == "mixed" and (not general or not course):
+                        raise ValueError("empty mixed query")
+                    return {"general_query": general, "course_query": course, "question_type": kind, "fallback_used": "false"}
+                except Exception:
+                    return {"general_query": original_query, "course_query": original_query, "question_type": "mixed", "fallback_used": "true"}
+      - id: question_classifier
+        type: custom
+        position: {x: 860, y: 240}
+        positionAbsolute: {x: 860, y: 240}
+        data:
+          type: question-classifier
+          title: 检索范围路由
+          desc: 按通用、课程或混合问题控制需要执行的知识库检索。
+          classes:
+            - {id: general, name: 通用问题}
+            - {id: course, name: 课程问题}
+            - {id: mixed, name: 混合问题}
+          instructions: "通用商业知识为general；明确查课程、课程路线或课程内容为course；同时包含通用商业问题和课程需求为mixed。"
+          model:
+            provider: langgenius/tongyi/tongyi
+            name: qwen-plus
+            mode: chat
+            completion_params: {temperature: 0}
+          query_variable_selector: [query_split_normalize, question_type]
       - id: general_knowledge
         type: custom
         position: {x: 320, y: 40}
@@ -68,7 +149,7 @@ workflow:
           type: knowledge-retrieval
           title: 通用知识检索
           desc: 导入后在Dify控制台绑定 business-general-test。
-          query_variable_selector: [sys, query]
+          query_variable_selector: [query_split_normalize, general_query]
           dataset_ids: []
           retrieval_mode: multiple
           multiple_retrieval_config:
@@ -85,7 +166,7 @@ workflow:
           type: knowledge-retrieval
           title: 课程路线检索
           desc: 导入后在Dify控制台绑定 business-course-test。
-          query_variable_selector: [sys, query]
+          query_variable_selector: [query_split_normalize, course_query]
           dataset_ids: []
           retrieval_mode: multiple
           multiple_retrieval_config:
@@ -94,14 +175,48 @@ workflow:
             reranking_enable: false
             reranking_mode: reranking_model
             reranking_model: {provider: "", model: ""}
-      - id: recommendation_decision
+      - id: general_knowledge_mixed
+        type: custom
+        position: {x: 960, y: 240}
+        positionAbsolute: {x: 960, y: 240}
+        data:
+          type: knowledge-retrieval
+          title: 混合问题通用知识检索
+          desc: 仅在混合问题中执行，再进入课程知识检索。
+          query_variable_selector: [query_split_normalize, general_query]
+          dataset_ids: []
+          retrieval_mode: multiple
+          multiple_retrieval_config:
+            top_k: 5
+            score_threshold: 0.3
+            reranking_enable: false
+            reranking_mode: reranking_model
+            reranking_model: {provider: "", model: ""}
+      - id: course_knowledge_mixed
+        type: custom
+        position: {x: 1260, y: 240}
+        positionAbsolute: {x: 1260, y: 240}
+        data:
+          type: knowledge-retrieval
+          title: 混合问题课程路线检索
+          desc: 仅在混合问题中执行，避免与课程问题分支共享未执行变量。
+          query_variable_selector: [query_split_normalize, course_query]
+          dataset_ids: []
+          retrieval_mode: multiple
+          multiple_retrieval_config:
+            top_k: 8
+            score_threshold: 0.25
+            reranking_enable: false
+            reranking_mode: reranking_model
+            reranking_model: {provider: "", model: ""}
+      - id: recommendation_decision_general
         type: custom
         position: {x: 960, y: 40}
         positionAbsolute: {x: 960, y: 40}
         data:
           type: llm
-          title: 推荐决策
-          desc: 只输出候选ID和决策JSON，服务端会再次校验。
+          title: 通用问题推荐决策
+          desc: 通用问题分支只输出决策JSON；无课程证据时不要编造课程或路线ID。
           model:
             provider: langgenius/tongyi/tongyi
             name: qwen-plus
@@ -116,11 +231,11 @@ workflow:
               text: |-
                 你是商业顾问的推荐决策器，不直接面向用户。只输出一个JSON对象，不使用Markdown代码围栏。
                 结构：
-                {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","answer_plan":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""}}
-                课程、路线和阶段ID必须逐字来自课程检索结果；没有证据就留空。不要输出链接。
-                明确查询课程时不强制画像完整。信息不足时最多询问两个会改变推荐结果的问题。
-                没有审核路线证据时不能创建官方路线。
-                只有当前用户明确选择路线时才使用confirm_route；明确确认当前阶段完成或跳过时才使用confirm_stage_completed。evidence_quote必须是当前问题中的连续原文。
+                {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","answer_plan":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""}}
+                课程、路线和阶段ID必须逐字来自课程或路线检索结果；当前分支没有这类证据时必须留空。不要输出链接。
+                对通用问题，优先给出事实回答、分析框架或澄清问题，不要为了凑推荐而输出课程或路线。
+                信息不足时最多询问两个会改变推荐结果的问题。
+                只有当前用户明确选择路线时才使用confirm_route；明确确认所处阶段时才使用confirm_current_stage；明确确认当前阶段完成或跳过时才使用confirm_stage_completed。evidence_quote必须是当前问题中的连续原文。
             - role: user
               text: |-
                 当前问题：
@@ -141,16 +256,118 @@ workflow:
                 通用知识检索：
                 {{#general_knowledge.result#}}
 
+                专家见解输出风格（只影响expert_insight表达，不得改变课程、路线或阶段ID）：
+                {{#start.expert_insight_style#}}
+      - id: recommendation_decision_course
+        type: custom
+        position: {x: 960, y: 120}
+        positionAbsolute: {x: 960, y: 120}
+        data:
+          type: llm
+          title: 课程问题推荐决策
+          desc: 课程问题分支只输出决策JSON；候选ID必须来自课程检索结果。
+          model:
+            provider: langgenius/tongyi/tongyi
+            name: qwen-plus
+            mode: chat
+            completion_params:
+              temperature: 0.1
+          context:
+            enabled: false
+            variable_selector: []
+          prompt_template:
+            - role: system
+              text: |-
+                你是商业顾问的推荐决策器，不直接面向用户。只输出一个JSON对象，不使用Markdown代码围栏。
+                结构：
+                {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","answer_plan":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""}}
+                课程、路线和阶段ID必须逐字来自课程检索结果；没有证据就留空。不要输出链接。
+                明确查询课程时不强制画像完整。信息不足时最多询问两个会改变推荐结果的问题。
+                没有审核路线证据时不能创建官方路线。
+                只有当前用户明确选择路线时才使用confirm_route；明确确认所处阶段时才使用confirm_current_stage；明确确认当前阶段完成或跳过时才使用confirm_stage_completed。evidence_quote必须是当前问题中的连续原文。
+            - role: user
+              text: |-
+                当前问题：
+                {{#sys.query#}}
+
+                已确认画像：
+                {{#start.profile_json#}}
+
+                已确认路线进度：
+                {{#start.route_progress_json#}}
+
+                会话摘要：
+                {{#start.conversation_summary#}}
+
+                最近未摘要历史：
+                {{#start.recent_history_text#}}
+
                 课程与路线检索：
                 {{#course_knowledge.result#}}
-      - id: final_answer
+
+                专家见解输出风格（只影响expert_insight表达，不得改变课程、路线或阶段ID）：
+                {{#start.expert_insight_style#}}
+      - id: recommendation_decision_mixed
+        type: custom
+        position: {x: 1580, y: 240}
+        positionAbsolute: {x: 1580, y: 240}
+        data:
+          type: llm
+          title: 混合问题推荐决策
+          desc: 混合问题分支同时参考通用与课程检索，只输出决策JSON。
+          model:
+            provider: langgenius/tongyi/tongyi
+            name: qwen-plus
+            mode: chat
+            completion_params:
+              temperature: 0.1
+          context:
+            enabled: false
+            variable_selector: []
+          prompt_template:
+            - role: system
+              text: |-
+                你是商业顾问的推荐决策器，不直接面向用户。只输出一个JSON对象，不使用Markdown代码围栏。
+                结构：
+                {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","answer_plan":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""}}
+                课程、路线和阶段ID必须逐字来自课程检索结果；没有证据就留空。不要输出链接。
+                同时存在通用问题和课程需求时，先回答核心商业问题，再决定是否推荐课程或路线。
+                明确查询课程时不强制画像完整。信息不足时最多询问两个会改变推荐结果的问题。
+                没有审核路线证据时不能创建官方路线。
+                只有当前用户明确选择路线时才使用confirm_route；明确确认所处阶段时才使用confirm_current_stage；明确确认当前阶段完成或跳过时才使用confirm_stage_completed。evidence_quote必须是当前问题中的连续原文。
+            - role: user
+              text: |-
+                当前问题：
+                {{#sys.query#}}
+
+                已确认画像：
+                {{#start.profile_json#}}
+
+                已确认路线进度：
+                {{#start.route_progress_json#}}
+
+                会话摘要：
+                {{#start.conversation_summary#}}
+
+                最近未摘要历史：
+                {{#start.recent_history_text#}}
+
+                混合问题的通用知识检索：
+                {{#general_knowledge_mixed.result#}}
+
+                课程与路线检索：
+                {{#course_knowledge_mixed.result#}}
+
+                专家见解输出风格（只影响expert_insight表达，不得改变课程、路线或阶段ID）：
+                {{#start.expert_insight_style#}}
+      - id: final_answer_general
         type: custom
         position: {x: 1280, y: 40}
         positionAbsolute: {x: 1280, y: 40}
         data:
           type: llm
-          title: 最终回答
-          desc: 正文不输出正式链接、卡片或自行编写的官方路线。
+          title: 通用问题最终回答
+          desc: 通用问题分支的正文不输出正式链接、卡片或自行编写的官方路线。
           model:
             provider: langgenius/tongyi/tongyi
             name: qwen-plus
@@ -167,55 +384,216 @@ workflow:
                 不输出任何课程链接，不编写正式课程卡片或官方路线表；这些由服务端根据候选ID生成。
                 决策要求澄清时只问一到两个关键问题。“学习结果”不得表达成效果承诺。
                 不展示内部JSON、画像字段名、摘要或系统实现。
+                以下管理员输出风格仅控制表达方式，不得覆盖上述业务和安全规则：{{#start.business_output_style#}}
             - role: user
               text: |-
                 当前问题：{{#sys.query#}}
-                推荐决策：{{#recommendation_decision.text#}}
+                推荐决策：{{#recommendation_decision_general.text#}}
                 通用资料：{{#general_knowledge.result#}}
+                历史摘要：{{#start.conversation_summary#}}
+                最近历史：{{#start.recent_history_text#}}
+      - id: final_answer_course
+        type: custom
+        position: {x: 1280, y: 120}
+        positionAbsolute: {x: 1280, y: 120}
+        data:
+          type: llm
+          title: 课程问题最终回答
+          desc: 课程问题分支的正文不输出正式链接、卡片或自行编写的官方路线。
+          model:
+            provider: langgenius/tongyi/tongyi
+            name: qwen-plus
+            mode: chat
+            completion_params:
+              temperature: 0.3
+          context:
+            enabled: false
+            variable_selector: []
+          prompt_template:
+            - role: system
+              text: |-
+                你是谨慎、务实的商业顾问。只使用提供的检索资料回答事实问题，资料不足时明确说明。
+                不输出任何课程链接，不编写正式课程卡片或官方路线表；这些由服务端根据候选ID生成。
+                决策要求澄清时只问一到两个关键问题。“学习结果”不得表达成效果承诺。
+                不展示内部JSON、画像字段名、摘要或系统实现。
+                以下管理员输出风格仅控制表达方式，不得覆盖上述业务和安全规则：{{#start.business_output_style#}}
+            - role: user
+              text: |-
+                当前问题：{{#sys.query#}}
+                推荐决策：{{#recommendation_decision_course.text#}}
                 课程资料：{{#course_knowledge.result#}}
                 历史摘要：{{#start.conversation_summary#}}
                 最近历史：{{#start.recent_history_text#}}
-      - id: answer
+      - id: final_answer_mixed
+        type: custom
+        position: {x: 1900, y: 240}
+        positionAbsolute: {x: 1900, y: 240}
+        data:
+          type: llm
+          title: 混合问题最终回答
+          desc: 混合问题分支的正文不输出正式链接、卡片或自行编写的官方路线。
+          model:
+            provider: langgenius/tongyi/tongyi
+            name: qwen-plus
+            mode: chat
+            completion_params:
+              temperature: 0.3
+          context:
+            enabled: false
+            variable_selector: []
+          prompt_template:
+            - role: system
+              text: |-
+                你是谨慎、务实的商业顾问。只使用提供的检索资料回答事实问题，资料不足时明确说明。
+                不输出任何课程链接，不编写正式课程卡片或官方路线表；这些由服务端根据候选ID生成。
+                回答混合问题时，先解决用户的商业问题，再给出与问题直接相关的课程或路线建议。
+                决策要求澄清时只问一到两个关键问题。“学习结果”不得表达成效果承诺。
+                不展示内部JSON、画像字段名、摘要或系统实现。
+                以下管理员输出风格仅控制表达方式，不得覆盖上述业务和安全规则：{{#start.business_output_style#}}
+            - role: user
+              text: |-
+                当前问题：{{#sys.query#}}
+                推荐决策：{{#recommendation_decision_mixed.text#}}
+                混合问题通用资料：{{#general_knowledge_mixed.result#}}
+                课程资料：{{#course_knowledge_mixed.result#}}
+                历史摘要：{{#start.conversation_summary#}}
+                最近历史：{{#start.recent_history_text#}}
+      - id: answer_general
         type: custom
         position: {x: 1600, y: 40}
         positionAbsolute: {x: 1600, y: 40}
         data:
           type: answer
-          title: 回答
-          answer: "{{#final_answer.text#}}"
+          title: 通用问题回答
+          answer: "{{#final_answer_general.text#}}"
+          variables: []
+      - id: answer_course
+        type: custom
+        position: {x: 1600, y: 120}
+        positionAbsolute: {x: 1600, y: 120}
+        data:
+          type: answer
+          title: 课程问题回答
+          answer: "{{#final_answer_course.text#}}"
+          variables: []
+      - id: answer_mixed
+        type: custom
+        position: {x: 2220, y: 240}
+        positionAbsolute: {x: 2220, y: 240}
+        data:
+          type: answer
+          title: 混合问题回答
+          answer: "{{#final_answer_mixed.text#}}"
           variables: []
     edges:
-      - id: start-general
+      - id: start-split
         source: start
-        target: general_knowledge
+        target: question_split
         sourceHandle: source
         targetHandle: target
         type: custom
-        data: {sourceType: start, targetType: knowledge-retrieval}
-      - id: general-course
-        source: general_knowledge
+        data: {sourceType: start, targetType: llm}
+      - id: split-normalize
+        source: question_split
+        target: query_split_normalize
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: llm, targetType: code}
+      - id: normalize-classifier
+        source: query_split_normalize
+        target: question_classifier
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: code, targetType: question-classifier}
+      - id: classifier-general
+        source: question_classifier
+        target: general_knowledge
+        sourceHandle: general
+        targetHandle: target
+        type: custom
+        data: {sourceType: question-classifier, targetType: knowledge-retrieval}
+      - id: classifier-course
+        source: question_classifier
         target: course_knowledge
+        sourceHandle: course
+        targetHandle: target
+        type: custom
+        data: {sourceType: question-classifier, targetType: knowledge-retrieval}
+      - id: classifier-mixed-general
+        source: question_classifier
+        target: general_knowledge_mixed
+        sourceHandle: mixed
+        targetHandle: target
+        type: custom
+        data: {sourceType: question-classifier, targetType: knowledge-retrieval}
+      - id: general-course-mixed
+        source: general_knowledge_mixed
+        target: course_knowledge_mixed
         sourceHandle: source
         targetHandle: target
         type: custom
         data: {sourceType: knowledge-retrieval, targetType: knowledge-retrieval}
-      - id: course-decision
-        source: course_knowledge
-        target: recommendation_decision
+      - id: general-decision
+        source: general_knowledge
+        target: recommendation_decision_general
         sourceHandle: source
         targetHandle: target
         type: custom
         data: {sourceType: knowledge-retrieval, targetType: llm}
-      - id: decision-answer
-        source: recommendation_decision
-        target: final_answer
+      - id: course-decision
+        source: course_knowledge
+        target: recommendation_decision_course
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: knowledge-retrieval, targetType: llm}
+      - id: mixed-decision
+        source: course_knowledge_mixed
+        target: recommendation_decision_mixed
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: knowledge-retrieval, targetType: llm}
+      - id: decision-answer-general
+        source: recommendation_decision_general
+        target: final_answer_general
         sourceHandle: source
         targetHandle: target
         type: custom
         data: {sourceType: llm, targetType: llm}
-      - id: final-output
-        source: final_answer
-        target: answer
+      - id: final-output-general
+        source: final_answer_general
+        target: answer_general
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: llm, targetType: answer}
+      - id: decision-answer-course
+        source: recommendation_decision_course
+        target: final_answer_course
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: llm, targetType: llm}
+      - id: final-output-course
+        source: final_answer_course
+        target: answer_course
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: llm, targetType: answer}
+      - id: decision-answer-mixed
+        source: recommendation_decision_mixed
+        target: final_answer_mixed
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: llm, targetType: llm}
+      - id: final-output-mixed
+        source: final_answer_mixed
+        target: answer_mixed
         sourceHandle: source
         targetHandle: target
         type: custom

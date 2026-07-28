@@ -5,6 +5,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from datetime import date, datetime
 from typing import Any, Iterator
 
 from .config import get_settings
@@ -51,7 +52,7 @@ class Cache:
             return value
 
     def set_json(self, key: str, value: Any, ttl: int | None = None) -> None:
-        encoded = json.dumps(value, ensure_ascii=False)
+        encoded, normalized = _encode_json_value(value)
         try:
             if self.client:
                 self.client.set(key, encoded, ex=ttl)
@@ -59,7 +60,7 @@ class Cache:
         except Exception:
             pass
         with self._memory_lock:
-            self._memory[key] = (time.time() + ttl if ttl else None, value)
+            self._memory[key] = (time.time() + ttl if ttl else None, normalized)
 
     def delete(self, key: str) -> None:
         try:
@@ -72,7 +73,7 @@ class Cache:
 
     def atomic_json_swap(self, key: str, value: Any) -> None:
         temporary = f"{key}:tmp:{uuid.uuid4().hex}"
-        encoded = json.dumps(value, ensure_ascii=False)
+        encoded, _normalized = _encode_json_value(value)
         try:
             if self.client:
                 pipe = self.client.pipeline()
@@ -224,3 +225,16 @@ class Cache:
 
 
 cache = Cache()
+
+
+def _json_default(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def _encode_json_value(value: Any) -> tuple[str, Any]:
+    encoded = json.dumps(value, ensure_ascii=False, default=_json_default)
+    return encoded, json.loads(encoded)

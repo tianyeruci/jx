@@ -127,7 +127,7 @@ def validate_recommendation(
     progress_applied = False
     action = decision.progress_action or {}
     evidence = str(action.get("evidence_quote") or "")
-    progress = None
+    progress: LearningRouteProgress | None = None
     if route:
         progress = session.scalar(
             select(LearningRouteProgress).where(
@@ -142,14 +142,22 @@ def validate_recommendation(
                 progress = LearningRouteProgress(
                     user_hash=user_hash,
                     route_id=route["route_id"],
-                    current_stage_id=stages[0]["stage_id"],
-                    status="active",
+                    current_stage_id=None,
+                    status="pending_stage",
                 )
                 session.add(progress)
             else:
-                progress.status = "active"
+                progress.current_stage_id = None
+                progress.status = "pending_stage"
             progress.confirmed_at = datetime.now(timezone.utc)
             progress_applied = True
+        elif action.get("type") == "confirm_current_stage" and progress:
+            confirmed_stage_id = str(action.get("stage_id") or "")
+            if any(stage.get("stage_id") == confirmed_stage_id for stage in stages):
+                progress.current_stage_id = confirmed_stage_id
+                progress.status = "active"
+                progress.confirmed_at = datetime.now(timezone.utc)
+                progress_applied = True
         elif action.get("type") == "confirm_stage_completed" and progress:
             current_index = next(
                 (
@@ -171,27 +179,50 @@ def validate_recommendation(
 
     if route and decision.intent == "route_recommendation":
         stages = sorted(route.get("stages", []), key=lambda item: item.get("order", 0))
-        current_stage_id = (
-            progress.current_stage_id
-            if progress and progress.status in {"active", "paused"}
-            else (stages[0].get("stage_id") if stages else "")
-        )
-        allowed_course_ids = {
-            course_id
-            for stage in stages
-            if stage.get("stage_id") == current_stage_id
-            for course_id in stage.get("course_ids", [])
-        }
+        progress_status = progress.status if progress else "pending_route"
+        current_stage_id = progress.current_stage_id if progress and progress_status == "active" else None
+        next_stage_id: str | None = None
+        allowed_course_ids: list[str] = []
+        if current_stage_id:
+            current_index = next(
+                (
+                    index
+                    for index, stage in enumerate(stages)
+                    if stage.get("stage_id") == current_stage_id
+                ),
+                -1,
+            )
+            if current_index >= 0:
+                current_stage = stages[current_index]
+                allowed_course_ids.extend(current_stage.get("course_ids", []))
+                if current_index + 1 < len(stages):
+                    next_stage = stages[current_index + 1]
+                    next_stage_id = str(next_stage.get("stage_id") or "") or None
+                    allowed_course_ids.extend(next_stage.get("course_ids", []))
         valid_course_records = {
-            course_id: course
-            for course_id, course in valid_course_records.items()
-            if course_id in allowed_course_ids
+            course_id: courses[course_id]
+            for course_id in dict.fromkeys(allowed_course_ids)
+            if course_id in courses
+            and courses[course_id].get("enabled")
+            and courses[course_id].get("review_status") == "approved"
         }
         route = {
             **route,
             "current_stage_id": current_stage_id,
-            "progress_status": progress.status if progress else "not_started",
+            "next_stage_id": next_stage_id,
+            "state": {
+                "pending_route": "awaiting_route_confirmation",
+                "pending_stage": "awaiting_stage_confirmation",
+                "active": "active",
+                "completed": "completed",
+            }.get(progress_status, "awaiting_route_confirmation"),
+            "progress_status": progress_status,
+            "confirmation_required": progress_status in {"pending_route", "pending_stage"},
         }
+    elif decision.intent == "route_recommendation":
+        # A route recommendation without a validated route must never fall
+        # back to model-supplied course IDs.  Ask for clarification instead.
+        valid_course_records = {}
 
     valid_courses: list[dict[str, Any]] = []
     for course_id, course in valid_course_records.items():
@@ -207,7 +238,7 @@ def validate_recommendation(
         "intent": decision.intent,
         "course_cards": valid_courses,
         "learning_route": route,
-        "expert_insight": decision.expert_insight if valid_courses or route else "",
+        "expert_insight": decision.expert_insight if valid_courses else "",
         "progress_applied": progress_applied,
     }
 

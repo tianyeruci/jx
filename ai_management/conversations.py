@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from base64 import urlsafe_b64decode, urlsafe_b64encode
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from typing import Any
@@ -24,7 +25,9 @@ from .models import (
 )
 from .schemas import RecommendationDecision
 from .security import dify_user
-from .sse import event
+from .services.observability import record_event
+from .services.style_settings import get_style_prompt
+from .sse import SSEEmitter
 from .stream_filter import StreamingUrlRedactor
 from .timeutil import business_today
 
@@ -177,6 +180,7 @@ def prepare_business_chat(
     query: str,
     conversation_id: str | None,
     request_id: str,
+    user_display_name: str = "",
 ) -> Iterator[bytes]:
     settings = get_settings()
     query = query.strip()
@@ -208,6 +212,16 @@ def prepare_business_chat(
         session.add(conversation)
         session.flush()
 
+    if user_display_name:
+        from .models import BusinessProfile
+
+        profile = session.get(BusinessProfile, user_hash)
+        if profile is None:
+            profile = BusinessProfile(user_hash=user_hash, display_name=user_display_name)
+            session.add(profile)
+        elif profile.display_name != user_display_name:
+            profile.display_name = user_display_name
+
     lock_context = cache.lock(f"ai:conversation-lock:{conversation.id}", ttl=600)
     acquired = lock_context.__enter__()
     if not acquired:
@@ -229,6 +243,12 @@ def prepare_business_chat(
     session.add_all([user_message, assistant_message])
     session.flush()
     context = build_context(session, conversation, user_hash, exclude_message_id=user_message.id)
+    context.inputs.update(
+        {
+            "business_output_style": get_style_prompt(session, "business_answer"),
+            "expert_insight_style": get_style_prompt(session, "business_expert_insight"),
+        }
+    )
     conversation.last_active_at = datetime.now(timezone.utc)
 
     segment = session.scalar(
@@ -250,6 +270,7 @@ def prepare_business_chat(
     session.commit()
 
     def stream() -> Iterator[bytes]:
+        emit = SSEEmitter(request_id)
         started = time.monotonic()
         first_token_ms: int | None = None
         answer_parts: list[str] = []
@@ -259,20 +280,14 @@ def prepare_business_chat(
         resources: list[dict[str, Any]] = []
         usage_metadata: dict[str, Any] = {}
         decision: RecommendationDecision | None = None
+        query_split_fallback = False
         final_status = "completed"
         error_to_emit: ServiceError | None = None
         enqueue_summary = False
         task_announced = False
         url_redactor = StreamingUrlRedactor()
 
-        if enqueue_summary and final_status == "completed":
-            try:
-                from .tasks import summarize_conversation
-
-                summarize_conversation.delay(prepared["conversation_id"])
-            except Exception:
-                logger.exception("failed to enqueue summary task")
-        yield event(
+        yield emit(
             "request_started",
             {
                 "request_id": request_id,
@@ -280,7 +295,7 @@ def prepare_business_chat(
                 "message_id": prepared["assistant_message_id"],
             },
         )
-        yield event("status", {"code": "retrieving", "message": "正在检索相关资料…"})
+        yield emit("status", {"code": "retrieving", "message": "正在检索相关资料…"})
 
         try:
             with SessionLocal() as work_session:
@@ -303,7 +318,7 @@ def prepare_business_chat(
                 )
                 if dify_task_id and not task_announced:
                     task_announced = True
-                    yield event(
+                    yield emit(
                         "status",
                         {
                             "code": "task_started",
@@ -320,7 +335,7 @@ def prepare_business_chat(
                         delta = url_redactor.feed(raw_delta)
                         if delta:
                             answer_parts.append(delta)
-                            yield event("answer_delta", {"delta": delta})
+                            yield emit("answer_delta", {"delta": delta})
                 # Dify 1.13.x emits ``node_finished`` for Chatflow node
                 # completion (older clients used ``workflow_node_finished``).
                 # Both forms carry the node outputs used for recommendation
@@ -329,6 +344,9 @@ def prepare_business_chat(
                 # canonical event name.
                 elif event_name in {"workflow_node_finished", "node_finished"}:
                     data = item.get("data") or {}
+                    if str(data.get("node_id") or "") == "query_split_normalize":
+                        outputs = data.get("outputs") or {}
+                        query_split_fallback = str(outputs.get("fallback_used") or "").lower() == "true"
                     parsed = _decision_from_outputs(data.get("outputs"))
                     if parsed:
                         decision = parsed
@@ -350,7 +368,7 @@ def prepare_business_chat(
             final_delta = url_redactor.finish()
             if final_delta:
                 answer_parts.append(final_delta)
-                yield event("answer_delta", {"delta": final_delta})
+                yield emit("answer_delta", {"delta": final_delta})
         except GeneratorExit:
             final_status = "stopped"
             if dify_task_id:
@@ -396,6 +414,16 @@ def prepare_business_chat(
                     actual_dify_conversation_id=actual_dify_conversation_id,
                     anonymous_user=anonymous_user,
                 )
+                # The threshold is only known after the final assistant result
+                # has been persisted.  Queue after that transaction commits so
+                # the worker never observes an incomplete conversation.
+                if enqueue_summary and final_status == "completed":
+                    try:
+                        from .tasks import summarize_conversation
+
+                        summarize_conversation.delay(prepared["conversation_id"])
+                    except Exception:
+                        logger.exception("failed to enqueue summary task")
             except Exception:
                 logger.exception(
                     "failed to persist business chat result",
@@ -432,18 +460,31 @@ def prepare_business_chat(
                     (recommendation.get("learning_route") or {}).get("route_id"),
                     final_status,
                 )
+                if query_split_fallback:
+                    record_event(
+                        level="WARNING",
+                        category="workflow",
+                        component="business_chat",
+                        event_code="MIXED_QUERY_SPLIT_FALLBACK",
+                        status="fallback",
+                        message="问题结构化拆分失败，已使用双知识库回退检索",
+                        request_id=request_id,
+                        actor_hash=user_hash,
+                        resource_type="conversation",
+                        resource_id=prepared["conversation_id"],
+                    )
                 lock_context.__exit__(None, None, None)
 
         if resources:
-            yield event("retriever_resources", resources)
-        if recommendation.get("course_cards"):
-            yield event("course_cards", recommendation["course_cards"])
+            yield emit("retriever_resources", {"resources": resources})
         if recommendation.get("learning_route"):
-            yield event("learning_route", recommendation["learning_route"])
+            yield emit("learning_route", recommendation["learning_route"])
+        if recommendation.get("course_cards"):
+            yield emit("course_cards", {"items": recommendation["course_cards"]})
         if recommendation.get("expert_insight"):
-            yield event("expert_insight", {"content": recommendation["expert_insight"]})
+            yield emit("expert_insight", {"content": recommendation["expert_insight"]})
         if error_to_emit:
-            yield event(
+            yield emit(
                 "error",
                 {
                     "code": error_to_emit.code,
@@ -453,7 +494,7 @@ def prepare_business_chat(
                 },
             )
             return
-        yield event(
+        yield emit(
             "message_end",
             {
                 "request_id": request_id,
@@ -471,15 +512,39 @@ def prepare_business_chat(
     return stream()
 
 
-def list_user_conversations(session: Session, user_hash: str) -> list[dict[str, Any]]:
-    rows = list(
-        session.scalars(
-            select(BusinessConversation)
-            .where(BusinessConversation.user_hash == user_hash)
-            .order_by(BusinessConversation.last_active_at.desc())
+def _decode_cursor(cursor: str | None) -> tuple[datetime, str] | None:
+    if not cursor:
+        return None
+    try:
+        raw = urlsafe_b64decode(cursor.encode("ascii") + b"=" * (-len(cursor) % 4))
+        payload = __import__("json").loads(raw)
+        return datetime.fromisoformat(payload["created_at"]), str(payload["id"])
+    except Exception as exc:
+        raise ServiceError("VALIDATION_ERROR", "分页游标无效", 422, False) from exc
+
+
+def _encode_cursor(created_at: datetime, row_id: str) -> str:
+    raw = __import__("json").dumps(
+        {"created_at": created_at.isoformat(), "id": row_id}, separators=(",", ":")
+    ).encode("utf-8")
+    return urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def list_user_conversations(
+    session: Session, user_hash: str, *, cursor: str | None = None, limit: int = 20
+) -> dict[str, Any]:
+    statement = select(BusinessConversation).where(BusinessConversation.user_hash == user_hash)
+    boundary = _decode_cursor(cursor)
+    if boundary:
+        created_at, row_id = boundary
+        statement = statement.where(
+            (BusinessConversation.created_at < created_at)
+            | ((BusinessConversation.created_at == created_at) & (BusinessConversation.id < row_id))
         )
-    )
-    return [
+    rows = list(session.scalars(statement.order_by(BusinessConversation.created_at.desc(), BusinessConversation.id.desc()).limit(limit + 1)))
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    items = [
         {
             "conversation_id": row.id,
             "title": row.title,
@@ -488,11 +553,15 @@ def list_user_conversations(session: Session, user_hash: str) -> list[dict[str, 
         }
         for row in rows
     ]
+    return {
+        "items": items,
+        "next_cursor": _encode_cursor(rows[-1].created_at, rows[-1].id) if has_more and rows else None,
+    }
 
 
 def list_conversation_messages(
-    session: Session, user_hash: str, conversation_id: str
-) -> list[dict[str, Any]]:
+    session: Session, user_hash: str, conversation_id: str, *, cursor: str | None = None, limit: int = 20
+) -> dict[str, Any]:
     conversation = session.scalar(
         select(BusinessConversation).where(
             BusinessConversation.id == conversation_id,
@@ -501,14 +570,18 @@ def list_conversation_messages(
     )
     if conversation is None:
         raise ServiceError("CONVERSATION_NOT_FOUND", "历史对话不存在", 404, False)
-    messages = list(
-        session.scalars(
-            select(BusinessMessage)
-            .where(BusinessMessage.conversation_id == conversation_id)
-            .order_by(BusinessMessage.created_at.asc())
+    statement = select(BusinessMessage).where(BusinessMessage.conversation_id == conversation_id)
+    boundary = _decode_cursor(cursor)
+    if boundary:
+        created_at, row_id = boundary
+        statement = statement.where(
+            (BusinessMessage.created_at > created_at)
+            | ((BusinessMessage.created_at == created_at) & (BusinessMessage.id > row_id))
         )
-    )
-    return [
+    messages = list(session.scalars(statement.order_by(BusinessMessage.created_at.asc(), BusinessMessage.id.asc()).limit(limit + 1)))
+    has_more = len(messages) > limit
+    messages = messages[:limit]
+    items = [
         {
             "message_id": row.id,
             "role": row.role,
@@ -520,6 +593,10 @@ def list_conversation_messages(
         }
         for row in messages
     ]
+    return {
+        "items": items,
+        "next_cursor": _encode_cursor(messages[-1].created_at, messages[-1].id) if has_more and messages else None,
+    }
 
 
 def delete_user_conversation(

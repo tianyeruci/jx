@@ -35,6 +35,17 @@ def require_user_id(
     return x_user_id.strip()
 
 
+def optional_user_name(
+    x_user_name: str | None = Header(default=None, alias="X-User-Name"),
+) -> str:
+    """Return a display name supplied by the mini-program backend.
+
+    The raw user id is never persisted.  A display name is optional and is only
+    used to make administrator audit searches usable; it is not sent to Dify.
+    """
+    return (x_user_name or "").strip()[:120]
+
+
 def user_hash(user_id: str) -> str:
     secret = get_settings().user_hmac_secret.encode("utf-8")
     return hmac.new(secret, user_id.encode("utf-8"), hashlib.sha256).hexdigest()

@@ -61,16 +61,94 @@ workflow:
                 {{#start.messages_json#}}
                 目标消息ID：
                 {{#start.target_message_id#}}
-      - id: end
+      - id: summary_normalize
         type: custom
         position: {x: 640, y: 0}
         positionAbsolute: {x: 640, y: 0}
+        data:
+          type: code
+          title: 归一化摘要画像JSON
+          desc: 兼容 fenced JSON、前后多余文本和缺省字段，保证 Worker 收到稳定 JSON。
+          code_language: python3
+          variables:
+            - {variable: raw_result, value_selector: [llm, text]}
+            - {variable: target_message_id, value_selector: [start, target_message_id]}
+          outputs:
+            result: {type: string, children: null}
+          code: |-
+            import json
+
+            def _extract_json(raw_result: str) -> dict:
+                text = (raw_result or "").strip()
+                if text.startswith("```"):
+                    lines = text.splitlines()
+                    if len(lines) >= 3:
+                        text = "\n".join(lines[1:-1]).strip()
+                        if text.lower().startswith("json"):
+                            text = text[4:].lstrip()
+                try:
+                    parsed = json.loads(text)
+                    return parsed if isinstance(parsed, dict) else {}
+                except Exception:
+                    start = text.find("{")
+                    end = text.rfind("}")
+                    if start >= 0 and end > start:
+                        try:
+                            parsed = json.loads(text[start : end + 1])
+                            return parsed if isinstance(parsed, dict) else {}
+                        except Exception:
+                            return {}
+                return {}
+
+            def _as_string(value) -> str:
+                if value is None:
+                    return ""
+                if isinstance(value, str):
+                    return value.strip()
+                return str(value).strip()
+
+            def _as_list_of_dicts(value) -> list:
+                if isinstance(value, dict):
+                    value = [{"field": field, "value": item} for field, item in value.items()]
+                if not isinstance(value, list):
+                    return []
+                result = []
+                for item in value:
+                    if not isinstance(item, dict):
+                        continue
+                    normalized = dict(item)
+                    if "field" in normalized:
+                        normalized["field"] = _as_string(normalized.get("field"))
+                    if "evidence_quote" in normalized:
+                        normalized["evidence_quote"] = _as_string(normalized.get("evidence_quote"))
+                    if "source_message_id" in normalized:
+                        normalized["source_message_id"] = _as_string(normalized.get("source_message_id"))
+                    result.append(normalized)
+                return result
+
+            def main(raw_result: str, target_message_id: str) -> dict:
+                parsed = _extract_json(raw_result)
+                updated_summary = _as_string(parsed.get("updated_summary"))
+                if not updated_summary:
+                    updated_summary = _as_string(raw_result)
+                normalized = {
+                    "updated_summary": updated_summary,
+                    "confirmed_profile_updates": _as_list_of_dicts(parsed.get("confirmed_profile_updates")),
+                    "candidate_profile_updates": _as_list_of_dicts(parsed.get("candidate_profile_updates")),
+                    "route_progress_candidates": _as_list_of_dicts(parsed.get("route_progress_candidates")),
+                    "target_message_id": _as_string(target_message_id),
+                }
+                return {"result": json.dumps(normalized, ensure_ascii=False)}
+      - id: end
+        type: custom
+        position: {x: 960, y: 0}
+        positionAbsolute: {x: 960, y: 0}
         data:
           type: end
           title: 结束
           outputs:
             - variable: result
-              value_selector: [llm, text]
+              value_selector: [summary_normalize, result]
     edges:
       - id: start-llm
         source: start
@@ -81,8 +159,15 @@ workflow:
         data: {sourceType: start, targetType: llm}
       - id: llm-end
         source: llm
+        target: summary_normalize
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: llm, targetType: code}
+      - id: summary-normalize-end
+        source: summary_normalize
         target: end
         sourceHandle: source
         targetHandle: target
         type: custom
-        data: {sourceType: llm, targetType: end}
+        data: {sourceType: code, targetType: end}

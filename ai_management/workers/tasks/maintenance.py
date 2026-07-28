@@ -24,6 +24,7 @@ from ...models import (
     ExternalDeletionTask,
     SystemEventLog,
 )
+from ...services.admin_settings import get_history_retention_days
 from ...services.observability.events import record_event
 from ..celery_app import celery_app
 from .cleaning import _finish_batch, _remove_or_disable_document, process_cleaning_file
@@ -56,11 +57,12 @@ def _queue_deletion(
 
 
 def _cleanup_history() -> None:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=settings.history_retention_days)
     inactive_ids: list[str] = []
     active_with_old: list[str] = []
     skipped_ids: list[str] = []
     with SessionLocal() as session:
+        retention_days = get_history_retention_days(session)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
         inactive_ids = list(
             session.scalars(
                 select(BusinessConversation.id).where(
@@ -247,7 +249,7 @@ def _cleanup_files_and_stale_tasks() -> None:
         for row in stale:
             if row.attempts < 2:
                 row.status = "pending"
-                process_cleaning_file.apply_async(args=[row.id], queue="cleaning")
+                process_cleaning_file.apply_async(args=[row.id], queue="ai_cleaning")
             else:
                 row.status = "failed"
                 row.error_code = "CLEANING_FAILED"

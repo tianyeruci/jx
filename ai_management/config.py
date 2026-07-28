@@ -36,8 +36,9 @@ class Settings(BaseSettings):
     dify_course_dataset_id: str = ""
 
     history_retention_days: int = Field(default=7, ge=1, le=365)
-    cleanup_hour: int = Field(default=3, ge=0, le=23)
-    cleanup_minute: int = Field(default=30, ge=0, le=59)
+    # The maintenance schedule is a product decision, not a runtime knob.
+    cleanup_hour: int = Field(default=2, ge=0, le=23)
+    cleanup_minute: int = Field(default=0, ge=0, le=59)
     summary_user_turns: int = Field(default=6, ge=1, le=100)
     summary_approx_chars: int = Field(default=6000, ge=100)
     summary_batch_max_chars: int = Field(default=40000, ge=1000, le=55000)
@@ -46,7 +47,7 @@ class Settings(BaseSettings):
     context_max_messages: int = Field(default=50, ge=4, le=500)
     max_query_chars: int = Field(default=12000, ge=100)
 
-    max_upload_file_mb: int = Field(default=50, ge=1)
+    max_upload_file_mb: int = Field(default=200, ge=1, le=200)
     max_upload_files: int = Field(default=10, ge=1, le=100)
     max_upload_batch_mb: int = Field(default=500, ge=1)
     failed_file_retention_hours: int = Field(default=24, ge=1)

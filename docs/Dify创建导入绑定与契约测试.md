@@ -64,12 +64,13 @@ DSL 不包含模型 API Key。
 打开商业顾问画布：
 
 - “通用知识检索”绑定 `business-general-test`。
+- “混合问题通用知识检索”也绑定 `business-general-test`。
 - “课程路线检索”绑定 `business-course-test`。
 - 确认两个 LLM 节点没有开启 Memory。
 - 开启引用与归属，让 API 的 `retriever_resources` 有内容。
 - 保存并发布。
 
-重要：`.env` 中 Dataset ID 只供 Service API 使用，不会自动改变 Chatflow 原生知识检索节点。更换知识库时必须同时改环境变量、重新绑定画布并发布。
+重要：`.env` 中 Dataset ID 只供 Service API 使用，不会自动改变 Chatflow 原生知识检索节点。更换知识库时必须同时改环境变量、重新绑定画布并发布。商业顾问含“通用 / 课程 / 混合”三条路径，三个检索节点都必须按上表完成绑定。
 
 ## 5. 创建四个 App Key
 
@@ -83,6 +84,12 @@ DIFY_SUMMARY_PROFILE_APP_API_KEY=
 ```
 
 不要复用旧 `.env` 中通用的 `DIFY_API_KEY`。已暴露或曾用于临时调试的 Key 应在 Dify 中撤销后重建。
+
+`app-...` 是应用访问 Key，不是应用 UUID，也不能写入交接文档、聊天记录或小程序代码。每次重新创建应用、导入 DSL、重新发布或轮换 Key 后，必须按受控流程核对 AI 管理服务的对应环境变量，并逐一验证三个用户入口的 `/parameters`；只有映射变化时才同步配置并重建 API、Worker、Scheduler。Dify 控制台的发布动作不会替 AI 管理服务完成该项核对。
+
+### 5.1 含 Code 节点的环境预检
+
+商业顾问含 Dify Code 节点。由 Dify 运维人员在不显示原值的前提下，比较 Dify API 的 `CODE_EXECUTION_API_KEY` 与 Sandbox 的 `SANDBOX_API_KEY` 的哈希；二者必须一致。若 Code 节点返回 401：先备份 Dify `.env`，使两个值一致后只重建 Sandbox，再用最小输入复测 Code 节点。不得通过删除 Dify 数据、知识库、卷或重启整套 Dify 来掩盖问题。
 
 ## 6. 最小真实调用
 
@@ -104,7 +111,7 @@ Invoke-WebRequest `
   -Body $body
 ```
 
-确认能看到 `request_started`、`answer_delta`、引用、课程卡片或 `message_end`。
+确认能看到 `request_started`、`answer_delta`、引用、课程卡片或 `message_end`。商业顾问必须分别用通用问题、课程问题和混合问题各测一次；每次都要有最终 `message_end`，且 Dify 运行记录中不能出现未定义变量。分类器未执行的分支不会生成空变量，因此决策和回答节点只能引用当前分支已经执行的检索节点输出。
 
 ## 7. 动态 inputs 契约
 

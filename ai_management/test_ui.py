@@ -109,7 +109,8 @@ def business_tab(user_id: str) -> None:
             st.session_state["business_conversations"] = api_json(
                 "GET", "/internal/v1/business/conversations", user_id=user_id
             )
-        conversations = st.session_state.get("business_conversations", [])
+        conversation_payload = st.session_state.get("business_conversations", {})
+        conversations = conversation_payload.get("items", []) if isinstance(conversation_payload, dict) else []
         options = {"新建会话": None}
         options.update(
             {
@@ -234,7 +235,7 @@ def tool_tab(user_id: str, kind: str) -> None:
 def course_tab(user_id: str) -> None:
     st.subheader("课程与路线测试")
     if st.button("读取当前已发布目录"):
-        st.json(api_json("GET", "/internal/v1/admin/catalog"))
+        st.json(api_json("GET", "/internal/v1/admin/catalog", admin=True))
     st.caption("以下问题通过商业顾问真实链路执行，卡片必须来自服务端校验结果。")
     questions = [
         "AI工具入门课程主要解决什么问题？",
@@ -259,44 +260,9 @@ def course_tab(user_id: str) -> None:
 
 
 def cleaning_tab() -> None:
-    st.subheader("批量文件清洗")
-    try:
-        strategies = api_json(
-            "GET", "/internal/v1/knowledge/cleaning-strategies"
-        )
-    except httpx.HTTPError as exc:
-        st.error(str(exc))
-        return
-    strategy = st.selectbox(
-        "清洗策略",
-        [item["code"] for item in strategies],
-        format_func=lambda code: next(
-            item["display_name"] for item in strategies if item["code"] == code
-        ),
-    )
+    st.subheader("文件清洗状态（只读）")
+    st.caption("公网临时页面不提供上传、重试、启停或删除。管理写操作仅由服务器内网命令和自动化验收执行。")
     knowledge_base = st.selectbox("目标知识库", ["general", "course"])
-    files = st.file_uploader(
-        "选择多个文件",
-        accept_multiple_files=True,
-    )
-    if st.button("上传并开始处理") and files:
-        multipart = [
-            ("files", (item.name, item.getvalue(), item.type)) for item in files
-        ]
-        with httpx.Client(timeout=120) as client:
-            response = client.post(
-                f"{API_BASE}/internal/v1/knowledge/cleaning-batches",
-                headers=headers(),
-                data={
-                    "strategy_code": strategy,
-                    "knowledge_base_code": knowledge_base,
-                },
-                files=multipart,
-            )
-            response.raise_for_status()
-            result = response.json()
-            st.session_state["cleaning_batch_id"] = result["batch_id"]
-            st.json(result)
     batch_id = st.text_input(
         "批次 ID", value=st.session_state.get("cleaning_batch_id", "")
     )
@@ -304,9 +270,26 @@ def cleaning_tab() -> None:
         st.json(
             api_json(
                 "GET",
-                f"/internal/v1/knowledge/cleaning-batches/{batch_id}",
+                f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}",
+                admin=True,
             )
         )
+
+
+def management_readonly_tab() -> None:
+    st.subheader("AI 管理只读状态")
+    st.caption("本页不提供任何管理写操作；验收完成后会停止该临时页面。")
+    if st.button("读取风格与保留策略"):
+        st.json(
+            {
+                "style_settings": api_json("GET", "/internal/v1/admin/style-settings", admin=True),
+                "retention": api_json("GET", "/internal/v1/admin/settings/retention", admin=True),
+            }
+        )
+    if st.button("读取知识库状态"):
+        st.json(api_json("GET", "/internal/v1/admin/knowledge-bases", admin=True))
+    if st.button("读取最近会话审计"):
+        st.json(api_json("GET", "/internal/v1/admin/conversations", admin=True))
 
 
 def diagnostics_tab() -> None:
@@ -417,6 +400,7 @@ def main() -> None:
             "日常写作",
             "课程测试",
             "文件清洗",
+            "AI 管理只读",
             "点击统计",
             "日志",
             "诊断",
@@ -433,10 +417,12 @@ def main() -> None:
     with tabs[4]:
         cleaning_tab()
     with tabs[5]:
-        course_clicks_tab()
+        management_readonly_tab()
     with tabs[6]:
-        logs_tab()
+        course_clicks_tab()
     with tabs[7]:
+        logs_tab()
+    with tabs[8]:
         diagnostics_tab()
 
 

@@ -1,47 +1,9 @@
 services:
-  postgres:
-    image: postgres:15-alpine
-    environment:
-      POSTGRES_DB: ${AI_POSTGRES_DB}
-      POSTGRES_USER: ${AI_POSTGRES_USER}
-      POSTGRES_PASSWORD: ${AI_POSTGRES_PASSWORD}
-    volumes:
-      - ai_postgres_data:/var/lib/postgresql/data
-    networks:
-      default:
-        aliases:
-          - ai-management-postgres
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${AI_POSTGRES_USER} -d ${AI_POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    restart: unless-stopped
-
-  redis:
-    image: redis:6-alpine
-    command:
-      - redis-server
-      - --appendonly
-      - "yes"
-      - --requirepass
-      - ${AI_REDIS_PASSWORD}
-    volumes:
-      - ai_redis_data:/data
-    networks:
-      default:
-        aliases:
-          - ai-management-redis
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a \"${AI_REDIS_PASSWORD}\" ping | grep PONG"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    restart: unless-stopped
-
   api:
-    image: ${AI_IMAGE:-jx-now-ai-management:0.2.0}
-    build: .
+    image: ${AI_IMAGE:-jx-now-ai-management:0.2.1}
+    build:
+      context: .
+      dockerfile: Dockerfile.offline
     env_file: .env
     command: uvicorn ai_management.main:app --host 0.0.0.0 --port 8000
     ports:
@@ -49,51 +11,39 @@ services:
     volumes:
       - ai_uploads:/app/var/uploads
     networks:
-      - default
       - dify
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     restart: unless-stopped
 
   worker:
-    image: ${AI_IMAGE:-jx-now-ai-management:0.2.0}
-    build: .
+    image: ${AI_IMAGE:-jx-now-ai-management:0.2.1}
+    build:
+      context: .
+      dockerfile: Dockerfile.offline
     env_file: .env
-    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q default,cleaning --concurrency=2
+    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_default,ai_cleaning --concurrency=4
     volumes:
       - ai_uploads:/app/var/uploads
     networks:
-      - default
       - dify
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     restart: unless-stopped
 
   scheduler:
-    image: ${AI_IMAGE:-jx-now-ai-management:0.2.0}
-    build: .
+    image: ${AI_IMAGE:-jx-now-ai-management:0.2.1}
+    build:
+      context: .
+      dockerfile: Dockerfile.offline
     env_file: .env
     command: celery -A ai_management.tasks.celery_app beat -l INFO
     volumes:
       - ai_uploads:/app/var/uploads
     networks:
-      - default
       - dify
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   ai_uploads:
+  # Historical standalone volumes stay declared as protected rollback evidence.
+  # They are intentionally no longer mounted by the running AI services.
   ai_postgres_data:
   ai_redis_data:
 

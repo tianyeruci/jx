@@ -33,6 +33,7 @@ workflow:
             - {label: 语气, variable: tone, type: text-input, required: false, max_length: 500}
             - {label: 格式, variable: format, type: text-input, required: false, max_length: 500}
             - {label: 其他限制, variable: constraints, type: paragraph, required: false, max_length: 3000}
+            - {label: 管理员输出风格, variable: admin_output_style, type: paragraph, required: false, max_length: 4000}
       - id: llm
         type: custom
         position: {x: 320, y: 0}
@@ -52,6 +53,8 @@ workflow:
                 你是日常写作助手。信息足够时直接给出成稿，不先复述要求。
                 保留用户事实，不增加姓名、数字、事件、引用或结论。严格遵守格式、语气和字数。
                 无法确认的事实使用中性占位或提醒补充。只输出最终内容，除非用户要求解释。
+                管理员输出风格优先于用户语气；用户语气只能补充不冲突的细节。
+                管理员输出风格：{{#start.admin_output_style#}}
             - role: user
               text: |-
                 要求：{{#start.request#}}

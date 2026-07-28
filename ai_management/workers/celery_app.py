@@ -26,7 +26,7 @@ celery_app.conf.update(
     timezone="Asia/Shanghai",
     enable_utc=True,
     task_acks_late=True,
-    task_default_queue="default",
+    task_default_queue="ai_default",
     worker_prefetch_multiplier=1,
     worker_hijack_root_logger=False,
     beat_schedule={

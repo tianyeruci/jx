@@ -174,21 +174,33 @@ def _summarize_sync(conversation_id: str) -> bool:
     retry_kwargs={"max_retries": 2},
 )
 def summarize_conversation(conversation_id: str) -> bool:
-    try:
-        result = _summarize_sync(conversation_id)
-    except Exception as exc:
-        record_event(
-            level="ERROR",
-            category="task",
-            component="summary_worker",
-            event_code="SUMMARY_FAILED",
-            status="failed",
-            message="会话摘要任务失败",
-            resource_type="conversation",
-            resource_id=conversation_id,
-            details={"error_type": type(exc).__name__},
-        )
-        raise
+    # A duplicate Celery delivery must not concurrently call the summarization
+    # workflow for the same conversation.  The optimistic cursor check below is
+    # retained as a second guard for a worker restart after the lock expires.
+    with cache.lock(f"ai:summary-lock:{conversation_id}", ttl=900) as acquired:
+        if not acquired:
+            record_event(
+                level="INFO", category="task", component="summary_worker",
+                event_code="SUMMARY_SKIPPED_LOCKED", status="skipped",
+                message="会话已有摘要任务执行中", resource_type="conversation",
+                resource_id=conversation_id,
+            )
+            return False
+        try:
+            result = _summarize_sync(conversation_id)
+        except Exception as exc:
+            record_event(
+                level="ERROR",
+                category="task",
+                component="summary_worker",
+                event_code="SUMMARY_FAILED",
+                status="failed",
+                message="会话摘要任务失败",
+                resource_type="conversation",
+                resource_id=conversation_id,
+                details={"error_type": type(exc).__name__},
+            )
+            raise
     record_event(
         level="INFO" if result else "WARNING",
         category="task",

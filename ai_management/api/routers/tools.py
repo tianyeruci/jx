@@ -6,14 +6,17 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
 
 from ...cache import cache
 from ...config import get_settings
+from ...db import get_session
 from ...dify import DifyAppClient
 from ...errors import ServiceError
 from ...schemas import MomentsRunRequest, WritingRunRequest
 from ...security import dify_user, require_internal_token, require_user_id
-from ...sse import event
+from ...services.style_settings import get_style_prompt
+from ...sse import SSEEmitter
 
 logger = logging.getLogger(__name__)
 SSE_HEADERS = {
@@ -37,9 +40,10 @@ def _workflow_stream(
     entry: str,
 ):
     started = time.monotonic()
+    emit = SSEEmitter(request_id)
     first_token_ms: int | None = None
-    yield event("request_started", {"request_id": request_id})
-    yield event("status", {"code": "generating", "message": "正在生成内容…"})
+    yield emit("request_started")
+    yield emit("status", {"code": "generating", "message": "正在生成内容…"})
     task_id = ""
     emitted_text = False
     metrics: dict[str, Any] = {}
@@ -56,7 +60,7 @@ def _workflow_stream(
                     {"entry": entry, "user": anonymous_user},
                     ttl=600,
                 )
-                yield event(
+                yield emit(
                     "status",
                     {
                         "code": "task_started",
@@ -70,14 +74,14 @@ def _workflow_stream(
                     if first_token_ms is None:
                         first_token_ms = int((time.monotonic() - started) * 1000)
                     emitted_text = True
-                    yield event("answer_delta", {"delta": delta})
+                    yield emit("answer_delta", {"delta": delta})
             elif event_name == "workflow_finished":
                 outputs = data.get("outputs") or {}
                 text_value = outputs.get("text") or outputs.get("answer") or ""
                 if text_value and not emitted_text:
                     if first_token_ms is None:
                         first_token_ms = int((time.monotonic() - started) * 1000)
-                    yield event("answer_delta", {"delta": str(text_value)})
+                    yield emit("answer_delta", {"delta": str(text_value)})
                 metrics = {
                     "elapsed_time": data.get("elapsed_time"),
                     "total_tokens": data.get("total_tokens"),
@@ -101,7 +105,7 @@ def _workflow_stream(
     except ServiceError as exc:
         if task_id:
             cache.delete(f"ai:tool-task:{task_id}")
-        yield event(
+        yield emit(
             "error",
             {
                 "code": exc.code,
@@ -111,7 +115,7 @@ def _workflow_stream(
             },
         )
         return
-    yield event(
+    yield emit(
         "message_end",
         {
             "request_id": request_id,
@@ -140,13 +144,17 @@ def run_moments(
     payload: MomentsRunRequest,
     request: Request,
     raw_user_id: str = Depends(require_user_id),
+    session: Session = Depends(get_session),
 ) -> StreamingResponse:
     settings = get_settings()
     client = DifyAppClient(settings.dify_url, settings.dify_moments_app_api_key)
     return StreamingResponse(
         _workflow_stream(
             client=client,
-            inputs=payload.inputs.model_dump(),
+            inputs={
+                **payload.inputs.model_dump(),
+                "admin_output_style": get_style_prompt(session, "moments"),
+            },
             anonymous_user=dify_user(raw_user_id),
             request_id=request.state.request_id,
             entry="moments_advisor",
@@ -161,13 +169,17 @@ def run_writing(
     payload: WritingRunRequest,
     request: Request,
     raw_user_id: str = Depends(require_user_id),
+    session: Session = Depends(get_session),
 ) -> StreamingResponse:
     settings = get_settings()
     client = DifyAppClient(settings.dify_url, settings.dify_writing_app_api_key)
     return StreamingResponse(
         _workflow_stream(
             client=client,
-            inputs=payload.inputs.model_dump(),
+            inputs={
+                **payload.inputs.model_dump(),
+                "admin_output_style": get_style_prompt(session, "writing"),
+            },
             anonymous_user=dify_user(raw_user_id),
             request_id=request.state.request_id,
             entry="writing_advisor",

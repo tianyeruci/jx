@@ -123,6 +123,62 @@ class DifyKnowledgeClient:
             raise RuntimeError("Dify创建文档响应缺少document id或batch")
         return document_id, batch
 
+    def create_document_by_file(
+        self,
+        file_path: Path,
+        *,
+        original_document_id: str | None = None,
+    ) -> tuple[str, str]:
+        """Upload one original file using Dify's native high-quality parser.
+
+        Dify 1.13 accepts multipart form data at ``create-by-file``.  The
+        client normally has a JSON Content-Type default, therefore this method
+        builds a one-off request without that header so httpx supplies the
+        required multipart boundary.
+        """
+        process_rule = {
+            "mode": "hierarchical",
+            "rules": {
+                "pre_processing_rules": [
+                    {"id": "remove_extra_spaces", "enabled": True},
+                    {"id": "remove_urls_emails", "enabled": False},
+                ],
+                "parent_mode": "paragraph",
+                "segmentation": {"separator": "\n\n", "max_tokens": 1000},
+                "subchunk_segmentation": {"separator": "\n", "max_tokens": 200},
+            },
+        }
+        payload: dict[str, Any] = {
+            "indexing_technique": "high_quality",
+            "doc_form": "hierarchical_model",
+            "doc_language": "Chinese",
+            "process_rule": process_rule,
+        }
+        if original_document_id:
+            payload["original_document_id"] = original_document_id
+        # Reuse the configured client so tests, proxies and transports behave
+        # exactly like the JSON endpoints.  Remove its JSON Content-Type only
+        # for this request; httpx then creates a correct multipart boundary.
+        json_content_type = self.client.headers.pop("Content-Type", None)
+        with file_path.open("rb") as handle:
+            try:
+                response = self.client.post(
+                    f"datasets/{self.dataset_id}/document/create-by-file",
+                    data={"data": json.dumps(payload, ensure_ascii=False)},
+                    files={"file": (file_path.name, handle, "application/octet-stream")},
+                )
+            finally:
+                if json_content_type is not None:
+                    self.client.headers["Content-Type"] = json_content_type
+        response.raise_for_status()
+        data = response.json() if response.content else {}
+        document = data.get("document") or {}
+        document_id = str(document.get("id") or data.get("document_id") or "")
+        batch = str(data.get("batch") or document.get("batch") or "")
+        if not document_id or not batch:
+            raise RuntimeError("Dify原文件上传响应缺少document id或batch")
+        return document_id, batch
+
     def wait_for_indexing(self, batch: str, *, timeout_seconds: int = 900, interval: float = 2) -> None:
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
@@ -296,6 +352,16 @@ class DifyKnowledgeClient:
 
     def disable_document(self, document_id: str) -> None:
         self.disable_documents([document_id])
+
+    def enable_documents(self, document_ids: Iterable[str]) -> None:
+        ids = list(dict.fromkeys(str(item) for item in document_ids if item))
+        if not ids:
+            return
+        self._request(
+            "PATCH",
+            f"datasets/{self.dataset_id}/documents/status/enable",
+            json={"document_ids": ids},
+        )
 
     def retrieve(
         self,

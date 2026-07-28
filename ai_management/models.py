@@ -69,6 +69,7 @@ class BusinessProfile(Base, TimestampMixin):
     user_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     confirmed: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     candidates: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    display_name: Mapped[str] = mapped_column(String(120), default="", index=True)
 
 
 class BusinessConversation(Base, TimestampMixin):
@@ -135,6 +136,7 @@ class BusinessMessage(Base, TimestampMixin):
     total_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     recommendation: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     retriever_resources: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    feedback: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     conversation: Mapped[BusinessConversation] = relationship(back_populates="messages")
 
@@ -146,8 +148,8 @@ class LearningRouteProgress(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     user_hash: Mapped[str] = mapped_column(String(64), index=True)
     route_id: Mapped[str] = mapped_column(String(100), index=True)
-    current_stage_id: Mapped[str] = mapped_column(String(100))
-    status: Mapped[str] = mapped_column(String(16), default="active")
+    current_stage_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending_route")
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -197,6 +199,7 @@ class CleaningBatch(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     strategy_code: Mapped[str] = mapped_column(String(100))
     knowledge_base_code: Mapped[str] = mapped_column(String(100))
+    upload_mode: Mapped[str] = mapped_column(String(16), default="cleaned")
     status: Mapped[str] = mapped_column(String(16), default="processing", index=True)
     common_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     build_version: Mapped[str] = mapped_column(String(100), default="development")
@@ -223,6 +226,7 @@ class CleaningFile(Base, TimestampMixin):
     error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    replace_document_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     batch: Mapped[CleaningBatch] = relationship(back_populates="files")
     documents: Mapped[list["CleaningDocument"]] = relationship(
@@ -280,3 +284,20 @@ class SystemEventLog(Base):
     details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     build_version: Mapped[str] = mapped_column(String(100), default="development")
+
+
+class AdminSetting(Base, TimestampMixin):
+    __tablename__ = "admin_setting"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class AIStyleSetting(Base, TimestampMixin):
+    __tablename__ = "ai_style_setting"
+
+    code: Mapped[str] = mapped_column(String(64), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    style_prompt: Mapped[str] = mapped_column(Text, default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    updated_by: Mapped[str] = mapped_column(String(64), default="admin")
