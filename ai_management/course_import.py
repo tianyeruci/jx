@@ -15,6 +15,7 @@ from knowledge_cleaner.dify import DifyKnowledgeClient
 
 from .config import get_settings
 from .courses import rebuild_snapshot
+from .services.admin_settings import bump_catalog_revision
 from .db import SessionLocal
 from .models import Course, ExternalDeletionTask, LearningRoute
 from .schemas import CourseRecord, RouteRecord
@@ -543,6 +544,7 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
                 row.stages = [stage.model_dump(mode="json") for stage in item.stages]
                 row.source_file = source_file.name
                 row.dify_document_id = replacements[("route", item.route_id)] or None
+            bump_catalog_revision(session)
             session.commit()
             rebuild_snapshot(session)
 

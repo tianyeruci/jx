@@ -20,12 +20,14 @@ from ...cleaning import (
     review_cleaning_item,
 )
 from ...config import get_settings
+from ...courses import rebuild_snapshot
 from ...db import get_session
 from ...errors import ServiceError
-from ...models import CleaningBatch, CleaningDocument, CleaningFile
+from ...models import Course, CleaningBatch, CleaningDocument, CleaningFile, LearningRoute
 from ...schemas import CleaningReviewDecisionRequest, DeleteDocumentRequest, DocumentStatusRequest
 from ...security import require_admin_token, require_internal_token
 from ...services.observability import record_event
+from ...services.admin_settings import bump_catalog_revision
 
 router = APIRouter(
     prefix="/internal/v1/admin/knowledge-bases",
@@ -83,6 +85,25 @@ def _document_name(document: dict[str, Any]) -> str:
         or _metadata(document).get("source_filename")
         or ""
     )
+
+
+def _catalog_record_for_document(
+    session: Session,
+    kb_code: str,
+    document_id: str,
+) -> Course | LearningRoute | None:
+    """Return the DB authority record for a published catalogue document.
+
+    General course-knowledge documents remain ordinary Dify documents.  A
+    record returned here is different: its enabled state controls structured
+    recommendation and therefore must never drift from Dify.
+    """
+    if kb_code != "course":
+        return None
+    course = session.scalar(select(Course).where(Course.dify_document_id == document_id))
+    if course is not None:
+        return course
+    return session.scalar(select(LearningRoute).where(LearningRoute.dify_document_id == document_id))
 
 
 def _serialize_document(
@@ -347,10 +368,22 @@ def set_document_status(
     kb_code: str,
     document_id: str,
     payload: DocumentStatusRequest,
+    session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     matches = [item for item in _documents(kb_code) if str(item.get("id") or "") == document_id]
     if not matches:
         raise ServiceError("VALIDATION_ERROR", "知识库文档不存在", 404, False)
+    catalog_record = _catalog_record_for_document(session, kb_code, document_id)
+    if catalog_record is not None and payload.enabled and catalog_record.review_status != "approved":
+        raise ServiceError("RECOMMENDATION_INVALID", "未审核目录记录不能启用", 409, False)
+    # Disabling must make the authority catalogue safe before an external
+    # Dify call.  If that call is ambiguous or fails after applying, the
+    # course stays unavailable for structured recommendation.
+    if catalog_record is not None and not payload.enabled:
+        catalog_record.enabled = False
+        bump_catalog_revision(session)
+        session.commit()
+        rebuild_snapshot(session)
     client = _client(kb_code)
     try:
         if payload.enabled:
@@ -361,13 +394,34 @@ def set_document_status(
         raise ServiceError("DIFY_UNAVAILABLE", "更新知识库文档状态失败", 502, True) from exc
     finally:
         client.close()
+    # For enabling, wait until Dify is available before exposing the record
+    # in the authority catalogue.  This prevents a course card whose
+    # retrieval copy is still disabled.
+    if catalog_record is not None and payload.enabled:
+        catalog_record.enabled = payload.enabled
+        bump_catalog_revision(session)
+        session.commit()
+        rebuild_snapshot(session)
     record_event(
         level="INFO", category="operation", component="knowledge_admin_api",
         event_code="KNOWLEDGE_DOCUMENT_STATUS_UPDATED", status="succeeded",
         message="知识库文档状态已更新", actor_hash="admin", resource_type="dify_document",
         resource_id=document_id, details={"kb_code": kb_code, "enabled": payload.enabled},
     )
-    return {"document_id": document_id, "enabled": payload.enabled}
+    return {
+        "document_id": document_id,
+        "enabled": payload.enabled,
+        "catalog_record": {
+            "record_type": "course" if isinstance(catalog_record, Course) else "learning_route",
+            "record_id": (
+                catalog_record.course_id
+                if isinstance(catalog_record, Course)
+                else catalog_record.route_id
+            ),
+        }
+        if catalog_record is not None
+        else None,
+    }
 
 
 @router.delete("/{kb_code}/documents/{document_id}")
@@ -375,10 +429,19 @@ def delete_document(
     kb_code: str,
     document_id: str,
     payload: DeleteDocumentRequest,
+    session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     matches = [item for item in _documents(kb_code) if str(item.get("id") or "") == document_id]
     if not matches:
         raise ServiceError("VALIDATION_ERROR", "知识库文档不存在", 404, False)
+    catalog_record = _catalog_record_for_document(session, kb_code, document_id)
+    if catalog_record is not None:
+        raise ServiceError(
+            "CONFLICT",
+            "课程或学习路线目录文档不能在此删除；请先停用目录记录，后续以新目录文件替换。",
+            409,
+            False,
+        )
     actual_name = _document_name(matches[0])
     if payload.confirm_name != actual_name:
         raise ServiceError("CONFLICT", "confirm_name 与当前文档名称不一致", 409, False)

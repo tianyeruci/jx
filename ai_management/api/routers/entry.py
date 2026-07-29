@@ -69,7 +69,12 @@ def entry_config() -> dict[str, Any]:
     return {"entries": result}
 
 
-@router.get("/r/{token}")
+@router.get(
+    "/r/{token}",
+    response_class=RedirectResponse,
+    status_code=302,
+    responses={302: {"description": "课程正式链接跳转"}},
+)
 def redirect_course(
     token: str,
     session: Session = Depends(get_session),

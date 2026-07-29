@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from ...db import get_session
+from ...config import get_settings
 from ...errors import ServiceError
 from ...schemas import RetentionSettingsRequest, StyleSettingUpdateRequest
 from ...security import require_admin_token, require_internal_token
@@ -25,7 +26,12 @@ router = APIRouter(
 
 @router.get("/settings/retention")
 def get_retention_settings(session: Session = Depends(get_session)) -> dict[str, int]:
-    return {"history_retention_days": get_history_retention_days(session), "cleanup_hour": 2, "cleanup_minute": 0}
+    settings = get_settings()
+    return {
+        "history_retention_days": get_history_retention_days(session),
+        "cleanup_hour": settings.cleanup_hour,
+        "cleanup_minute": settings.cleanup_minute,
+    }
 
 
 @router.put("/settings/retention")
@@ -45,7 +51,12 @@ def put_retention_settings(
         resource_id="history_retention",
         details={"history_retention_days": value},
     )
-    return {"history_retention_days": value, "cleanup_hour": 2, "cleanup_minute": 0}
+    settings = get_settings()
+    return {
+        "history_retention_days": value,
+        "cleanup_hour": settings.cleanup_hour,
+        "cleanup_minute": settings.cleanup_minute,
+    }
 
 
 @router.get("/style-settings")

@@ -28,6 +28,12 @@
 - 写操作均显示真实请求参数，并要求勾选确认或输入精确确认值；测试页不会把管理员 Token 暴露给浏览器。
 - r9 页面已真实读取配置和知识库文档，确认新增入口与 API 连通；涉及真实修改或删除的接口仍以 r8 `49/49` 契约实测为执行证据。
 
+2026-07-29 课程与学习路线 r2 更新：
+
+- 当前 jx 核心服务为 `jx-now-ai-management:0.2.1-course-route-7a1b71a-r2`，API、Worker、Scheduler 同版本；测试页为 `jx-now-ai-management-ui:0.2.1-cleaning-27a8bc0-r9`。
+- 本文第 3 章的课程/路线 SSE 契约和第 4 章目录字段已按 r2 实现更新。此前 `expert_insight`、旧 `/internal/v1/knowledge/...` 清洗路径和“上传页只读”的表述均不再适用。
+- r8 的 `49/49` 是历史接口基线，不能替代 r2 的课程/路线页面上传、Metadata、Redis 和 SSE 复测证据。
+
 ## 1. 基本约定
 
 ### 1.1 鉴权
@@ -242,7 +248,7 @@ X-User-Name: <用户展示名，可选>
 - `retriever_resources`
 - `learning_route`
 - `course_cards`
-- `expert_insight`
+- `course_recommendation_note`
 - `message_end`
 - `error`
 
@@ -293,18 +299,12 @@ event: learning_route
 data: {"schema_version":"2.0","request_id":"req-001","sequence":6,"route_id":"route_ai_basic","name":"AI入门路线","direction":"AI基础","target":"完成AI基础使用","stages":[{"stage_id":"stage_1","name":"入门","order":1,"course_ids":["course_ai_001"]}],"current_stage_id":null,"next_stage_id":null,"state":"awaiting_route_confirmation","progress_status":"pending_route","confirmation_required":true}
 ```
 
-`expert_insight` 示例：
+课程/路线规则：
 
-```text
-event: expert_insight
-data: {"schema_version":"2.0","request_id":"req-001","sequence":7,"content":"先用最小场景验证，而不是先追求复杂流程。"}
-```
-
-说明：
-
-- `expert_insight` 不是另一个顾问接口。
-- 它是商业顾问回答中的一个可选补充块。
-- 如果前端不需要单独展示这部分内容，可以忽略该事件。
+- `learning_route.state=awaiting_route_confirmation` 或 `awaiting_stage_confirmation` 时，`course_cards` 必须为空；调用方应引导用户明确确认路线和当前阶段。
+- 只有 `active` 路线才返回当前阶段及下一阶段的课程卡片，最多 5 门且保持路线顺序。
+- 没有官方匹配路线时，服务可返回独立课程；不得临时拼接成路线。
+- `course_recommendation_note` 是可选的匹配理由，不是课程事实扩写。课程级 `expert_insight` 已停用，客户端不得等待或渲染它。
 
 `message_end` 示例：
 
@@ -778,6 +778,12 @@ GET /internal/v1/admin/catalog
       "course_id": "course_ai_001",
       "name": "AI工具入门",
       "direction": "AI基础",
+      "stage": "入门",
+      "source_platform": "小鹅通",
+      "series_name": null,
+      "published_at": null,
+      "first_imported_at": "2026-07-29T08:00:00+00:00",
+      "prerequisite_course_ids": [],
       "enabled": true,
       "review_status": "approved",
       "optional_data": {}
@@ -877,17 +883,17 @@ PUT /internal/v1/admin/settings/retention
 | style_code | 对应入口 | 实际作用 |
 | --- | --- | --- |
 | `business_answer` | 商业顾问 | 控制商业顾问主回答正文风格 |
-| `business_expert_insight` | 商业顾问 | 控制商业顾问补充观点块风格，仅在返回 `expert_insight` 时生效 |
+| `business_expert_insight` | 历史兼容项 | 当前课程/路线链路不生成 `expert_insight`，不得用它配置或推导课程级专业见解 |
 | `moments` | 朋友圈顾问 | 控制朋友圈顾问输出风格 |
 | `writing` | 日常写作 | 控制日常写作输出风格 |
 
 可以直接理解为：
 
-- 商业顾问有 2 个可调项：主回答、补充观点
+- 商业顾问当前只使用主回答风格；补充观点项为历史兼容项
 - 朋友圈顾问 1 个可调项
 - 日常写作 1 个可调项
 
-如果前端不展示 `expert_insight`，那么 `business_expert_insight` 可以视为可选项。
+`business_expert_insight` 仍可能出现在旧管理数据中，但当前不应新增或依赖该配置。
 
 #### 查询
 

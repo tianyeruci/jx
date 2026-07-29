@@ -26,6 +26,7 @@ def service_db():
 
     cache._client = False
     cache._memory.clear()
+    cache._pending_redis_sync.clear()
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     try:
@@ -33,6 +34,7 @@ def service_db():
     finally:
         Base.metadata.drop_all(bind=engine)
         cache._memory.clear()
+        cache._pending_redis_sync.clear()
 
 
 def pytest_sessionfinish(session, exitstatus):

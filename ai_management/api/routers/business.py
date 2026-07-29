@@ -41,7 +41,16 @@ router = APIRouter(
 )
 
 
-@router.post("/chat")
+@router.post(
+    "/chat",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "商业顾问 Server-Sent Events",
+            "content": {"text/event-stream": {"schema": {"type": "string"}}},
+        }
+    },
+)
 def business_chat(
     payload: BusinessChatRequest,
     request: Request,

@@ -11,7 +11,9 @@ services:
     volumes:
       - ai_uploads:/app/var/uploads
     networks:
-      - dify
+      dify:
+        aliases:
+          - ai-management-api
     restart: unless-stopped
 
   worker:

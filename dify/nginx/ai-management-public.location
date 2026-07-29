@@ -1,0 +1,12 @@
+# Public, token-only course jump.  The endpoint itself validates the signed
+# token and the current course status, so this location must not inject any
+# internal or admin token.
+location ^~ /r/ {
+  resolver 127.0.0.11 ipv6=off valid=10s;
+  set $ai_management_upstream ai-management-api:8000;
+
+  proxy_pass http://$ai_management_upstream;
+  include proxy.conf;
+  proxy_set_header Host $host;
+  proxy_set_header X-Forwarded-Proto $scheme;
+}

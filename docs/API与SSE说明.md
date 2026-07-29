@@ -48,7 +48,7 @@ answer_delta
 retriever_resources
 course_cards
 learning_route
-expert_insight
+course_recommendation_note
 message_end
 error
 ```
@@ -96,25 +96,34 @@ GET /internal/v1/entry-config
 
 服务从 Dify 参数接口聚合开场白和推荐问题，并声明入口是否支持历史、反馈和课程。
 
-## 文件清洗
+## 课程与学习路线事件
+
+`learning_route` 表示服务端已校验过的官方路线。它可能处于 `awaiting_route_confirmation`、`awaiting_stage_confirmation`、`active` 或 `completed`；只有用户明确确认路线和当前阶段后，才允许出现该路线的 `course_cards`。
+
+`course_cards.items` 只包含启用且审核通过的课程。卡片中的 `redirect_url` 是唯一允许客户端打开的课程地址；不要从回答正文、Dify 文档或 `official_url` 推导链接。每轮最多 5 门，路线卡片严格按当前阶段、下一阶段顺序返回。
+
+`course_recommendation_note` 是可选的简短匹配理由，只能基于用户已确认目标、当前问题、阶段和课程真实介绍。课程级 `expert_insight` 已停用，不是当前 SSE 契约，客户端无需等待或渲染该事件。
+
+## AI 管理端文件清洗
 
 ```http
-GET  /internal/v1/knowledge/cleaning-strategies
-POST /internal/v1/knowledge/cleaning-batches
-GET  /internal/v1/knowledge/cleaning-batches/{batch_id}
-POST /internal/v1/knowledge/cleaning-batches/{batch_id}/files/{file_id}/retry
+GET  /internal/v1/admin/knowledge-bases/{kb_code}/cleaning-strategies
+POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches
+GET  /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}
+POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/retry
 ```
+
+以上接口还要求 `X-Admin-Token`；`kb_code` 只能为 `general` 或 `course`。课程信息和学习路线必须上传至 `course`，并分别选择 `course_information`、`learning_route` 策略。完整条目查询、复核、启停和删除接口以 [小程序后端与 AI 管理服务接口对接标准](小程序后端与AI管理服务接口对接标准.md) 为准。
 
 上传为 `multipart/form-data`：
 
 ```text
-strategy_code=test_markdown
-knowledge_base_code=general
+strategy_code=course_information
 common_metadata={"document_type":"test"}
 files=<多个文件>
 ```
 
-目标知识库代码只能是 `general` 或 `course`，不能传任意 Dataset ID。
+课程上传成功的最终条件不是 HTTP 200，而是批次和所有条目完成、Dify 索引/Metadata 回读成功、数据库目录已写入、Redis 有效快照已重建。
 
 ## 统一错误
 

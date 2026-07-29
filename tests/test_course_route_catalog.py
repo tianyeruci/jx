@@ -13,6 +13,7 @@ from ai_management.course_import import (
     load_route_records_text,
     sync_cleaning_catalog_record,
 )
+from ai_management.cache import Cache
 from ai_management.courses import (
     get_snapshot,
     infer_recommendation_decision,
@@ -21,6 +22,7 @@ from ai_management.courses import (
 )
 from ai_management.models import Course, LearningRoute
 from ai_management.schemas import RecommendationDecision
+from ai_management.services.admin_settings import bump_catalog_revision
 from ai_management.workers.tasks.cleaning import _course_document_publish_order
 
 
@@ -217,6 +219,7 @@ def test_latest_catalog_query_uses_structured_fields_and_excludes_inactive(servi
         assert decision.answer_plan == "按首次发布时间最新"
         result = validate_recommendation(session, decision, user_hash="u", query="增长系列最新课程")
         assert [item["course_id"] for item in result["course_cards"]] == ["new", "old"]
+        assert "expert_insight" not in result
         overall = infer_recommendation_decision(session, query="最新课程")
         assert overall and overall.candidate_course_ids[0] == "fallback"
         assert overall.answer_plan == "按当前目录收录时间最新"
@@ -265,8 +268,72 @@ def test_route_cards_require_stage_confirmation_and_keep_route_order(service_db)
         )
         active = validate_recommendation(session, confirmed, user_hash="u", query="我确认目前在第一阶段")
         assert [item["course_id"] for item in active["course_cards"]] == ["c1", "c2", "c3", "c4", "c5"]
+        assert "expert_insight" not in active
         assert active["learning_route"]["current_stage_id"] == "s1"
         assert active["learning_route"]["next_stage_id"] == "s2"
+
+
+def test_snapshot_recovery_syncs_memory_snapshot_before_reading_old_redis_value():
+    class OfflineRedis:
+        def pipeline(self):
+            raise ConnectionError("offline")
+
+    class Pipeline:
+        def __init__(self, store):
+            self.store = store
+            self.operations = []
+
+        def set(self, key, value, **_kwargs):
+            self.operations.append(("set", key, value))
+            return self
+
+        def rename(self, source, target):
+            self.operations.append(("rename", source, target))
+            return self
+
+        def execute(self):
+            for operation, first, second in self.operations:
+                if operation == "set":
+                    self.store[first] = second
+                else:
+                    self.store[second] = self.store.pop(first)
+
+    class OnlineRedis:
+        def __init__(self):
+            self.store = {"ai:course:snapshot": '{"courses":{"stale":{}},"routes":{}}'}
+
+        def pipeline(self):
+            return Pipeline(self.store)
+
+        def get(self, key):
+            return self.store.get(key)
+
+    local_cache = Cache()
+    local_cache._client = OfflineRedis()
+    fresh = {"courses": {"fresh": {"course_id": "fresh"}}, "routes": {}}
+    local_cache.atomic_json_swap("ai:course:snapshot", fresh)
+    assert local_cache.get_json("ai:course:snapshot") == fresh
+
+    recovered = OnlineRedis()
+    local_cache._client = recovered
+    assert local_cache.get_json("ai:course:snapshot") == fresh
+    assert "fresh" in recovered.store["ai:course:snapshot"]
+    assert "stale" not in recovered.store["ai:course:snapshot"]
+
+
+def test_snapshot_rebuilds_when_db_catalog_revision_changes(service_db):
+    with service_db() as session:
+        session.add(_course("base"))
+        session.commit()
+        first = rebuild_snapshot(session)
+        assert first["catalog_revision"] == 0
+
+        session.add(_course("new"))
+        bump_catalog_revision(session)
+        session.commit()
+        current = get_snapshot(session)
+        assert current["catalog_revision"] == 1
+        assert set(current["courses"]) == {"base", "new"}
 
 
 def test_course_retrieval_nodes_filter_active_dify_metadata():

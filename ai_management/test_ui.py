@@ -72,7 +72,7 @@ def consume_sse(response: httpx.Response, placeholder: Any) -> dict[str, Any]:
             "error",
             "course_cards",
             "learning_route",
-            "expert_insight",
+            "course_recommendation_note",
             "retriever_resources",
         }:
             diagnostics[event_name] = payload
@@ -258,27 +258,48 @@ def tool_tab(user_id: str, kind: str) -> None:
 
 def course_tab(user_id: str) -> None:
     st.subheader("课程与路线测试")
+    if "course_test_conversation_id" not in st.session_state:
+        st.session_state["course_test_conversation_id"] = ""
     if st.button("读取当前已发布目录"):
         st.json(api_json("GET", "/internal/v1/admin/catalog", admin=True))
-    st.caption("以下问题通过商业顾问真实链路执行，卡片必须来自服务端校验结果。")
+    st.caption("以下问题通过商业顾问真实链路执行；路线确认和阶段确认必须复用同一本地会话。")
     questions = [
         "AI工具入门课程主要解决什么问题？",
         "我想从零学习公众号运营，有审核后的路线吗？",
+        "我确认选择刚才推荐的学习路线。",
+        "我确认我目前在入门阶段。",
+        "请推荐最新课程。",
         "请推荐不存在的量子计算工程师认证课程。",
         "请给我停用的旧版AI速成课报名链接。",
     ]
     selected = st.selectbox("典型问题", questions)
+    query = st.text_area("本轮问题", value=selected, key="course_test_query")
+    reuse_conversation = st.checkbox("复用上次课程测试会话", value=True)
+    if st.session_state["course_test_conversation_id"]:
+        st.caption(f"当前课程测试会话：{st.session_state['course_test_conversation_id']}")
+    if st.button("新建课程测试会话"):
+        st.session_state["course_test_conversation_id"] = ""
+        st.rerun()
     if st.button("执行课程推荐测试"):
         output = st.empty()
         try:
-            st.json(
-                stream_post(
-                    "/internal/v1/business/chat",
-                    {"query": selected, "conversation_id": None},
-                    user_id,
-                    output,
-                )
+            result = stream_post(
+                "/internal/v1/business/chat",
+                {
+                    "query": query,
+                    "conversation_id": (
+                        st.session_state["course_test_conversation_id"]
+                        if reuse_conversation
+                        else None
+                    ),
+                },
+                user_id,
+                output,
             )
+            message_end = result.get("message_end") or {}
+            if isinstance(message_end, dict) and message_end.get("conversation_id"):
+                st.session_state["course_test_conversation_id"] = str(message_end["conversation_id"])
+            st.json(result)
         except httpx.HTTPError as exc:
             st.error(str(exc))
 

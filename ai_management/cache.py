@@ -21,6 +21,10 @@ class Cache:
         self._client = None
         self._memory: dict[str, tuple[float | None, Any]] = {}
         self._memory_lock = threading.RLock()
+        # A failed atomic swap may leave Redis with an older snapshot while
+        # this process has a newer DB-derived memory copy.  Never let a later
+        # Redis recovery silently resurrect that older value.
+        self._pending_redis_sync: set[str] = set()
 
     @property
     def client(self):
@@ -35,6 +39,28 @@ class Cache:
             return False
 
     def get_json(self, key: str) -> Any | None:
+        with self._memory_lock:
+            pending = key in self._pending_redis_sync
+            memory_item = self._memory.get(key)
+            if memory_item and memory_item[0] and memory_item[0] <= time.time():
+                self._memory.pop(key, None)
+                memory_item = None
+        if pending and memory_item is not None:
+            _, memory_value = memory_item
+            temporary = f"{key}:tmp:{uuid.uuid4().hex}"
+            encoded, _normalized = _encode_json_value(memory_value)
+            try:
+                if self.client:
+                    pipe = self.client.pipeline()
+                    pipe.set(temporary, encoded)
+                    pipe.rename(temporary, key)
+                    pipe.execute()
+                    with self._memory_lock:
+                        self._pending_redis_sync.discard(key)
+                    return memory_value
+            except Exception:
+                return memory_value
+            return memory_value
         try:
             if self.client:
                 value = self.client.get(key)
@@ -83,7 +109,12 @@ class Cache:
                 return
         except Exception:
             pass
-        self.set_json(key, value)
+        # Do not retry through set_json here: the cache may have recovered
+        # between calls and then accept an unrelated stale value first.  Keep
+        # the known DB-derived snapshot and sync it atomically on recovery.
+        with self._memory_lock:
+            self._memory[key] = (None, _normalized)
+            self._pending_redis_sync.add(key)
 
     @contextmanager
     def lock(self, key: str, ttl: int = 300) -> Iterator[bool]:

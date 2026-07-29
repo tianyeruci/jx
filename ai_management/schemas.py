@@ -136,5 +136,4 @@ class RecommendationDecision(BaseModel):
     missing_information: list[str] = Field(default_factory=list, max_length=2)
     clarification_question: str = ""
     answer_plan: str = ""
-    expert_insight: str = ""
     progress_action: dict[str, Any] = Field(default_factory=dict)

@@ -15,6 +15,7 @@ from knowledge_cleaner.dify import DifyKnowledgeClient
 
 from ...cache import cache
 from ...course_import import sync_cleaning_catalog_record
+from ...services.admin_settings import bump_catalog_revision
 from ...courses import rebuild_snapshot
 from ...cleaning import (
     ChunkingConfig,
@@ -367,6 +368,8 @@ def _publish_document(session, row: CleaningDocument, batch: CleaningBatch, file
         row.status = "succeeded"
         row.stage = "completed"
         row.retryable = False
+        if batch.strategy_code in {"course_information", "learning_route"}:
+            bump_catalog_revision(session)
         session.commit()
         if batch.strategy_code in {"course_information", "learning_route"}:
             # DB is authoritative.  Rebuild the effective cache only after its

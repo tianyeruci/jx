@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 from .cache import cache
 from .config import get_settings
 from .context import build_context, should_summarize
-from .courses import infer_recommendation_decision, validate_recommendation
+from .courses import create_redirect_token, get_snapshot, infer_recommendation_decision, validate_recommendation
 from .db import SessionLocal
 from .dify import DifyAppClient, extract_json_object
 from .errors import ServiceError
@@ -265,7 +265,6 @@ def prepare_business_chat(
     context.inputs.update(
         {
             "business_output_style": get_style_prompt(session, "business_answer"),
-            "expert_insight_style": get_style_prompt(session, "business_expert_insight"),
         }
     )
     conversation.last_active_at = datetime.now(timezone.utc)
@@ -502,8 +501,6 @@ def prepare_business_chat(
             yield emit("course_cards", {"items": recommendation["course_cards"]})
         if recommendation.get("recommendation_note"):
             yield emit("course_recommendation_note", {"content": recommendation["recommendation_note"]})
-        if recommendation.get("expert_insight"):
-            yield emit("expert_insight", {"content": recommendation["expert_insight"]})
         if error_to_emit:
             yield emit(
                 "error",
@@ -602,13 +599,36 @@ def list_conversation_messages(
     messages = list(session.scalars(statement.order_by(BusinessMessage.created_at.asc(), BusinessMessage.id.asc()).limit(limit + 1)))
     has_more = len(messages) > limit
     messages = messages[:limit]
+    snapshot = get_snapshot(session)
+
+    def _current_recommendation(value: dict[str, Any] | None) -> dict[str, Any]:
+        """Never return expired or now-disabled signed course links from history."""
+        recommendation = dict(value or {})
+        cards: list[dict[str, Any]] = []
+        for stored_card in recommendation.get("course_cards") or []:
+            if not isinstance(stored_card, dict):
+                continue
+            course_id = str(stored_card.get("course_id") or "")
+            course = (snapshot.get("courses") or {}).get(course_id)
+            if not isinstance(course, dict):
+                continue
+            card = {key: item for key, item in course.items() if key != "official_url"}
+            card["redirect_url"] = (
+                f"{get_settings().public_base_url.rstrip('/')}/r/"
+                f"{create_redirect_token(course_id, user_hash)}"
+            )
+            cards.append(card)
+        if "course_cards" in recommendation:
+            recommendation["course_cards"] = cards
+        return recommendation
+
     items = [
         {
             "message_id": row.id,
             "role": row.role,
             "content": row.content,
             "status": row.status,
-            "recommendation": row.recommendation,
+            "recommendation": _current_recommendation(row.recommendation),
             "retriever_resources": row.retriever_resources,
             "created_at": row.created_at,
         }

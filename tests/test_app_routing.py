@@ -76,11 +76,76 @@ def test_admin_routes_require_both_tokens(service_db) -> None:
     assert accepted.json() == {"courses": [], "routes": []}
 
 
+def test_catalog_document_disable_updates_authority_and_delete_is_blocked(service_db, monkeypatch) -> None:
+    from ai_management.api.routers import knowledge_admin
+    from ai_management.courses import get_snapshot
+    from ai_management.db import SessionLocal
+
+    class FakeKnowledgeClient:
+        def __init__(self) -> None:
+            self.disabled: list[str] = []
+
+        def enable_documents(self, _ids):
+            raise AssertionError("this test only disables")
+
+        def disable_documents(self, ids):
+            self.disabled.extend(ids)
+
+        def close(self):
+            pass
+
+    client = FakeKnowledgeClient()
+    monkeypatch.setattr(knowledge_admin, "_documents", lambda _kb: [{"id": "course-doc", "name": "目录课程"}])
+    monkeypatch.setattr(knowledge_admin, "_client", lambda _kb: client)
+    with service_db() as session:
+        session.add(
+            Course(
+                course_id="catalog-course",
+                name="目录课程",
+                direction="AI商业",
+                description="真实课程介绍",
+                official_url="https://example.com/catalog-course",
+                enabled=True,
+                review_status="approved",
+                dify_document_id="course-doc",
+            )
+        )
+        session.commit()
+    headers = {"X-Internal-Token": "test-internal-token", "X-Admin-Token": "test-admin-token"}
+    with TestClient(app) as test_client:
+        disabled = test_client.patch(
+            "/internal/v1/admin/knowledge-bases/course/documents/course-doc/status",
+            headers=headers,
+            json={"enabled": False},
+        )
+        deleted = test_client.request(
+            "DELETE",
+            "/internal/v1/admin/knowledge-bases/course/documents/course-doc",
+            headers=headers,
+            json={"confirm_name": "目录课程"},
+        )
+    assert disabled.status_code == 200
+    assert disabled.json()["catalog_record"] == {"record_type": "course", "record_id": "catalog-course"}
+    assert client.disabled == ["course-doc"]
+    assert deleted.status_code == 409
+    with SessionLocal() as session:
+        assert session.get(Course, "catalog-course").enabled is False
+        assert "catalog-course" not in get_snapshot(session)["courses"]
+
+
 def test_health_live_is_still_public(service_db) -> None:
     with TestClient(app) as client:
         response = client.get("/health/live")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_openapi_declares_sse_and_course_redirect_contracts() -> None:
+    schema = app.openapi()
+    chat = schema["paths"]["/internal/v1/business/chat"]["post"]["responses"]["200"]
+    redirect = schema["paths"]["/r/{token}"]["get"]["responses"]
+    assert "text/event-stream" in chat["content"]
+    assert "302" in redirect
 
 
 def test_course_clicks_are_filtered_paginated_and_merge_live_counts(service_db) -> None:

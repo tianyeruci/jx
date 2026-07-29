@@ -19,7 +19,7 @@ from ai_management.cleaning import (
 )
 from ai_management.config import get_settings
 from ai_management.context import build_context, should_summarize
-from ai_management.conversations import _decision_from_outputs
+from ai_management.conversations import _decision_from_outputs, list_conversation_messages
 from ai_management.course_import import catalog_summary, load_catalog
 from ai_management.courses import (
     create_redirect_token,
@@ -97,7 +97,6 @@ def test_business_chat_stream_and_history(service_db, monkeypatch):
             "profile_json",
             "route_progress_json",
             "business_output_style",
-            "expert_insight_style",
         }
         yield {"event": "workflow_started", "task_id": "task-001"}
         yield {
@@ -157,6 +156,43 @@ def test_business_chat_stream_and_history(service_db, monkeypatch):
         ).json()
         assert [item["role"] for item in messages["items"]] == ["user", "assistant"]
         assert messages["items"][1]["content"] == "这是测试回答。"
+
+
+def test_history_course_cards_are_re_signed_from_current_catalog(service_db):
+    with service_db() as session:
+        course = Course(
+            course_id="history-course",
+            name="历史课程",
+            direction="AI商业",
+            description="当前课程介绍",
+            official_url="https://example.com/history-course",
+            enabled=True,
+            review_status="approved",
+        )
+        conversation = BusinessConversation(user_hash="history-user", title="历史")
+        session.add_all([course, conversation])
+        session.flush()
+        session.add(
+            BusinessMessage(
+                conversation_id=conversation.id,
+                role="assistant",
+                content="旧回答",
+                status="completed",
+                recommendation={
+                    "course_cards": [
+                        {
+                            "course_id": "history-course",
+                            "redirect_url": "http://old.example/r/expired",
+                        }
+                    ]
+                },
+            )
+        )
+        session.commit()
+        payload = list_conversation_messages(session, "history-user", conversation.id)
+    card = payload["items"][0]["recommendation"]["course_cards"][0]
+    assert card["redirect_url"] != "http://old.example/r/expired"
+    assert parse_redirect_token(card["redirect_url"].rsplit("/", 1)[-1])["course_id"] == "history-course"
 
 
 def _seed_catalog(session):

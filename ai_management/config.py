@@ -36,7 +36,9 @@ class Settings(BaseSettings):
     dify_course_dataset_id: str = ""
 
     history_retention_days: int = Field(default=7, ge=1, le=365)
-    # The maintenance schedule is a product decision, not a runtime knob.
+    # The catalogue refresh time is a product decision, not a deployment
+    # preference.  Keeping it literal prevents an unnoticed environment
+    # override from moving the course snapshot away from 02:00 Asia/Shanghai.
     cleanup_hour: int = Field(default=2, ge=0, le=23)
     cleanup_minute: int = Field(default=0, ge=0, le=59)
     summary_user_turns: int = Field(default=6, ge=1, le=100)
@@ -71,6 +73,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_secrets(self) -> "Settings":
+        if (self.cleanup_hour, self.cleanup_minute) != (2, 0):
+            raise ValueError("课程目录夜间刷新必须为 Asia/Shanghai 02:00")
         if self.app_env != "production":
             return self
         missing: list[str] = []

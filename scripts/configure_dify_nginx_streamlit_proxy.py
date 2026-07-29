@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Idempotently add or remove the Streamlit include from Dify's Nginx server block."""
+"""Idempotently expose the test UI and signed course redirect through Dify Nginx."""
 
 from __future__ import annotations
 
@@ -7,10 +7,13 @@ import argparse
 from pathlib import Path
 
 
-BEGIN = "    # BEGIN ai-management-test proxy"
-INCLUDE = "    include /etc/nginx/conf.d/ai-management-test.location;"
-END = "    # END ai-management-test proxy"
-BLOCK = f"{BEGIN}\n{INCLUDE}\n{END}"
+BEGIN = "    # BEGIN ai-management public proxy"
+INCLUDES = (
+    "    include /etc/nginx/conf.d/ai-management-test.location;",
+    "    include /etc/nginx/conf.d/ai-management-public.location;",
+)
+END = "    # END ai-management public proxy"
+BLOCK = "\n".join((BEGIN, *INCLUDES, END))
 ANCHOR = "    # placeholder for acme challenge location"
 
 

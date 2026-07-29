@@ -267,6 +267,7 @@ def admin_catalog(session: Session = Depends(get_session)) -> dict[str, Any]:
                 "route_id": item.route_id,
                 "name": item.name,
                 "direction": item.direction,
+                "target": item.target,
                 "enabled": item.enabled,
                 "review_status": item.review_status,
                 "stages": item.stages,

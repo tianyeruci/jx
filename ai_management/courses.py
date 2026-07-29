@@ -17,6 +17,7 @@ from .config import get_settings
 from .errors import ServiceError
 from .models import Course, LearningRoute, LearningRouteProgress
 from .schemas import RecommendationDecision
+from .services.admin_settings import get_catalog_revision
 from .timeutil import business_today
 
 COURSE_SNAPSHOT_KEY = "ai:course:snapshot"
@@ -59,9 +60,9 @@ def _course_dict(course: Course) -> dict[str, Any]:
         **(course.optional_data or {}),
         "stage": course.stage or "",
         "source_platform": course.source_platform or "小鹅通",
-        "series_name": course.series_name or "",
-        "published_at": course.published_at.isoformat() if course.published_at else "",
-        "first_imported_at": course.first_imported_at.isoformat() if course.first_imported_at else "",
+        "series_name": course.series_name or None,
+        "published_at": course.published_at.isoformat() if course.published_at else None,
+        "first_imported_at": course.first_imported_at.isoformat() if course.first_imported_at else None,
         "prerequisite_course_ids": course.prerequisite_course_ids or [],
     }
 
@@ -110,6 +111,7 @@ def rebuild_snapshot(session: Session) -> dict[str, Any]:
         )
     ]
     snapshot = {
+        "catalog_revision": get_catalog_revision(session),
         "courses": {item.course_id: _course_dict(item) for item in courses},
         "routes": {item.route_id: _route_dict(item) for item in routes},
     }
@@ -127,7 +129,13 @@ def rebuild_snapshot(session: Session) -> dict[str, Any]:
 def get_snapshot(session: Session) -> dict[str, Any]:
     started = time.perf_counter()
     snapshot = cache.get_json(COURSE_SNAPSHOT_KEY)
-    if isinstance(snapshot, dict) and "courses" in snapshot and "routes" in snapshot:
+    revision = get_catalog_revision(session)
+    if (
+        isinstance(snapshot, dict)
+        and "courses" in snapshot
+        and "routes" in snapshot
+        and snapshot.get("catalog_revision") == revision
+    ):
         _SNAPSHOT_PARSE_SAMPLES_MS.append((time.perf_counter() - started) * 1000)
         del _SNAPSHOT_PARSE_SAMPLES_MS[:-100]
         return snapshot
@@ -524,9 +532,6 @@ def validate_recommendation(
         "intent": decision.intent,
         "course_cards": valid_courses,
         "learning_route": route,
-        # Kept as an empty compatibility field.  Course-level "expert
-        # insight" is not source material and must not be invented.
-        "expert_insight": "",
         "recommendation_note": decision.answer_plan if valid_courses else "",
         "progress_applied": progress_applied,
     }
