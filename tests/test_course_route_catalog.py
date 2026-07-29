@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -20,6 +21,7 @@ from ai_management.courses import (
 )
 from ai_management.models import Course, LearningRoute
 from ai_management.schemas import RecommendationDecision
+from ai_management.workers.tasks.cleaning import _course_document_publish_order
 
 
 def _course(course_id: str, *, name: str | None = None, stage: str = "入门", **values) -> Course:
@@ -98,6 +100,34 @@ prerequisite_course_ids: [course_base]
     source.write_text(source.read_text(encoding="utf-8").replace("course_base", "missing"), encoding="utf-8")
     with pytest.raises(ValueError, match="不存在的前置课程"):
         STRATEGY_REGISTRY["course_information"].clean(source, source.name)
+
+
+def test_course_upload_orders_same_file_prerequisites_before_dependents():
+    dependent = SimpleNamespace(
+        id="document-dependent",
+        sequence=1,
+        audit_json={
+            "catalog_record": {
+                "course_id": "course-dependent",
+                "prerequisite_course_ids": ["course-base"],
+            }
+        },
+    )
+    base = SimpleNamespace(
+        id="document-base",
+        sequence=2,
+        audit_json={
+            "catalog_record": {
+                "course_id": "course-base",
+                "prerequisite_course_ids": [],
+            }
+        },
+    )
+
+    assert _course_document_publish_order([dependent, base]) == [
+        "document-base",
+        "document-dependent",
+    ]
 
 
 def test_route_cleaning_resolves_only_known_unique_course_names(service_db, tmp_path):

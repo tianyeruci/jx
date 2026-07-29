@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from celery import chain
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -99,6 +100,62 @@ def _content_sha(markdown: str, metadata: dict[str, Any], chunking: dict[str, An
     return hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def _course_document_publish_order(documents: list[CleaningDocument]) -> list[str]:
+    """Order one uploaded course file so same-file prerequisites publish first.
+
+    Dify indexing is intentionally asynchronous, but database catalogue writes
+    must observe prerequisite records.  A Celery chain gives that ordering
+    without inventing a route or mutating the course content.  Invalid cycles
+    and unknown prerequisites retain their original order and are rejected by
+    the normal catalogue validation with a user-visible reason.
+    """
+
+    entries: dict[str, tuple[CleaningDocument, set[str]]] = {}
+    for document in sorted(documents, key=lambda item: item.sequence):
+        payload = (document.audit_json or {}).get("catalog_record")
+        course_id = payload.get("course_id") if isinstance(payload, dict) else ""
+        if not isinstance(course_id, str) or not course_id or course_id in entries:
+            continue
+        prerequisites = payload.get("prerequisite_course_ids", [])
+        entries[course_id] = (
+            document,
+            {str(item) for item in prerequisites if str(item).strip()},
+        )
+
+    unresolved = set(entries)
+    ordered_ids: list[str] = []
+    while unresolved:
+        ready = sorted(
+            (
+                course_id
+                for course_id in unresolved
+                if not (entries[course_id][1] & unresolved)
+            ),
+            key=lambda course_id: entries[course_id][0].sequence,
+        )
+        if not ready:
+            # Leave invalid dependency graphs to the existing strict validator.
+            ordered_ids.extend(
+                entries[course_id][0].id
+                for course_id in sorted(unresolved, key=lambda item: entries[item][0].sequence)
+            )
+            break
+        for course_id in ready:
+            unresolved.remove(course_id)
+            ordered_ids.append(entries[course_id][0].id)
+
+    known_ids = {document.id for document in documents}
+    ordered_set = set(ordered_ids)
+    # Documents without a usable catalogue record still go through the normal
+    # failure path after the well-formed records, preserving source order.
+    ordered_ids.extend(
+        document.id
+        for document in sorted(documents, key=lambda item: item.sequence)
+        if document.id in known_ids and document.id not in ordered_set
+    )
+    return ordered_ids
 
 
 def _finish_batch(session, batch_id: str) -> None:
@@ -445,16 +502,28 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 session.add(item)
             session.commit()
 
-            pending_items = list(
+            pending_documents = list(
                 session.scalars(
-                    select(CleaningDocument.id).where(
+                    select(CleaningDocument)
+                    .where(
                         CleaningDocument.file_id == row.id,
                         CleaningDocument.status == "pending",
                     )
+                    .order_by(CleaningDocument.sequence)
                 )
             )
-            for item_id in pending_items:
-                process_cleaning_document.apply_async(args=[item_id], queue="ai_cleaning")
+            if batch.strategy_code == "course_information":
+                ordered_ids = _course_document_publish_order(pending_documents)
+                if ordered_ids:
+                    chain(
+                        *(
+                            process_cleaning_document.si(item_id).set(queue="ai_cleaning")
+                            for item_id in ordered_ids
+                        )
+                    ).apply_async()
+            else:
+                for item in pending_documents:
+                    process_cleaning_document.apply_async(args=[item.id], queue="ai_cleaning")
             _refresh_file_state(session, row.id, commit=False)
             _finish_batch(session, row.batch_id)
             session.commit()
