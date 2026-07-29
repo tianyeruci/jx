@@ -48,6 +48,81 @@ _FRAGMENT_STOPWORDS = {
 }
 
 
+def _explicit_stage_confirmation(query: str, stage: dict[str, Any]) -> bool:
+    """Return true only for a user's explicit confirmation of a known stage.
+
+    A later turn such as "我确认我目前在入门阶段" often has no useful
+    retrieval result of its own.  It must nevertheless be actionable when the
+    same user already selected exactly one official route.  Do not infer a
+    stage merely because a name happens to occur: require a confirmation/state
+    phrase and an exact published stage name or ID.
+    """
+
+    normalized = _normalize_text(query)
+    if not normalized:
+        return False
+    has_confirmation = any(
+        token in normalized
+        for token in ("确认", "目前在", "现在在", "我在", "处于", "当前是")
+    )
+    if not has_confirmation:
+        return False
+    stage_id = _normalize_text(str(stage.get("stage_id") or ""))
+    stage_name = _normalize_text(str(stage.get("name") or ""))
+    return bool((stage_id and stage_id in normalized) or (stage_name and stage_name in normalized))
+
+
+def _progress_confirmation_decision(
+    session: Session,
+    *,
+    user_hash: str,
+    query: str,
+) -> RecommendationDecision | None:
+    """Recover an explicit route-progress action without trusting an LLM.
+
+    Dify is still used to answer the question.  This narrow recovery is only
+    for a route already selected by the same user.  It avoids losing a valid
+    stage confirmation just because the short follow-up did not retrieve the
+    route document again.  Ambiguous matches deliberately return ``None``.
+    """
+
+    snapshot = get_snapshot(session)
+    progresses = list(
+        session.scalars(
+            select(LearningRouteProgress).where(
+                LearningRouteProgress.user_hash == user_hash,
+                LearningRouteProgress.status.in_(("pending_stage", "active")),
+            )
+        )
+    )
+    matches: list[tuple[LearningRouteProgress, dict[str, Any], dict[str, Any]]] = []
+    for progress in progresses:
+        route = snapshot["routes"].get(progress.route_id)
+        if not route:
+            continue
+        for stage in _sorted_route_stages(route):
+            if _explicit_stage_confirmation(query, stage):
+                matches.append((progress, route, stage))
+
+    if len(matches) != 1:
+        return None
+    progress, route, stage = matches[0]
+    if progress.status != "pending_stage":
+        # Selecting a stage is valid only before progress has begun.  An active
+        # learner must explicitly complete or skip the current stage instead.
+        return None
+    return RecommendationDecision(
+        intent="route_recommendation",
+        candidate_route_id=str(route["route_id"]),
+        progress_action={
+            "type": "confirm_current_stage",
+            "route_id": str(route["route_id"]),
+            "stage_id": str(stage["stage_id"]),
+            "evidence_quote": query,
+        },
+    )
+
+
 def _course_dict(course: Course) -> dict[str, Any]:
     return {
         "course_id": course.course_id,
@@ -380,6 +455,19 @@ def validate_recommendation(
     user_hash: str,
     query: str,
 ) -> dict[str, Any]:
+    # A confirmed route is durable state in the authoritative database.  A
+    # terse follow-up that explicitly names the learner's stage must not fail
+    # merely because the workflow did not retrieve that route document again.
+    # The recovery is intentionally narrower than recommendation inference and
+    # accepts only one unambiguous, already-selected official route.
+    progress_decision = _progress_confirmation_decision(
+        session,
+        user_hash=user_hash,
+        query=query,
+    )
+    if progress_decision is not None:
+        decision = progress_decision
+
     snapshot = get_snapshot(session)
     courses = snapshot["courses"]
     routes = snapshot["routes"]

@@ -273,6 +273,53 @@ def test_route_cards_require_stage_confirmation_and_keep_route_order(service_db)
         assert active["learning_route"]["next_stage_id"] == "s2"
 
 
+def test_explicit_stage_confirmation_recovers_selected_route_when_dify_has_no_route(service_db):
+    """A short follow-up must use durable route state, not a fresh retrieval hit."""
+
+    with service_db() as session:
+        session.add_all([_course("c1"), _course("c2")])
+        session.add(
+            LearningRoute(
+                route_id="route_pending_stage",
+                name="待确认路线",
+                direction="AI商业",
+                target="测试",
+                stages=[
+                    {"stage_id": "intro", "name": "入门", "order": 1, "course_ids": ["c1"]},
+                    {"stage_id": "advanced", "name": "进阶", "order": 2, "course_ids": ["c2"]},
+                ],
+            )
+        )
+        session.commit()
+        rebuild_snapshot(session)
+        validate_recommendation(
+            session,
+            RecommendationDecision(
+                intent="route_recommendation",
+                candidate_route_id="route_pending_stage",
+                progress_action={
+                    "type": "confirm_route",
+                    "route_id": "route_pending_stage",
+                    "evidence_quote": "我确认选择这条路线",
+                },
+            ),
+            user_hash="u",
+            query="我确认选择这条路线",
+        )
+
+        # Simulate the exact failure observed on the test page: the workflow
+        # answers a short stage-confirmation follow-up but emits no route ID.
+        recovered = validate_recommendation(
+            session,
+            RecommendationDecision(intent="general_qa"),
+            user_hash="u",
+            query="我确认我目前在入门阶段",
+        )
+        assert [item["course_id"] for item in recovered["course_cards"]] == ["c1", "c2"]
+        assert recovered["learning_route"]["current_stage_id"] == "intro"
+        assert recovered["learning_route"]["state"] == "active"
+
+
 def test_snapshot_recovery_syncs_memory_snapshot_before_reading_old_redis_value():
     class OfflineRedis:
         def pipeline(self):
@@ -348,3 +395,6 @@ def test_course_retrieval_nodes_filter_active_dify_metadata():
             "logical_operator": "and",
             "conditions": [{"name": "status", "comparison_operator": "is", "value": "active"}],
         }
+    assert "expert_insight" not in open(
+        "dify/dsl/business_advisor.yml", encoding="utf-8"
+    ).read()
