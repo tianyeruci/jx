@@ -20,7 +20,7 @@ from ai_management.courses import (
     rebuild_snapshot,
     validate_recommendation,
 )
-from ai_management.models import Course, LearningRoute
+from ai_management.models import Course, LearningRoute, LearningRouteProgress
 from ai_management.schemas import RecommendationDecision
 from ai_management.services.admin_settings import bump_catalog_revision
 from ai_management.workers.tasks.cleaning import _course_document_publish_order
@@ -318,6 +318,46 @@ def test_explicit_stage_confirmation_recovers_selected_route_when_dify_has_no_ro
         assert [item["course_id"] for item in recovered["course_cards"]] == ["c1", "c2"]
         assert recovered["learning_route"]["current_stage_id"] == "intro"
         assert recovered["learning_route"]["state"] == "active"
+
+
+def test_route_availability_question_cannot_be_treated_as_route_confirmation(service_db):
+    with service_db() as session:
+        session.add(_course("c1"))
+        session.add(
+            LearningRoute(
+                route_id="route_requires_confirmation",
+                name="需确认路线",
+                direction="AI商业",
+                target="测试",
+                stages=[
+                    {"stage_id": "intro", "name": "入门", "order": 1, "course_ids": ["c1"]},
+                ],
+            )
+        )
+        session.commit()
+        rebuild_snapshot(session)
+
+        # Dify may return an over-eager action.  The service must reject it
+        # because the user is only asking whether a route exists.
+        result = validate_recommendation(
+            session,
+            RecommendationDecision(
+                intent="route_recommendation",
+                candidate_route_id="route_requires_confirmation",
+                progress_action={
+                    "type": "confirm_route",
+                    "route_id": "route_requires_confirmation",
+                    "evidence_quote": "有审核后的学习路线吗",
+                },
+            ),
+            user_hash="u",
+            query="有审核后的学习路线吗？",
+        )
+        assert result["course_cards"] == []
+        assert result["learning_route"]["state"] == "awaiting_route_confirmation"
+        assert session.scalar(
+            select(LearningRouteProgress).where(LearningRouteProgress.user_hash == "u")
+        ) is None
 
 
 def test_snapshot_recovery_syncs_memory_snapshot_before_reading_old_redis_value():

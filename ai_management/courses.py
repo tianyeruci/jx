@@ -48,6 +48,26 @@ _FRAGMENT_STOPWORDS = {
 }
 
 
+def _explicit_route_confirmation(query: str) -> bool:
+    """Accept only an affirmative route-selection statement, never a question."""
+
+    normalized = _normalize_text(query)
+    if not normalized or "吗" in query or "？" in query or "?" in query:
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "我确认选择",
+            "确认选择",
+            "我选择",
+            "我选",
+            "决定选择",
+            "采用这条",
+            "开始这条",
+        )
+    )
+
+
 def _explicit_stage_confirmation(query: str, stage: dict[str, Any]) -> bool:
     """Return true only for a user's explicit confirmation of a known stage.
 
@@ -59,7 +79,7 @@ def _explicit_stage_confirmation(query: str, stage: dict[str, Any]) -> bool:
     """
 
     normalized = _normalize_text(query)
-    if not normalized:
+    if not normalized or "吗" in query or "？" in query or "?" in query:
         return False
     has_confirmation = any(
         token in normalized
@@ -516,7 +536,8 @@ def validate_recommendation(
         )
     if route and evidence and evidence in query and action.get("route_id") == route.get("route_id"):
         stages = sorted(route.get("stages", []), key=lambda item: item.get("order", 0))
-        if action.get("type") == "confirm_route" and stages:
+        action_type = str(action.get("type") or "")
+        if action_type == "confirm_route" and stages and _explicit_route_confirmation(query):
             if progress is None:
                 progress = LearningRouteProgress(
                     user_hash=user_hash,
@@ -530,14 +551,22 @@ def validate_recommendation(
                 progress.status = "pending_stage"
             progress.confirmed_at = datetime.now(timezone.utc)
             progress_applied = True
-        elif action.get("type") == "confirm_current_stage" and progress:
+        elif action_type == "confirm_current_stage" and progress:
             confirmed_stage_id = str(action.get("stage_id") or "")
-            if any(stage.get("stage_id") == confirmed_stage_id for stage in stages):
+            stage = next(
+                (item for item in stages if item.get("stage_id") == confirmed_stage_id),
+                None,
+            )
+            if stage and _explicit_stage_confirmation(query, stage):
                 progress.current_stage_id = confirmed_stage_id
                 progress.status = "active"
                 progress.confirmed_at = datetime.now(timezone.utc)
                 progress_applied = True
-        elif action.get("type") == "confirm_stage_completed" and progress:
+        elif action_type == "confirm_stage_completed" and progress:
+            completion_confirmation = any(
+                marker in _normalize_text(query)
+                for marker in ("已完成", "完成了", "我完成", "跳过", "略过")
+            ) and "吗" not in query and "？" not in query and "?" not in query
             current_index = next(
                 (
                     index
@@ -547,7 +576,7 @@ def validate_recommendation(
                 ),
                 -1,
             )
-            if current_index >= 0:
+            if completion_confirmation and current_index >= 0:
                 if current_index + 1 < len(stages):
                     progress.current_stage_id = stages[current_index + 1]["stage_id"]
                     progress.status = "active"
