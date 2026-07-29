@@ -53,18 +53,21 @@ def admin_conversations(
             select(BusinessProfile).where(BusinessProfile.user_hash.in_([row.user_hash for row in rows]))
         )
     } if rows else {}
-    return {"items": [
-        {
-            "conversation_id": row.id,
-            "user_hash": row.user_hash,
-            "user_name": profile_names.get(row.user_hash, ""),
-            "title": row.title,
-            "summary": row.summary,
-            "summary_gap": row.summary_gap,
-            "last_active_at": row.last_active_at,
-        }
-        for row in rows
-    ]}
+    return {
+        "items": [
+            {
+                "conversation_id": row.id,
+                "user_hash": row.user_hash,
+                "user_name": profile_names.get(row.user_hash, ""),
+                "title": row.title,
+                "summary": row.summary,
+                "summary_gap": row.summary_gap,
+                "last_active_at": row.last_active_at,
+            }
+            for row in rows
+        ],
+        "next_cursor": None,
+    }
 
 
 @router.get("/conversations/{conversation_id}")

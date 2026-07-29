@@ -60,6 +60,11 @@ def consume_sse(response: httpx.Response, placeholder: Any) -> dict[str, Any]:
         if event_name == "answer_delta":
             answer += str(payload.get("delta", payload.get("text", "")))
             placeholder.markdown(answer)
+        elif event_name == "status":
+            diagnostics.setdefault("status_events", []).append(payload)
+            diagnostics["status"] = payload
+            if isinstance(payload, dict) and payload.get("task_id") and not diagnostics.get("task_id"):
+                diagnostics["task_id"] = payload.get("task_id")
         elif event_name in {
             "request_started",
             "message_end",
@@ -70,6 +75,8 @@ def consume_sse(response: httpx.Response, placeholder: Any) -> dict[str, Any]:
             "retriever_resources",
         }:
             diagnostics[event_name] = payload
+            if event_name == "message_end" and isinstance(payload, dict) and payload.get("task_id") and not diagnostics.get("task_id"):
+                diagnostics["task_id"] = payload.get("task_id")
 
     for line in response.iter_lines():
         if line.startswith("event:"):
@@ -103,6 +110,8 @@ def stream_post(
 
 def business_tab(user_id: str) -> None:
     st.subheader("商业顾问")
+    if "business_stop_task_id" not in st.session_state:
+        st.session_state["business_stop_task_id"] = ""
     col1, col2 = st.columns([2, 3])
     with col1:
         if st.button("刷新历史会话"):
@@ -162,9 +171,14 @@ def business_tab(user_id: str) -> None:
                     (time.perf_counter() - started) * 1000, 1
                 )
                 st.session_state["last_business_result"] = result
+                if result.get("task_id"):
+                    st.session_state["last_business_task_id"] = result["task_id"]
+                    st.session_state["business_stop_task_id"] = result["task_id"]
             except httpx.HTTPError as exc:
                 st.error(str(exc))
         if result := st.session_state.get("last_business_result"):
+            if result.get("task_id"):
+                st.caption(f"最近任务 ID：{result['task_id']}")
             with st.expander("课程、引用和诊断", expanded=True):
                 st.json(result)
             message_id = (
@@ -186,7 +200,7 @@ def business_tab(user_id: str) -> None:
                             json={"rating": feedback, "content": reason},
                         )
                     )
-        task_to_stop = st.text_input("要停止的商业任务 ID")
+        task_to_stop = st.text_input("要停止的商业任务 ID", key="business_stop_task_id")
         if st.button("停止商业任务") and task_to_stop:
             st.json(
                 api_json(
@@ -200,6 +214,9 @@ def business_tab(user_id: str) -> None:
 def tool_tab(user_id: str, kind: str) -> None:
     labels = {"moments": "朋友圈顾问", "writing": "日常写作"}
     st.subheader(labels[kind])
+    stop_key = f"{kind}_stop_id"
+    if stop_key not in st.session_state:
+        st.session_state[stop_key] = ""
     prompt = st.text_area(
         "输入",
         "请帮我写一段介绍本周学习收获的内容。",
@@ -218,10 +235,16 @@ def tool_tab(user_id: str, kind: str) -> None:
             result["client_elapsed_ms"] = round(
                 (time.perf_counter() - started) * 1000, 1
             )
+            if result.get("task_id"):
+                st.session_state[f"{kind}_last_task_id"] = result["task_id"]
+                st.session_state[stop_key] = result["task_id"]
             st.json(result)
         except httpx.HTTPError as exc:
             st.error(str(exc))
-    task_to_stop = st.text_input("要停止的任务 ID", key=f"{kind}_stop_id")
+    last_task_id = st.session_state.get(f"{kind}_last_task_id")
+    if last_task_id:
+        st.caption(f"最近任务 ID：{last_task_id}")
+    task_to_stop = st.text_input("要停止的任务 ID", key=stop_key)
     if st.button("停止任务", key=f"{kind}_stop") and task_to_stop:
         st.json(
             api_json(

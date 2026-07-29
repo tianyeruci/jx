@@ -849,3 +849,11 @@ Dify 父子上传需要同时提供 `segmentation`、`parent_mode` 和 `subchunk
   - `replace_and_approve` 后条目成功入库，远端父块 / 子块数为 `1/1`；
   - `exclude` 后文件终态为 `excluded`，批次 `all_processed_without_error=true`；
   - 验收产生的临时知识库文档已删除。
+
+2026-07-29 r8 增量验收结果：
+
+- 服务器核心 / UI 均已更新为 `0.2.1-cleaning-27a8bc0-r8`，清洗 Metadata 的 `build_version` 已同步为 r8。
+- 本地 `tests` 全量回归 `58 passed`；交接标准真实接口契约 `49/49` 通过；测试页真实用户操作 `15/15` 通过。
+- 知识星球真实样本 `【3 个简单粗暴的成长建议 08】.md` 经 `zsxq_post` 策略完成上传、清洗、Dify 入库，验证父块 `3`、子块 `11`、父子分隔符、Metadata、启停和确认名称删除。
+- 管理会话列表与知识库文档列表已实际返回文档约定的 `next_cursor`；清洗文档列表可回读 `source_filename`、`source_sha256`。
+- 详细证据见 `docs/测试页与接口全量实测记录-2026-07-29.md` 与 `docs/小程序后端与AI管理服务接口对接标准.md`。

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 from .cache import cache
 from .config import get_settings
 from .context import build_context, should_summarize
-from .courses import validate_recommendation
+from .courses import infer_recommendation_decision, validate_recommendation
 from .db import SessionLocal
 from .dify import DifyAppClient, extract_json_object
 from .errors import ServiceError
@@ -139,6 +139,25 @@ def _persist_business_result(
                 user_hash=user_hash,
                 query=query,
             )
+        if (
+            final_status != "failed"
+            and not recommendation.get("course_cards")
+            and not recommendation.get("learning_route")
+        ):
+            fallback_decision = infer_recommendation_decision(
+                work_session,
+                query=query,
+                decision=decision,
+            )
+            if fallback_decision is not None:
+                fallback_recommendation = validate_recommendation(
+                    work_session,
+                    fallback_decision,
+                    user_hash=user_hash,
+                    query=query,
+                )
+                if fallback_recommendation.get("course_cards") or fallback_recommendation.get("learning_route"):
+                    recommendation = fallback_recommendation
         assistant_db.content = "".join(answer_parts)
         assistant_db.status = final_status
         assistant_db.dify_task_id = dify_task_id or None

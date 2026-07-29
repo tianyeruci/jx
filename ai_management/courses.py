@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -19,6 +20,30 @@ from .schemas import RecommendationDecision
 from .timeutil import business_today
 
 COURSE_SNAPSHOT_KEY = "ai:course:snapshot"
+_ROUTE_HINTS = (
+    "学习路线",
+    "学习路径",
+    "路线",
+    "系统学习",
+    "从哪里开始",
+    "怎么开始",
+    "先学",
+    "按什么顺序",
+)
+_COURSE_HINTS = ("课程", "学习", "入门", "推荐", "从零")
+_FRAGMENT_STOPWORDS = {
+    "学习",
+    "系统",
+    "课程",
+    "路线",
+    "推荐",
+    "开始",
+    "哪里",
+    "什么",
+    "怎么",
+    "从零",
+    "相关",
+}
 
 
 def _course_dict(course: Course) -> dict[str, Any]:
@@ -60,6 +85,156 @@ def get_snapshot(session: Session) -> dict[str, Any]:
     if isinstance(snapshot, dict) and "courses" in snapshot and "routes" in snapshot:
         return snapshot
     return rebuild_snapshot(session)
+
+
+def _normalize_text(value: str) -> str:
+    return re.sub(r"[\W_]+", "", value or "").lower()
+
+
+def _text_fragments(value: str) -> list[str]:
+    normalized = _normalize_text(value)
+    if len(normalized) < 2:
+        return []
+    fragments: set[str] = {normalized}
+    upper = min(len(normalized), 8)
+    for size in range(upper, 1, -1):
+        for start in range(0, len(normalized) - size + 1):
+            fragment = normalized[start : start + size]
+            if fragment in _FRAGMENT_STOPWORDS:
+                continue
+            if len(fragment) == 2 and not fragment.isascii():
+                continue
+            fragments.add(fragment)
+    return sorted(fragments, key=len, reverse=True)
+
+
+def _score_query_match(query: str, *texts: str) -> int:
+    query_text = _normalize_text(query)
+    if not query_text:
+        return 0
+    score = 0
+    matched: set[str] = set()
+    for text in texts:
+        normalized = _normalize_text(text)
+        if not normalized:
+            continue
+        if normalized in query_text:
+            score += max(8, len(normalized) * 3)
+            matched.add(normalized)
+        for fragment in _text_fragments(normalized):
+            if fragment in matched or fragment not in query_text:
+                continue
+            if len(fragment) >= 4 or fragment.isascii():
+                score += len(fragment) * 2
+                matched.add(fragment)
+            if len(matched) >= 5:
+                break
+    return score
+
+
+def _sorted_route_stages(route: dict[str, Any]) -> list[dict[str, Any]]:
+    return sorted(route.get("stages", []), key=lambda item: item.get("order", 0))
+
+
+def _first_stage_course_ids(route: dict[str, Any]) -> list[str]:
+    stages = _sorted_route_stages(route)
+    if not stages:
+        return []
+    return list(dict.fromkeys(stages[0].get("course_ids", [])))
+
+
+def infer_recommendation_decision(
+    session: Session,
+    *,
+    query: str,
+    decision: RecommendationDecision | None = None,
+) -> RecommendationDecision | None:
+    snapshot = get_snapshot(session)
+    courses = snapshot["courses"]
+    routes = snapshot["routes"]
+    route_like = any(hint in query for hint in _ROUTE_HINTS) or ("系统" in query and "学习" in query)
+    course_like = any(hint in query for hint in _COURSE_HINTS)
+
+    approved_courses = {
+        course_id: item
+        for course_id, item in courses.items()
+        if item.get("enabled") and item.get("review_status") == "approved"
+    }
+    approved_routes = {
+        route_id: item
+        for route_id, item in routes.items()
+        if item.get("enabled") and item.get("review_status") == "approved"
+    }
+    candidate_course_ids = [
+        course_id
+        for course_id in (decision.candidate_course_ids if decision else [])
+        if course_id in approved_courses
+    ]
+
+    route_scores: list[tuple[int, str]] = []
+    for route_id, route in approved_routes.items():
+        course_ids = [
+            course_id
+            for stage in _sorted_route_stages(route)
+            for course_id in stage.get("course_ids", [])
+            if course_id in approved_courses
+        ]
+        if not course_ids:
+            continue
+        overlap = len(set(candidate_course_ids) & set(course_ids))
+        stage_names = [str(stage.get("name") or "") for stage in _sorted_route_stages(route)]
+        course_names = [approved_courses[course_id]["name"] for course_id in course_ids[:6]]
+        score = overlap * 30 + _score_query_match(
+            query,
+            str(route.get("name") or ""),
+            str(route.get("direction") or ""),
+            str(route.get("target") or ""),
+            *stage_names,
+            *course_names,
+        )
+        if route_like:
+            score += 5
+        if score > 0:
+            route_scores.append((score, route_id))
+    route_scores.sort(reverse=True)
+    if route_scores:
+        best_score, best_route_id = route_scores[0]
+        second_score = route_scores[1][0] if len(route_scores) > 1 else -1
+        if best_score >= (10 if route_like else 18) and best_score - second_score >= 4:
+            route = approved_routes[best_route_id]
+            return RecommendationDecision(
+                intent="route_recommendation",
+                candidate_course_ids=_first_stage_course_ids(route),
+                candidate_route_id=best_route_id,
+            )
+
+    if not course_like and not candidate_course_ids:
+        return None
+    course_scores: list[tuple[int, str]] = []
+    for course_id, course in approved_courses.items():
+        score = _score_query_match(
+            query,
+            str(course.get("name") or ""),
+            str(course.get("direction") or ""),
+            str(course.get("description") or ""),
+        )
+        if course_like:
+            score += 3
+        if course_id in candidate_course_ids:
+            score += 20
+        if score > 0:
+            course_scores.append((score, course_id))
+    course_scores.sort(reverse=True)
+    if not course_scores:
+        return None
+    best_score, best_course_id = course_scores[0]
+    second_score = course_scores[1][0] if len(course_scores) > 1 else -1
+    if best_score < 8 or best_score - second_score < 4:
+        return None
+    return RecommendationDecision(
+        intent="direct_course",
+        candidate_course_ids=[best_course_id],
+    )
 
 
 def _sign(payload: bytes) -> str:
@@ -199,6 +374,10 @@ def validate_recommendation(
                     next_stage = stages[current_index + 1]
                     next_stage_id = str(next_stage.get("stage_id") or "") or None
                     allowed_course_ids.extend(next_stage.get("course_ids", []))
+        elif stages:
+            next_stage = stages[0]
+            next_stage_id = str(next_stage.get("stage_id") or "") or None
+            allowed_course_ids.extend(next_stage.get("course_ids", []))
         valid_course_records = {
             course_id: courses[course_id]
             for course_id in dict.fromkeys(allowed_course_ids)

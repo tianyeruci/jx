@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from knowledge_cleaner.dify import DifyKnowledgeClient
@@ -21,6 +22,7 @@ from ...cleaning import (
 from ...config import get_settings
 from ...db import get_session
 from ...errors import ServiceError
+from ...models import CleaningBatch, CleaningDocument, CleaningFile
 from ...schemas import CleaningReviewDecisionRequest, DeleteDocumentRequest, DocumentStatusRequest
 from ...security import require_admin_token, require_internal_token
 from ...services.observability import record_event
@@ -83,19 +85,23 @@ def _document_name(document: dict[str, Any]) -> str:
     )
 
 
-def _serialize_document(document: dict[str, Any]) -> dict[str, Any]:
+def _serialize_document(
+    document: dict[str, Any],
+    local_source: dict[str, str] | None = None,
+) -> dict[str, Any]:
     metadata = _metadata(document)
+    local_source = local_source or {}
     return {
         "document_id": str(document.get("id") or ""),
-        "name": _document_name(document),
+        "name": _document_name(document) or str(local_source.get("name") or ""),
         "enabled": bool(document.get("enabled", True)) and not bool(document.get("archived", False)),
         "indexing_status": str(document.get("indexing_status") or ""),
         "word_count": int(document.get("word_count") or 0),
         "segment_count": int(document.get("segment_count") or 0),
         "created_at": document.get("created_at"),
         "updated_at": document.get("updated_at"),
-        "source_sha256": metadata.get("source_sha256", ""),
-        "source_filename": metadata.get("source_filename", ""),
+        "source_sha256": str(metadata.get("source_sha256") or local_source.get("source_sha256") or ""),
+        "source_filename": str(metadata.get("source_filename") or local_source.get("source_filename") or ""),
     }
 
 
@@ -107,6 +113,36 @@ def _documents(kb_code: str) -> list[dict[str, Any]]:
         raise ServiceError("DIFY_UNAVAILABLE", "读取知识库文档失败", 502, True) from exc
     finally:
         client.close()
+
+
+def _local_cleaning_document_sources(
+    kb_code: str,
+    session: Session,
+) -> dict[str, dict[str, str]]:
+    rows = session.execute(
+        select(
+            CleaningDocument.dify_document_id,
+            CleaningDocument.dify_document_name,
+            CleaningFile.original_filename,
+            CleaningFile.source_sha256,
+        )
+        .join(CleaningFile, CleaningFile.id == CleaningDocument.file_id)
+        .join(CleaningBatch, CleaningBatch.id == CleaningFile.batch_id)
+        .where(
+            CleaningBatch.knowledge_base_code == kb_code,
+            CleaningDocument.dify_document_id.is_not(None),
+        )
+    )
+    result: dict[str, dict[str, str]] = {}
+    for dify_document_id, dify_document_name, original_filename, source_sha256 in rows:
+        if not dify_document_id:
+            continue
+        result[str(dify_document_id)] = {
+            "name": str(dify_document_name or ""),
+            "source_filename": str(original_filename or ""),
+            "source_sha256": str(source_sha256 or ""),
+        }
+    return result
 
 
 @router.get("")
@@ -129,9 +165,22 @@ def knowledge_bases() -> dict[str, list[dict[str, Any]]]:
 
 
 @router.get("/{kb_code}/documents")
-def list_documents(kb_code: str) -> dict[str, list[dict[str, Any]]]:
+def list_documents(
+    kb_code: str,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
     _dataset_id(kb_code)
-    return {"items": [_serialize_document(item) for item in _documents(kb_code)]}
+    local_sources = _local_cleaning_document_sources(kb_code, session)
+    return {
+        "items": [
+            _serialize_document(
+                item,
+                local_sources.get(str(item.get("id") or "")),
+            )
+            for item in _documents(kb_code)
+        ],
+        "next_cursor": None,
+    }
 
 
 @router.get("/{kb_code}/cleaning-strategies")

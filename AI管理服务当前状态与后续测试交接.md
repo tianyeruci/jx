@@ -1,6 +1,6 @@
 # AI 管理服务当前状态与后续测试交接
 
-> 更新时间：2026-07-28  
+> 更新时间：2026-07-29
 > 用途：新开 Codex 对话后，先完整阅读本文，再继续联调、测试和修复。  
 > 业务与实现边界仍以 `AI管理服务快速落地与测试计划.md` 为准。
 
@@ -68,6 +68,29 @@ AI 管理服务的代码、Dify 应用、测试知识库和服务器基础部署
 对应本地回归结果：
 
 - `python -m pytest tests -q`：`55 passed`
+
+### 1.2 2026-07-29 接口、测试页与真实清洗链路复验（r8）
+
+本轮验收范围已经完成，不应再将接口交接文档视为“仅按代码推断”：
+
+- 核心镜像：`jx-now-ai-management:0.2.1-cleaning-27a8bc0-r8`
+- 测试页镜像：`jx-now-ai-management-ui:0.2.1-cleaning-27a8bc0-r8`
+- `BUILD_VERSION`：`0.2.1-cleaning-27a8bc0-r8`
+- wheel SHA256：`d3ffbbccf2dd633fc9d626fb574baf7586281809a9c6892467afd7ca1602649a`
+- Alembic：`6a5f9e2b1c44 (head)`
+- 本地全量回归：`58 passed`
+- 按 [小程序后端与AI管理服务接口对接标准.md](docs/小程序后端与AI管理服务接口对接标准.md) 的路径、参数和返回结构实测：`49/49` 通过。
+- 浏览器测试页真实用户点击：`15/15` 通过；商业顾问问题“我想系统学习 AI 工具，应该从哪里开始？”稳定返回路线与课程卡片。
+- 一条真实知识星球 Markdown 样本完成上传→`zsxq_post` 清洗→Dify 入库→父子块/Metadata 回读→禁用→启用→删除；父/子块数为 `3/11`，Metadata 中的版本值为 r8。
+- 专用 stop 校验：HTTP `200`，终态 `message_end.status=stopped`。
+
+验收报告与截图位置：
+
+- [测试页与接口全量实测记录-2026-07-29.md](docs/测试页与接口全量实测记录-2026-07-29.md)
+- 服务器：`/opt/ai-management/var/reports/v2/20260729-interface-contract-r8-retry1/`
+- 浏览器截图：本地 `output/playwright/`
+
+发布过程出现过宿主机无 `pg_restore`、Windows CRLF 传入 Bash、旧导出镜像变量覆盖 `.env` 三个运维问题，均已在部署手册中修正；最终 API、Worker、Scheduler、测试页均运行 r8。
 
 ## 2. 已完成并验证的工作
 

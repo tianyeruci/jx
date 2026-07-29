@@ -23,10 +23,12 @@ from ai_management.conversations import _decision_from_outputs
 from ai_management.course_import import catalog_summary, load_catalog
 from ai_management.courses import (
     create_redirect_token,
+    infer_recommendation_decision,
     parse_redirect_token,
     validate_recommendation,
 )
 from ai_management.main import app
+from ai_management.api.routers import knowledge_admin as knowledge_admin_router
 from ai_management.models import (
     BusinessConversation,
     BusinessMessage,
@@ -222,7 +224,7 @@ def test_recommendation_filters_and_progress_requires_evidence(service_db):
             query="我确认选择这条路线",
         )
         session.commit()
-        assert result["course_cards"] == []
+        assert [item["course_id"] for item in result["course_cards"]] == ["course_1"]
         assert result["progress_applied"] is True
         progress = session.scalar(select(LearningRouteProgress))
         assert progress.current_stage_id is None
@@ -266,6 +268,19 @@ def test_recommendation_filters_and_progress_requires_evidence(service_db):
         )
         assert advanced["progress_applied"] is True
         assert progress.current_stage_id == "stage_2"
+
+
+def test_infer_recommendation_decision_picks_route_for_route_like_query(service_db):
+    with service_db() as session:
+        _seed_catalog(session)
+        inferred = infer_recommendation_decision(
+            session,
+            query="我想系统学习第一阶段课程，应该从哪里开始？",
+        )
+        assert inferred is not None
+        assert inferred.intent == "route_recommendation"
+        assert inferred.candidate_route_id == "route_1"
+        assert inferred.candidate_course_ids == ["course_1"]
 
 
 def test_redirect_token_tamper_and_expiry():
@@ -740,6 +755,119 @@ def test_batch_summary_marks_file_level_failures(service_db):
     }
     assert payload["all_succeeded"] is False
     assert payload["all_processed_without_error"] is False
+
+
+def test_admin_conversations_include_next_cursor(service_db):
+    with service_db() as session:
+        profile = BusinessProfile(user_hash="user-hash-1", display_name="测试用户")
+        conversation = BusinessConversation(
+            user_hash="user-hash-1",
+            title="测试会话",
+            summary="摘要",
+        )
+        session.add_all([profile, conversation])
+        session.commit()
+
+    admin_headers = {
+        "X-Internal-Token": "test-internal-token",
+        "X-Admin-Token": "test-admin-token",
+    }
+    with TestClient(app) as client:
+        response = client.get(
+            "/internal/v1/admin/conversations",
+            headers=admin_headers,
+            params={"limit": 20},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["next_cursor"] is None
+    assert payload["items"][0]["title"] == "测试会话"
+
+
+def test_admin_document_list_uses_local_cleaning_source_fallback(service_db, monkeypatch):
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="standard_document",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="completed",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = CleaningFile(
+            batch_id=batch.id,
+            original_filename="真实样本.md",
+            storage_filename="sample.md",
+            extension=".md",
+            source_sha256="f" * 64,
+            size_bytes=123,
+            status="succeeded",
+            stage="completed",
+            outcome="succeeded",
+        )
+        session.add(file_row)
+        session.flush()
+        session.add(
+            CleaningDocument(
+                file_id=file_row.id,
+                sequence=1,
+                title="真实样本",
+                dify_document_name="真实样本__ffffffff__1.md",
+                dify_document_id="doc-001",
+                document_key="doc-001:1",
+                status="succeeded",
+                stage="completed",
+                cleaned_markdown="# 真实样本\n\n正文",
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(
+        knowledge_admin_router,
+        "_documents",
+        lambda kb_code: [
+            {
+                "id": "doc-001",
+                "name": "真实样本__ffffffff__1.md",
+                "enabled": True,
+                "indexing_status": "completed",
+                "word_count": 12,
+                "segment_count": 1,
+                "created_at": "2026-07-29T00:00:00Z",
+                "updated_at": "2026-07-29T00:00:00Z",
+                "doc_metadata": [],
+            }
+        ],
+    )
+
+    admin_headers = {
+        "X-Internal-Token": "test-internal-token",
+        "X-Admin-Token": "test-admin-token",
+    }
+    with TestClient(app) as client:
+        response = client.get(
+            "/internal/v1/admin/knowledge-bases/general/documents",
+            headers=admin_headers,
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["next_cursor"] is None
+    assert payload["items"] == [
+        {
+            "document_id": "doc-001",
+            "name": "真实样本__ffffffff__1.md",
+            "enabled": True,
+            "indexing_status": "completed",
+            "word_count": 12,
+            "segment_count": 1,
+            "created_at": "2026-07-29T00:00:00Z",
+            "updated_at": "2026-07-29T00:00:00Z",
+            "source_sha256": "f" * 64,
+            "source_filename": "真实样本.md",
+        }
+    ]
 
 
 def test_admin_knowledge_item_endpoints(service_db, monkeypatch):
