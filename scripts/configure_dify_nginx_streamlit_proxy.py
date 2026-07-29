@@ -14,17 +14,21 @@ INCLUDES = (
 )
 END = "    # END ai-management public proxy"
 BLOCK = "\n".join((BEGIN, *INCLUDES, END))
+LEGACY_BEGIN = "    # BEGIN ai-management-test proxy"
+LEGACY_END = "    # END ai-management-test proxy"
 ANCHOR = "    # placeholder for acme challenge location"
 
 
 def update(path: Path, mode: str) -> bool:
     content = path.read_text(encoding="utf-8")
-    start = content.find(BEGIN)
+    block_begin = BEGIN if BEGIN in content else LEGACY_BEGIN
+    block_end = END if block_begin == BEGIN else LEGACY_END
+    start = content.find(block_begin)
     if start != -1:
-        end = content.find(END, start)
+        end = content.find(block_end, start)
         if end == -1:
             raise ValueError(f"Unclosed proxy block in {path}")
-        end += len(END)
+        end += len(block_end)
         content = content[:start] + content[end:].lstrip("\r\n")
 
     if mode == "enable":
