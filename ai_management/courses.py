@@ -6,7 +6,7 @@ import hmac
 import json
 import re
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -20,6 +20,7 @@ from .schemas import RecommendationDecision
 from .timeutil import business_today
 
 COURSE_SNAPSHOT_KEY = "ai:course:snapshot"
+_SNAPSHOT_PARSE_SAMPLES_MS: list[float] = []
 _ROUTE_HINTS = (
     "学习路线",
     "学习路径",
@@ -56,6 +57,12 @@ def _course_dict(course: Course) -> dict[str, Any]:
         "enabled": course.enabled,
         "review_status": course.review_status,
         **(course.optional_data or {}),
+        "stage": course.stage or "",
+        "source_platform": course.source_platform or "小鹅通",
+        "series_name": course.series_name or "",
+        "published_at": course.published_at.isoformat() if course.published_at else "",
+        "first_imported_at": course.first_imported_at.isoformat() if course.first_imported_at else "",
+        "prerequisite_course_ids": course.prerequisite_course_ids or [],
     }
 
 
@@ -71,18 +78,58 @@ def _route_dict(route: LearningRoute) -> dict[str, Any]:
     }
 
 
+def _p95(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    return round(ordered[max(0, int(len(ordered) * 0.95) - 1)], 3)
+
+
 def rebuild_snapshot(session: Session) -> dict[str, Any]:
+    started = time.perf_counter()
+    courses = list(
+        session.scalars(
+            select(Course).where(Course.enabled.is_(True), Course.review_status == "approved")
+        )
+    )
+    routes = list(
+        session.scalars(
+            select(LearningRoute).where(
+                LearningRoute.enabled.is_(True), LearningRoute.review_status == "approved"
+            )
+        )
+    )
+    active_course_ids = {item.course_id for item in courses}
+    routes = [
+        route
+        for route in routes
+        if all(
+            course_id in active_course_ids
+            for stage in (route.stages or [])
+            for course_id in (stage.get("course_ids", []) if isinstance(stage, dict) else [])
+        )
+    ]
     snapshot = {
-        "courses": {item.course_id: _course_dict(item) for item in session.scalars(select(Course))},
-        "routes": {item.route_id: _route_dict(item) for item in session.scalars(select(LearningRoute))},
+        "courses": {item.course_id: _course_dict(item) for item in courses},
+        "routes": {item.route_id: _route_dict(item) for item in routes},
     }
     cache.atomic_json_swap(COURSE_SNAPSHOT_KEY, snapshot)
+    serialized_bytes = len(json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    snapshot["metrics"] = {
+        "effective_records": len(courses) + len(routes),
+        "serialized_bytes": serialized_bytes,
+        "swap_ms": round((time.perf_counter() - started) * 1000, 3),
+        "parse_p95_ms": _p95(_SNAPSHOT_PARSE_SAMPLES_MS),
+    }
     return snapshot
 
 
 def get_snapshot(session: Session) -> dict[str, Any]:
+    started = time.perf_counter()
     snapshot = cache.get_json(COURSE_SNAPSHOT_KEY)
     if isinstance(snapshot, dict) and "courses" in snapshot and "routes" in snapshot:
+        _SNAPSHOT_PARSE_SAMPLES_MS.append((time.perf_counter() - started) * 1000)
+        del _SNAPSHOT_PARSE_SAMPLES_MS[:-100]
         return snapshot
     return rebuild_snapshot(session)
 
@@ -143,6 +190,41 @@ def _first_stage_course_ids(route: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(stages[0].get("course_ids", [])))
 
 
+def _effective_latest_key(course: dict[str, Any]) -> tuple[str, str]:
+    # ISO date/datetime strings sort chronologically and avoid changing the
+    # immutable fallback timestamp whenever administrators edit a catalogue row.
+    return (
+        str(course.get("published_at") or course.get("first_imported_at") or ""),
+        str(course.get("course_id") or ""),
+    )
+
+
+def _latest_course_ids(query: str, courses: dict[str, dict[str, Any]]) -> list[str]:
+    if "最新" not in query:
+        return []
+    matched = list(courses.values())
+    platforms = {
+        str(item.get("source_platform") or "")
+        for item in matched
+        if str(item.get("source_platform") or "")
+    }
+    explicit_platform = next((item for item in sorted(platforms, key=len, reverse=True) if item in query), "")
+    if explicit_platform:
+        matched = [item for item in matched if item.get("source_platform") == explicit_platform]
+    series_names = {
+        str(item.get("series_name") or "")
+        for item in matched
+        if str(item.get("series_name") or "")
+    }
+    explicit_series = next((item for item in sorted(series_names, key=len, reverse=True) if item in query), "")
+    if explicit_series:
+        matched = [item for item in matched if item.get("series_name") == explicit_series]
+    return [
+        str(item["course_id"])
+        for item in sorted(matched, key=_effective_latest_key, reverse=True)[:5]
+    ]
+
+
 def infer_recommendation_decision(
     session: Session,
     *,
@@ -170,6 +252,17 @@ def infer_recommendation_decision(
         for course_id in (decision.candidate_course_ids if decision else [])
         if course_id in approved_courses
     ]
+
+    latest_ids = _latest_course_ids(query, approved_courses)
+    if latest_ids:
+        latest_with_published_at = all(approved_courses[item].get("published_at") for item in latest_ids)
+        return RecommendationDecision(
+            intent="direct_course",
+            candidate_course_ids=latest_ids,
+            answer_plan=(
+                "按首次发布时间最新" if latest_with_published_at else "按当前目录收录时间最新"
+            ),
+        )
 
     route_scores: list[tuple[int, str]] = []
     for route_id, route in approved_routes.items():
@@ -204,7 +297,6 @@ def infer_recommendation_decision(
             route = approved_routes[best_route_id]
             return RecommendationDecision(
                 intent="route_recommendation",
-                candidate_course_ids=_first_stage_course_ids(route),
                 candidate_route_id=best_route_id,
             )
 
@@ -212,6 +304,11 @@ def infer_recommendation_decision(
         return None
     course_scores: list[tuple[int, str]] = []
     for course_id, course in approved_courses.items():
+        exact_name_match = _normalize_text(str(course.get("name") or "")) in _normalize_text(query)
+        if not str(course.get("stage") or "").strip() and not exact_name_match:
+            # Legacy rows without a confirmed global difficulty are still
+            # available for an explicit course lookup, never generic matching.
+            continue
         score = _score_query_match(
             query,
             str(course.get("name") or ""),
@@ -234,6 +331,9 @@ def infer_recommendation_decision(
     return RecommendationDecision(
         intent="direct_course",
         candidate_course_ids=[best_course_id],
+        answer_plan=(
+            "未找到匹配的官方学习路线，以下为独立课程推荐。" if route_like else ""
+        ),
     )
 
 
@@ -299,8 +399,16 @@ def validate_recommendation(
         ):
             route = None
 
-    progress_applied = False
     action = decision.progress_action or {}
+    # An LLM-supplied route ID is evidence only, never an authorization to
+    # auto-select a weak match.  Explicit confirmation actions are handled
+    # below against the selected route/progress state.
+    if route and decision.intent == "route_recommendation" and (action.get("type") or "none") == "none":
+        inferred = infer_recommendation_decision(session, query=query, decision=decision)
+        if not inferred or inferred.intent != "route_recommendation" or inferred.candidate_route_id != route.get("route_id"):
+            route = None
+
+    progress_applied = False
     evidence = str(action.get("evidence_quote") or "")
     progress: LearningRouteProgress | None = None
     if route:
@@ -374,10 +482,9 @@ def validate_recommendation(
                     next_stage = stages[current_index + 1]
                     next_stage_id = str(next_stage.get("stage_id") or "") or None
                     allowed_course_ids.extend(next_stage.get("course_ids", []))
-        elif stages:
-            next_stage = stages[0]
-            next_stage_id = str(next_stage.get("stage_id") or "") or None
-            allowed_course_ids.extend(next_stage.get("course_ids", []))
+        # Do not issue any course card until both the route and the learner's
+        # current stage have been explicitly confirmed.  The first stage is a
+        # prompt for confirmation, not an implicit enrollment decision.
         valid_course_records = {
             course_id: courses[course_id]
             for course_id in dict.fromkeys(allowed_course_ids)
@@ -404,7 +511,7 @@ def validate_recommendation(
         valid_course_records = {}
 
     valid_courses: list[dict[str, Any]] = []
-    for course_id, course in valid_course_records.items():
+    for course_id, course in list(valid_course_records.items())[:5]:
         card = {key: value for key, value in course.items() if key != "official_url"}
         token = create_redirect_token(course_id, user_hash)
         card["redirect_url"] = f"{get_settings().public_base_url.rstrip('/')}/r/{token}"
@@ -417,7 +524,10 @@ def validate_recommendation(
         "intent": decision.intent,
         "course_cards": valid_courses,
         "learning_route": route,
-        "expert_insight": decision.expert_insight if valid_courses else "",
+        # Kept as an empty compatibility field.  Course-level "expert
+        # insight" is not source material and must not be invented.
+        "expert_insight": "",
+        "recommendation_note": decision.answer_plan if valid_courses else "",
         "progress_applied": progress_applied,
     }
 

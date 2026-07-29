@@ -172,6 +172,7 @@ def _seed_catalog(session):
                 direction="测试",
                 description="测试课程",
                 official_url=f"https://example.com/{course_id}",
+                stage="入门" if course_id == "course_1" else "进阶",
                 enabled=course_id != "course_disabled",
                 review_status="approved",
             )
@@ -224,7 +225,7 @@ def test_recommendation_filters_and_progress_requires_evidence(service_db):
             query="我确认选择这条路线",
         )
         session.commit()
-        assert [item["course_id"] for item in result["course_cards"]] == ["course_1"]
+        assert result["course_cards"] == []
         assert result["progress_applied"] is True
         progress = session.scalar(select(LearningRouteProgress))
         assert progress.current_stage_id is None
@@ -280,7 +281,7 @@ def test_infer_recommendation_decision_picks_route_for_route_like_query(service_
         assert inferred is not None
         assert inferred.intent == "route_recommendation"
         assert inferred.candidate_route_id == "route_1"
-        assert inferred.candidate_course_ids == ["course_1"]
+        assert inferred.candidate_course_ids == []
 
 
 def test_redirect_token_tamper_and_expiry():

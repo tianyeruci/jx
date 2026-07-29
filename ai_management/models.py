@@ -161,6 +161,17 @@ class Course(Base, TimestampMixin):
     direction: Mapped[str] = mapped_column(String(100), index=True)
     description: Mapped[str] = mapped_column(Text)
     official_url: Mapped[str] = mapped_column(Text)
+    stage: Mapped[str] = mapped_column(String(100), default="", index=True)
+    source_platform: Mapped[str] = mapped_column(String(100), default="小鹅通", index=True)
+    series_name: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    published_at: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    # This timestamp is assigned only when the stable course ID first enters
+    # the authority database.  It must not move when an administrator edits a
+    # course, otherwise "latest" would silently mean "last edited".
+    first_imported_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    prerequisite_course_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     review_status: Mapped[str] = mapped_column(String(32), default="approved", index=True)
     optional_data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

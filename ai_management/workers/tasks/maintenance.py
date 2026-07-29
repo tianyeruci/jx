@@ -11,6 +11,7 @@ from knowledge_cleaner.dify import DifyKnowledgeClient
 from ...cache import cache
 from ...config import get_settings
 from ...context import messages_after_summary
+from ...courses import rebuild_snapshot
 from ...db import SessionLocal
 from ...dify import DifyAppClient
 from ...models import (
@@ -297,6 +298,12 @@ def _cleanup_system_event_logs() -> None:
         session.commit()
 
 
+def _refresh_course_snapshot() -> None:
+    """Rebuild the effective recommendation catalogue from its DB authority."""
+    with SessionLocal() as session:
+        rebuild_snapshot(session)
+
+
 @celery_app.task(name="ai_management.nightly_maintenance")
 def nightly_maintenance() -> dict[str, bool]:
     results: dict[str, bool] = {}
@@ -306,6 +313,7 @@ def nightly_maintenance() -> dict[str, bool]:
         ("clicks", _flush_clicks),
         ("files", _cleanup_files_and_stale_tasks),
         ("system_event_logs", _cleanup_system_event_logs),
+        ("course_snapshot", _refresh_course_snapshot),
     ):
         try:
             function()
@@ -341,6 +349,7 @@ __all__ = [
     "_cleanup_files_and_stale_tasks",
     "_cleanup_history",
     "_cleanup_system_event_logs",
+    "_refresh_course_snapshot",
     "_flush_clicks",
     "_queue_deletion",
     "_retry_external_deletions",

@@ -29,7 +29,7 @@ from knowledge_cleaner.sources import parse_markdown_posts, parse_wechat_public_
 
 from .cache import cache
 from .config import get_settings
-from .db import get_session
+from .db import SessionLocal, get_session
 from .errors import ServiceError
 from .models import CleaningBatch, CleaningDocument, CleaningFile, utcnow
 from .security import require_admin_token, require_internal_token
@@ -589,6 +589,95 @@ class BookStrategy:
         return documents
 
 
+class CourseInformationStrategy:
+    """Strict catalogue cleaner for one or more structured course records."""
+
+    code = "course_information"
+    display_name = "课程信息"
+    supported_extensions = {".md", ".markdown", ".txt", ".docx"}
+    sensitive = False
+    knowledge_base_code = "course"
+    dify_metadata_fields = frozenset(
+        {"document_type", "course_id", "direction", "stage", "source_platform", "series_name", "status"}
+    )
+
+    def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
+        from .course_import import _course_text, load_course_records_text
+        from .models import Course
+
+        text = _read_text_markdown(file_path, file_path.suffix.lower())
+        # An initial course upload has no dependency on a live catalogue.  Only
+        # touch the DB when the supplied template explicitly names prerequisite
+        # IDs that need resolving against already published courses.
+        courses = load_course_records_text(
+            text, validate_prerequisite_references=False
+        )
+        if any(item.prerequisite_course_ids for item in courses):
+            with SessionLocal() as session:
+                known_course_ids = set(session.scalars(select(Course.course_id)))
+            courses = load_course_records_text(
+                text, known_course_ids=known_course_ids
+            )
+        return [
+            CleanedDocument(
+                markdown=_course_text(item),
+                title=item.name,
+                metadata={
+                    "document_type": "course",
+                    "course_id": item.course_id,
+                    "direction": item.direction,
+                    "stage": item.stage,
+                    "source_platform": item.source_platform or "小鹅通",
+                    "series_name": item.series_name or "",
+                    "status": "active" if item.enabled and item.review_status == "approved" else "inactive",
+                },
+                audit={"catalog_record": item.model_dump(mode="json")},
+            )
+            for item in courses
+        ]
+
+
+class LearningRouteStrategy:
+    """Strict route cleaner; stage courses resolve against existing catalogue IDs."""
+
+    code = "learning_route"
+    display_name = "学习路线"
+    supported_extensions = {".md", ".markdown", ".txt", ".docx"}
+    sensitive = False
+    knowledge_base_code = "course"
+    dify_metadata_fields = frozenset({"document_type", "route_id", "direction", "status"})
+
+    def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
+        from .course_import import _route_text, load_route_records_text
+        from .models import Course
+
+        text = _read_text_markdown(file_path, file_path.suffix.lower())
+        with SessionLocal() as session:
+            known_courses = {
+                item.course_id: item.name
+                for item in session.scalars(
+                    select(Course).where(
+                        Course.enabled.is_(True), Course.review_status == "approved"
+                    )
+                )
+            }
+        routes = load_route_records_text(text, known_courses=known_courses)
+        return [
+            CleanedDocument(
+                markdown=_route_text(item),
+                title=item.name,
+                metadata={
+                    "document_type": "learning_route",
+                    "route_id": item.route_id,
+                    "direction": item.direction,
+                    "status": "active" if item.enabled and item.review_status == "approved" else "inactive",
+                },
+                audit={"catalog_record": item.model_dump(mode="json")},
+            )
+            for item in routes
+        ]
+
+
 STRATEGY_REGISTRY: dict[str, CleaningStrategy] = {
     strategy.code: strategy
     for strategy in (
@@ -600,6 +689,8 @@ STRATEGY_REGISTRY: dict[str, CleaningStrategy] = {
         XiaobotPostStrategy(),
         LeadMagnetStrategy(),
         BookStrategy(),
+        CourseInformationStrategy(),
+        LearningRouteStrategy(),
     )
 }
 
@@ -617,13 +708,27 @@ SYSTEM_METADATA_FIELDS = {
     "course_id",
     "route_id",
     "direction",
+    "stage",
+    "source_platform",
+    "series_name",
+    "status",
     "record_type",
     "topic",
     "source_title",
     "industry",
     "business_stage",
 }
-ALLOWED_COMMON_METADATA = {"document_type", "review_status", "course_id", "route_id", "direction"}
+ALLOWED_COMMON_METADATA = {
+    "document_type",
+    "review_status",
+    "course_id",
+    "route_id",
+    "direction",
+    "stage",
+    "source_platform",
+    "series_name",
+    "status",
+}
 ITEM_TERMINAL_STATUSES = {"succeeded", "excluded", "review_required", "failed"}
 ITEM_SUCCESS_STATUSES = {"succeeded"}
 ITEM_PROCESSED_WITHOUT_ERROR = {"succeeded", "excluded"}

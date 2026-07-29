@@ -5,6 +5,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
 
 import yaml
@@ -36,44 +37,70 @@ def _generated_id(prefix: str, *parts: Any) -> str:
     return f"{prefix}_{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:12]}"
 
 
-def load_catalog(path: Path) -> Catalog:
-    text = path.read_text(encoding="utf-8-sig")
+def _catalog_blocks(text: str) -> list[dict[str, Any]]:
     blocks = re.findall(r"```ya?ml\s*\n(.*?)```", text, flags=re.IGNORECASE | re.DOTALL)
     if not blocks:
         raise ValueError("课程资料中没有找到 ```yaml 数据块")
-    course_values: list[dict[str, Any]] = []
-    route_values: list[dict[str, Any]] = []
+    values: list[dict[str, Any]] = []
     for index, block in enumerate(blocks, start=1):
         raw = yaml.safe_load(block)
         if not isinstance(raw, dict):
             raise ValueError(f"第 {index} 个 YAML 数据块必须是对象")
-        record_type = raw.pop("record_type", "")
+        values.append(dict(raw))
+    return values
+
+
+def _prepare_course(raw: dict[str, Any]) -> dict[str, Any]:
+    raw = dict(raw)
+    raw.pop("record_type", None)
+    if not raw.get("course_id"):
+        raw["course_id"] = _generated_id("course", raw.get("direction", ""), raw.get("name", ""))
+    raw.setdefault("source_platform", "小鹅通")
+    return raw
+
+
+def _prepare_route(raw: dict[str, Any]) -> dict[str, Any]:
+    raw = dict(raw)
+    raw.pop("record_type", None)
+    if not raw.get("route_id"):
+        raw["route_id"] = _generated_id("route", raw.get("direction", ""), raw.get("name", ""))
+    stages = raw.get("stages")
+    if isinstance(stages, list):
+        for position, stage in enumerate(stages, start=1):
+            if not isinstance(stage, dict):
+                continue
+            stage.setdefault("order", position)
+            if not stage.get("stage_id"):
+                stage["stage_id"] = f"{raw['route_id']}_stage_{stage['order']}"
+    return raw
+
+
+def _resolve_route_course_names(
+    route_values: list[dict[str, Any]], *, name_to_id: dict[str, str]
+) -> None:
+    for raw in route_values:
+        for stage in raw.get("stages") or []:
+            if isinstance(stage, dict) and isinstance(stage.get("course_ids"), list):
+                stage["course_ids"] = [
+                    name_to_id.get(str(value).strip(), str(value).strip())
+                    for value in stage["course_ids"]
+                ]
+
+
+def load_catalog(path: Path) -> Catalog:
+    text = path.read_text(encoding="utf-8-sig")
+    return load_catalog_text(text)
+
+
+def load_catalog_text(text: str) -> Catalog:
+    course_values: list[dict[str, Any]] = []
+    route_values: list[dict[str, Any]] = []
+    for index, raw in enumerate(_catalog_blocks(text), start=1):
+        record_type = raw.get("record_type", "")
         if record_type == "course":
-            if not raw.get("course_id"):
-                raw["course_id"] = _generated_id(
-                    "course",
-                    raw.get("direction", ""),
-                    raw.get("name", ""),
-                )
-            course_values.append(raw)
+            course_values.append(_prepare_course(raw))
         elif record_type == "route":
-            if not raw.get("route_id"):
-                raw["route_id"] = _generated_id(
-                    "route",
-                    raw.get("direction", ""),
-                    raw.get("name", ""),
-                )
-            stages = raw.get("stages")
-            if isinstance(stages, list):
-                for position, stage in enumerate(stages, start=1):
-                    if not isinstance(stage, dict):
-                        continue
-                    stage.setdefault("order", position)
-                    if not stage.get("stage_id"):
-                        stage["stage_id"] = (
-                            f"{raw['route_id']}_stage_{stage['order']}"
-                        )
-            route_values.append(raw)
+            route_values.append(_prepare_route(raw))
         else:
             raise ValueError(f"第 {index} 个 YAML 数据块 record_type 必须是 course 或 route")
     courses = [CourseRecord.model_validate(raw) for raw in course_values]
@@ -88,19 +115,70 @@ def load_catalog(path: Path) -> Catalog:
             f"课程名称重复，路线不能按名称解析：{sorted(ambiguous_names)}"
         )
     name_to_id = {name: ids[0] for name, ids in name_to_ids.items()}
-    for raw in route_values:
-        for stage in raw.get("stages") or []:
-            if isinstance(stage, dict) and isinstance(stage.get("course_ids"), list):
-                stage["course_ids"] = [
-                    name_to_id.get(str(value).strip(), str(value).strip())
-                    for value in stage["course_ids"]
-                ]
+    _resolve_route_course_names(route_values, name_to_id=name_to_id)
     routes = [RouteRecord.model_validate(raw) for raw in route_values]
     validate_catalog(courses, routes)
     return Catalog(courses=courses, routes=routes)
 
 
-def validate_catalog(courses: list[CourseRecord], routes: list[RouteRecord]) -> None:
+def load_course_records_text(
+    text: str,
+    *,
+    known_course_ids: set[str] | None = None,
+    validate_prerequisite_references: bool = True,
+) -> list[CourseRecord]:
+    values = _catalog_blocks(text)
+    raw_courses = [_prepare_course(item) for item in values if item.get("record_type") == "course"]
+    if len(raw_courses) != len(values):
+        raise ValueError("课程信息文件只能包含 record_type: course")
+    courses = [CourseRecord.model_validate(item) for item in raw_courses]
+    validate_catalog(
+        courses,
+        [],
+        known_course_ids=known_course_ids,
+        validate_prerequisite_references=validate_prerequisite_references,
+    )
+    for course in courses:
+        if not course.stage.strip():
+            raise ValueError(f"课程 {course.course_id} 缺少必填 stage")
+    return courses
+
+
+def load_route_records_text(
+    text: str, *, known_courses: dict[str, str]
+) -> list[RouteRecord]:
+    values = _catalog_blocks(text)
+    raw_routes = [_prepare_route(item) for item in values if item.get("record_type") == "route"]
+    if len(raw_routes) != len(values):
+        raise ValueError("学习路线文件只能包含 record_type: route")
+    names: dict[str, list[str]] = {}
+    for course_id, name in known_courses.items():
+        names.setdefault(name.strip(), []).append(course_id)
+    ambiguous = {name for name, ids in names.items() if len(ids) > 1}
+    if ambiguous:
+        # A route can still use explicit IDs, but never a name that resolves to
+        # more than one course.
+        for raw in raw_routes:
+            for stage in raw.get("stages") or []:
+                for value in stage.get("course_ids", []) if isinstance(stage, dict) else []:
+                    if str(value).strip() in ambiguous:
+                        raise ValueError(f"路线课程名称不唯一，请改用 course_id：{value}")
+    _resolve_route_course_names(
+        raw_routes,
+        name_to_id={name: ids[0] for name, ids in names.items() if len(ids) == 1},
+    )
+    routes = [RouteRecord.model_validate(item) for item in raw_routes]
+    validate_catalog([], routes, known_course_ids=set(known_courses))
+    return routes
+
+
+def validate_catalog(
+    courses: list[CourseRecord],
+    routes: list[RouteRecord],
+    *,
+    known_course_ids: set[str] | None = None,
+    validate_prerequisite_references: bool = True,
+) -> None:
     course_ids = [item.course_id for item in courses]
     route_ids = [item.route_id for item in routes]
     if len(course_ids) != len(set(course_ids)):
@@ -110,7 +188,16 @@ def validate_catalog(courses: list[CourseRecord], routes: list[RouteRecord]) -> 
     urls = [str(item.official_url) for item in courses]
     if len(urls) != len(set(urls)):
         raise ValueError("课程正式链接重复")
-    known_courses = set(course_ids)
+    known_courses = set(course_ids) | (known_course_ids or set())
+    for course in courses:
+        if course.course_id in course.prerequisite_course_ids:
+            raise ValueError(f"课程 {course.course_id} 不能把自己设为前置课程")
+        if validate_prerequisite_references:
+            unknown_prerequisites = set(course.prerequisite_course_ids) - known_courses
+            if unknown_prerequisites:
+                raise ValueError(
+                    f"课程 {course.course_id} 引用了不存在的前置课程：{sorted(unknown_prerequisites)}"
+                )
     for route in routes:
         stage_ids = [stage.stage_id for stage in route.stages]
         stage_orders = [stage.order for stage in route.stages]
@@ -150,12 +237,92 @@ def catalog_summary(catalog: Catalog) -> dict[str, Any]:
     }
 
 
+def sync_cleaning_catalog_record(
+    session,
+    *,
+    strategy_code: str,
+    payload: dict[str, Any],
+    dify_document_id: str,
+    source_file: str,
+) -> str:
+    """Apply one Dify-verified catalogue document to the authority DB.
+
+    The caller must commit before deleting the returned old Dify document.  A
+    failed database transaction therefore leaves the previously authoritative
+    document in place and lets the worker delete the just-created copy.
+    """
+    if strategy_code == "course_information":
+        item = CourseRecord.model_validate(payload)
+        if item.course_id in item.prerequisite_course_ids:
+            raise ValueError(f"课程 {item.course_id} 不能把自己设为前置课程")
+        known_course_ids = set(session.scalars(select(Course.course_id)))
+        validate_catalog([item], [], known_course_ids=known_course_ids)
+        row = session.get(Course, item.course_id)
+        old_document_id = row.dify_document_id if row else ""
+        if row is None:
+            row = Course(course_id=item.course_id)
+            session.add(row)
+        row.name = item.name
+        row.direction = item.direction
+        row.description = item.description
+        row.official_url = str(item.official_url)
+        row.stage = item.stage
+        row.source_platform = item.source_platform or "小鹅通"
+        row.series_name = item.series_name or None
+        row.published_at = item.published_at
+        row.prerequisite_course_ids = list(item.prerequisite_course_ids)
+        if row.first_imported_at is None:
+            row.first_imported_at = datetime.now(timezone.utc)
+        row.enabled = item.enabled
+        row.review_status = item.review_status
+        row.optional_data = {
+            "audience": item.audience,
+            "highlights": item.highlights,
+            "learning_outcomes": item.learning_outcomes,
+            "special_prerequisites": item.special_prerequisites,
+            "stage_tags": item.stage_tags,
+            "prerequisite_course_ids": item.prerequisite_course_ids,
+        }
+        row.source_file = source_file
+        row.dify_document_id = dify_document_id or None
+        return old_document_id or ""
+
+    if strategy_code == "learning_route":
+        item = RouteRecord.model_validate(payload)
+        known_course_ids = set(
+            session.scalars(
+                select(Course.course_id).where(
+                    Course.enabled.is_(True), Course.review_status == "approved"
+                )
+            )
+        )
+        validate_catalog([], [item], known_course_ids=known_course_ids)
+        row = session.get(LearningRoute, item.route_id)
+        old_document_id = row.dify_document_id if row else ""
+        if row is None:
+            row = LearningRoute(route_id=item.route_id)
+            session.add(row)
+        row.name = item.name
+        row.direction = item.direction
+        row.target = item.target
+        row.enabled = item.enabled
+        row.review_status = item.review_status
+        row.stages = [stage.model_dump(mode="json") for stage in item.stages]
+        row.source_file = source_file
+        row.dify_document_id = dify_document_id or None
+        return old_document_id or ""
+
+    return ""
+
+
 def _course_text(course: CourseRecord) -> str:
     lines = [
         f"# {course.name}",
         "",
         f"- 课程ID：{course.course_id}",
         f"- 所属方向：{course.direction}",
+        f"- 课程难度阶段：{course.stage}",
+        f"- 来源平台：{course.source_platform}",
         f"- 主要内容或解决的问题：{course.description}",
     ]
     optional = (
@@ -164,11 +331,13 @@ def _course_text(course: CourseRecord) -> str:
         ("学习结果", "；".join(course.learning_outcomes)),
         ("特殊前置条件", "；".join(course.special_prerequisites)),
         ("阶段标签", "；".join(course.stage_tags)),
+        ("所属系列", course.series_name or ""),
+        ("首次发布时间", course.published_at.isoformat() if course.published_at else ""),
+        ("前置课程ID", "、".join(course.prerequisite_course_ids)),
     )
     lines.extend(f"- {name}：{value}" for name, value in optional if value)
-    # The model never receives this URL as its final source of truth, but the
-    # normalized catalog remains complete for administrators and exact queries.
-    lines.append(f"- 官方链接：{course.official_url}")
+    # Official URLs are intentionally database-only.  The model returns a
+    # signed server-side redirect card and must never see a raw course URL.
     return "\n".join(lines)
 
 
@@ -245,8 +414,10 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
                 "course_id",
                 "route_id",
                 "direction",
-                "review_status",
-                "source_file",
+                "stage",
+                "source_platform",
+                "series_name",
+                "status",
             ]
         )
         with SessionLocal() as session:
@@ -273,10 +444,24 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
                     "document_type": "course",
                     "course_id": course.course_id,
                     "direction": course.direction,
-                    "review_status": course.review_status,
-                    "source_file": source_file.name,
+                    "stage": course.stage,
+                    "source_platform": course.source_platform,
+                    "series_name": course.series_name or "",
+                    "status": "active" if course.enabled and course.review_status == "approved" else "inactive",
                 },
                 fields,
+            )
+            client.verify_document_metadata(
+                document_id,
+                {
+                    "document_type": "course",
+                    "course_id": course.course_id,
+                    "direction": course.direction,
+                    "stage": course.stage,
+                    "source_platform": course.source_platform or "小鹅通",
+                    "series_name": course.series_name or "",
+                    "status": "active" if course.enabled and course.review_status == "approved" else "inactive",
+                },
             )
             replacements[("course", course.course_id)] = document_id
 
@@ -300,34 +485,22 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
                     "document_type": "learning_route",
                     "route_id": route.route_id,
                     "direction": route.direction,
-                    "review_status": route.review_status,
-                    "source_file": source_file.name,
+                    "status": "active" if route.enabled and route.review_status == "approved" else "inactive",
                 },
                 fields,
             )
+            client.verify_document_metadata(
+                document_id,
+                {
+                    "document_type": "learning_route",
+                    "route_id": route.route_id,
+                    "direction": route.direction,
+                    "status": "active" if route.enabled and route.review_status == "approved" else "inactive",
+                },
+            )
             replacements[("route", route.route_id)] = document_id
 
-        incoming_course_ids = {item.course_id for item in catalog.courses}
-        incoming_route_ids = {item.route_id for item in catalog.routes}
-        old_ids.extend(
-            item.dify_document_id
-            for course_id, item in existing_courses.items()
-            if course_id not in incoming_course_ids and item.dify_document_id
-        )
-        old_ids.extend(
-            item.dify_document_id
-            for route_id, item in existing_routes.items()
-            if route_id not in incoming_route_ids and item.dify_document_id
-        )
-
         with SessionLocal() as session:
-            for row in session.scalars(select(Course)):
-                if row.course_id not in incoming_course_ids:
-                    row.enabled = False
-            for row in session.scalars(select(LearningRoute)):
-                if row.route_id not in incoming_route_ids:
-                    row.enabled = False
-
             for item in catalog.courses:
                 row = session.get(Course, item.course_id)
                 if row is None:
@@ -337,6 +510,13 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
                 row.direction = item.direction
                 row.description = item.description
                 row.official_url = str(item.official_url)
+                row.stage = item.stage
+                row.source_platform = item.source_platform or "小鹅通"
+                row.series_name = item.series_name or None
+                row.published_at = item.published_at
+                row.prerequisite_course_ids = list(item.prerequisite_course_ids)
+                if row.first_imported_at is None:
+                    row.first_imported_at = datetime.now(timezone.utc)
                 row.enabled = item.enabled
                 row.review_status = item.review_status
                 row.optional_data = {
@@ -345,6 +525,7 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
                     "learning_outcomes": item.learning_outcomes,
                     "special_prerequisites": item.special_prerequisites,
                     "stage_tags": item.stage_tags,
+                    "prerequisite_course_ids": item.prerequisite_course_ids,
                 }
                 row.source_file = source_file.name
                 row.dify_document_id = replacements[("course", item.course_id)] or None

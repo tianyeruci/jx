@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
@@ -88,6 +89,14 @@ class CourseRecord(BaseModel):
     official_url: HttpUrl
     enabled: bool = True
     review_status: Literal["approved", "pending_review", "rejected"] = "approved"
+    # `stage` is a catalogue-wide difficulty level.  It is deliberately
+    # separate from a route stage, which only describes a course's position
+    # within that one route.
+    stage: str = ""
+    source_platform: str = "小鹅通"
+    series_name: str | None = None
+    published_at: date | None = None
+    prerequisite_course_ids: list[str] = Field(default_factory=list)
     audience: str = ""
     highlights: list[str] = Field(default_factory=list)
     learning_outcomes: list[str] = Field(default_factory=list)

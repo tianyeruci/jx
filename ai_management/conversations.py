@@ -500,6 +500,8 @@ def prepare_business_chat(
             yield emit("learning_route", recommendation["learning_route"])
         if recommendation.get("course_cards"):
             yield emit("course_cards", {"items": recommendation["course_cards"]})
+        if recommendation.get("recommendation_note"):
+            yield emit("course_recommendation_note", {"content": recommendation["recommendation_note"]})
         if recommendation.get("expert_insight"):
             yield emit("expert_insight", {"content": recommendation["expert_insight"]})
         if error_to_emit:

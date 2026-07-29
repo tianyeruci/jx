@@ -13,6 +13,8 @@ from sqlalchemy.orm import selectinload
 from knowledge_cleaner.dify import DifyKnowledgeClient
 
 from ...cache import cache
+from ...course_import import sync_cleaning_catalog_record
+from ...courses import rebuild_snapshot
 from ...cleaning import (
     ChunkingConfig,
     STRATEGY_REGISTRY,
@@ -229,6 +231,7 @@ def _set_document_state(
 def _publish_document(session, row: CleaningDocument, batch: CleaningBatch, file_row: CleaningFile) -> bool:
     client: DifyKnowledgeClient | None = None
     created_remote_id = ""
+    replaced_catalog_document_id = ""
     try:
         client = _knowledge_client(batch)
         row.status = "processing"
@@ -293,10 +296,33 @@ def _publish_document(session, row: CleaningDocument, batch: CleaningBatch, file
         field_ids = client.ensure_metadata_names(sorted(remote_metadata))
         client.set_document_metadata(document_id, remote_metadata, field_ids)
         client.verify_document_metadata(document_id, remote_metadata)
+        if batch.strategy_code in {"course_information", "learning_route"}:
+            payload = (row.audit_json or {}).get("catalog_record")
+            if not isinstance(payload, dict):
+                raise ValueError("课程目录清洗结果缺少受控结构化记录")
+            replaced_catalog_document_id = sync_cleaning_catalog_record(
+                session,
+                strategy_code=batch.strategy_code,
+                payload=payload,
+                dify_document_id=document_id,
+                source_file=file_row.original_filename,
+            )
         row.status = "succeeded"
         row.stage = "completed"
         row.retryable = False
         session.commit()
+        if batch.strategy_code in {"course_information", "learning_route"}:
+            # DB is authoritative.  Rebuild the effective cache only after its
+            # transaction succeeds; an old Dify copy is then safe to retire.
+            try:
+                rebuild_snapshot(session)
+            except Exception:
+                # The next scheduled rebuild repairs the cache.  Do not turn a
+                # committed catalogue/Dify publish into a destructive retry.
+                logger.exception("course snapshot rebuild failed after catalogue commit")
+            if replaced_catalog_document_id and replaced_catalog_document_id != document_id:
+                if not _remove_or_disable_document(client, replaced_catalog_document_id):
+                    _queue_document_cleanup(replaced_catalog_document_id, client.dataset_id)
         return True
     except Exception as exc:
         logger.exception("cleaning document publish failed", extra={"document_id": row.id})
