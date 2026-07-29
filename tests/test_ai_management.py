@@ -1255,3 +1255,30 @@ def test_dsl_and_gold_data_are_complete():
     ]
     assert len(lines) == 40
     assert sum(item["category"] == "no_answer" for item in lines) == 10
+
+
+def test_test_page_exposes_all_documented_management_entry_points():
+    source = Path("ai_management/test_ui.py").read_text(encoding="utf-8")
+    compile(source, "ai_management/test_ui.py", "exec")
+    required_path_fragments = (
+        "/health/live",
+        "/health/ready",
+        "/internal/v1/entry-config",
+        "/internal/v1/business/chat",
+        "/internal/v1/business/conversations",
+        "/internal/v1/business/messages/",
+        "/internal/v1/tools/{kind}/run",
+        "/internal/v1/tools/{task_to_stop}/stop",
+        "/internal/v1/admin/course-clicks",
+        "/internal/v1/admin/catalog",
+        "/internal/v1/admin/conversations",
+        "/internal/v1/admin/users/{quote(delete_user_id, safe='')}/ai-data",
+        "/internal/v1/admin/settings/retention",
+        "/internal/v1/admin/style-settings",
+        "/internal/v1/admin/knowledge-bases",
+        "/documents/{document_id}/status",
+        "/upload-batches",
+        "/review-decisions",
+        "/internal/v1/admin/logs",
+    )
+    assert all(fragment in source for fragment in required_path_fragments)

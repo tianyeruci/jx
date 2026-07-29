@@ -4,6 +4,7 @@ import json
 import os
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import streamlit as st
@@ -444,20 +445,237 @@ def cleaning_tab() -> None:
                         )
 
 
-def management_readonly_tab() -> None:
-    st.subheader("AI 管理只读状态")
-    st.caption("本页不提供任何管理写操作；验收完成后会停止该临时页面。")
-    if st.button("读取风格与保留策略"):
-        st.json(
-            {
-                "style_settings": api_json("GET", "/internal/v1/admin/style-settings", admin=True),
-                "retention": api_json("GET", "/internal/v1/admin/settings/retention", admin=True),
-            }
+def management_tab(default_user_id: str) -> None:
+    st.subheader("AI 管理接口")
+    st.caption(
+        "此页覆盖交接文档中的 AI 管理接口。写操作会真实修改测试环境数据，"
+        "删除类操作必须输入目标名称或确认短语。"
+    )
+    conversations_tab, settings_tab, knowledge_tab, destructive_tab = st.tabs(
+        ["会话审计", "配置", "知识库文档", "删除用户 AI 数据"]
+    )
+
+    with conversations_tab:
+        st.markdown("#### 会话列表与详情")
+        col1, col2, col3 = st.columns(3)
+        audit_user_id = col1.text_input("按用户 ID 筛选（可选）", value=default_user_id)
+        audit_user_name = col2.text_input("按用户名称筛选（可选）")
+        audit_limit = int(col3.number_input("返回条数", min_value=1, max_value=100, value=50))
+        if st.button("查询管理会话"):
+            params: dict[str, Any] = {"limit": audit_limit}
+            if audit_user_id.strip():
+                params["user_id"] = audit_user_id.strip()
+            if audit_user_name.strip():
+                params["user_name"] = audit_user_name.strip()
+            st.session_state["admin_conversations"] = api_json(
+                "GET", "/internal/v1/admin/conversations", admin=True, params=params
+            )
+        conversations_payload = st.session_state.get("admin_conversations", {})
+        conversations = (
+            conversations_payload.get("items") or []
+            if isinstance(conversations_payload, dict)
+            else []
         )
-    if st.button("读取知识库状态"):
-        st.json(api_json("GET", "/internal/v1/admin/knowledge-bases", admin=True))
-    if st.button("读取最近会话审计"):
-        st.json(api_json("GET", "/internal/v1/admin/conversations", admin=True))
+        if conversations:
+            st.dataframe(conversations, use_container_width=True, hide_index=True)
+            conversation_options = {
+                f"{item.get('title') or '未命名'} · {item.get('conversation_id')}": item.get(
+                    "conversation_id"
+                )
+                for item in conversations
+                if item.get("conversation_id")
+            }
+            selected_conversation = st.selectbox(
+                "查看会话详情", list(conversation_options), key="admin_conversation_selected"
+            )
+            if st.button("读取会话详情"):
+                st.json(
+                    api_json(
+                        "GET",
+                        f"/internal/v1/admin/conversations/{conversation_options[selected_conversation]}",
+                        admin=True,
+                    )
+                )
+        elif isinstance(conversations_payload, dict) and conversations_payload:
+            st.info("没有符合条件的会话。")
+
+    with settings_tab:
+        st.markdown("#### 历史保留策略与输出风格")
+        if st.button("读取风格与保留策略"):
+            st.session_state["admin_style_settings"] = api_json(
+                "GET", "/internal/v1/admin/style-settings", admin=True
+            )
+            st.session_state["admin_retention_settings"] = api_json(
+                "GET", "/internal/v1/admin/settings/retention", admin=True
+            )
+        style_payload = st.session_state.get("admin_style_settings", {})
+        retention_payload = st.session_state.get("admin_retention_settings", {})
+        if isinstance(retention_payload, dict) and retention_payload:
+            st.json({"retention": retention_payload})
+        style_items = (
+            style_payload.get("items") or []
+            if isinstance(style_payload, dict)
+            else []
+        )
+        if style_items:
+            st.dataframe(style_items, use_container_width=True, hide_index=True)
+        else:
+            st.caption("先读取配置后，可按服务端返回的风格项修改。")
+
+        retention_days = st.number_input(
+            "历史保留天数", min_value=1, max_value=365,
+            value=int(retention_payload.get("history_retention_days", 7))
+            if isinstance(retention_payload, dict)
+            else 7,
+            key="admin_retention_days",
+        )
+        retention_confirmed = st.checkbox(
+            "我确认修改测试环境的历史保留天数", key="admin_retention_confirm"
+        )
+        if st.button("更新历史保留策略", disabled=not retention_confirmed):
+            result = api_json(
+                "PUT",
+                "/internal/v1/admin/settings/retention",
+                admin=True,
+                json={"history_retention_days": int(retention_days)},
+            )
+            st.session_state["admin_retention_settings"] = result
+            st.json(result)
+
+        if style_items:
+            style_by_code = {str(item["code"]): item for item in style_items}
+            style_code = st.selectbox("输出风格项", list(style_by_code), key="admin_style_code")
+            selected_style = style_by_code[style_code]
+            style_enabled = st.checkbox(
+                "启用该风格项",
+                value=bool(selected_style.get("enabled")),
+                key=f"admin_style_enabled_{style_code}",
+            )
+            style_prompt = st.text_area(
+                "风格提示词",
+                value=str(selected_style.get("style_prompt") or ""),
+                max_chars=4000,
+                key=f"admin_style_prompt_{style_code}",
+            )
+            style_confirmed = st.checkbox(
+                f"我确认更新 {style_code}", key=f"admin_style_confirm_{style_code}"
+            )
+            if st.button("更新输出风格", disabled=not style_confirmed):
+                result = api_json(
+                    "PUT",
+                    f"/internal/v1/admin/style-settings/{style_code}",
+                    admin=True,
+                    json={"enabled": style_enabled, "style_prompt": style_prompt},
+                )
+                st.json(result)
+                st.session_state.pop("admin_style_settings", None)
+
+    with knowledge_tab:
+        st.markdown("#### 知识库概览、文档列表、启停与删除")
+        knowledge_base = st.selectbox(
+            "知识库", ["general", "course"], key="admin_knowledge_base"
+        )
+        col1, col2 = st.columns(2)
+        if col1.button("读取知识库概览"):
+            st.json(api_json("GET", "/internal/v1/admin/knowledge-bases", admin=True))
+        if col2.button("读取知识库文档"):
+            st.session_state[f"admin_documents_{knowledge_base}"] = api_json(
+                "GET",
+                f"/internal/v1/admin/knowledge-bases/{knowledge_base}/documents",
+                admin=True,
+            )
+        documents_payload = st.session_state.get(f"admin_documents_{knowledge_base}", {})
+        documents = (
+            documents_payload.get("items") or []
+            if isinstance(documents_payload, dict)
+            else []
+        )
+        if documents:
+            st.dataframe(documents, use_container_width=True, hide_index=True)
+            document_options = {
+                f"{item.get('name') or item.get('source_filename') or '未命名'} · {item.get('document_id')}": item
+                for item in documents
+                if item.get("document_id")
+            }
+            selected_document_label = st.selectbox(
+                "目标文档", list(document_options), key=f"admin_document_selected_{knowledge_base}"
+            )
+            selected_document = document_options[selected_document_label]
+            document_id = str(selected_document["document_id"])
+            document_name = str(
+                selected_document.get("name") or selected_document.get("source_filename") or ""
+            )
+            current_enabled = bool(selected_document.get("enabled"))
+
+            st.markdown("##### 启用或停用文档")
+            desired_enabled = st.selectbox(
+                "目标状态", [True, False],
+                index=0 if current_enabled else 1,
+                format_func=lambda value: "启用" if value else "停用",
+                key=f"admin_document_enabled_{document_id}",
+            )
+            status_confirmed = st.checkbox(
+                "我确认更新该文档状态", key=f"admin_document_status_confirm_{document_id}"
+            )
+            if st.button("更新文档状态", disabled=not status_confirmed):
+                st.json(
+                    api_json(
+                        "PATCH",
+                        f"/internal/v1/admin/knowledge-bases/{knowledge_base}/documents/{document_id}/status",
+                        admin=True,
+                        json={"enabled": desired_enabled},
+                    )
+                )
+
+            st.markdown("##### 删除知识库文档")
+            st.warning("删除会同步删除 Dify 中的该文档，且不可恢复。")
+            delete_confirm_name = st.text_input(
+                f"输入完整文档名以删除：{document_name}",
+                key=f"admin_document_delete_name_{document_id}",
+            )
+            if st.button(
+                "删除知识库文档",
+                type="secondary",
+                disabled=not document_name or delete_confirm_name != document_name,
+            ):
+                st.json(
+                    api_json(
+                        "DELETE",
+                        f"/internal/v1/admin/knowledge-bases/{knowledge_base}/documents/{document_id}",
+                        admin=True,
+                        json={"confirm_name": delete_confirm_name},
+                    )
+                )
+                st.session_state.pop(f"admin_documents_{knowledge_base}", None)
+        elif isinstance(documents_payload, dict) and documents_payload:
+            st.info("该知识库当前没有文档。")
+
+    with destructive_tab:
+        st.markdown("#### 删除指定用户的 AI 数据")
+        st.warning(
+            "此操作会删除该用户的 AI 会话、消息、画像与学习路线进度；"
+            "课程日汇总点击数据会保留。"
+        )
+        delete_user_id = st.text_input(
+            "要删除的用户 ID", value=default_user_id, key="admin_delete_user_id"
+        ).strip()
+        delete_phrase = st.text_input(
+            "输入确认短语（DELETE <用户 ID>）",
+            key="admin_delete_user_phrase",
+        )
+        expected_phrase = f"DELETE {delete_user_id}" if delete_user_id else ""
+        if st.button(
+            "删除该用户 AI 数据",
+            type="secondary",
+            disabled=not delete_user_id or delete_phrase != expected_phrase,
+        ):
+            st.json(
+                api_json(
+                    "DELETE",
+                    f"/internal/v1/admin/users/{quote(delete_user_id, safe='')}/ai-data",
+                    admin=True,
+                )
+            )
 
 
 def diagnostics_tab() -> None:
@@ -568,7 +786,7 @@ def main() -> None:
             "日常写作",
             "课程测试",
             "文件清洗",
-            "AI 管理只读",
+            "AI 管理接口",
             "点击统计",
             "日志",
             "诊断",
@@ -585,7 +803,7 @@ def main() -> None:
     with tabs[4]:
         cleaning_tab()
     with tabs[5]:
-        management_readonly_tab()
+        management_tab(user_id)
     with tabs[6]:
         course_clicks_tab()
     with tabs[7]:
