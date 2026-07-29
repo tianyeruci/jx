@@ -28,10 +28,17 @@
 - 写操作均显示真实请求参数，并要求勾选确认或输入精确确认值；测试页不会把管理员 Token 暴露给浏览器。
 - r9 页面已真实读取配置和知识库文档，确认新增入口与 API 连通；涉及真实修改或删除的接口仍以 r8 `49/49` 契约实测为执行证据。
 
-2026-07-29 课程与学习路线 r2 更新：
+2026-07-29 当前接口契约核对口径：
 
-- 当前 jx 核心服务为 `jx-now-ai-management:0.2.1-course-route-7a1b71a-r2`，API、Worker、Scheduler 同版本；测试页为 `jx-now-ai-management-ui:0.2.1-cleaning-27a8bc0-r9`。
-- 本文第 3 章的课程/路线 SSE 契约和第 4 章目录字段已按 r2 实现更新。此前 `expert_insight`、旧 `/internal/v1/knowledge/...` 清洗路径和“上传页只读”的表述均不再适用。
+- jx 线上当前核心服务为 `jx-now-ai-management:0.2.1-course-route-fc36f00-r4`，API、Worker、Scheduler 同版本；测试页为 `jx-now-ai-management-ui:0.2.1-course-route-fc36f00-r4`。
+- 从 `10cd1ea` 到当前代码，公开路由、请求头、请求体、SSE 事件名和公开返回字段没有改变；课程路线内部确认校验不要求小程序后端修改调用方式。
+- 当前课程路线 SSE 继续使用 `learning_route`、`course_cards` 和 `course_recommendation_note`；课程级 `expert_insight` 不属于当前接口。
+- 本地存在尚未发布的 `ddfbb67`，只包含路线确认语义校验；它不改变本接口请求和返回结构。
+- 本次接口契约专项测试共 `17/17` 通过，覆盖路由/OpenAPI、鉴权、商业 SSE/历史、AI 管理接口和课程路线结构化事件；本次未执行页面上传、jx 复测或全量回归。
+
+2026-07-29 课程与学习路线 r2 历史更新：
+
+- r2 时完成了本文第 3 章课程/路线 SSE 契约和第 4 章目录字段更新；此前 `expert_insight`、旧 `/internal/v1/knowledge/...` 清洗路径和“上传页只读”的表述均不再适用。
 - r8 的 `49/49` 是历史接口基线，不能替代 r2 的课程/路线页面上传、Metadata、Redis 和 SSE 复测证据。
 
 ## 1. 基本约定
