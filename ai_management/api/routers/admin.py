@@ -31,6 +31,63 @@ router = APIRouter(
 )
 
 
+def _recommendation_payload(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _recommendation_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("content", "text", "value"):
+            if isinstance(value.get(key), str):
+                return value[key]
+    return ""
+
+
+def _message_audit_fields(message: BusinessMessage | None) -> dict[str, Any]:
+    recommendation = _recommendation_payload(message.recommendation if message else None)
+    courses = recommendation.get("course_cards")
+    if not isinstance(courses, list):
+        courses = []
+    return {
+        "recommended_courses": courses,
+        "professional_insight": _recommendation_text(recommendation.get("expert_insight")),
+        "recommendation_note": _recommendation_text(recommendation.get("recommendation_note")),
+        "token_usage": int(message.token_usage or 0) if message else 0,
+        "first_token_ms": message.first_token_ms if message else None,
+        "total_ms": message.total_ms if message else None,
+    }
+
+
+def _message_detail(message: BusinessMessage) -> dict[str, Any]:
+    return {
+        "message_id": message.id,
+        "role": message.role,
+        "content": message.content,
+        "status": message.status,
+        **_message_audit_fields(message),
+        "recommendation": message.recommendation,
+        "retriever_resources": message.retriever_resources,
+        "feedback": message.feedback,
+        "dify_message_id": message.dify_message_id,
+        "dify_task_id": message.dify_task_id,
+        "created_at": message.created_at,
+    }
+
+
+def _latest_assistant(session: Session, conversation_id: str) -> BusinessMessage | None:
+    return session.scalar(
+        select(BusinessMessage)
+        .where(
+            BusinessMessage.conversation_id == conversation_id,
+            BusinessMessage.role == "assistant",
+        )
+        .order_by(BusinessMessage.created_at.desc(), BusinessMessage.id.desc())
+        .limit(1)
+    )
+
+
 @router.get("/conversations")
 def admin_conversations(
     user_id: str | None = Query(default=None, max_length=255),
@@ -40,15 +97,18 @@ def admin_conversations(
 ) -> dict[str, Any]:
     statement = select(BusinessConversation).order_by(BusinessConversation.last_active_at.desc()).limit(limit)
     if user_id:
-        statement = statement.where(BusinessConversation.user_hash == user_hash(user_id.strip()))
+        statement = statement.join(
+            BusinessProfile,
+            BusinessProfile.user_hash == BusinessConversation.user_hash,
+        ).where(BusinessProfile.user_id == user_id.strip())
     elif user_name and user_name.strip():
         statement = statement.join(
             BusinessProfile,
             BusinessProfile.user_hash == BusinessConversation.user_hash,
         ).where(BusinessProfile.display_name.ilike(f"%{user_name.strip()}%"))
     rows = list(session.scalars(statement))
-    profile_names = {
-        item.user_hash: item.display_name
+    profiles = {
+        item.user_hash: item
         for item in session.scalars(
             select(BusinessProfile).where(BusinessProfile.user_hash.in_([row.user_hash for row in rows]))
         )
@@ -57,12 +117,13 @@ def admin_conversations(
         "items": [
             {
                 "conversation_id": row.id,
-                "user_hash": row.user_hash,
-                "user_name": profile_names.get(row.user_hash, ""),
+                "user_id": (profiles.get(row.user_hash).user_id if profiles.get(row.user_hash) else "") or "",
+                "user_name": profiles.get(row.user_hash).display_name if profiles.get(row.user_hash) else "",
                 "title": row.title,
                 "summary": row.summary,
                 "summary_gap": row.summary_gap,
                 "last_active_at": row.last_active_at,
+                **_message_audit_fields(_latest_assistant(session, row.id)),
             }
             for row in rows
         ],
@@ -82,34 +143,20 @@ def admin_conversation_detail(
         session.scalars(
             select(BusinessMessage)
             .where(BusinessMessage.conversation_id == conversation_id)
-            .order_by(BusinessMessage.created_at.asc())
+            .order_by(BusinessMessage.created_at.asc(), BusinessMessage.id.asc())
         )
     )
     profile = session.get(BusinessProfile, conversation.user_hash)
+    message_items = [_message_detail(item) for item in messages]
+    latest = next((item for item in reversed(messages) if item.role == "assistant"), None)
     return {
         "conversation_id": conversation.id,
-        "user_hash": conversation.user_hash,
+        "user_id": (profile.user_id if profile else "") or "",
         "user_name": profile.display_name if profile else "",
         "title": conversation.title,
         "summary": conversation.summary,
-        "messages": [
-            {
-                "message_id": item.id,
-                "role": item.role,
-                "content": item.content,
-                "status": item.status,
-                "token_usage": item.token_usage,
-                "first_token_ms": item.first_token_ms,
-                "total_ms": item.total_ms,
-                "recommendation": item.recommendation,
-                "retriever_resources": item.retriever_resources,
-                "feedback": item.feedback,
-                "dify_message_id": item.dify_message_id,
-                "dify_task_id": item.dify_task_id,
-                "created_at": item.created_at,
-            }
-            for item in messages
-        ],
+        **_message_audit_fields(latest),
+        "messages": message_items,
     }
 
 

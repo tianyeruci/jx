@@ -1,0 +1,4 @@
+interface:
+  display_name: "维护项目排障知识"
+  short_description: "按开发、测试、部署、Dify和数据域查询并沉淀已验证的排障经验"
+  default_prompt: "使用 $maintain-project-troubleshooting 查询当前任务域的已验证排障经验，并在解决问题后安全沉淀新条目。"

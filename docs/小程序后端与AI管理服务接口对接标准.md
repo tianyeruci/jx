@@ -476,16 +476,25 @@ GET /internal/v1/admin/conversations?user_id=<user_id>&user_name=<user_name>&lim
   "items": [
     {
       "conversation_id": "conv_001",
-      "user_hash": "hash_xxx",
+      "user_id": "user_001",
       "user_name": "张三",
       "title": "我想从零学习AI工具",
       "summary": "用户希望从零开始学习 AI 工具。",
       "summary_gap": false,
-      "last_active_at": "2026-07-28T09:30:00Z"
+      "last_active_at": "2026-07-28T09:30:00Z",
+      "recommended_courses": [{"course_id": "course_ai_001", "name": "AI工具入门"}],
+      "professional_insight": "",
+      "recommendation_note": "适合从基础工具开始。",
+      "token_usage": 128,
+      "first_token_ms": 620,
+      "total_ms": 4820
     }
-  ]
+  ],
+  "next_cursor": null
 }
 ```
+
+列表中的推荐课程、专业见解和推荐理由来自最近一条助手消息；没有值时分别返回空数组或空字符串。`token_usage` 为当前消息总 token，响应耗时单位为毫秒。管理接口不再返回内部 `user_hash`；迁移前没有保存原始用户 ID 的历史记录返回空 `user_id`，用户再次聊天后才会补齐。
 ### 4.2 会话详情
 ```http
 GET /internal/v1/admin/conversations/{conversation_id}
@@ -494,16 +503,25 @@ GET /internal/v1/admin/conversations/{conversation_id}
 ```json
 {
   "conversation_id": "conv_001",
-  "user_hash": "hash_xxx",
+  "user_id": "user_001",
   "user_name": "张三",
   "title": "我想从零学习AI工具",
   "summary": "用户希望从零开始学习 AI 工具。",
+  "recommended_courses": [{"course_id": "course_ai_001", "name": "AI工具入门"}],
+  "professional_insight": "",
+  "recommendation_note": "适合从基础工具开始。",
+  "token_usage": 128,
+  "first_token_ms": 620,
+  "total_ms": 4820,
   "messages": [
     {
       "message_id": "msg_001",
       "role": "assistant",
       "content": "建议先从高频办公场景开始。",
       "status": "completed",
+      "recommended_courses": [{"course_id": "course_ai_001", "name": "AI工具入门"}],
+      "professional_insight": "",
+      "recommendation_note": "适合从基础工具开始。",
       "token_usage": 128,
       "first_token_ms": 620,
       "total_ms": 4820,

@@ -15,6 +15,36 @@ ADMIN_TOKEN = os.getenv("ADMIN_API_TOKEN", "change-me")
 DEFAULT_USER = os.getenv("TEST_USER_ID", "test-user-001")
 
 
+def render_api_notice(address: str) -> None:
+    """Render the non-clickable API endpoint used by this test-only page."""
+    st.caption("API 地址（此页面仅用于测试环境）")
+    st.code(address, language="text")
+
+
+def render_result_diagnostics(result: Any, *, label: str = "诊断与原始结果") -> None:
+    """Keep task ids, citations and raw API payloads available without noise."""
+    with st.expander(label, expanded=False):
+        payload = result
+        st.json(payload)
+
+
+def delete_confirmation_valid(user_id: str, phrase: str) -> bool:
+    """Require an exact, non-empty destructive-action confirmation phrase."""
+    normalized_user_id = user_id.strip()
+    return bool(normalized_user_id) and phrase == f"DELETE {normalized_user_id}"
+
+
+def conversation_id_from_sse_result(result: Any) -> str | None:
+    """Return the local conversation id emitted by the business chat stream."""
+    if not isinstance(result, dict):
+        return None
+    for event_name in ("message_end", "request_started"):
+        payload = result.get(event_name)
+        if isinstance(payload, dict) and payload.get("conversation_id"):
+            return str(payload["conversation_id"])
+    return None
+
+
 def headers(user_id: str | None = None, *, admin: bool = False) -> dict[str, str]:
     result = {"X-Internal-Token": INTERNAL_TOKEN}
     if admin:
@@ -111,6 +141,11 @@ def stream_post(
 
 def business_tab(user_id: str) -> None:
     st.subheader("商业顾问")
+    normalized_user_id = user_id.strip()
+    if st.session_state.get("business_active_user_id") != normalized_user_id:
+        st.session_state["business_active_user_id"] = normalized_user_id
+        st.session_state["business_conversation_id"] = ""
+        st.session_state.pop("last_business_result", None)
     if "business_stop_task_id" not in st.session_state:
         st.session_state["business_stop_task_id"] = ""
     col1, col2 = st.columns([2, 3])
@@ -121,16 +156,27 @@ def business_tab(user_id: str) -> None:
             )
         conversation_payload = st.session_state.get("business_conversations", {})
         conversations = conversation_payload.get("items", []) if isinstance(conversation_payload, dict) else []
-        options = {"新建会话": None}
-        options.update(
-            {
-                item["title"]: item.get("conversation_id", item.get("id"))
-                for item in conversations
-                if item.get("conversation_id", item.get("id"))
-            }
+        active_id = st.session_state.get("business_conversation_id") or ""
+        options: dict[str, str | None] = {"新建会话": None}
+        for item in conversations:
+            item_id = item.get("conversation_id", item.get("id"))
+            if item_id:
+                label = f"{item.get('title') or '未命名'} · {item_id}"
+                options[label] = str(item_id)
+        if active_id and active_id not in options.values():
+            options[f"当前会话 · {active_id}"] = active_id
+        labels = list(options)
+        selected = st.selectbox(
+            "会话",
+            labels,
+            index=next((index for index, label in enumerate(labels) if options[label] == active_id), 0),
         )
-        selected = st.selectbox("会话", list(options))
         conversation_id = options[selected]
+        st.session_state["business_conversation_id"] = conversation_id or ""
+        if st.button("新建会话"):
+            st.session_state["business_conversation_id"] = ""
+            st.session_state.pop("last_business_result", None)
+            conversation_id = None
         if conversation_id:
             if st.button("加载消息"):
                 st.json(
@@ -172,6 +218,9 @@ def business_tab(user_id: str) -> None:
                     (time.perf_counter() - started) * 1000, 1
                 )
                 st.session_state["last_business_result"] = result
+                returned_conversation_id = conversation_id_from_sse_result(result)
+                if returned_conversation_id:
+                    st.session_state["business_conversation_id"] = returned_conversation_id
                 if result.get("task_id"):
                     st.session_state["last_business_task_id"] = result["task_id"]
                     st.session_state["business_stop_task_id"] = result["task_id"]
@@ -180,8 +229,7 @@ def business_tab(user_id: str) -> None:
         if result := st.session_state.get("last_business_result"):
             if result.get("task_id"):
                 st.caption(f"最近任务 ID：{result['task_id']}")
-            with st.expander("课程、引用和诊断", expanded=True):
-                st.json(result)
+            render_result_diagnostics(result, label="课程、引用和诊断")
             message_id = (
                 result.get("message_end", {}).get("message_id")
                 if isinstance(result.get("message_end"), dict)
@@ -239,9 +287,11 @@ def tool_tab(user_id: str, kind: str) -> None:
             if result.get("task_id"):
                 st.session_state[f"{kind}_last_task_id"] = result["task_id"]
                 st.session_state[stop_key] = result["task_id"]
-            st.json(result)
+            st.session_state[f"{kind}_last_result"] = result
         except httpx.HTTPError as exc:
             st.error(str(exc))
+    if result := st.session_state.get(f"{kind}_last_result"):
+        render_result_diagnostics(result)
     last_task_id = st.session_state.get(f"{kind}_last_task_id")
     if last_task_id:
         st.caption(f"最近任务 ID：{last_task_id}")
@@ -299,7 +349,7 @@ def course_tab(user_id: str) -> None:
             message_end = result.get("message_end") or {}
             if isinstance(message_end, dict) and message_end.get("conversation_id"):
                 st.session_state["course_test_conversation_id"] = str(message_end["conversation_id"])
-            st.json(result)
+            render_result_diagnostics(result, label="课程推荐诊断")
         except httpx.HTTPError as exc:
             st.error(str(exc))
 
@@ -498,7 +548,23 @@ def management_tab(default_user_id: str) -> None:
             else []
         )
         if conversations:
-            st.dataframe(conversations, use_container_width=True, hide_index=True)
+            table_rows = [
+                {
+                    "会话 ID": item.get("conversation_id", ""),
+                    "用户 ID": item.get("user_id", ""),
+                    "用户名称": item.get("user_name", ""),
+                    "标题": item.get("title", ""),
+                    "推荐课程": json.dumps(item.get("recommended_courses") or [], ensure_ascii=False),
+                    "专业见解": item.get("professional_insight") or "",
+                    "推荐理由": item.get("recommendation_note") or "",
+                    "Token 消耗": item.get("token_usage", 0),
+                    "首 token(ms)": item.get("first_token_ms"),
+                    "总耗时(ms)": item.get("total_ms"),
+                    "最后活跃": item.get("last_active_at", ""),
+                }
+                for item in conversations
+            ]
+            st.dataframe(table_rows, use_container_width=True, hide_index=True)
             conversation_options = {
                 f"{item.get('title') or '未命名'} · {item.get('conversation_id')}": item.get(
                     "conversation_id"
@@ -510,13 +576,43 @@ def management_tab(default_user_id: str) -> None:
                 "查看会话详情", list(conversation_options), key="admin_conversation_selected"
             )
             if st.button("读取会话详情"):
-                st.json(
-                    api_json(
-                        "GET",
-                        f"/internal/v1/admin/conversations/{conversation_options[selected_conversation]}",
-                        admin=True,
-                    )
+                st.session_state["admin_conversation_detail"] = api_json(
+                    "GET",
+                    f"/internal/v1/admin/conversations/{conversation_options[selected_conversation]}",
+                    admin=True,
                 )
+            detail = st.session_state.get("admin_conversation_detail")
+            if isinstance(detail, dict) and detail.get("conversation_id"):
+                st.markdown("#### 会话详情")
+                st.caption(
+                    f"用户 ID：{detail.get('user_id') or '（历史数据未记录）'}　"
+                    f"用户名称：{detail.get('user_name') or '（未设置）'}"
+                )
+                metric_cols = st.columns(3)
+                metric_cols[0].metric("Token 消耗", detail.get("token_usage", 0))
+                metric_cols[1].metric("首 token(ms)", detail.get("first_token_ms") or "—")
+                metric_cols[2].metric("总耗时(ms)", detail.get("total_ms") or "—")
+                if detail.get("recommended_courses"):
+                    st.write("推荐课程", detail["recommended_courses"])
+                if detail.get("professional_insight"):
+                    st.write("专业见解", detail["professional_insight"])
+                if detail.get("recommendation_note"):
+                    st.write("推荐理由", detail["recommendation_note"])
+                for message in detail.get("messages") or []:
+                    role = "用户" if message.get("role") == "user" else "助手"
+                    created_at = message.get("created_at") or ""
+                    with st.expander(f"{role} · {created_at}", expanded=False):
+                        st.markdown(message.get("content") or "（无内容）")
+                        message_metrics = st.columns(3)
+                        message_metrics[0].metric("Token 消耗", message.get("token_usage", 0))
+                        message_metrics[1].metric("首 token(ms)", message.get("first_token_ms") or "—")
+                        message_metrics[2].metric("总耗时(ms)", message.get("total_ms") or "—")
+                        if message.get("recommended_courses"):
+                            st.write("推荐课程", message["recommended_courses"])
+                        if message.get("professional_insight"):
+                            st.write("专业见解", message["professional_insight"])
+                        if message.get("recommendation_note"):
+                            st.write("推荐理由", message["recommendation_note"])
         elif isinstance(conversations_payload, dict) and conversations_payload:
             st.info("没有符合条件的会话。")
 
@@ -561,7 +657,7 @@ def management_tab(default_user_id: str) -> None:
                 json={"history_retention_days": int(retention_days)},
             )
             st.session_state["admin_retention_settings"] = result
-            st.json(result)
+            render_result_diagnostics(result, label="保留策略更新结果")
 
         if style_items:
             style_by_code = {str(item["code"]): item for item in style_items}
@@ -588,7 +684,7 @@ def management_tab(default_user_id: str) -> None:
                     admin=True,
                     json={"enabled": style_enabled, "style_prompt": style_prompt},
                 )
-                st.json(result)
+                render_result_diagnostics(result, label="输出风格更新结果")
                 st.session_state.pop("admin_style_settings", None)
 
     with knowledge_tab:
@@ -677,26 +773,27 @@ def management_tab(default_user_id: str) -> None:
             "此操作会删除该用户的 AI 会话、消息、画像与学习路线进度；"
             "课程日汇总点击数据会保留。"
         )
-        delete_user_id = st.text_input(
-            "要删除的用户 ID", value=default_user_id, key="admin_delete_user_id"
-        ).strip()
-        delete_phrase = st.text_input(
-            "输入确认短语（DELETE <用户 ID>）",
-            key="admin_delete_user_phrase",
-        )
-        expected_phrase = f"DELETE {delete_user_id}" if delete_user_id else ""
-        if st.button(
-            "删除该用户 AI 数据",
-            type="secondary",
-            disabled=not delete_user_id or delete_phrase != expected_phrase,
-        ):
-            st.json(
-                api_json(
-                    "DELETE",
-                    f"/internal/v1/admin/users/{quote(delete_user_id, safe='')}/ai-data",
-                    admin=True,
-                )
+        with st.form("admin_delete_user_form", enter_to_submit=False):
+            delete_user_id = st.text_input(
+                "要删除的用户 ID", value=default_user_id, key="admin_delete_user_id"
+            ).strip()
+            delete_phrase = st.text_input(
+                "输入确认短语（DELETE <用户 ID>）",
+                key="admin_delete_user_phrase",
             )
+            submitted = st.form_submit_button("删除该用户 AI 数据", type="secondary")
+        if submitted:
+            if not delete_confirmation_valid(delete_user_id, delete_phrase):
+                st.error("确认短语必须精确等于 DELETE <用户 ID>。")
+            else:
+                render_result_diagnostics(
+                    api_json(
+                        "DELETE",
+                        f"/internal/v1/admin/users/{quote(delete_user_id, safe='')}/ai-data",
+                        admin=True,
+                    ),
+                    label="删除结果",
+                )
 
 
 def diagnostics_tab() -> None:
@@ -798,7 +895,7 @@ def logs_tab() -> None:
 def main() -> None:
     st.set_page_config(page_title="AI管理服务测试页", layout="wide")
     st.title("AI管理服务极简测试页")
-    st.caption(f"API: {API_BASE}。此页面仅用于测试环境。")
+    render_api_notice(API_BASE)
     user_id = st.sidebar.text_input("测试用户 ID", DEFAULT_USER)
     tabs = st.tabs(
         [

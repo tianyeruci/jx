@@ -351,7 +351,7 @@ curl -s "$AI_SERVICE_BASE_URL/internal/v1/admin/conversations?limit=50" \
   -H "X-Internal-Token: $INTERNAL_TOKEN" -H "X-Admin-Token: $ADMIN_TOKEN"
 ~~~
 
-返回 items[] 中包含 conversation_id、user_hash、user_name、title、summary、summary_gap、last_active_at，并返回 next_cursor。
+返回 `items[]` 中包含 `conversation_id`、原始 `user_id`、`user_name`、`title`、`summary`、`summary_gap`、`last_active_at`，以及最近一条助手消息的 `recommended_courses`、`professional_insight`、`recommendation_note`、`token_usage`、`first_token_ms`、`total_ms`，并返回 `next_cursor`。管理接口不返回内部 `user_hash`；历史记录没有原始用户 ID 时 `user_id` 为空。
 
 ### 3.2 管理会话详情（必须对接）
 
@@ -364,12 +364,12 @@ curl -s "$AI_SERVICE_BASE_URL/internal/v1/admin/conversations/conv_001" \
   -H "X-Internal-Token: $INTERNAL_TOKEN" -H "X-Admin-Token: $ADMIN_TOKEN"
 ~~~
 
-返回包含会话基本信息和 messages[]；消息可能包含 recommendation、retriever_resources、feedback、token_usage、first_token_ms、total_ms、dify_message_id、dify_task_id。
+返回包含会话基本信息和 `messages[]`。顶层指标取最近一条助手消息；每条消息都包含 `recommended_courses`、`professional_insight`、`recommendation_note`、`token_usage`、`first_token_ms`、`total_ms`，并保留 `recommendation`、`retriever_resources`、`feedback`、`dify_message_id`、`dify_task_id`。推荐课程无值时为 `[]`，专业见解和推荐理由无值时为空字符串。
 
 最小返回示例：
 
 ~~~json
-{"conversation_id":"conv_001","user_hash":"hash_xxx","user_name":"张三","title":"我想从零学习AI工具","summary":"用户希望从零开始学习 AI 工具。","summary_gap":false,"messages":[]}
+{"conversation_id":"conv_001","user_id":"user_001","user_name":"张三","title":"我想从零学习AI工具","summary":"用户希望从零开始学习 AI 工具。","recommended_courses":[],"professional_insight":"","recommendation_note":"","token_usage":0,"first_token_ms":null,"total_ms":null,"messages":[]}
 ~~~
 
 ### 3.3 课程点击统计（按需对接）

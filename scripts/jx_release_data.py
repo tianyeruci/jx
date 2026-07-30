@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -48,7 +48,6 @@ FORMAL_COURSE_IDS = {
     "course_wechat_003",
 }
 FORMAL_ROUTE_IDS = {"route_ai_basic", "route_wechat_operation"}
-TEST_MARKER = re.compile(r"(?:^|[^a-z])(test|synthetic|acceptance)(?:[^a-z]|$)|测试|验收|合成", re.I)
 
 AI_DATA_MODELS = (
     BusinessProfile,
@@ -125,13 +124,49 @@ def _dify_documents() -> dict[str, list[dict[str, Any]]]:
     return result
 
 
-def _redis_keys() -> list[str]:
+def _redis_client() -> Redis:
     settings = get_settings()
-    client = Redis.from_url(settings.redis_url, decode_responses=True)
+    return Redis.from_url(settings.redis_url, decode_responses=True)
+
+
+def _redis_key_inventory(client: Redis) -> dict[str, Any]:
+    """Return non-sensitive evidence; never persist raw keys or values."""
+    keys = sorted(str(item) for item in client.scan_iter(match="*"))
+    return {"count": len(keys), "fingerprint": _fingerprint(keys)}
+
+
+def _redis_db() -> str:
+    return urlsplit(get_settings().redis_url).path.lstrip("/") or "0"
+
+
+def _redis_exclusivity_guard() -> dict[str, Any]:
+    """Require explicit proof before any destructive Redis operation."""
+    settings = get_settings()
+    redis_url = urlsplit(settings.redis_url)
+    redis_db = redis_url.path.lstrip("/") or "0"
+    if redis_db != "5":
+        raise RuntimeError(f"AI Redis must use DB 5, got DB {redis_db}")
+    dify_url = os.getenv("DIFY_REDIS_URL", "")
+    dify_db = os.getenv("DIFY_REDIS_DB", "")
+    if dify_url:
+        parsed_dify = urlsplit(dify_url)
+        if parsed_dify.hostname == redis_url.hostname and (
+            parsed_dify.port or 6379
+        ) == (redis_url.port or 6379) and (parsed_dify.path.lstrip("/") or "0") == redis_db:
+            raise RuntimeError("Redis DB 5 is not exclusive: DIFY_REDIS_URL points to it")
+    if dify_db == redis_db:
+        raise RuntimeError("Redis DB 5 is not exclusive: DIFY_REDIS_DB points to it")
+    if os.getenv("AI_REDIS_EXCLUSIVE", "").lower() not in {"1", "true", "yes"}:
+        raise RuntimeError("set AI_REDIS_EXCLUSIVE=1 only after proving DB 5 is AI-only")
+    if os.getenv("REDIS_BACKUP_CONFIRMED", "").lower() not in {"1", "true", "yes"}:
+        raise RuntimeError("set REDIS_BACKUP_CONFIRMED=1 only after a recoverable Redis backup")
+    client = _redis_client()
     try:
-        return sorted(str(item) for item in client.scan_iter(match="*"))
+        client.ping()
+        inventory = _redis_key_inventory(client)
     finally:
         client.close()
+    return {"redis_host": redis_url.hostname, "redis_db": redis_db, **inventory, "exclusive": True}
 
 
 def _counts(session) -> dict[str, int]:
@@ -208,7 +243,11 @@ def snapshot(output: Path) -> dict[str, Any]:
             ],
         }
     payload["dify_documents"] = _dify_documents()
-    payload["redis_keys"] = _redis_keys()
+    redis_client = _redis_client()
+    try:
+        payload["redis_inventory"] = _redis_key_inventory(redis_client)
+    finally:
+        redis_client.close()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
@@ -244,37 +283,76 @@ def _is_formal_course_document(metadata: dict[str, str]) -> bool:
     )
 
 
-def _test_document_candidates(
+def _manifest_document_ids(manifest: Path | None) -> dict[str, set[str]]:
+    """Read exact Dify IDs from a run manifest; names are never an authority."""
+    result: dict[str, set[str]] = {"general": set(), "course": set()}
+    if manifest is None:
+        return result
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    raw = payload.get("dify_document_ids") or payload.get("created_dify_document_ids") or {}
+    if isinstance(raw, list):
+        raw = {"general": raw, "course": raw}
+    if not isinstance(raw, dict):
+        raise ValueError("manifest.dify_document_ids must be a dataset map or list")
+    for code in result:
+        values = raw.get(code) or []
+        if not isinstance(values, list):
+            raise ValueError(f"manifest.dify_document_ids.{code} must be a list")
+        result[code] = {str(item) for item in values if str(item).strip()}
+    return result
+
+
+def _local_associated_document_ids() -> dict[str, set[str]]:
+    """Collect only exact IDs created/associated by this service."""
+    with SessionLocal() as session:
+        cleaning_ids = {
+            str(item)
+            for item in session.scalars(
+                select(CleaningDocument.dify_document_id).where(
+                    CleaningDocument.dify_document_id.is_not(None)
+                )
+            )
+            if item
+        }
+        catalog_ids = set(_local_nonformal_catalog_document_ids())
+    return {"general": set(cleaning_ids), "course": cleaning_ids | catalog_ids}
+
+
+def _planned_document_candidates(
     documents: dict[str, list[dict[str, Any]]],
-) -> dict[str, list[str]]:
+    manifest_ids: dict[str, set[str]],
+) -> tuple[dict[str, list[str]], dict[str, dict[str, list[str]]], dict[str, list[str]]]:
+    associated = _local_associated_document_ids()
     candidates: dict[str, list[str]] = {"general": [], "course": []}
+    reasons: dict[str, dict[str, list[str]]] = {"general": {}, "course": {}}
+    preserved_unknown: dict[str, list[str]] = {"general": [], "course": []}
     for code, entries in documents.items():
+        exact_ids = manifest_ids.get(code, set()) | associated.get(code, set())
         for document in entries:
+            document_id = str(document.get("id") or "")
+            if not document_id:
+                continue
             metadata = document.get("metadata") or {}
             if _is_formal_course_document(metadata):
+                preserved_unknown[code].append(document_id)
                 continue
-            course_id = str(metadata.get("course_id") or "")
-            route_id = str(metadata.get("route_id") or "")
-            if (course_id and course_id not in FORMAL_COURSE_IDS) or (
-                route_id and route_id not in FORMAL_ROUTE_IDS
-            ):
-                candidates[code].append(str(document.get("id") or ""))
-                continue
-            evidence = " ".join(
-                [
-                    str(document.get("name") or ""),
-                    *(f"{key}={value}" for key, value in metadata.items()),
-                ]
-            )
-            if TEST_MARKER.search(evidence):
-                candidates[code].append(str(document.get("id") or ""))
-    return {
-        code: sorted(set(document_id for document_id in ids if document_id))
-        for code, ids in candidates.items()
-    }
+            if document_id in exact_ids:
+                candidates[code].append(document_id)
+                reasons[code][document_id] = []
+                if document_id in manifest_ids.get(code, set()):
+                    reasons[code][document_id].append("explicit_run_manifest")
+                if document_id in associated.get(code, set()):
+                    reasons[code][document_id].append("local_service_association")
+            else:
+                preserved_unknown[code].append(document_id)
+    return (
+        {code: sorted(set(ids)) for code, ids in candidates.items()},
+        reasons,
+        {code: sorted(set(ids)) for code, ids in preserved_unknown.items()},
+    )
 
 
-def _delete_test_dify_documents(
+def _delete_planned_dify_documents(
     candidates: dict[str, list[str]],
 ) -> dict[str, list[str]]:
     settings = get_settings()
@@ -324,28 +402,81 @@ def _local_nonformal_catalog_document_ids() -> list[str]:
     return sorted(set([*course_ids, *route_ids]))
 
 
-def clean(output: Path) -> dict[str, Any]:
-    before_documents = _dify_documents()
-    candidates = _test_document_candidates(before_documents)
-    remote_course_ids = {
-        str(item.get("id") or "") for item in before_documents["course"]
-    }
-    candidates["course"] = sorted(
-        set(
-            [
-                *candidates["course"],
-                *(
-                    document_id
-                    for document_id in _local_nonformal_catalog_document_ids()
-                    if document_id in remote_course_ids
-                ),
-            ]
-        )
+def _plan_basis(
+    configuration: dict[str, Any],
+    counts: dict[str, int],
+    documents: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    return {"configuration": configuration, "counts": counts, "dify_documents": documents}
+
+
+def plan_clean(output: Path, manifest: Path | None = None) -> dict[str, Any]:
+    with SessionLocal() as session:
+        configuration = _configuration_fingerprint()
+        counts = _counts(session)
+    documents = _dify_documents()
+    manifest_ids = _manifest_document_ids(manifest)
+    candidates, reasons, preserved_unknown = _planned_document_candidates(
+        documents, manifest_ids
     )
-    deleted_documents = _delete_test_dify_documents(candidates)
+    basis = _plan_basis(configuration, counts, documents)
+    plan = {
+        "plan_version": 2,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "source_fingerprint": _fingerprint(basis),
+        "plan_fingerprint": _fingerprint(
+            {"basis": basis, "candidate_ids": candidates, "manifest_ids": manifest_ids}
+        ),
+        "configuration": configuration,
+        "counts": counts,
+        "candidate_ids": candidates,
+        "candidate_reasons": reasons,
+        "preserved_unknown_document_ids": preserved_unknown,
+        "manifest_fingerprint": _fingerprint(
+            {code: sorted(values) for code, values in manifest_ids.items()}
+        ),
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    return plan
+
+
+def _verified_clean_plan(plan_path: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    if plan.get("plan_version") != 2 or not plan.get("plan_fingerprint"):
+        raise RuntimeError("clean requires a versioned plan-clean output")
+    with SessionLocal() as session:
+        counts = _counts(session)
+    documents = _dify_documents()
+    basis = _plan_basis(_configuration_fingerprint(), counts, documents)
+    if _fingerprint(basis) != plan.get("source_fingerprint"):
+        raise RuntimeError("current data no longer matches plan source_fingerprint")
+    candidates = plan.get("candidate_ids")
+    if not isinstance(candidates, dict) or set(candidates) != {"general", "course"}:
+        raise RuntimeError("plan candidate_ids must explicitly cover both Dify datasets")
+    current_ids = {
+        code: {str(item.get("id") or "") for item in documents.get(code, [])}
+        for code in ("general", "course")
+    }
+    for code in current_ids:
+        if not set(candidates[code]) <= current_ids[code]:
+            raise RuntimeError(f"plan contains unknown {code} Dify document ID")
+    return plan, basis, documents
+
+
+def clean(output: Path, plan_path: Path) -> dict[str, Any]:
+    plan, basis, before_documents = _verified_clean_plan(plan_path)
+    redis_guard = _redis_exclusivity_guard()
+    candidates = {
+        code: sorted(set(str(item) for item in plan["candidate_ids"].get(code, [])))
+        for code in ("general", "course")
+    }
+    deleted_documents = _delete_planned_dify_documents(candidates)
 
     with SessionLocal() as session:
-        before_counts = _counts(session)
+        before_counts = basis["counts"]
         extra_course_ids = sorted(
             set(session.scalars(select(Course.course_id))) - FORMAL_COURSE_IDS
         )
@@ -380,10 +511,9 @@ def clean(output: Path) -> dict[str, Any]:
         _formal_guard(session)
         after_counts = _counts(session)
 
-    settings = get_settings()
-    redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
+    redis_client = _redis_client()
     try:
-        redis_size_before = int(redis_client.dbsize())
+        redis_inventory_before = _redis_key_inventory(redis_client)
         redis_client.flushdb()
     finally:
         redis_client.close()
@@ -395,9 +525,9 @@ def clean(output: Path) -> dict[str, Any]:
         for code in style_codes:
             get_style_prompt(session, code)
 
-    redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
+    redis_client = _redis_client()
     try:
-        redis_size_after = int(redis_client.dbsize())
+        redis_inventory_after = _redis_key_inventory(redis_client)
     finally:
         redis_client.close()
 
@@ -414,8 +544,10 @@ def clean(output: Path) -> dict[str, Any]:
         "dify_counts_after": {
             code: len(items) for code, items in after_documents.items()
         },
-        "redis_size_before": redis_size_before,
-        "redis_size_after": redis_size_after,
+        "redis_inventory_before": redis_inventory_before,
+        "redis_inventory_after": redis_inventory_after,
+        "redis_exclusivity": redis_guard,
+        "plan_fingerprint": plan["plan_fingerprint"],
         "history_retention_days": history_retention_days,
         "style_setting_count": len(style_codes),
         "formal_course_count": len(FORMAL_COURSE_IDS),
@@ -453,7 +585,9 @@ def safe_summary(payload: dict[str, Any]) -> dict[str, Any]:
                 code: len(items)
                 for code, items in payload.get("dify_documents", {}).items()
             },
-            "redis_key_count": len(payload.get("redis_keys", [])),
+            "redis_key_count": int(
+                (payload.get("redis_inventory") or {}).get("count", 0)
+            ),
             "output_fingerprint": _fingerprint(payload),
         }
     return payload
@@ -462,15 +596,24 @@ def safe_summary(payload: dict[str, Any]) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for command in ("snapshot", "clean"):
+    for command in ("snapshot", "plan-clean", "clean"):
         child = subparsers.add_parser(command)
         child.add_argument("--output", type=Path, required=True)
+        if command == "plan-clean":
+            child.add_argument("--manifest", type=Path)
+        elif command == "clean":
+            child.add_argument("--plan", type=Path, required=True)
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
-    payload = snapshot(args.output) if args.command == "snapshot" else clean(args.output)
+    if args.command == "snapshot":
+        payload = snapshot(args.output)
+    elif args.command == "plan-clean":
+        payload = plan_clean(args.output, args.manifest)
+    else:
+        payload = clean(args.output, args.plan)
     print(json.dumps(safe_summary(payload), ensure_ascii=False, sort_keys=True))
     return 0
 

@@ -67,6 +67,9 @@ class BusinessProfile(Base, TimestampMixin):
     __tablename__ = "business_profile"
 
     user_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Keep the internal hash for existing relationships, while retaining the
+    # administrator-visible source identifier for audit views.
+    user_id: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
     confirmed: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     candidates: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     display_name: Mapped[str] = mapped_column(String(120), default="", index=True)

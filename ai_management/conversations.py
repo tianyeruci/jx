@@ -26,6 +26,7 @@ from .models import (
     BusinessConversation,
     BusinessConversationSegment,
     BusinessMessage,
+    BusinessProfile,
     ExternalDeletionTask,
 )
 from .privacy import load_public_redaction_rules
@@ -244,14 +245,18 @@ def prepare_business_chat(
         session.add(conversation)
         session.flush()
 
-    if user_display_name:
-        from .models import BusinessProfile
-
-        profile = session.get(BusinessProfile, user_hash)
-        if profile is None:
-            profile = BusinessProfile(user_hash=user_hash, display_name=user_display_name)
-            session.add(profile)
-        elif profile.display_name != user_display_name:
+    profile = session.get(BusinessProfile, user_hash)
+    if profile is None:
+        profile = BusinessProfile(
+            user_hash=user_hash,
+            user_id=user_id,
+            display_name=user_display_name,
+        )
+        session.add(profile)
+    else:
+        if profile.user_id != user_id:
+            profile.user_id = user_id
+        if user_display_name and profile.display_name != user_display_name:
             profile.display_name = user_display_name
 
     lock_context = cache.lock(f"ai:conversation-lock:{conversation.id}", ttl=600)

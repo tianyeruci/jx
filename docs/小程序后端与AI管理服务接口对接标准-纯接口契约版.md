@@ -571,13 +571,20 @@ Query 参数：
 | --- | --- | --- | --- |
 | items | array<object> | 是 | 否 |
 | items[].conversation_id | string | 是 | 否 |
-| items[].user_hash | string | 是 | 否 |
+| items[].user_id | string | 是 | 是 |
 | items[].user_name | string | 是 | 否 |
 | items[].title | string | 是 | 否 |
 | items[].summary | string | 是 | 否 |
 | items[].summary_gap | boolean | 是 | 否 |
 | items[].last_active_at | datetime | 是 | 否 |
+| items[].recommended_courses | array<object> | 是 | 否 |
+| items[].professional_insight | string | 是 | 否 |
+| items[].recommendation_note | string | 是 | 否 |
+| items[].token_usage | integer | 是 | 否 |
+| items[].first_token_ms | integer | 是 | 是 |
+| items[].total_ms | integer | 是 | 是 |
 | next_cursor | null | 是 | 是 |
+`recommended_courses`、`professional_insight`、`recommendation_note`、token 和耗时取最近一条助手消息；无课程返回 `[]`，无见解或推荐理由返回空字符串。管理接口不返回内部 `user_hash`。迁移前未保存原始用户 ID 的历史记录返回空 `user_id`，用户再次聊天后补齐。
 入参案例：
 ~~~http
 GET /internal/v1/admin/conversations?user_name=张三&limit=50
@@ -586,7 +593,7 @@ X-Admin-Token: <ADMIN_TOKEN>
 ~~~
 出参案例：
 ~~~json
-{"items":[{"conversation_id":"conv-001","user_hash":"hash-xxx","user_name":"张三","title":"AI 工具学习","summary":"用户希望学习 AI 工具。","summary_gap":false,"last_active_at":"2026-07-28T09:30:00Z"}],"next_cursor":null}
+{"items":[{"conversation_id":"conv-001","user_id":"user-001","user_name":"张三","title":"AI 工具学习","summary":"用户希望学习 AI 工具。","summary_gap":false,"last_active_at":"2026-07-28T09:30:00Z","recommended_courses":[{"course_id":"course-ai-001","name":"AI 工具入门"}],"professional_insight":"","recommendation_note":"适合从基础工具开始。","token_usage":120,"first_token_ms":500,"total_ms":2500}],"next_cursor":null}
 ~~~
 ### 3.2 管理会话详情
 ~~~http
@@ -600,16 +607,25 @@ Path 参数：
 | 字段 | 类型 | 一定返回 | 可空 |
 | --- | --- | --- | --- |
 | conversation_id | string | 是 | 否 |
-| user_hash | string | 是 | 否 |
+| user_id | string | 是 | 是 |
 | user_name | string | 是 | 否 |
 | title | string | 是 | 否 |
 | summary | string | 是 | 否 |
+| recommended_courses | array<object> | 是 | 否 |
+| professional_insight | string | 是 | 否 |
+| recommendation_note | string | 是 | 否 |
+| token_usage | integer | 是 | 否 |
+| first_token_ms | integer | 是 | 是 |
+| total_ms | integer | 是 | 是 |
 | messages | array<object> | 是 | 否 |
 | messages[].message_id | string | 是 | 否 |
 | messages[].role | string | 是 | 否 |
 | messages[].content | string | 是 | 否 |
 | messages[].status | string | 是 | 否 |
-| messages[].token_usage | object | 是 | 是 |
+| messages[].recommended_courses | array<object> | 是 | 否 |
+| messages[].professional_insight | string | 是 | 否 |
+| messages[].recommendation_note | string | 是 | 否 |
+| messages[].token_usage | integer | 是 | 否 |
 | messages[].first_token_ms | integer | 是 | 是 |
 | messages[].total_ms | integer | 是 | 是 |
 | messages[].recommendation | object | 是 | 是 |
@@ -626,7 +642,7 @@ X-Admin-Token: <ADMIN_TOKEN>
 ~~~
 出参案例：
 ~~~json
-{"conversation_id":"conv-001","user_hash":"hash-xxx","user_name":"张三","title":"AI 工具学习","summary":"用户希望学习 AI 工具。","messages":[{"message_id":"msg-001","role":"assistant","content":"建议先从入门开始。","status":"completed","token_usage":{"total_tokens":120},"first_token_ms":500,"total_ms":2500,"recommendation":{},"retriever_resources":[],"feedback":null,"dify_message_id":"external-msg-001","dify_task_id":"task-001","created_at":"2026-07-28T09:00:05Z"}]}
+{"conversation_id":"conv-001","user_id":"user-001","user_name":"张三","title":"AI 工具学习","summary":"用户希望学习 AI 工具。","recommended_courses":[{"course_id":"course-ai-001","name":"AI 工具入门"}],"professional_insight":"","recommendation_note":"适合从基础工具开始。","token_usage":120,"first_token_ms":500,"total_ms":2500,"messages":[{"message_id":"msg-001","role":"assistant","content":"建议先从入门开始。","status":"completed","recommended_courses":[{"course_id":"course-ai-001","name":"AI 工具入门"}],"professional_insight":"","recommendation_note":"适合从基础工具开始。","token_usage":120,"first_token_ms":500,"total_ms":2500,"recommendation":{},"retriever_resources":[],"feedback":null,"dify_message_id":"external-msg-001","dify_task_id":"task-001","created_at":"2026-07-28T09:00:05Z"}]}
 ~~~
 ### 3.3 课程点击统计
 对接级别：按需

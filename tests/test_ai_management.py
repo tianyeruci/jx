@@ -156,6 +156,10 @@ def test_business_chat_stream_and_history(service_db, monkeypatch):
         ).json()
         assert [item["role"] for item in messages["items"]] == ["user", "assistant"]
         assert messages["items"][1]["content"] == "这是测试回答。"
+    with service_db() as session:
+        profile = session.get(BusinessProfile, user_hash("user-001"))
+        assert profile is not None
+        assert profile.user_id == "user-001"
 
 
 def test_history_course_cards_are_re_signed_from_current_catalog(service_db):
@@ -820,6 +824,98 @@ def test_admin_conversations_include_next_cursor(service_db):
     payload = response.json()
     assert payload["next_cursor"] is None
     assert payload["items"][0]["title"] == "测试会话"
+
+
+def test_admin_conversation_fields_use_user_id_and_latest_assistant(service_db):
+    now = datetime.now(timezone.utc)
+    with service_db() as session:
+        subject_hash = user_hash("admin-real-user")
+        session.add(
+            BusinessProfile(
+                user_hash=subject_hash,
+                user_id="admin-real-user",
+                display_name="管理测试用户",
+            )
+        )
+        conversation = BusinessConversation(
+            user_hash=subject_hash,
+            title="字段测试",
+            summary="测试摘要",
+            last_active_at=now,
+        )
+        session.add(conversation)
+        session.flush()
+        session.add_all(
+            [
+                BusinessMessage(
+                    conversation_id=conversation.id,
+                    role="assistant",
+                    content="旧回答",
+                    status="completed",
+                    token_usage=7,
+                    first_token_ms=70,
+                    total_ms=700,
+                    recommendation={
+                        "course_cards": [{"course_id": "old-course", "name": "旧课程"}],
+                        "expert_insight": "旧见解",
+                        "recommendation_note": "旧理由",
+                    },
+                    created_at=now - timedelta(minutes=1),
+                ),
+                BusinessMessage(
+                    conversation_id=conversation.id,
+                    role="assistant",
+                    content="新回答",
+                    status="completed",
+                    token_usage=42,
+                    first_token_ms=420,
+                    total_ms=4200,
+                    recommendation={
+                        "course_cards": [{"course_id": "new-course", "name": "新课程"}],
+                        "expert_insight": {"content": "新见解"},
+                        "recommendation_note": "新理由",
+                    },
+                    created_at=now,
+                ),
+            ]
+        )
+        session.commit()
+        conversation_id = conversation.id
+
+    admin_headers = {
+        "X-Internal-Token": "test-internal-token",
+        "X-Admin-Token": "test-admin-token",
+    }
+    with TestClient(app) as client:
+        list_response = client.get(
+            "/internal/v1/admin/conversations",
+            headers=admin_headers,
+            params={"user_id": "admin-real-user"},
+        )
+        detail_response = client.get(
+            f"/internal/v1/admin/conversations/{conversation_id}",
+            headers=admin_headers,
+        )
+
+    item = list_response.json()["items"][0]
+    assert list_response.status_code == 200
+    assert "user_hash" not in item
+    assert item["user_id"] == "admin-real-user"
+    assert item["recommended_courses"] == [{"course_id": "new-course", "name": "新课程"}]
+    assert item["professional_insight"] == "新见解"
+    assert item["recommendation_note"] == "新理由"
+    assert item["token_usage"] == 42
+    assert item["first_token_ms"] == 420
+    assert item["total_ms"] == 4200
+
+    detail = detail_response.json()
+    assert detail_response.status_code == 200
+    assert "user_hash" not in detail
+    assert detail["user_id"] == "admin-real-user"
+    assert detail["messages"][0]["professional_insight"] == "旧见解"
+    assert detail["messages"][1]["recommended_courses"] == [
+        {"course_id": "new-course", "name": "新课程"}
+    ]
 
 
 def test_admin_document_list_uses_local_cleaning_source_fallback(service_db, monkeypatch):
