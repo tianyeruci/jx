@@ -1,4 +1,7 @@
-import json, os, uuid
+import json
+import os
+import uuid
+
 from ai_management.dify import DifyAppClient
 
 client = DifyAppClient(os.environ['DIFY_BASE_URL'], os.environ['DIFY_BUSINESS_APP_API_KEY'])

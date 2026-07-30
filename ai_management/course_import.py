@@ -4,8 +4,8 @@ import hashlib
 import re
 import unicodedata
 from dataclasses import dataclass
-from pathlib import Path
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -15,10 +15,10 @@ from knowledge_cleaner.dify import DifyKnowledgeClient
 
 from .config import get_settings
 from .courses import rebuild_snapshot
-from .services.admin_settings import bump_catalog_revision
 from .db import SessionLocal
 from .models import Course, ExternalDeletionTask, LearningRoute
 from .schemas import CourseRecord, RouteRecord
+from .services.admin_settings import bump_catalog_revision
 from .services.observability import record_event
 
 

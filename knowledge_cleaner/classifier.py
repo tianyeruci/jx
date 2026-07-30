@@ -6,7 +6,6 @@ from typing import Any, Literal
 
 import httpx
 
-
 DOMAIN_CLASSES = frozenset(
     {"business_core", "business_support", "off_scope", "promotion_or_catalog", "uncertain"}
 )

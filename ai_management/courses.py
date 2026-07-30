@@ -6,7 +6,7 @@ import hmac
 import json
 import re
 import time
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -565,7 +565,14 @@ def validate_recommendation(
         elif action_type == "confirm_stage_completed" and progress:
             completion_confirmation = any(
                 marker in _normalize_text(query)
-                for marker in ("已完成", "完成了", "我完成", "跳过", "略过")
+                for marker in (
+                    "已完成",
+                    "已经完成",
+                    "完成了",
+                    "我完成",
+                    "跳过",
+                    "略过",
+                )
             ) and "吗" not in query and "？" not in query and "?" not in query
             current_index = next(
                 (

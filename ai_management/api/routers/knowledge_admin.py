@@ -23,11 +23,11 @@ from ...config import get_settings
 from ...courses import rebuild_snapshot
 from ...db import get_session
 from ...errors import ServiceError
-from ...models import Course, CleaningBatch, CleaningDocument, CleaningFile, LearningRoute
+from ...models import CleaningBatch, CleaningDocument, CleaningFile, Course, LearningRoute
 from ...schemas import CleaningReviewDecisionRequest, DeleteDocumentRequest, DocumentStatusRequest
 from ...security import require_admin_token, require_internal_token
-from ...services.observability import record_event
 from ...services.admin_settings import bump_catalog_revision
+from ...services.observability import record_event
 
 router = APIRouter(
     prefix="/internal/v1/admin/knowledge-bases",

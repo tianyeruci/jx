@@ -7,13 +7,13 @@ import pytest
 import yaml
 from sqlalchemy import select
 
+from ai_management.cache import Cache
 from ai_management.cleaning import STRATEGY_REGISTRY
 from ai_management.course_import import (
     load_course_records_text,
     load_route_records_text,
     sync_cleaning_catalog_record,
 )
-from ai_management.cache import Cache
 from ai_management.courses import (
     get_snapshot,
     infer_recommendation_decision,

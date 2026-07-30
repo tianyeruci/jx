@@ -6,7 +6,6 @@ from pathlib import Path
 
 from .models import Disposition, PageText, SourceUnit
 
-
 BUSINESS_TERMS = {
     "个人ip", "定位", "内容", "写作", "自媒体", "获客", "私域", "流量", "销售", "成交",
     "产品", "定价", "变现", "交付", "经营", "创业", "一人公司", "社群", "课程", "学习",

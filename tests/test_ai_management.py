@@ -10,6 +10,7 @@ import yaml
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from ai_management.api.routers import knowledge_admin as knowledge_admin_router
 from ai_management.cache import cache
 from ai_management.cleaning import (
     STRATEGY_REGISTRY,
@@ -28,7 +29,6 @@ from ai_management.courses import (
     validate_recommendation,
 )
 from ai_management.main import app
-from ai_management.api.routers import knowledge_admin as knowledge_admin_router
 from ai_management.models import (
     BusinessConversation,
     BusinessMessage,
@@ -566,8 +566,8 @@ def test_cleaning_strategy_and_filename_rules(tmp_path):
     )
     name = dify_document_name(original, hashlib.sha256(b"x").hexdigest(), 1)
     assert "/" not in name and "\\" not in name
-    assert name.endswith("__2d711642__1.md")
-    assert len(Path(name).stem) < 100
+    assert name.endswith("__001.md")
+    assert len(name) <= 300
 
     source = tmp_path / "sample.md"
     source.write_text("# 标题\n\n正文", encoding="utf-8")
@@ -600,8 +600,8 @@ def test_cleaning_batch_upload_reports_each_file(
     monkeypatch,
     tmp_path,
 ):
-    from ai_management.tasks import process_cleaning_file
     from ai_management import cleaning as cleaning_module
+    from ai_management.tasks import process_cleaning_file
 
     monkeypatch.setattr(get_settings(), "upload_root", tmp_path)
     monkeypatch.setattr(cleaning_module, "_preflight_remote_duplicates", lambda **_: None)

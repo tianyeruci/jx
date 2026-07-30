@@ -19,10 +19,9 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Protocol, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 
 from pypdf import PdfReader
-
 
 _COMPACT_WHITESPACE = re.compile(r"[ \t\f\v]+")
 _MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\([^\n)]*\)")

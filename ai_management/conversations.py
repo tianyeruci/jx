@@ -13,7 +13,12 @@ from sqlalchemy.orm import Session, selectinload
 from .cache import cache
 from .config import get_settings
 from .context import build_context, should_summarize
-from .courses import create_redirect_token, get_snapshot, infer_recommendation_decision, validate_recommendation
+from .courses import (
+    create_redirect_token,
+    get_snapshot,
+    infer_recommendation_decision,
+    validate_recommendation,
+)
 from .db import SessionLocal
 from .dify import DifyAppClient, extract_json_object
 from .errors import ServiceError
@@ -23,15 +28,21 @@ from .models import (
     BusinessMessage,
     ExternalDeletionTask,
 )
+from .privacy import load_public_redaction_rules
 from .schemas import RecommendationDecision
 from .security import dify_user
 from .services.observability import record_event
 from .services.style_settings import get_style_prompt
 from .sse import SSEEmitter
-from .stream_filter import StreamingUrlRedactor
+from .stream_filter import StreamingPublicRedactor
 from .timeutil import business_today
 
 logger = logging.getLogger(__name__)
+
+PUBLIC_REFERENCE_PRIVACY_INSTRUCTION = (
+    "公开引用不得展示资料中的真实姓名、昵称、笔名、个人账号称呼或原文件名；"
+    "只能使用清洗后的“作者”“案例人物A”“匿名参与者”等稳定匿名称谓。"
+)
 
 
 def _business_client() -> DifyAppClient:
@@ -212,6 +223,8 @@ def prepare_business_chat(
             422,
             False,
         )
+    redaction_rules = load_public_redaction_rules(session)
+    query = redaction_rules.sanitize_text(query)
 
     if conversation_id:
         conversation = session.scalar(
@@ -262,9 +275,17 @@ def prepare_business_chat(
     session.add_all([user_message, assistant_message])
     session.flush()
     context = build_context(session, conversation, user_hash, exclude_message_id=user_message.id)
+    configured_style = get_style_prompt(session, "business_answer").strip()
     context.inputs.update(
         {
-            "business_output_style": get_style_prompt(session, "business_answer"),
+            "business_output_style": "\n\n".join(
+                value
+                for value in (
+                    configured_style,
+                    PUBLIC_REFERENCE_PRIVACY_INSTRUCTION,
+                )
+                if value
+            ),
         }
     )
     conversation.last_active_at = datetime.now(timezone.utc)
@@ -303,7 +324,9 @@ def prepare_business_chat(
         error_to_emit: ServiceError | None = None
         enqueue_summary = False
         task_announced = False
-        url_redactor = StreamingUrlRedactor()
+        public_redactor = StreamingPublicRedactor(
+            redaction_rules.replacements
+        )
 
         yield emit(
             "request_started",
@@ -350,7 +373,7 @@ def prepare_business_chat(
                     if raw_delta:
                         if first_token_ms is None:
                             first_token_ms = int((time.monotonic() - started) * 1000)
-                        delta = url_redactor.feed(raw_delta)
+                        delta = public_redactor.feed(raw_delta)
                         if delta:
                             answer_parts.append(delta)
                             yield emit("answer_delta", {"delta": delta})
@@ -372,7 +395,14 @@ def prepare_business_chat(
                     metadata = item.get("metadata") or {}
                     raw_resources = metadata.get("retriever_resources") or []
                     if isinstance(raw_resources, list):
-                        resources = [value for value in raw_resources if isinstance(value, dict)]
+                        resources = [
+                            redaction_rules.sanitize_value(
+                                value,
+                                remove_urls=True,
+                            )
+                            for value in raw_resources
+                            if isinstance(value, dict)
+                        ]
                     usage = metadata.get("usage") or {}
                     if isinstance(usage, dict):
                         usage_metadata = usage
@@ -383,7 +413,7 @@ def prepare_business_chat(
                         502,
                         True,
                     )
-            final_delta = url_redactor.finish()
+            final_delta = public_redactor.finish()
             if final_delta:
                 answer_parts.append(final_delta)
                 yield emit("answer_delta", {"delta": final_delta})
@@ -562,10 +592,11 @@ def list_user_conversations(
     rows = list(session.scalars(statement.order_by(BusinessConversation.created_at.desc(), BusinessConversation.id.desc()).limit(limit + 1)))
     has_more = len(rows) > limit
     rows = rows[:limit]
+    redaction_rules = load_public_redaction_rules(session)
     items = [
         {
             "conversation_id": row.id,
-            "title": row.title,
+            "title": redaction_rules.sanitize_text(row.title),
             "last_active_at": row.last_active_at,
             "created_at": row.created_at,
         }
@@ -600,6 +631,7 @@ def list_conversation_messages(
     has_more = len(messages) > limit
     messages = messages[:limit]
     snapshot = get_snapshot(session)
+    redaction_rules = load_public_redaction_rules(session)
 
     def _current_recommendation(value: dict[str, Any] | None) -> dict[str, Any]:
         """Never return expired or now-disabled signed course links from history."""
@@ -626,10 +658,18 @@ def list_conversation_messages(
         {
             "message_id": row.id,
             "role": row.role,
-            "content": row.content,
+            "content": redaction_rules.sanitize_text(
+                row.content,
+                remove_urls=True,
+            ),
             "status": row.status,
-            "recommendation": _current_recommendation(row.recommendation),
-            "retriever_resources": row.retriever_resources,
+            "recommendation": redaction_rules.sanitize_value(
+                _current_recommendation(row.recommendation)
+            ),
+            "retriever_resources": redaction_rules.sanitize_value(
+                row.retriever_resources,
+                remove_urls=True,
+            ),
             "created_at": row.created_at,
         }
         for row in messages

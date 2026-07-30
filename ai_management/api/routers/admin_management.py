@@ -3,8 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from ...db import get_session
 from ...config import get_settings
+from ...db import get_session
 from ...errors import ServiceError
 from ...schemas import RetentionSettingsRequest, StyleSettingUpdateRequest
 from ...security import require_admin_token, require_internal_token

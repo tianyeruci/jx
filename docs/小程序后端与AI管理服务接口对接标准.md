@@ -1,83 +1,28 @@
 # 小程序后端与 AI 管理服务接口对接标准
-
-更新时间：2026-07-29
-
-适用范围：
-
-- 小程序后端接入 AI 管理服务
-- AI 管理页接入 AI 管理服务
-
-本文只写当前代码中已经实现的接口。未实现的能力不写成既有标准。
-
-2026-07-28 文档清洗链路补充结论：
-
-- 第 3 章“小程序后端对接接口”本轮无协议变更。
-- 本轮新增内容只影响第 4 章“AI 管理页对接接口”中的知识库清洗管理能力。
-- 小程序前端依旧不能直接持有管理 Token，也不直接调用清洗管理接口。
-
-2026-07-29 r8 实测状态：
-
-- 服务器实测版本为核心镜像 `jx-now-ai-management:0.2.1-cleaning-27a8bc0-r8`、测试页镜像 `jx-now-ai-management-ui:0.2.1-cleaning-27a8bc0-r8`。
-- 本文列出的接口已按路径、请求参数和返回结构完成 `49/49` 真实契约验证；浏览器测试页真实用户操作为 `15/15` 通过。
-- 管理会话列表及知识库文档列表的 `next_cursor`、清洗文档的 `source_filename` / `source_sha256` 已由实际响应核验。
-- 验证过程、真实样本文档清洗入库和负向样本结果见 [测试页与接口全量实测记录-2026-07-29.md](测试页与接口全量实测记录-2026-07-29.md)。
-
-2026-07-29 r9 测试页补充：
-
-- 测试页已升级为 `jx-now-ai-management-ui:0.2.1-cleaning-27a8bc0-r9`，提供本文全部接口的手工验收入口；此前缺失的会话详情、配置更新、知识库文档列表 / 启停 / 删除、删除用户 AI 数据均已补齐。
-- 写操作均显示真实请求参数，并要求勾选确认或输入精确确认值；测试页不会把管理员 Token 暴露给浏览器。
-- r9 页面已真实读取配置和知识库文档，确认新增入口与 API 连通；涉及真实修改或删除的接口仍以 r8 `49/49` 契约实测为执行证据。
-
-2026-07-29 当前接口契约核对口径：
-
-- jx 线上当前核心服务为 `jx-now-ai-management:0.2.1-course-route-fc36f00-r4`，API、Worker、Scheduler 同版本；测试页为 `jx-now-ai-management-ui:0.2.1-course-route-fc36f00-r4`。
-- 从 `10cd1ea` 到当前代码，公开路由、请求头、请求体、SSE 事件名和公开返回字段没有改变；课程路线内部确认校验不要求小程序后端修改调用方式。
-- 当前课程路线 SSE 继续使用 `learning_route`、`course_cards` 和 `course_recommendation_note`；课程级 `expert_insight` 不属于当前接口。
-- 本地存在尚未发布的 `ddfbb67`，只包含路线确认语义校验；它不改变本接口请求和返回结构。
-- 本次接口契约专项测试共 `17/17` 通过，覆盖路由/OpenAPI、鉴权、商业 SSE/历史、AI 管理接口和课程路线结构化事件；本次未执行页面上传、jx 复测或全量回归。
-
-2026-07-29 课程与学习路线 r2 历史更新：
-
-- r2 时完成了本文第 3 章课程/路线 SSE 契约和第 4 章目录字段更新；此前 `expert_insight`、旧 `/internal/v1/knowledge/...` 清洗路径和“上传页只读”的表述均不再适用。
-- r8 的 `49/49` 是历史接口基线，不能替代 r2 的课程/路线页面上传、Metadata、Redis 和 SSE 复测证据。
-
 ## 1. 基本约定
-
 ### 1.1 鉴权
-
 除健康检查和课程跳转外，接口默认需要：
-
 ```http
 X-Internal-Token: <内部服务令牌>
 ```
-
 用户侧接口还需要：
-
 ```http
 X-User-Id: <稳定用户ID>
 ```
-
 可选请求头：
-
 ```http
 X-User-Name: <用户展示名>
 X-Request-Id: <请求ID>
 ```
-
 管理接口还需要：
-
 ```http
 X-Admin-Token: <管理员令牌>
 ```
-
 约束：
-
 - `X-User-Id` 必填，长度不超过 255。
 - `X-User-Name` 选填，仅用于后台展示，不传给 Dify。
 - 小程序前端不能持有 `X-Internal-Token`、`X-Admin-Token`、Dify Key、Dataset ID。
-
 ### 1.2 统一错误结构
-
 ```json
 {
   "code": "DIFY_UNAVAILABLE",
@@ -86,9 +31,7 @@ X-Admin-Token: <管理员令牌>
   "retryable": true
 }
 ```
-
 常见错误码：
-
 - `UNAUTHORIZED`
 - `VALIDATION_ERROR`
 - `CONVERSATION_NOT_FOUND`
@@ -100,19 +43,13 @@ X-Admin-Token: <管理员令牌>
 - `DIFY_RATE_LIMITED`
 - `CLEANING_FAILED`
 - `NOT_FOUND`
-
 ### 1.3 SSE 约定
-
 流式接口响应类型：
-
 ```http
 Content-Type: text/event-stream
 ```
-
 客户端必须按 SSE 事件边界解析，不能按网络分片解析。
-
 所有 SSE 事件都包含：
-
 ```json
 {
   "schema_version": "2.0",
@@ -120,37 +57,25 @@ Content-Type: text/event-stream
   "sequence": 1
 }
 ```
-
 出现 `error` 事件时，之前收到的 `answer_delta` 只能视为部分内容。
-
 ## 2. 健康检查
-
 ### 2.1 存活检查
-
 ```http
 GET /health/live
 ```
-
 请求头：无
-
 返回示例：
-
 ```json
 {
   "status": "ok"
 }
 ```
-
 ### 2.2 就绪检查
-
 ```http
 GET /health/ready
 ```
-
 请求头：无
-
 返回示例：
-
 ```json
 {
   "status": "ready",
@@ -161,23 +86,16 @@ GET /health/ready
   "dify_reachable": true
 }
 ```
-
 ## 3. 小程序后端对接接口
-
 ### 3.1 入口配置
-
 ```http
 GET /internal/v1/entry-config
 ```
-
 请求头：
-
 ```http
 X-Internal-Token: <内部服务令牌>
 ```
-
 返回示例：
-
 ```json
 {
   "entries": [
@@ -213,42 +131,30 @@ X-Internal-Token: <内部服务令牌>
   ]
 }
 ```
-
 ### 3.2 商业顾问聊天
-
 ```http
 POST /internal/v1/business/chat
 ```
-
 请求头：
-
 ```http
 X-Internal-Token: <内部服务令牌>
 X-User-Id: <稳定用户ID>
 X-User-Name: <用户展示名，可选>
 ```
-
 请求体：
-
 ```json
 {
   "query": "我想从零学习AI工具，应该怎么开始？",
   "conversation_id": null
 }
 ```
-
 说明：
-
 - `conversation_id` 不传或传 `null` 表示新建会话。
 - 续聊时只能传本服务返回的本地 `conversation_id`。
 - 不能传 Dify 的 `conversation_id`。
-
 返回方式：SSE
-
 #### 商业顾问 SSE 事件
-
 可能出现的事件：
-
 - `request_started`
 - `status`
 - `answer_delta`
@@ -258,118 +164,83 @@ X-User-Name: <用户展示名，可选>
 - `course_recommendation_note`
 - `message_end`
 - `error`
-
 `request_started` 示例：
-
 ```text
 event: request_started
 data: {"schema_version":"2.0","request_id":"req-001","sequence":1,"conversation_id":"conv_001","message_id":"msg_001"}
 ```
-
 `status` 示例：
-
 ```text
 event: status
 data: {"schema_version":"2.0","request_id":"req-001","sequence":2,"code":"retrieving","message":"正在检索相关资料…"}
 ```
-
 开始生成后的 `status` 示例：
-
 ```text
 event: status
 data: {"schema_version":"2.0","request_id":"req-001","sequence":3,"code":"task_started","message":"已开始生成","task_id":"task_001"}
 ```
-
 `answer_delta` 示例：
-
 ```text
 event: answer_delta
 data: {"schema_version":"2.0","request_id":"req-001","sequence":4,"delta":"建议先从高频办公场景开始。"}
 ```
-
 `course_cards` 示例：
-
 ```text
 event: course_cards
 data: {"schema_version":"2.0","request_id":"req-001","sequence":5,"items":[{"course_id":"course_ai_001","name":"AI工具入门","direction":"AI基础","description":"适合零基础用户","enabled":true,"review_status":"approved","redirect_url":"https://example.com/r/xxxxx"}]}
 ```
-
 说明：
-
 - `redirect_url` 为服务端生成的完整访问链接。
 - 调用方只使用这个链接，不自行拼接路径，不自行生成参数，不解析其中内容。
-
 `learning_route` 示例：
-
 ```text
 event: learning_route
 data: {"schema_version":"2.0","request_id":"req-001","sequence":6,"route_id":"route_ai_basic","name":"AI入门路线","direction":"AI基础","target":"完成AI基础使用","stages":[{"stage_id":"stage_1","name":"入门","order":1,"course_ids":["course_ai_001"]}],"current_stage_id":null,"next_stage_id":null,"state":"awaiting_route_confirmation","progress_status":"pending_route","confirmation_required":true}
 ```
-
 课程/路线规则：
-
 - `learning_route.state=awaiting_route_confirmation` 或 `awaiting_stage_confirmation` 时，`course_cards` 必须为空；调用方应引导用户明确确认路线和当前阶段。
 - 只有 `active` 路线才返回当前阶段及下一阶段的课程卡片，最多 5 门且保持路线顺序。
 - 没有官方匹配路线时，服务可返回独立课程；不得临时拼接成路线。
 - `course_recommendation_note` 是可选的匹配理由，不是课程事实扩写。课程级 `expert_insight` 已停用，客户端不得等待或渲染它。
-
 `message_end` 示例：
-
 ```text
 event: message_end
 data: {"schema_version":"2.0","request_id":"req-001","sequence":8,"conversation_id":"conv_001","message_id":"msg_001","dify_message_id":"dify_msg_001","task_id":"task_001","status":"completed","first_token_ms":620,"total_ms":4820,"token_usage":{"total_tokens":128}}
 ```
-
 `error` 示例：
-
 ```text
 event: error
 data: {"schema_version":"2.0","request_id":"req-001","sequence":9,"code":"DIFY_UNAVAILABLE","message":"AI服务暂时不可用，请稍后重试","retryable":true}
 ```
-
 补充：
-
 - 同一会话正在生成时，接口返回 `409 CONVERSATION_BUSY`。
 - `message_end.status` 当前可能为 `completed`、`failed`、`stopped`。
-
 ### 3.3 停止商业顾问生成
-
 ```http
 POST /internal/v1/business/chat/{task_id}/stop
 ```
-
 请求头：
-
 ```http
 X-Internal-Token: <内部服务令牌>
 X-User-Id: <稳定用户ID>
 ```
-
 返回示例：
-
 ```json
 {
   "result": "success"
 }
 ```
-
 说明：该接口成功返回时，字段以当前 Dify 返回为准，不建议前端对返回体做强绑定。
-
 ### 3.4 会话列表
-
 ```http
 GET /internal/v1/business/conversations?cursor=<cursor>&limit=20
 ```
-
 请求头：
-
 ```http
 X-Internal-Token: <内部服务令牌>
 X-User-Id: <稳定用户ID>
 ```
-
 返回示例：
-
 ```json
 {
   "items": [
@@ -383,22 +254,16 @@ X-User-Id: <稳定用户ID>
   "next_cursor": null
 }
 ```
-
 ### 3.5 消息列表
-
 ```http
 GET /internal/v1/business/conversations/{conversation_id}/messages?cursor=<cursor>&limit=20
 ```
-
 请求头：
-
 ```http
 X-Internal-Token: <内部服务令牌>
 X-User-Id: <稳定用户ID>
 ```
-
 返回示例：
-
 ```json
 {
   "items": [
@@ -426,111 +291,80 @@ X-User-Id: <稳定用户ID>
   "next_cursor": null
 }
 ```
-
 ### 3.6 重命名会话
-
 ```http
 PATCH /internal/v1/business/conversations/{conversation_id}
 ```
-
 请求头：
-
 ```http
 X-Internal-Token: <内部服务令牌>
 X-User-Id: <稳定用户ID>
 ```
-
 请求体：
-
 ```json
 {
   "title": "新的会话标题"
 }
 ```
-
 返回示例：
-
 ```json
 {
   "conversation_id": "conv_001",
   "title": "新的会话标题"
 }
 ```
-
 ### 3.7 删除会话
-
 ```http
 DELETE /internal/v1/business/conversations/{conversation_id}
 ```
-
 请求头：
-
 ```http
 X-Internal-Token: <内部服务令牌>
 X-User-Id: <稳定用户ID>
 ```
-
 返回示例：
-
 ```json
 {
   "deleted": true
 }
 ```
-
 ### 3.8 消息反馈
-
 ```http
 POST /internal/v1/business/messages/{message_id}/feedback
 ```
-
 请求头：
-
 ```http
 X-Internal-Token: <内部服务令牌>
 X-User-Id: <稳定用户ID>
 ```
-
 请求体：
-
 ```json
 {
   "rating": "like",
   "content": "回答比较清楚"
 }
 ```
-
 `rating` 允许值：
-
 - `like`
 - `dislike`
 - `null`
-
 返回示例：
-
 ```json
 {
   "result": "success"
 }
 ```
-
 说明：该接口成功返回时，字段以当前 Dify 返回为准，不建议前端对返回体做强绑定。
-
 ### 3.9 朋友圈顾问
-
 ```http
 POST /internal/v1/tools/moments/run
 ```
-
 请求头：
-
 ```http
 X-Internal-Token: <内部服务令牌>
 X-User-Id: <稳定用户ID>
 ```
-
 请求体：
-
 ```json
 {
   "inputs": {
@@ -542,32 +376,23 @@ X-User-Id: <稳定用户ID>
   }
 }
 ```
-
 返回方式：SSE
-
 事件类型通常为：
-
 - `request_started`
 - `status`
 - `answer_delta`
 - `message_end`
 - `error`
-
 ### 3.10 日常写作
-
 ```http
 POST /internal/v1/tools/writing/run
 ```
-
 请求头：
-
 ```http
 X-Internal-Token: <内部服务令牌>
 X-User-Id: <稳定用户ID>
 ```
-
 请求体：
-
 ```json
 {
   "inputs": {
@@ -580,46 +405,31 @@ X-User-Id: <稳定用户ID>
   }
 }
 ```
-
 返回方式：SSE
-
 事件类型通常为：
-
 - `request_started`
 - `status`
 - `answer_delta`
 - `message_end`
 - `error`
-
 ### 3.11 停止工具生成
-
 ```http
 POST /internal/v1/tools/{task_id}/stop
 ```
-
 请求头：
-
 ```http
 X-Internal-Token: <内部服务令牌>
 X-User-Id: <稳定用户ID>
 ```
-
 返回示例：
-
 ```json
 {
   "result": "success"
 }
 ```
-
 说明：该接口成功返回时，字段以当前 Dify 返回为准，不建议前端对返回体做强绑定。
-
 ### 3.12 课程点击统计接入
-
-该能力已经包含在商业顾问返回的课程卡片里，不需要额外再调一个“上报点击”的接口。
-
 商业顾问返回课程卡片时，会带：
-
 ```json
 {
   "course_id": "course_ai_001",
@@ -627,62 +437,40 @@ X-User-Id: <稳定用户ID>
   "redirect_url": "https://example.com/r/xxxxx"
 }
 ```
-
 小程序后端或前端只需要这样接：
-
 1. 读取 `course_cards[].redirect_url`
 2. 用户点击课程卡片时，直接打开这个 `redirect_url`
-
 不需要传额外参数。
-
 不需要额外请求体。
-
 不需要再调用单独的点击上报接口。
-
 服务端会在打开这个链接时自动完成两件事：
-
 1. 记录一次课程有效点击
 2. 跳转到课程真实地址
-
 当前“有效点击”的定义：
-
 - 使用服务返回的 `redirect_url`
 - 链接合法且未过期
 - 课程当前仍然启用且已审核
-
 当前统计口径：
-
 - PV：每次有效点击都计数
 - UV：同一用户同一课程同一天只计一次
-
 当前能力边界：
-
 - 可以统计课程被有效点击的次数
 - 不提供每一次点击的逐条明细查询
-
 管理页查询统计使用：
-
 ```http
 GET /internal/v1/admin/course-clicks
 ```
-
 ## 4. AI 管理页对接接口
-
 以下接口都需要：
-
 ```http
 X-Internal-Token: <内部服务令牌>
 X-Admin-Token: <管理员令牌>
 ```
-
 ### 4.1 会话列表
-
 ```http
 GET /internal/v1/admin/conversations?user_id=<user_id>&user_name=<user_name>&limit=50
 ```
-
 返回示例：
-
 ```json
 {
   "items": [
@@ -698,15 +486,11 @@ GET /internal/v1/admin/conversations?user_id=<user_id>&user_name=<user_name>&lim
   ]
 }
 ```
-
 ### 4.2 会话详情
-
 ```http
 GET /internal/v1/admin/conversations/{conversation_id}
 ```
-
 返回示例：
-
 ```json
 {
   "conversation_id": "conv_001",
@@ -733,15 +517,11 @@ GET /internal/v1/admin/conversations/{conversation_id}
   ]
 }
 ```
-
 ### 4.3 课程点击统计
-
 ```http
 GET /internal/v1/admin/course-clicks?course_id=<course_id>&from_date=2026-07-01&to_date=2026-07-28&page=1&limit=50
 ```
-
 返回示例：
-
 ```json
 {
   "items": [
@@ -769,15 +549,11 @@ GET /internal/v1/admin/course-clicks?course_id=<course_id>&from_date=2026-07-01&
   ]
 }
 ```
-
 ### 4.4 课程与路线目录
-
 ```http
 GET /internal/v1/admin/catalog
 ```
-
 返回示例：
-
 ```json
 {
   "courses": [
@@ -817,15 +593,11 @@ GET /internal/v1/admin/catalog
   ]
 }
 ```
-
 ### 4.5 删除指定用户 AI 数据
-
 ```http
 DELETE /internal/v1/admin/users/{raw_user_id}/ai-data
 ```
-
 返回示例：
-
 ```json
 {
   "deleted": true,
@@ -833,22 +605,15 @@ DELETE /internal/v1/admin/users/{raw_user_id}/ai-data
   "external_deletions_queued": 3
 }
 ```
-
 说明：
-
 - 删除用户 AI 会话、消息、画像、路线进度等 AI 数据。
 - 保留课程每日 PV/UV 汇总数据。
-
 ### 4.6 历史保留配置
-
 #### 查询
-
 ```http
 GET /internal/v1/admin/settings/retention
 ```
-
 返回示例：
-
 ```json
 {
   "history_retention_days": 7,
@@ -856,23 +621,17 @@ GET /internal/v1/admin/settings/retention
   "cleanup_minute": 0
 }
 ```
-
 #### 更新
-
 ```http
 PUT /internal/v1/admin/settings/retention
 ```
-
 请求体：
-
 ```json
 {
   "history_retention_days": 14
 }
 ```
-
 返回示例：
-
 ```json
 {
   "history_retention_days": 14,
@@ -880,36 +639,24 @@ PUT /internal/v1/admin/settings/retention
   "cleanup_minute": 0
 }
 ```
-
 ### 4.7 输出风格配置
-
-这里的“风格”是各入口输出时附加的风格控制文本，不是新增一个顾问接口。
-
 当前配置项如下：
-
 | style_code | 对应入口 | 实际作用 |
 | --- | --- | --- |
 | `business_answer` | 商业顾问 | 控制商业顾问主回答正文风格 |
 | `business_expert_insight` | 历史兼容项 | 当前课程/路线链路不生成 `expert_insight`，不得用它配置或推导课程级专业见解 |
 | `moments` | 朋友圈顾问 | 控制朋友圈顾问输出风格 |
 | `writing` | 日常写作 | 控制日常写作输出风格 |
-
 可以直接理解为：
-
 - 商业顾问当前只使用主回答风格；补充观点项为历史兼容项
 - 朋友圈顾问 1 个可调项
 - 日常写作 1 个可调项
-
 `business_expert_insight` 仍可能出现在旧管理数据中，但当前不应新增或依赖该配置。
-
 #### 查询
-
 ```http
 GET /internal/v1/admin/style-settings
 ```
-
 返回示例：
-
 ```json
 {
   "items": [
@@ -943,31 +690,23 @@ GET /internal/v1/admin/style-settings
   ]
 }
 ```
-
 当前支持的 `style_code`：
-
 - `business_answer`
 - `business_expert_insight`
 - `moments`
 - `writing`
-
 #### 更新
-
 ```http
 PUT /internal/v1/admin/style-settings/{style_code}
 ```
-
 请求体：
-
 ```json
 {
   "enabled": true,
   "style_prompt": "自然、克制、避免夸张表达。"
 }
 ```
-
 返回示例：
-
 ```json
 {
   "code": "moments",
@@ -979,15 +718,11 @@ PUT /internal/v1/admin/style-settings/{style_code}
   "updated_by": "system"
 }
 ```
-
 ### 4.8 知识库概览
-
 ```http
 GET /internal/v1/admin/knowledge-bases
 ```
-
 返回示例：
-
 ```json
 {
   "items": [
@@ -1006,20 +741,14 @@ GET /internal/v1/admin/knowledge-bases
   ]
 }
 ```
-
 ### 4.9 知识库文档列表
-
 ```http
 GET /internal/v1/admin/knowledge-bases/{kb_code}/documents
 ```
-
 `kb_code` 只允许：
-
 - `general`
 - `course`
-
 返回示例：
-
 ```json
 {
   "items": [
@@ -1038,24 +767,16 @@ GET /internal/v1/admin/knowledge-bases/{kb_code}/documents
   ]
 }
 ```
-
 ### 4.10 文档清洗管理能力
-
 #### 4.10.1 获取可用清洗策略
-
 ```http
 GET /internal/v1/admin/knowledge-bases/{kb_code}/cleaning-strategies
 ```
-
 `kb_code` 只允许：
-
 - `general`
 - `course`
-
 当前正式文档清洗策略都在 `general` 知识库下使用。
-
 返回示例：
-
 ```json
 {
   "items": [
@@ -1074,23 +795,17 @@ GET /internal/v1/admin/knowledge-bases/{kb_code}/cleaning-strategies
   ]
 }
 ```
-
 #### 4.10.2 创建知识库上传批次
-
 ```http
 POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches
 Content-Type: multipart/form-data
 ```
-
 表单字段：
-
 - `files`: 多文件
 - `upload_mode`: `cleaned` 或 `raw`
 - `strategy_code`
 - `common_metadata`
-
 示例：
-
 ```text
 kb_code=general
 upload_mode=cleaned
@@ -1099,9 +814,7 @@ common_metadata={"document_type":"lead_magnet","review_status":"approved"}
 files=<文件1>
 files=<文件2>
 ```
-
 返回示例：
-
 ```json
 {
   "batch_id": "batch_001",
@@ -1175,31 +888,22 @@ files=<文件2>
   ]
 }
 ```
-
 补充约束：
-
 - `common_metadata` 必须是 JSON 对象。
 - 不允许写入未受控的公共 Metadata 字段。
 - `.txt` 以文本读取；其余支持格式进入 Markdown 清洗链路。
 - 当前正式清洗策略都在 `general` 知识库下使用。
 - `book` 策略在 Markdown 成品超过 `10MB` 时会拆分后再入库。
-
 #### 4.10.3 查询上传批次状态
-
 ```http
 GET /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}
 ```
-
 返回示例：同上传批次返回结构。
-
 #### 4.10.4 查询文件条目列表
-
 ```http
 GET /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items?status=<status>&cursor=<cursor>&limit=50
 ```
-
 返回示例：
-
 ```json
 {
   "file_id": "file_001",
@@ -1235,15 +939,11 @@ GET /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files
   "total": 1
 }
 ```
-
 #### 4.10.5 查询条目详情
-
 ```http
 GET /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}
 ```
-
 返回示例：
-
 ```json
 {
   "item_id": "item_001",
@@ -1274,76 +974,56 @@ GET /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files
   "updated_at": "2026-07-28T10:00:05Z"
 }
 ```
-
 #### 4.10.6 重试失败文件
-
 ```http
 POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/retry
 ```
-
 返回示例：
-
 ```json
 {
   "file_id": "file_002",
   "status": "pending"
 }
 ```
-
 说明：
-
 - 该接口只用于：
   - 文件级失败；
   - 文件下存在失败条目。
 - 如果文件下全部条目都处于 `review_required`，返回 `409 CONFLICT`，必须先对条目执行复核。
-
 冲突示例：
-
 ```json
 {
   "code": "VALIDATION_ERROR",
   "message": "待复核条目不能直接重试，请先执行人工复核"
 }
 ```
-
 #### 4.10.7 重试单条目
-
 ```http
 POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}/retry
 ```
-
 返回示例：
-
 ```json
 {
   "item_id": "item_001",
   "status": "pending"
 }
 ```
-
 说明：
-
 - 该接口只允许 `failed` 条目调用。
 - `review_required` 条目调用时返回 `409 CONFLICT`，必须先执行复核。
-
 冲突示例：
-
 ```json
 {
   "code": "VALIDATION_ERROR",
   "message": "只有失败条目可以重试；待复核条目请先执行人工复核"
 }
 ```
-
 #### 4.10.8 条目复核
-
 ```http
 POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}/review-decisions
 Content-Type: multipart/form-data
 ```
-
 表单字段：
-
 - `action`
   - `approve`
   - `replace_and_approve`
@@ -1352,9 +1032,7 @@ Content-Type: multipart/form-data
 - `reason`
 - `metadata_patch`
 - `markdown_file`（仅 `replace_and_approve` 时必传）
-
 返回示例：
-
 ```json
 {
   "item_id": "item_001",
@@ -1362,68 +1040,50 @@ Content-Type: multipart/form-data
   "review_revision": 1
 }
 ```
-
 说明：
-
 - `expected_revision` 是并发保护字段，版本不一致返回 `409 CONFLICT`。
 - `status=review_required` 且 `retryable=false` 表示必须先走复核接口，不能直接调用重试接口。
 - `exclude` 不再入库；其余动作会重新提交条目级任务。
 - `exclude` 完成后，文件和批次聚合状态会立即刷新。
-
 ### 4.11 启用或停用知识库文档
-
 ```http
 PATCH /internal/v1/admin/knowledge-bases/{kb_code}/documents/{document_id}/status
 ```
-
 请求体：
-
 ```json
 {
   "enabled": false
 }
 ```
-
 返回示例：
-
 ```json
 {
   "document_id": "doc_001",
   "enabled": false
 }
 ```
-
 ### 4.12 删除知识库文档
-
 ```http
 DELETE /internal/v1/admin/knowledge-bases/{kb_code}/documents/{document_id}
 ```
-
 请求体：
-
 ```json
 {
   "confirm_name": "测试文档.md"
 }
 ```
-
 返回示例：
-
 ```json
 {
   "deleted": true,
   "document_id": "doc_001"
 }
 ```
-
 ### 4.13 日志列表
-
 ```http
 GET /internal/v1/admin/logs?page=1&limit=50
 ```
-
 可选查询参数：
-
 - `from_time`
 - `to_time`
 - `level`
@@ -1434,9 +1094,7 @@ GET /internal/v1/admin/logs?page=1&limit=50
 - `resource_id`
 - `page`
 - `limit`
-
 返回示例：
-
 ```json
 {
   "items": [
@@ -1462,15 +1120,11 @@ GET /internal/v1/admin/logs?page=1&limit=50
   "total": 1
 }
 ```
-
 ### 4.14 日志详情
-
 ```http
 GET /internal/v1/admin/logs/{log_id}
 ```
-
 返回示例：
-
 ```json
 {
   "log_id": "log_001",
@@ -1493,19 +1147,37 @@ GET /internal/v1/admin/logs/{log_id}
   }
 }
 ```
-
 ## 5. 当前不纳入本标准的能力
-
 以下能力当前没有做成 AI 管理服务接口，不按既有接口对接：
-
 - 一键切换整个应用模型
 - 新增或删除整个知识库
 - 商业顾问聊天附件上传
 - 单独的课程点击上报接口
 - 通用幂等键接口
-
 当前处理方式：
-
 - 模型切换：走 Dify 原生控制台
 - 知识库新增或删除：走 Dify 原生控制台
 - 课程点击统计：通过 `redirect_url` 自动完成
+
+## 6. 2026-07-30 已验证补充约束
+
+本轮未改变既有接口路径、请求字段、SSE 事件名和公开响应结构。以下约束从本版本开始作为接口标准的一部分：
+
+- 商业顾问公开输出中的真实姓名、昵称、笔名、个人账号称呼、原文件名和 Dify 管理名称必须被服务端替换；范围包括 `answer_delta`、`retriever_resources`、会话标题和历史消息。
+- 姓名过滤必须覆盖跨 SSE 分片的情况。小程序后端仍按标准 SSE 事件解析，不自行拼接或还原受保护来源。
+- 检索引用不得携带非受控 URL；课程卡中的 `redirect_url` 是服务端签名生成的受控字段，继续按原契约使用。
+- 原文件名允许出现在管理员鉴权保护下的清洗详情中；不得进入公开回答、公开引用、测试安全摘要或普通运行日志。
+- 清洗状态 API 仍返回条目明细，但同一源文件的发布和失败重试是一个原子单元。任一应发布条目失败时，同源本轮 Dify 写入会被删除或停用，课程/路线目录不得部分提交。
+- 待复核条目会阻止同源其他条目发布；管理员完成复核后，重新执行的是整文件发布检查。
+- Dify 子文档管理名固定为 `原文件名主体__NNN.原扩展名`，其中 `NNN` 从 `001` 开始；公开接口不得返回这个管理名。
+- `personal_business_consultation` 支持 `.docx` 与 `.pdf`。无法可靠脱敏或版面不可确认时，条目进入 `review_required`。
+
+2026-07-30 jx 实测版本为：
+
+```text
+核心：jx-now-ai-management:0.2.1-contract-cleaning-90a23f26-r3
+测试页：jx-now-ai-management-ui:0.2.1-contract-cleaning-90a23f26-r3
+Alembic：e11c7f4a2d90 (head)
+```
+
+接口 runner 为 `37/37`，清洗与公开引用为 `15/15 + 3/3`，完整证据见 [接口契约与清洗全链路验收记录-2026-07-30.md](接口契约与清洗全链路验收记录-2026-07-30.md)。

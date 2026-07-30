@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import hashlib
 import hmac
 import json
@@ -7,10 +8,10 @@ import re
 import shutil
 import unicodedata
 import zipfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path, PurePath
-from typing import Any, Protocol
+from typing import Any, Iterable, Protocol
 
 from docx import Document
 from fastapi import APIRouter, Depends, File, Form, UploadFile
@@ -32,6 +33,11 @@ from .config import get_settings
 from .db import SessionLocal, get_session
 from .errors import ServiceError
 from .models import CleaningBatch, CleaningDocument, CleaningFile, utcnow
+from .privacy import (
+    consultation_aliases,
+    discover_author_aliases,
+    redact_article_identity,
+)
 from .security import require_admin_token, require_internal_token
 from .services.observability import record_event
 
@@ -193,30 +199,84 @@ class StandardDocumentStrategy:
 class PersonalBusinessConsultationStrategy:
     code = "personal_business_consultation"
     display_name = "个人商业咨询案例总结"
-    supported_extensions = {".pdf"}
+    supported_extensions = {".docx", ".pdf"}
     sensitive = True
     knowledge_base_code = "general"
     dify_metadata_fields = frozenset({"record_type", "topic", "source_title", "case_id"})
 
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
-        from knowledge_cleaner.pdf_convert import convert_consultation_pdf
+        from knowledge_cleaner.pdf_convert import (
+            anonymize_consultation,
+            convert_consultation_pdf,
+            scan_residual_pii,
+        )
 
-        # OCR and image content recognition are explicitly out of scope.  A
-        # scanned PDF must fail visibly instead of silently producing guesses.
-        result = convert_consultation_pdf(file_path, enable_ocr=False)
-        if result.needs_review or result.residual_pii:
-            raise ValueError("隐私或版面检查未通过，需要人工处理后重试")
-        if not result.markdown.strip():
-            raise ValueError("PDF没有提取到可入库正文")
+        suffix = file_path.suffix.lower()
+        aliases: dict[str, str]
+        if suffix == ".docx":
+            raw_markdown = _docx_markdown(file_path)
+            aliases = consultation_aliases(raw_markdown, original_filename)
+            markdown, redactions = anonymize_consultation(
+                raw_markdown,
+                extra_entities=aliases,
+            )
+            residual_pii = scan_residual_pii(markdown)
+            source_checksum = hashlib.sha256(file_path.read_bytes()).hexdigest()
+            document_id = f"case_{source_checksum[:16]}"
+            review_reasons = []
+            if not markdown.strip():
+                review_reasons.append("未生成可入库正文")
+            if residual_pii:
+                review_reasons.append(
+                    f"脱敏后仍检测到{len(residual_pii)}处潜在PII，禁止直接发布"
+                )
+            needs_review = bool(review_reasons)
+        elif suffix == ".pdf":
+            aliases = consultation_aliases("", original_filename)
+            # OCR and image content recognition remain explicitly out of scope
+            # for automatic publication. A scan-only PDF becomes a review item.
+            result = convert_consultation_pdf(
+                file_path,
+                enable_ocr=False,
+                extra_entities=aliases,
+            )
+            markdown = str(result.markdown or "")
+            redactions = list(getattr(result, "redactions", []) or [])
+            residual_pii = list(getattr(result, "residual_pii", []) or [])
+            source_checksum = str(
+                getattr(result, "source_checksum", "")
+                or hashlib.sha256(file_path.read_bytes()).hexdigest()
+            )
+            document_id = str(
+                getattr(result, "document_id", "")
+                or f"case_{source_checksum[:16]}"
+            )
+            review_reasons = list(getattr(result, "review_reasons", []) or [])
+            needs_review = bool(
+                getattr(result, "needs_review", False) or residual_pii
+            )
+        else:
+            raise ValueError(f"个人商业咨询不支持 {suffix} 文件")
+
+        disposition = "review_required" if needs_review else "pending"
+        safe_markdown = markdown.strip()
+        if not safe_markdown:
+            safe_markdown = "# 匿名商业咨询案例\n\n内容需人工复核后发布。"
+        redaction_summary = {
+            str(getattr(item, "category", "unknown")): int(
+                getattr(item, "count", 0)
+            )
+            for item in redactions
+        }
         return [
             CleanedDocument(
-                markdown=result.markdown,
-                title=f"匿名商业咨询案例 {result.document_id[:12]}",
+                markdown=safe_markdown,
+                title=f"匿名商业咨询案例 {document_id[:12]}",
                 metadata={
                     "record_type": "consulting_case",
                     "topic": "产品与客户",
-                    "source_title": f"匿名商业咨询案例 {result.document_id[:12]}",
-                    "case_id": result.document_id[:16],
+                    "source_title": f"匿名商业咨询案例 {document_id[:12]}",
+                    "case_id": document_id[:16],
                 },
                 chunking=ChunkingConfig(
                     doc_form="hierarchical_model",
@@ -229,7 +289,23 @@ class PersonalBusinessConsultationStrategy:
                     parent_chunk_overlap=0,
                     child_chunk_overlap=0,
                 ),
-                audit={"privacy_level": "private_anonymized"},
+                disposition=disposition,
+                error_code=(
+                    "PRIVACY_REVIEW_REQUIRED" if needs_review else None
+                ),
+                error_message=(
+                    "；".join(review_reasons[:3]) or "隐私或版面检查需要人工确认"
+                    if needs_review
+                    else None
+                ),
+                warnings=review_reasons,
+                audit={
+                    "privacy_level": "private_anonymized",
+                    "identity_aliases": aliases,
+                    "forbidden_public_names": sorted(aliases),
+                    "redaction_summary": redaction_summary,
+                    "residual_pii_count": len(residual_pii),
+                },
             )
         ]
 
@@ -301,13 +377,17 @@ class WechatPublicAccountCognitionStrategy:
         documents: list[CleanedDocument] = []
         seen_bodies: set[str] = set()
         for unit in units:
-            body = unit.body.strip()
+            title, body, identity_audit = redact_article_identity(
+                unit.title,
+                unit.body.strip(),
+                provided_identities=(unit.author,),
+            )
             if not body or "body_candidate_conflict" in unit.warnings:
                 continue
             if DIFY_PARENT_SEPARATOR in body or DIFY_CHILD_SEPARATOR in body:
                 raise ValueError(f"文章 {unit.sequence} 正文与Dify分隔符碰撞")
 
-            decision = classify_text(unit.title, body)
+            decision = classify_text(title, body)
             if decision.disposition != "keep":
                 continue
             fingerprint = hashlib.sha256(
@@ -322,30 +402,32 @@ class WechatPublicAccountCognitionStrategy:
                 documents.append(
                     CleanedDocument(
                         markdown=body,
-                        title=unit.title,
+                        title=title,
                         metadata={
                             "record_type": "article",
-                            "source_title": unit.title,
+                            "source_title": title,
                         },
                         chunking=_article_chunking(),
                         disposition="review_required",
                         error_code="TOPIC_REVIEW_REQUIRED",
                         error_message="主题无法稳定归入受控词表，需要人工确认",
-                        audit={"warnings": list(unit.warnings)},
+                        audit={
+                            **identity_audit,
+                            "warnings": list(unit.warnings),
+                        },
                     )
                 )
                 continue
             source_body = body
             if decision.time_sensitive and unit.published_at:
-                attribution = unit.author or "该公众号"
                 source_body = (
-                    f"> 来源语境：{attribution}于{unit.published_at}发布。"
+                    f"> 来源语境：作者于{unit.published_at}发布。"
                     "以下为当时观点，不代表当前状态。\n\n"
                     f"{body}"
                 )
             chunks = prepare_chunks(
                 source_body,
-                title=unit.title,
+                title=title,
                 content_type="article",
                 topics=(topic,),
                 overlap=0,
@@ -356,13 +438,14 @@ class WechatPublicAccountCognitionStrategy:
             documents.append(
                 CleanedDocument(
                     markdown=markdown,
-                    title=unit.title,
+                    title=title,
                     metadata={
                         "record_type": "article",
                         "topic": topic,
-                        "source_title": unit.title,
+                        "source_title": title,
                     },
                     chunking=_article_chunking(),
+                    audit=identity_audit,
                 )
             )
         if not documents:
@@ -396,7 +479,13 @@ def _build_article_document(
     parent_max_tokens: int = 1000,
     child_max_tokens: int = 350,
     record_type: str = "article",
+    identity_candidates: Iterable[str] = (),
 ) -> CleanedDocument:
+    title, body, identity_audit = redact_article_identity(
+        title,
+        body,
+        provided_identities=identity_candidates,
+    )
     decision = classify_text(title, body)
     topic = _advisor_topic(decision) if decision.disposition == "keep" else ""
     chunks = prepare_chunks(
@@ -432,6 +521,7 @@ def _build_article_document(
         error_code=None if disposition == "pending" else ("TOPIC_REVIEW_REQUIRED" if not topic else decision.disposition.upper()),
         error_message=None if disposition == "pending" else ("主题无法稳定归入受控词表，需要人工确认" if not topic else decision.reason),
         audit={
+            **identity_audit,
             "semantic_disposition": decision.disposition,
             "semantic_reason": decision.reason,
             "semantic_topics": list(decision.topics),
@@ -450,8 +540,15 @@ class ZsxqPostStrategy:
 
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
         units = parse_markdown_posts(file_path)
+        source_text = _read_text_markdown(file_path, file_path.suffix.lower())
+        source_aliases = discover_author_aliases("", source_text)
         documents = [
-            _build_article_document(title=unit.title, body=unit.body, child_max_tokens=800)
+            _build_article_document(
+                title=unit.title,
+                body=unit.body,
+                child_max_tokens=800,
+                identity_candidates=source_aliases,
+            )
             for unit in units
             if unit.body.strip()
         ]
@@ -470,8 +567,14 @@ class XiaobotPostStrategy:
 
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
         units = parse_markdown_posts(file_path)
+        source_text = _read_text_markdown(file_path, file_path.suffix.lower())
+        source_aliases = discover_author_aliases("", source_text)
         documents = [
-            _build_article_document(title=unit.title, body=unit.body)
+            _build_article_document(
+                title=unit.title,
+                body=unit.body,
+                identity_candidates=source_aliases,
+            )
             for unit in units
             if unit.body.strip()
         ]
@@ -583,7 +686,10 @@ class BookStrategy:
                     disposition="pending" if metadata_topic else "review_required",
                     error_code=None if metadata_topic else "TOPIC_REVIEW_REQUIRED",
                     error_message=None if metadata_topic else "书籍主题无法稳定归入受控词表，需要人工确认",
-                    audit={"split_parts": total},
+                    audit={
+                        "split_parts": total,
+                        "privacy_level": "public_source",
+                    },
                 )
             )
         return documents
@@ -776,7 +882,8 @@ def validate_uploaded_file(path: Path, suffix: str, content_type: str | None) ->
         encodings = ("utf-8-sig", "gb18030") if suffix == ".txt" else ("utf-8-sig",)
         for encoding in encodings:
             try:
-                sample.decode(encoding, errors="strict")
+                decoder = codecs.getincrementaldecoder(encoding)(errors="strict")
+                decoder.decode(sample, final=False)
                 break
             except UnicodeDecodeError:
                 continue
@@ -801,12 +908,19 @@ def normalized_original_filename(value: str) -> str:
 
 
 def dify_document_name(original_filename: str, sha256: str, sequence: int) -> str:
-    stem = PurePath(original_filename).stem
+    del sha256
+    source = PurePath(original_filename)
+    stem = source.stem
     stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", stem)
     stem = re.sub(r"\s+", " ", stem).strip(" ._") or "未命名"
-    if len(stem) > 60:
-        stem = f"{stem[:40]}…{stem[-19:]}"
-    return f"{stem}__{sha256[:8]}__{sequence}.md"
+    extension = source.suffix.lower() or ".md"
+    suffix = f"__{sequence:03d}{extension}"
+    maximum_stem = 300 - len(suffix)
+    if len(stem) > maximum_stem:
+        keep_tail = min(40, max(10, maximum_stem // 3))
+        keep_head = maximum_stem - keep_tail - 1
+        stem = f"{stem[:keep_head]}…{stem[-keep_tail:]}"
+    return f"{stem}{suffix}"
 
 
 def _serialize_item(item: CleaningDocument) -> dict[str, Any]:

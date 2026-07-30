@@ -146,6 +146,7 @@ class DifyKnowledgeClient:
         file_path: Path,
         *,
         original_document_id: str | None = None,
+        upload_name: str | None = None,
     ) -> tuple[str, str]:
         """Upload one original file using Dify's native high-quality parser.
 
@@ -183,7 +184,13 @@ class DifyKnowledgeClient:
                 response = self.client.post(
                     f"datasets/{self.dataset_id}/document/create-by-file",
                     data={"data": json.dumps(payload, ensure_ascii=False)},
-                    files={"file": (file_path.name, handle, "application/octet-stream")},
+                    files={
+                        "file": (
+                            upload_name or file_path.name,
+                            handle,
+                            "application/octet-stream",
+                        )
+                    },
                 )
             finally:
                 if json_content_type is not None:

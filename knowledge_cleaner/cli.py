@@ -13,7 +13,6 @@ from .dify import DifyKnowledgeClient, publish_clean_output
 from .evaluation import evaluate_retrieval, load_evaluation_cases
 from .pipeline import CleaningPipeline, PipelineOptions
 
-
 PILOT_PATTERNS = (
     "阿猫投资学_20260101-20260531",
     "高效读书课",

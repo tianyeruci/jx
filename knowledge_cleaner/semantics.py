@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-
 CORE_TERMS = {
     "创业", "一人公司", "商业模式", "个人ip", "定位", "产品", "定价", "营销", "销售",
     "成交", "获客", "私域", "流量", "自媒体", "公众号", "小红书", "朋友圈", "内容创作",

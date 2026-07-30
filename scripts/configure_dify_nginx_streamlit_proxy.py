@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-
 BEGIN = "    # BEGIN ai-management public proxy"
 INCLUDES = (
     "    include /etc/nginx/conf.d/ai-management-test.location;",

@@ -1,30 +1,29 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 import hashlib
 import json
 import logging
-from pathlib import Path
+from dataclasses import asdict
 from typing import Any
 
-from celery import chain
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from knowledge_cleaner.dify import DifyKnowledgeClient
 
 from ...cache import cache
-from ...course_import import sync_cleaning_catalog_record
-from ...services.admin_settings import bump_catalog_revision
-from ...courses import rebuild_snapshot
 from ...cleaning import (
-    ChunkingConfig,
     STRATEGY_REGISTRY,
+    ChunkingConfig,
     cleaning_batch_cache_key,
+    dify_document_name,
     get_settings,
 )
+from ...course_import import sync_cleaning_catalog_record
+from ...courses import rebuild_snapshot
 from ...db import SessionLocal
 from ...models import CleaningBatch, CleaningDocument, CleaningFile, ExternalDeletionTask, utcnow
+from ...services.admin_settings import bump_catalog_revision
 from ...services.observability.events import record_event
 from ..celery_app import celery_app
 
@@ -286,7 +285,14 @@ def _set_document_state(
         session.commit()
 
 
-def _publish_document(session, row: CleaningDocument, batch: CleaningBatch, file_row: CleaningFile) -> bool:
+def _publish_document(
+    session,
+    row: CleaningDocument,
+    batch: CleaningBatch,
+    file_row: CleaningFile,
+    *,
+    stage_only: bool = False,
+) -> bool:
     client: DifyKnowledgeClient | None = None
     created_remote_id = ""
     replaced_catalog_document_id = ""
@@ -307,8 +313,11 @@ def _publish_document(session, row: CleaningDocument, batch: CleaningBatch, file
 
         if batch.upload_mode == "raw":
             target = settings.upload_root.resolve() / batch.id / file_row.storage_filename
-            document_id, dify_batch_id = client.create_document_by_file(target)
-            expected_parent_count = 0
+            document_id, dify_batch_id = client.create_document_by_file(
+                target,
+                upload_name=file_row.original_filename,
+            )
+            expected_parent_count = None
             expected_child_counts: list[int] = []
         else:
             chunking = _chunking_from_json(row.chunking_json)
@@ -345,7 +354,12 @@ def _publish_document(session, row: CleaningDocument, batch: CleaningBatch, file
         row.stage = "metadata"
         session.commit()
 
-        allowed_remote_fields = getattr(STRATEGY_REGISTRY.get(batch.strategy_code), "dify_metadata_fields", None)
+        strategy = STRATEGY_REGISTRY.get(batch.strategy_code)
+        allowed_remote_fields = (
+            getattr(strategy, "dify_metadata_fields", None)
+            if strategy is not None
+            else frozenset()
+        )
         remote_metadata = {
             key: value
             for key, value in (row.metadata_json or {}).items()
@@ -354,6 +368,12 @@ def _publish_document(session, row: CleaningDocument, batch: CleaningBatch, file
         field_ids = client.ensure_metadata_names(sorted(remote_metadata))
         client.set_document_metadata(document_id, remote_metadata, field_ids)
         client.verify_document_metadata(document_id, remote_metadata)
+        if stage_only:
+            row.status = "staged"
+            row.stage = "source_commit"
+            row.retryable = False
+            session.commit()
+            return True
         if batch.strategy_code in {"course_information", "learning_route"}:
             payload = (row.audit_json or {}).get("catalog_record")
             if not isinstance(payload, dict):
@@ -402,6 +422,180 @@ def _publish_document(session, row: CleaningDocument, batch: CleaningBatch, file
     finally:
         if client:
             client.close()
+
+
+def _commit_source_publication(
+    session,
+    *,
+    file_row: CleaningFile,
+    batch: CleaningBatch,
+    documents: list[CleaningDocument],
+) -> None:
+    replaced_document_ids: list[str] = []
+    try:
+        if batch.strategy_code in {"course_information", "learning_route"}:
+            for document in documents:
+                payload = (document.audit_json or {}).get("catalog_record")
+                if not isinstance(payload, dict):
+                    raise ValueError("课程目录清洗结果缺少受控结构化记录")
+                old_id = sync_cleaning_catalog_record(
+                    session,
+                    strategy_code=batch.strategy_code,
+                    payload=payload,
+                    dify_document_id=str(document.dify_document_id or ""),
+                    source_file=file_row.original_filename,
+                )
+                if old_id and old_id != document.dify_document_id:
+                    replaced_document_ids.append(old_id)
+            bump_catalog_revision(session)
+        for document in documents:
+            document.status = "succeeded"
+            document.stage = "completed"
+            document.retryable = False
+            document.error_code = None
+            document.error_message = None
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+
+    if batch.strategy_code in {"course_information", "learning_route"}:
+        try:
+            rebuild_snapshot(session)
+        except Exception:
+            logger.exception(
+                "course snapshot rebuild failed after source commit",
+                extra={"file_id": file_row.id},
+            )
+        if replaced_document_ids:
+            client = _knowledge_client(batch)
+            try:
+                for document_id in replaced_document_ids:
+                    if not _remove_or_disable_document(client, document_id):
+                        _queue_document_cleanup(document_id, client.dataset_id)
+            finally:
+                client.close()
+
+
+def _compensate_source_publication(
+    session,
+    *,
+    file_row: CleaningFile,
+    batch: CleaningBatch,
+    retry: bool,
+) -> None:
+    documents = list(
+        session.scalars(
+            select(CleaningDocument)
+            .where(CleaningDocument.file_id == file_row.id)
+            .order_by(CleaningDocument.sequence)
+        )
+    )
+    remote_ids = [
+        str(document.dify_document_id)
+        for document in documents
+        if document.dify_document_id
+    ]
+    if remote_ids:
+        client = _knowledge_client(batch)
+        try:
+            for document_id in remote_ids:
+                if not _remove_or_disable_document(client, document_id):
+                    _queue_document_cleanup(document_id, client.dataset_id)
+        finally:
+            client.close()
+    for document in documents:
+        if document.status in {
+            "pending",
+            "processing",
+            "staged",
+            "succeeded",
+            "failed",
+        }:
+            document.dify_document_id = None
+            document.dify_batch_id = None
+            document.remote_parent_count = 0
+            document.remote_child_count = 0
+            document.status = "pending" if retry else "failed"
+            document.stage = "retrying" if retry else "failed"
+            document.error_code = "SOURCE_ATOMIC_ROLLBACK"
+            document.error_message = (
+                "同一源文件的任一子文档失败，已补偿全部远端写入"
+            )
+            document.retryable = retry
+    file_row.status = "processing" if retry else "failed"
+    file_row.outcome = "processing" if retry else "failed"
+    file_row.stage = "retrying" if retry else "failed"
+    file_row.error_code = "SOURCE_ATOMIC_ROLLBACK"
+    file_row.error_message = "同一源文件发布失败，已执行整文件补偿"
+    session.commit()
+
+
+def _publish_source_file(
+    session,
+    *,
+    file_row: CleaningFile,
+    batch: CleaningBatch,
+) -> bool:
+    documents = list(
+        session.scalars(
+            select(CleaningDocument)
+            .where(
+                CleaningDocument.file_id == file_row.id,
+                CleaningDocument.status.in_(("pending", "processing", "staged")),
+            )
+            .order_by(CleaningDocument.sequence)
+        )
+    )
+    if not documents:
+        return False
+    if batch.strategy_code == "course_information":
+        by_id = {document.id: document for document in documents}
+        documents = [
+            by_id[document_id]
+            for document_id in _course_document_publish_order(documents)
+        ]
+    try:
+        for document in documents:
+            published = _publish_document(
+                session,
+                document,
+                batch,
+                file_row,
+                stage_only=True,
+            )
+            if not published:
+                raise RuntimeError("同一源文件存在发布失败的子文档")
+        _commit_source_publication(
+            session,
+            file_row=file_row,
+            batch=batch,
+            documents=documents,
+        )
+        return True
+    except Exception:
+        logger.exception(
+            "source file publication failed; compensating",
+            extra={"file_id": file_row.id},
+        )
+        session.expire_all()
+        current_documents = list(
+            session.scalars(
+                select(CleaningDocument).where(
+                    CleaningDocument.file_id == file_row.id
+                )
+            )
+        )
+        retry = any(document.attempts < 2 for document in current_documents)
+        _compensate_source_publication(
+            session,
+            file_row=session.get(CleaningFile, file_row.id),
+            batch=session.get(CleaningBatch, batch.id),
+            retry=retry,
+        )
+        if retry:
+            raise
+        return False
 
 
 @celery_app.task(
@@ -463,6 +657,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     **(batch.common_metadata or {}),
                     **(document.metadata or {}),
                     "source_file_id": row.id,
+                    "source_filename": row.original_filename,
                     "source_extension": row.extension,
                     "source_sha256": row.source_sha256,
                     "upload_batch_id": batch.id,
@@ -470,8 +665,6 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     "source_document_index": sequence,
                     "build_version": batch.build_version,
                 }
-                if not getattr(strategy, "sensitive", False):
-                    metadata["source_filename"] = row.original_filename
                 metadata = {
                     key: value
                     for key, value in metadata.items()
@@ -499,7 +692,11 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 item.dify_document_name = (
                     row.original_filename
                     if batch.upload_mode == "raw"
-                    else f"{Path(row.original_filename).stem}__{row.source_sha256[:8]}__{sequence}.md"
+                    else dify_document_name(
+                        row.original_filename,
+                        row.source_sha256,
+                        sequence,
+                    )
                 )
                 item.content_sha256 = _content_sha(item.cleaned_markdown, item.metadata_json, item.chunking_json)
                 session.add(item)
@@ -515,18 +712,38 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     .order_by(CleaningDocument.sequence)
                 )
             )
-            if batch.strategy_code == "course_information":
-                ordered_ids = _course_document_publish_order(pending_documents)
-                if ordered_ids:
-                    chain(
-                        *(
-                            process_cleaning_document.si(item_id).set(queue="ai_cleaning")
-                            for item_id in ordered_ids
-                        )
-                    ).apply_async()
-            else:
+            blocking_reviews = list(
+                session.scalars(
+                    select(CleaningDocument).where(
+                        CleaningDocument.file_id == row.id,
+                        CleaningDocument.status == "review_required",
+                    )
+                )
+            )
+            if blocking_reviews and pending_documents:
                 for item in pending_documents:
-                    process_cleaning_document.apply_async(args=[item.id], queue="ai_cleaning")
+                    item.status = "review_required"
+                    item.stage = "review"
+                    item.error_code = "SOURCE_REVIEW_REQUIRED"
+                    item.error_message = (
+                        "同一源文件存在需复核子文档，整文件暂不发布"
+                    )
+                    item.audit_json = {
+                        **(item.audit_json or {}),
+                        "source_atomic_original_disposition": "pending",
+                    }
+                pending_documents = []
+                session.commit()
+            if pending_documents:
+                ordered_ids = (
+                    _course_document_publish_order(pending_documents)
+                    if batch.strategy_code == "course_information"
+                    else [item.id for item in pending_documents]
+                )
+                process_cleaning_document.apply_async(
+                    args=[ordered_ids[0]],
+                    queue="ai_cleaning",
+                )
             _refresh_file_state(session, row.id, commit=False)
             _finish_batch(session, row.batch_id)
             session.commit()
@@ -586,11 +803,19 @@ def process_cleaning_document(self, document_id: str) -> bool:
                     selectinload(CleaningDocument.file).selectinload(CleaningFile.batch)
                 )
             )
-            if row is None or row.status not in {"pending", "processing"}:
+            if row is None or row.status not in {
+                "pending",
+                "processing",
+                "staged",
+            }:
                 return False
             batch = row.file.batch
             file_row = row.file
-            result = _publish_document(session, row, batch, file_row)
+            result = _publish_source_file(
+                session,
+                file_row=file_row,
+                batch=batch,
+            )
             _refresh_file_state(session, file_row.id, commit=False)
             _finish_batch(session, file_row.batch_id)
             session.commit()

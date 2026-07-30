@@ -1,9 +1,8 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
-import uuid
-import argparse
 
 import httpx
 
