@@ -35,6 +35,36 @@ class Settings(BaseSettings):
     dify_general_dataset_id: str = ""
     dify_course_dataset_id: str = ""
 
+    bailian_api_key: str = ""
+    bailian_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    cleaning_model: str = "qwen-plus"
+    cleaning_prompt_version: str = "commercial-cleaning-v1"
+    # Bump only when stored-cleaning semantics change (sanitization, strategy
+    # contract, chunking or publication policy).  It is deliberately distinct
+    # from a build version so routine releases do not re-index every source.
+    cleaning_spec_revision: str = "commercial-cleaning-v3"
+    cleaning_batch_candidate_threshold: int = Field(default=100, ge=1, le=50_000)
+    cleaning_batch_token_threshold: int = Field(default=200_000, ge=1)
+    cleaning_batch_max_requests: int = Field(default=40_000, ge=1, le=50_000)
+    cleaning_batch_max_bytes: int = Field(
+        default=400 * 1024 * 1024, ge=1024, le=500 * 1024 * 1024
+    )
+    cleaning_candidate_max_tokens: int = Field(default=12_000, ge=1000)
+    # Dify validates this independently from the model prompt candidate cap.
+    # Its custom hierarchical segment API accepts only 50..4000.
+    dify_parent_max_tokens: int = Field(default=2000, ge=50, le=4000)
+    cleaning_realtime_rpm: int = Field(default=60, ge=1)
+    cleaning_realtime_tpm: int = Field(default=500_000, ge=10_000)
+    cleaning_price_version: str = ""
+    cleaning_price_effective_date: str = ""
+    cleaning_price_valid_until: str = ""
+    cleaning_input_price_per_million: float = Field(default=0, ge=0)
+    cleaning_output_price_per_million: float = Field(default=0, ge=0)
+    dify_publish_window_start_hour: int = Field(default=0, ge=0, le=23)
+    dify_publish_window_end_hour: int = Field(default=24, ge=1, le=24)
+    dify_shard_max_items: int = Field(default=200, ge=1, le=200)
+    dify_shard_max_bytes: int = Field(default=1_000_000, ge=1024)
+
     history_retention_days: int = Field(default=7, ge=1, le=365)
     # The catalogue refresh time is a product decision, not a deployment
     # preference.  Keeping it literal prevents an unnoticed environment
@@ -50,7 +80,7 @@ class Settings(BaseSettings):
     max_query_chars: int = Field(default=12000, ge=100)
 
     max_upload_file_mb: int = Field(default=200, ge=1, le=200)
-    max_upload_files: int = Field(default=10, ge=1, le=100)
+    max_upload_files: int = Field(default=100, ge=1, le=100)
     max_upload_batch_mb: int = Field(default=500, ge=1)
     failed_file_retention_hours: int = Field(default=24, ge=1)
     cleaning_status_retention_days: int = Field(default=7, ge=1)
@@ -100,6 +130,7 @@ class Settings(BaseSettings):
             "dify_knowledge_api_key",
             "dify_general_dataset_id",
             "dify_course_dataset_id",
+            "bailian_api_key",
         ):
             if not getattr(self, field_name):
                 missing.append(field_name.upper())

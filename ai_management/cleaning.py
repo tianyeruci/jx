@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import codecs
 import hashlib
-import hmac
 import json
 import re
 import shutil
@@ -24,15 +23,20 @@ from knowledge_cleaner.chunking import (
     prepare_chunks,
     render_hierarchical_dify_text,
 )
-from knowledge_cleaner.dify import DifyKnowledgeClient
-from knowledge_cleaner.semantics import SemanticDecision, classify_text
+from knowledge_cleaner.semantics import SemanticDecision
 from knowledge_cleaner.sources import parse_markdown_posts, parse_wechat_public_account
 
 from .cache import cache
 from .config import get_settings
 from .db import SessionLocal, get_session
 from .errors import ServiceError
-from .models import CleaningBatch, CleaningDocument, CleaningFile, utcnow
+from .models import (
+    CleaningBatch,
+    CleaningDocument,
+    CleaningFile,
+    ModelCleaningTask,
+    utcnow,
+)
 from .privacy import (
     consultation_aliases,
     discover_author_aliases,
@@ -138,10 +142,27 @@ def _read_pdf_markdown(path: Path) -> str:
     from knowledge_cleaner.pdf_convert import convert_pdf
 
     result = convert_pdf(path, enable_ocr=False)
-    if result.needs_review or not result.markdown.strip():
-        reason = "；".join(result.review_reasons[:3]) or "没有可提取正文"
+    blocking_reasons = [
+        reason
+        for reason in result.review_reasons
+        if not str(reason).startswith("table_review:")
+    ]
+    if blocking_reasons or not result.markdown.strip():
+        reason = "；".join(blocking_reasons[:3]) or "没有可提取正文"
         raise ValueError(f"PDF不支持清洗入库：{reason}")
     return result.markdown.strip()
+
+
+def _content_title(markdown: str) -> str:
+    for line in markdown.splitlines():
+        match = re.match(r"^\s*#{1,6}\s+(.+?)\s*$", line)
+        if match:
+            return match.group(1).strip()[:300]
+    for line in markdown.splitlines():
+        candidate = line.strip().strip("|").strip()
+        if candidate:
+            return candidate[:80]
+    return "未命名文档"
 
 
 def _load_markdown_like(path: Path, original_filename: str) -> tuple[str, str]:
@@ -150,7 +171,9 @@ def _load_markdown_like(path: Path, original_filename: str) -> tuple[str, str]:
         markdown = _read_pdf_markdown(path)
     else:
         markdown = _read_text_markdown(path, suffix)
-    title = PurePath(original_filename).stem.strip() or "未命名文档"
+    # The original filename is administrative provenance only. It must not
+    # change the semantic title, model prompt or content identity.
+    title = _content_title(markdown)
     if not markdown.lstrip().startswith("#"):
         markdown = f"# {title}\n\n{markdown}"
     return title, markdown
@@ -161,6 +184,7 @@ class TestDocumentStrategy:
     display_name = "通用测试文档"
     supported_extensions = {".md", ".markdown", ".txt", ".docx"}
     sensitive = False
+    dify_metadata_fields = frozenset({"document_type", "review_status"})
 
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
         title, markdown = _load_markdown_like(file_path, original_filename)
@@ -182,6 +206,7 @@ class StandardDocumentStrategy:
     display_name = "标准文档清洗"
     supported_extensions = {".md", ".markdown", ".txt", ".docx", ".pdf"}
     sensitive = False
+    dify_metadata_fields = frozenset({"document_type", "review_status"})
 
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
         title, markdown = _load_markdown_like(file_path, original_filename)
@@ -252,13 +277,18 @@ class PersonalBusinessConsultationStrategy:
                 or f"case_{source_checksum[:16]}"
             )
             review_reasons = list(getattr(result, "review_reasons", []) or [])
+            blocking_reasons = [
+                reason
+                for reason in review_reasons
+                if not str(reason).startswith("table_review:")
+            ]
             needs_review = bool(
-                getattr(result, "needs_review", False) or residual_pii
+                blocking_reasons or residual_pii or not markdown.strip()
             )
         else:
             raise ValueError(f"个人商业咨询不支持 {suffix} 文件")
 
-        disposition = "review_required" if needs_review else "pending"
+        disposition = "review_required" if needs_review else "awaiting_model"
         safe_markdown = markdown.strip()
         if not safe_markdown:
             safe_markdown = "# 匿名商业咨询案例\n\n内容需人工复核后发布。"
@@ -305,6 +335,9 @@ class PersonalBusinessConsultationStrategy:
                     "forbidden_public_names": sorted(aliases),
                     "redaction_summary": redaction_summary,
                     "residual_pii_count": len(residual_pii),
+                    "model_blocks": (
+                        {} if needs_review else _source_blocks(safe_markdown)
+                    ),
                 },
             )
         ]
@@ -360,6 +393,18 @@ def _advisor_topic(decision: SemanticDecision) -> str:
     return ""
 
 
+def _source_blocks(text: str) -> dict[str, str]:
+    paragraphs = [
+        value.strip()
+        for value in re.split(r"\n\s*\n+", str(text or ""))
+        if value.strip()
+    ]
+    return {
+        f"b{index:04d}": value
+        for index, value in enumerate(paragraphs, start=1)
+    }
+
+
 class WechatPublicAccountCognitionStrategy:
     code = "wechat_public_account_cognition"
     display_name = "微信公众号认知分享"
@@ -387,9 +432,6 @@ class WechatPublicAccountCognitionStrategy:
             if DIFY_PARENT_SEPARATOR in body or DIFY_CHILD_SEPARATOR in body:
                 raise ValueError(f"文章 {unit.sequence} 正文与Dify分隔符碰撞")
 
-            decision = classify_text(title, body)
-            if decision.disposition != "keep":
-                continue
             fingerprint = hashlib.sha256(
                 re.sub(r"\s+", "", body).lower().encode("utf-8")
             ).hexdigest()
@@ -397,55 +439,23 @@ class WechatPublicAccountCognitionStrategy:
                 continue
             seen_bodies.add(fingerprint)
 
-            topic = _advisor_topic(decision)
-            if not topic:
-                documents.append(
-                    CleanedDocument(
-                        markdown=body,
-                        title=title,
-                        metadata={
-                            "record_type": "article",
-                            "source_title": title,
-                        },
-                        chunking=_article_chunking(),
-                        disposition="review_required",
-                        error_code="TOPIC_REVIEW_REQUIRED",
-                        error_message="主题无法稳定归入受控词表，需要人工确认",
-                        audit={
-                            **identity_audit,
-                            "warnings": list(unit.warnings),
-                        },
-                    )
-                )
-                continue
             source_body = body
-            if decision.time_sensitive and unit.published_at:
-                source_body = (
-                    f"> 来源语境：作者于{unit.published_at}发布。"
-                    "以下为当时观点，不代表当前状态。\n\n"
-                    f"{body}"
-                )
-            chunks = prepare_chunks(
-                source_body,
-                title=title,
-                content_type="article",
-                topics=(topic,),
-                overlap=0,
-            )
-            markdown = render_hierarchical_dify_text(chunks)
-            if not markdown:
-                continue
             documents.append(
                 CleanedDocument(
-                    markdown=markdown,
+                    markdown=source_body,
                     title=title,
                     metadata={
                         "record_type": "article",
-                        "topic": topic,
                         "source_title": title,
                     },
                     chunking=_article_chunking(),
-                    audit=identity_audit,
+                    disposition="awaiting_model",
+                    audit={
+                        **identity_audit,
+                        "model_blocks": _source_blocks(source_body),
+                        "published_at": unit.published_at,
+                        "parser_warnings": list(unit.warnings),
+                    },
                 )
             )
         if not documents:
@@ -480,29 +490,45 @@ def _build_article_document(
     child_max_tokens: int = 350,
     record_type: str = "article",
     identity_candidates: Iterable[str] = (),
+    requires_model: bool = True,
 ) -> CleanedDocument:
     title, body, identity_audit = redact_article_identity(
         title,
         body,
         provided_identities=identity_candidates,
     )
-    decision = classify_text(title, body)
-    topic = _advisor_topic(decision) if decision.disposition == "keep" else ""
-    chunks = prepare_chunks(
-        body,
-        title=title,
-        content_type=record_type,
-        topics=(topic,) if topic else (),
-        overlap=0,
-    )
-    markdown = render_hierarchical_dify_text(chunks) if chunks else body.strip()
-    disposition = {
-        "keep": "pending",
-        "review": "review_required",
-        "content_missing": "excluded",
-    }.get(decision.disposition, "excluded")
-    if disposition == "pending" and not topic:
-        disposition = "review_required"
+    model_blocks = _source_blocks(body)
+    if not model_blocks:
+        return CleanedDocument(
+            markdown="",
+            title=title,
+            metadata={"record_type": record_type, "source_title": title},
+            chunking=_article_chunking(
+                parent_max_tokens=parent_max_tokens,
+                child_max_tokens=child_max_tokens,
+            ),
+            disposition="excluded",
+            error_code="CONTENT_MISSING",
+            error_message="没有可供商业知识判断的正文",
+            audit=identity_audit,
+        )
+    if requires_model:
+        topic = ""
+        markdown = body.strip()
+        disposition = "awaiting_model"
+    else:
+        # Book and lead-magnet scope is selected by the uploader. They do not
+        # spend model tokens and do not require a keyword-derived topic.
+        topic = ""
+        chunks = prepare_chunks(
+            body,
+            title=title,
+            content_type=record_type,
+            topics=(),
+            overlap=0,
+        )
+        markdown = render_hierarchical_dify_text(chunks) if chunks else body.strip()
+        disposition = "pending"
     metadata = {
         "record_type": record_type,
         "source_title": title,
@@ -518,14 +544,12 @@ def _build_article_document(
             child_max_tokens=child_max_tokens,
         ),
         disposition=disposition,
-        error_code=None if disposition == "pending" else ("TOPIC_REVIEW_REQUIRED" if not topic else decision.disposition.upper()),
-        error_message=None if disposition == "pending" else ("主题无法稳定归入受控词表，需要人工确认" if not topic else decision.reason),
+        error_code=None,
+        error_message=None,
         audit={
             **identity_audit,
-            "semantic_disposition": decision.disposition,
-            "semantic_reason": decision.reason,
-            "semantic_topics": list(decision.topics),
-            "confidence": decision.confidence,
+            "model_blocks": model_blocks if requires_model else {},
+            "semantic_mode": "model" if requires_model else "trusted_upload_scope",
         },
     )
 
@@ -592,13 +616,24 @@ class LeadMagnetStrategy:
     dify_metadata_fields = _ARTICLE_METADATA_FIELDS
 
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
+        from .document_structure import remove_reliable_toc
+
         title, markdown = _load_markdown_like(file_path, original_filename)
+        toc = remove_reliable_toc(markdown)
         document = _build_article_document(
             title=title,
-            body=markdown,
+            body=toc.markdown,
             parent_max_tokens=1200,
             child_max_tokens=350,
+            requires_model=False,
         )
+        if toc.needs_review:
+            document.disposition = "review_required"
+            document.error_code = "TOC_REVIEW_REQUIRED"
+            document.error_message = "疑似目录无法与正文标题可靠对应"
+        document.warnings.extend(toc.warnings)
+        document.audit["toc_detected"] = toc.detected
+        document.audit["toc_headings"] = toc.headings
         if not document.markdown.strip():
             raise ValueError(f"{original_filename} 没有可清洗正文")
         return [document]
@@ -647,13 +682,16 @@ class BookStrategy:
     dify_metadata_fields = frozenset({"record_type", "topic", "source_title", "book_id", "part_index", "part_count"})
 
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
+        from .document_structure import remove_reliable_toc
+
         title, markdown = _load_markdown_like(file_path, original_filename)
+        toc = remove_reliable_toc(markdown)
+        markdown = toc.markdown
         parts = _split_book_markdown(markdown, get_settings().cleaning_markdown_split_bytes)
         if not parts:
             raise ValueError(f"{original_filename} 没有可清洗正文")
-        semantic = classify_text(title, markdown, hinted_type="book")
-        metadata_topic = _advisor_topic(semantic) if semantic.disposition == "keep" else ""
-        book_id = hashlib.sha256(f"{original_filename}:{title}".encode("utf-8")).hexdigest()[:16]
+        metadata_topic = ""
+        book_id = hashlib.sha256(markdown.encode("utf-8")).hexdigest()[:16]
         documents: list[CleanedDocument] = []
         total = len(parts)
         for index, part in enumerate(parts, start=1):
@@ -683,12 +721,31 @@ class BookStrategy:
                         parent_chunk_overlap=0,
                         child_chunk_overlap=0,
                     ),
-                    disposition="pending" if metadata_topic else "review_required",
-                    error_code=None if metadata_topic else "TOPIC_REVIEW_REQUIRED",
-                    error_message=None if metadata_topic else "书籍主题无法稳定归入受控词表，需要人工确认",
+                    disposition=(
+                        "review_required"
+                        if toc.needs_review
+                        else "pending"
+                    ),
+                    error_code=(
+                        "TOC_REVIEW_REQUIRED"
+                        if toc.needs_review
+                        else None
+                    ),
+                    error_message=(
+                        "疑似目录无法与正文标题可靠对应"
+                        if toc.needs_review
+                        else (
+                            None
+                            if metadata_topic
+                            else None
+                        )
+                    ),
+                    warnings=list(toc.warnings),
                     audit={
                         "split_parts": total,
                         "privacy_level": "public_source",
+                        "toc_detected": toc.detected,
+                        "toc_headings": toc.headings,
                     },
                 )
             )
@@ -784,6 +841,172 @@ class LearningRouteStrategy:
         ]
 
 
+class CourseRouteCatalogStrategy:
+    """Parse one XLSX into deterministic course and route review drafts."""
+
+    code = "course_route_catalog"
+    display_name = "课程信息与学习路线（合并）"
+    supported_extensions = {".xlsx"}
+    sensitive = False
+    knowledge_base_code = "course"
+    dify_metadata_fields = frozenset(
+        {
+            "document_type",
+            "course_id",
+            "route_id",
+            "direction",
+            "stage",
+            "source_platform",
+            "series_name",
+            "status",
+        }
+    )
+
+    def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
+        from .course_route_catalog import (
+            normalize_course_url,
+            parse_course_route_catalog,
+        )
+        from .models import Course
+
+        with SessionLocal() as session:
+            existing_ids: dict[str, str] = {}
+            for row in session.scalars(select(Course)):
+                try:
+                    existing_ids[normalize_course_url(row.official_url)] = row.course_id
+                except ValueError:
+                    continue
+        catalog = parse_course_route_catalog(
+            file_path,
+            existing_course_ids_by_url=existing_ids,
+        )
+        audit_summary = {
+            "sheet_name": catalog.audit.sheet_name,
+            "source_sha256": catalog.audit.source_sha256,
+            "source_rows": catalog.audit.source_rows,
+            "unknown_columns": catalog.audit.unknown_columns,
+            "duplicate_link_groups": catalog.audit.duplicate_link_groups,
+            "warnings": catalog.audit.warnings,
+        }
+        documents: list[CleanedDocument] = []
+        for item in catalog.courses:
+            blocks = {
+                "b001": f"课程名称：{item.name}",
+                "b002": f"阶段：{item.stage}",
+                "b003": f"学习路线：{item.route_name}",
+                "b004": f"系列名称：{item.series_name}",
+                "b005": f"课程方向：{item.direction_candidate}",
+                "b006": f"课程描述：{item.description_candidate}",
+                "b007": f"适用人群：{item.audience_candidate}",
+                "b008": f"课程亮点：{item.highlights_candidate}",
+                "b009": f"学习目标：{item.learning_outcomes_candidate}",
+            }
+            blocks = {
+                key: value
+                for key, value in blocks.items()
+                if value.split("：", 1)[-1].strip()
+            }
+            documents.append(
+                CleanedDocument(
+                    markdown=f"# {item.name}\n\n课程资料等待审核后发布。",
+                    title=item.name,
+                    metadata={
+                        "document_type": "course",
+                        "course_id": item.course_id,
+                        "stage": item.stage,
+                        "source_platform": "小鹅通",
+                        "series_name": item.series_name,
+                        "status": "inactive",
+                        "review_status": "pending_review",
+                    },
+                    disposition="awaiting_model",
+                    error_code=None,
+                    error_message=None,
+                    audit={
+                        "catalog_kind": "course",
+                        "catalog_draft": {
+                            "course_id": item.course_id,
+                            "name": item.name,
+                            "official_url": item.normalized_url,
+                            "stage": item.stage,
+                            "source_platform": "小鹅通",
+                            "series_name": item.series_name,
+                            "direction": item.direction_candidate,
+                            "description": item.description_candidate,
+                            "audience": item.audience_candidate,
+                            "highlights": [
+                                value.strip()
+                                for value in re.split(
+                                    r"[；;\n]+", item.highlights_candidate
+                                )
+                                if value.strip()
+                            ],
+                            "learning_outcomes": [
+                                value.strip()
+                                for value in re.split(
+                                    r"[；;\n]+", item.learning_outcomes_candidate
+                                )
+                                if value.strip()
+                            ],
+                            "enabled": False,
+                            "review_status": "pending_review",
+                        },
+                        "model_blocks": blocks,
+                        "field_sources": {
+                            "name": "source",
+                            "official_url": "source",
+                            "stage": "source",
+                            "course_id": "deterministic",
+                        },
+                        "source_rows": item.source_rows,
+                        "catalog_audit": audit_summary,
+                    },
+                )
+            )
+        for item in catalog.routes:
+            documents.append(
+                CleanedDocument(
+                    markdown=f"# {item.name}\n\n学习路线等待审核和排序后发布。",
+                    title=item.name,
+                    metadata={
+                        "document_type": "learning_route",
+                        "route_id": item.route_id,
+                        "status": "inactive",
+                        "review_status": "pending_review",
+                    },
+                    disposition="awaiting_model",
+                    error_code=None,
+                    error_message=None,
+                    audit={
+                        "catalog_kind": "route",
+                        "catalog_draft": {
+                            "route_id": item.route_id,
+                            "name": item.name,
+                            "direction": item.direction_candidate,
+                            "target": item.target_candidate,
+                            "stages": item.stages,
+                            "enabled": False,
+                            "review_status": "pending_review",
+                        },
+                        "model_blocks": {
+                            "b001": f"路线名称：{item.name}",
+                            "b002": f"路线目标：{item.target_candidate}",
+                        },
+                        "field_sources": {
+                            "name": "source",
+                            "route_id": "deterministic",
+                            "stages": "deterministic_pending_review",
+                        },
+                        "source_rows": item.source_rows,
+                        "catalog_audit": audit_summary,
+                    },
+                )
+            )
+        if not documents:
+            raise ValueError("工作簿没有生成任何课程或学习路线草稿")
+        return documents
+
+
 STRATEGY_REGISTRY: dict[str, CleaningStrategy] = {
     strategy.code: strategy
     for strategy in (
@@ -797,6 +1020,7 @@ STRATEGY_REGISTRY: dict[str, CleaningStrategy] = {
         BookStrategy(),
         CourseInformationStrategy(),
         LearningRouteStrategy(),
+        CourseRouteCatalogStrategy(),
     )
 }
 
@@ -807,6 +1031,7 @@ SYSTEM_METADATA_FIELDS = {
     "source_sha256",
     "upload_batch_id",
     "cleaning_strategy",
+    "cleaning_spec_revision",
     "source_document_index",
     "build_version",
     "document_type",
@@ -834,6 +1059,10 @@ ALLOWED_COMMON_METADATA = {
     "source_platform",
     "series_name",
     "status",
+    # Only the dedicated Streamlit test page writes this.  It remains local
+    # provenance and is deliberately absent from every strategy's Dify
+    # metadata allow-list.
+    "_test_ui_cleanup_run_id",
 }
 ITEM_TERMINAL_STATUSES = {"succeeded", "excluded", "review_required", "failed"}
 ITEM_SUCCESS_STATUSES = {"succeeded"}
@@ -845,6 +1074,11 @@ _ALLOWED_CONTENT_TYPES = {
     ".pdf": {"application/pdf", "application/octet-stream"},
     ".docx": {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/zip",
+        "application/octet-stream",
+    },
+    ".xlsx": {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "application/zip",
         "application/octet-stream",
     },
@@ -865,14 +1099,19 @@ def validate_uploaded_file(path: Path, suffix: str, content_type: str | None) ->
         if header != b"%PDF-":
             raise ValueError("PDF文件头无效")
         return
-    if suffix == ".docx":
+    if suffix in {".docx", ".xlsx"}:
         try:
             with zipfile.ZipFile(path) as archive:
                 names = set(archive.namelist())
-                if "[Content_Types].xml" not in names or "word/document.xml" not in names:
-                    raise ValueError("DOCX内部结构无效")
+                required = (
+                    "word/document.xml"
+                    if suffix == ".docx"
+                    else "xl/workbook.xml"
+                )
+                if "[Content_Types].xml" not in names or required not in names:
+                    raise ValueError(f"{suffix.upper()[1:]}内部结构无效")
         except zipfile.BadZipFile as exc:
-            raise ValueError("DOCX不是有效ZIP文档") from exc
+            raise ValueError(f"{suffix.upper()[1:]}不是有效ZIP文档") from exc
         return
     if suffix in {".md", ".markdown", ".txt"}:
         with path.open("rb") as handle:
@@ -908,19 +1147,11 @@ def normalized_original_filename(value: str) -> str:
 
 
 def dify_document_name(original_filename: str, sha256: str, sequence: int) -> str:
-    del sha256
-    source = PurePath(original_filename)
-    stem = source.stem
-    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", stem)
-    stem = re.sub(r"\s+", " ", stem).strip(" ._") or "未命名"
-    extension = source.suffix.lower() or ".md"
-    suffix = f"__{sequence:03d}{extension}"
-    maximum_stem = 300 - len(suffix)
-    if len(stem) > maximum_stem:
-        keep_tail = min(40, max(10, maximum_stem // 3))
-        keep_head = maximum_stem - keep_tail - 1
-        stem = f"{stem[:keep_head]}…{stem[-keep_tail:]}"
-    return f"{stem}{suffix}"
+    del original_filename
+    digest = re.sub(r"[^a-fA-F0-9]", "", sha256)[:16].lower()
+    if len(digest) < 12:
+        raise ValueError("Dify文档命名需要有效内容校验值")
+    return f"cleaned-{digest}__{sequence:03d}.md"
 
 
 def _serialize_item(item: CleaningDocument) -> dict[str, Any]:
@@ -939,6 +1170,8 @@ def _serialize_item(item: CleaningDocument) -> dict[str, Any]:
         "metadata": item.metadata_json or {},
         "chunking": item.chunking_json or {},
         "dify_document_id": item.dify_document_id,
+        "shard_id": item.shard_id,
+        "shard_parent_index": item.shard_parent_index,
         "remote_parent_count": item.remote_parent_count,
         "remote_child_count": item.remote_child_count,
         "updated_at": item.updated_at,
@@ -951,6 +1184,10 @@ def _summarize_file(file_row: CleaningFile) -> dict[str, Any]:
     status_counts = {
         "pending": sum(item.status == "pending" for item in items),
         "processing": sum(item.status == "processing" for item in items),
+        "awaiting_model": sum(item.status == "awaiting_model" for item in items),
+        "model_processing": sum(item.status == "model_processing" for item in items),
+        "shard_pending": sum(item.status == "shard_pending" for item in items),
+        "shard_indexing": sum(item.status == "shard_indexing" for item in items),
         "succeeded": sum(item.status == "succeeded" for item in items),
         "excluded": sum(item.status == "excluded" for item in items),
         "review_required": sum(item.status == "review_required" for item in items),
@@ -959,12 +1196,25 @@ def _summarize_file(file_row: CleaningFile) -> dict[str, Any]:
     terminal = status_counts["succeeded"] + status_counts["excluded"] + status_counts["review_required"] + status_counts["failed"]
     if item_total == 0:
         outcome = file_row.outcome if file_row.outcome and file_row.outcome != "pending" else file_row.status
-    elif terminal < item_total or status_counts["processing"] or status_counts["pending"]:
+    elif terminal < item_total or any(
+        status_counts[name]
+        for name in (
+            "processing",
+            "pending",
+            "awaiting_model",
+            "model_processing",
+            "shard_pending",
+            "shard_indexing",
+        )
+    ):
         outcome = "processing"
-    elif status_counts["succeeded"] == item_total:
-        outcome = "succeeded"
     elif status_counts["excluded"] == item_total:
         outcome = "excluded"
+    elif (
+        status_counts["succeeded"] + status_counts["excluded"]
+        == item_total
+    ):
+        outcome = "succeeded"
     elif status_counts["review_required"] == item_total:
         outcome = "review_required"
     elif status_counts["failed"] == item_total:
@@ -988,6 +1238,48 @@ def _summarize_file(file_row: CleaningFile) -> dict[str, Any]:
         "item_terminal": terminal,
         "progress": progress,
         "items": [_serialize_item(item) for item in items],
+        "publication_shards": [
+            {
+                "shard_id": shard.id,
+                "shard_index": shard.shard_index,
+                "status": shard.status,
+                "item_count": shard.item_count,
+                "content_bytes": shard.content_bytes,
+                "dify_document_id": shard.dify_document_id,
+                "remote_parent_count": shard.remote_parent_count,
+                "remote_child_count": shard.remote_child_count,
+                "last_error": shard.last_error,
+            }
+            for shard in sorted(
+                file_row.publication_shards,
+                key=lambda value: value.shard_index,
+            )
+        ],
+    }
+
+
+def _serialize_model_task(task: ModelCleaningTask) -> dict[str, Any]:
+    return {
+        "task_id": task.id,
+        "mode": task.mode,
+        "model": task.model,
+        "prompt_version": task.prompt_version,
+        "status": task.status,
+        "candidate_fingerprint": task.candidate_fingerprint,
+        "candidate_count": task.candidate_count,
+        "estimated_input_tokens": task.estimated_input_tokens,
+        "estimated_output_tokens": task.estimated_output_tokens,
+        "estimated_cost_low": task.estimated_cost_low,
+        "estimated_cost_high": task.estimated_cost_high,
+        "price_version": task.price_version,
+        "price_effective_date": task.price_effective_date,
+        "price_valid_until": task.price_valid_until,
+        "approved_at": task.approved_at,
+        "provider_batch_ids": task.provider_batch_ids or [],
+        "result_counts": task.result_counts or {},
+        "actual_usage": task.actual_usage or {},
+        "cleanup_status": task.cleanup_status,
+        "last_error": task.last_error,
     }
 
 
@@ -1004,13 +1296,21 @@ def _serialize_batch(batch: CleaningBatch) -> dict[str, Any]:
     item_counts = {
         "pending": sum(item["item_counts"]["pending"] for item in files),
         "processing": sum(item["item_counts"]["processing"] for item in files),
+        "awaiting_model": sum(item["item_counts"]["awaiting_model"] for item in files),
+        "model_processing": sum(item["item_counts"]["model_processing"] for item in files),
+        "shard_pending": sum(item["item_counts"]["shard_pending"] for item in files),
+        "shard_indexing": sum(item["item_counts"]["shard_indexing"] for item in files),
         "succeeded": sum(item["item_counts"]["succeeded"] for item in files),
         "excluded": sum(item["item_counts"]["excluded"] for item in files),
         "review_required": sum(item["item_counts"]["review_required"] for item in files),
         "failed": sum(item["item_counts"]["failed"] for item in files),
     }
     terminal_items = item_counts["succeeded"] + item_counts["excluded"] + item_counts["review_required"] + item_counts["failed"]
-    status = "completed" if file_total and non_terminal_files == 0 and terminal_items == total_items else "processing"
+    status = (
+        "completed"
+        if file_total and non_terminal_files == 0 and terminal_items == total_items
+        else batch.status
+    )
     if file_total == 0:
         progress = 0
     elif total_items == 0:
@@ -1049,92 +1349,113 @@ def _serialize_batch(batch: CleaningBatch) -> dict[str, Any]:
             "mixed": file_mixed,
         },
         "item_counts": item_counts,
+        "model_tasks": [
+            _serialize_model_task(item)
+            for item in sorted(batch.model_tasks, key=lambda value: value.created_at)
+        ],
         "files": files,
     }
 
 
-def _remote_metadata(document: dict[str, Any]) -> dict[str, str]:
-    raw = document.get("doc_metadata") or document.get("metadata") or []
-    if isinstance(raw, dict):
-        return {str(key): str(value) for key, value in raw.items()}
-    if not isinstance(raw, list):
-        return {}
-    return {
-        str(item.get("name")): str(item.get("value") or "")
-        for item in raw
-        if isinstance(item, dict) and item.get("name")
-    }
+def _mark_preflight_duplicate(row: CleaningFile, *, message: str) -> None:
+    """Leave an auditable terminal item when upload-time deduplication wins.
 
+    A duplicate is intentionally not re-indexed, but it is still a user
+    submitted file.  Previously we only changed the file state; that made a
+    completed upload appear to have no items at all and hid the reason from
+    the cleaning-status API and UI.
+    """
 
-def _remote_source_name(document: dict[str, Any]) -> str:
-    metadata = _remote_metadata(document)
-    details = document.get("data_source_info") or document.get("data_source_detail_dict") or {}
-    return str(
-        metadata.get("source_filename")
-        or document.get("name")
-        or details.get("upload_file")
-        or details.get("file_name")
-        or ""
+    row.status = "excluded"
+    row.outcome = "excluded"
+    row.stage = "duplicate_noop"
+    row.error_code = None
+    row.error_message = message
+    if row.documents:
+        return
+    row.documents.append(
+        CleaningDocument(
+            sequence=1,
+            title="重复内容（未重复入库）",
+            dify_document_name=dify_document_name("", row.source_sha256, 1),
+            document_key=f"{row.id}:duplicate:{row.source_sha256[:12]}",
+            status="excluded",
+            stage="duplicate_noop",
+            error_code="EXACT_CONTENT_DUPLICATE",
+            error_message=message,
+            content_sha256=hashlib.sha256(
+                f"duplicate:{row.source_sha256}".encode("utf-8")
+            ).hexdigest(),
+            metadata_json={
+                "source_file_id": row.id,
+                "source_filename": row.original_filename,
+                "source_extension": row.extension,
+                "source_sha256": row.source_sha256,
+                "upload_batch_id": row.batch_id,
+                "cleaning_strategy": row.batch.strategy_code,
+                "cleaning_spec_revision": row.batch.spec_revision,
+                "source_document_index": 1,
+                "build_version": row.batch.build_version,
+            },
+            chunking_json={},
+            audit_json={"duplicate_preflight": True},
+            warnings_json=[],
+            cleaned_markdown="",
+            retryable=False,
+        )
     )
 
 
-def _preflight_remote_duplicates(
+def _preflight_local_duplicates(
     *,
+    session: Session,
     knowledge_base_code: str,
     rows: list[CleaningFile],
 ) -> None:
-    """Apply the documented duplicate rules before any Worker task is queued."""
-    settings = get_settings()
-    dataset_id = (
-        settings.dify_general_dataset_id
-        if knowledge_base_code == "general"
-        else settings.dify_course_dataset_id
-    )
-    if not settings.dify_knowledge_api_key or not dataset_id:
-        if settings.app_env == "test":
-            return
-        raise ServiceError("DIFY_UNAVAILABLE", "知识库服务尚未配置", 503, True)
-    client = DifyKnowledgeClient(
-        settings.knowledge_base_url,
-        settings.dify_knowledge_api_key,
-        dataset_id,
-        timeout=60,
-    )
-    try:
-        remote_by_name: dict[str, list[dict[str, Any]]] = {}
-        for document in client.iter_documents():
-            remote_by_name.setdefault(_remote_source_name(document), []).append(document)
-        for row in rows:
-            same_name = remote_by_name.get(row.original_filename, [])
-            if len(same_name) > 1:
-                raise ServiceError(
-                    "CONFLICT",
-                    f"Dify 中存在多个同名文档：{row.original_filename}，请先由管理员处理",
-                    409,
-                    False,
-                )
-            if not same_name:
-                continue
-            existing = same_name[0]
-            existing_hash = _remote_metadata(existing).get("source_sha256", "")
-            if existing_hash and hmac.compare_digest(existing_hash, row.source_sha256):
-                row.status = "succeeded"
-                row.outcome = "excluded"
-                row.stage = "duplicate_noop"
-                row.error_code = None
-                row.error_message = "同名且内容未变化，未重复索引"
-            else:
-                remote_id = str(existing.get("id") or "")
-                if not remote_id:
-                    raise ServiceError("DIFY_UNAVAILABLE", "Dify 文档缺少 ID，无法安全替换", 502, True)
-                row.replace_document_id = remote_id
-                row.stage = "replace_pending"
-    except ServiceError:
-        raise
-    except Exception as exc:
-        raise ServiceError("DIFY_UNAVAILABLE", "知识库重复校验失败，已停止上传", 502, True) from exc
-    finally:
-        client.close()
+    """Deduplicate against protected local provenance before Worker queuing.
+
+    Source hashes must not be projected into Dify.  The local cleaning file
+    record is authoritative for both successful remote publication and the
+    cleaning revision, so no Dify listing is required here.
+    """
+
+    rows = [row for row in rows if row.source_sha256]
+    if not rows:
+        return
+    submitted_ids = {row.id for row in rows}
+    source_hashes = {row.source_sha256 for row in rows}
+    existing = session.execute(
+        select(CleaningFile, CleaningBatch)
+        .join(CleaningBatch, CleaningFile.batch_id == CleaningBatch.id)
+        .where(
+            CleaningFile.source_sha256.in_(source_hashes),
+            CleaningFile.status == "succeeded",
+            CleaningBatch.knowledge_base_code == knowledge_base_code,
+        )
+    ).all()
+    existing_by_key = {
+        (file_row.source_sha256, batch.strategy_code, batch.spec_revision)
+        for file_row, batch in existing
+        if file_row.id not in submitted_ids
+    }
+    seen_batch_hashes: set[str] = set()
+    for row in rows:
+        if row.source_sha256 in seen_batch_hashes:
+            _mark_preflight_duplicate(
+                row,
+                message="同批次内容完全相同，未重复索引",
+            )
+            continue
+        seen_batch_hashes.add(row.source_sha256)
+        if (
+            row.source_sha256,
+            row.batch.strategy_code,
+            row.batch.spec_revision,
+        ) in existing_by_key:
+            _mark_preflight_duplicate(
+                row,
+                message="内容校验值已存在，未重复索引",
+            )
 
 
 @router.get("/cleaning-strategies")
@@ -1204,6 +1525,7 @@ async def create_cleaning_batch(
         upload_mode=upload_mode,
         common_metadata=parsed_metadata,
         build_version=settings.build_version,
+        spec_revision=settings.cleaning_spec_revision,
     )
     session.add(batch)
     session.flush()
@@ -1274,7 +1596,8 @@ async def create_cleaning_batch(
 
     try:
         pending_rows = [session.get(CleaningFile, file_id) for file_id in pending_ids]
-        _preflight_remote_duplicates(
+        _preflight_local_duplicates(
+            session=session,
             knowledge_base_code=knowledge_base_code,
             rows=[item for item in pending_rows if item is not None],
         )
@@ -1287,6 +1610,12 @@ async def create_cleaning_batch(
         for file_id in pending_ids
         if (row := session.get(CleaningFile, file_id)) is not None and row.status == "pending"
     ]
+    for row in pending_rows:
+        if row is None or row.status not in {"succeeded", "excluded"}:
+            continue
+        target = batch_dir / row.storage_filename
+        target.unlink(missing_ok=True)
+        row.source_deleted_at = utcnow()
     if not pending_ids:
         batch.status = "completed"
     session.commit()
@@ -1359,7 +1688,11 @@ def get_cleaning_batch(batch_id: str, session: Session = Depends(get_session)) -
         select(CleaningBatch)
         .where(CleaningBatch.id == batch_id)
         .options(
-            selectinload(CleaningBatch.files).selectinload(CleaningFile.documents)
+            selectinload(CleaningBatch.files).selectinload(CleaningFile.documents),
+            selectinload(CleaningBatch.files).selectinload(
+                CleaningFile.publication_shards
+            ),
+            selectinload(CleaningBatch.model_tasks),
         )
     )
     if batch is None:
@@ -1564,8 +1897,9 @@ def review_cleaning_item(
         row.retryable = True
         row.error_code = None
         row.error_message = None
-    from .tasks import _finish_batch
+    from .tasks import _finish_batch, _refresh_file_state
 
+    _refresh_file_state(session, row.file_id, commit=False)
     _finish_batch(session, row.file.batch_id)
     session.commit()
     if action != "exclude":

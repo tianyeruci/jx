@@ -76,7 +76,7 @@ def test_consultation_supports_docx_and_pdf_and_redacts_identity(tmp_path):
     cleaned = strategy.clean(source, source.name)
     serialized = _public_text(cleaned)
     assert len(cleaned) == 1
-    assert cleaned[0].disposition == "pending"
+    assert cleaned[0].disposition == "awaiting_model"
     assert "陈北" not in serialized
     assert "远山科技" not in serialized
     assert "13800138000" not in serialized
@@ -156,15 +156,19 @@ def test_wechat_strategy_hides_account_name_and_person_name(tmp_path):
     assert "作者" in serialized
 
 
-def test_dify_child_document_names_use_source_extension_and_three_digit_sequence():
+def test_dify_child_document_names_use_content_hash_and_three_digit_sequence():
     source_hash = hashlib.sha256(b"same-source").hexdigest()
-    assert dify_document_name("访谈记录.docx", source_hash, 1) == "访谈记录__001.docx"
-    assert dify_document_name("访谈记录.docx", source_hash, 12) == "访谈记录__012.docx"
+    assert dify_document_name("访谈记录.docx", source_hash, 1) == (
+        f"cleaned-{source_hash[:16]}__001.md"
+    )
+    assert dify_document_name("另一个名字.pdf", source_hash, 12) == (
+        f"cleaned-{source_hash[:16]}__012.md"
+    )
     long_name = "非常长的来源文件名" + "甲" * 200 + ".pdf"
     first = dify_document_name(long_name, source_hash, 3)
     second = dify_document_name(long_name, source_hash, 3)
     assert first == second
-    assert first.endswith("__003.pdf")
+    assert first.endswith("__003.md")
     assert len(first) <= 300
 
 

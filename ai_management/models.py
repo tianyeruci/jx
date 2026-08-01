@@ -196,6 +196,19 @@ class LearningRoute(Base, TimestampMixin):
     dify_document_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
+class CourseDirection(Base, TimestampMixin):
+    __tablename__ = "course_direction"
+
+    code: Mapped[str] = mapped_column(String(100), primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    review_status: Mapped[str] = mapped_column(
+        String(32), default="approved", index=True
+    )
+    approved_by: Mapped[str] = mapped_column(String(100), default="admin")
+
+
 class CourseClickDaily(Base, TimestampMixin):
     __tablename__ = "course_click_daily"
     __table_args__ = (UniqueConstraint("course_id", "click_date", name="uq_course_click_date"),)
@@ -214,12 +227,15 @@ class CleaningBatch(Base, TimestampMixin):
     strategy_code: Mapped[str] = mapped_column(String(100))
     knowledge_base_code: Mapped[str] = mapped_column(String(100))
     upload_mode: Mapped[str] = mapped_column(String(16), default="cleaned")
-    status: Mapped[str] = mapped_column(String(16), default="processing", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="processing", index=True)
     common_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     build_version: Mapped[str] = mapped_column(String(100), default="development")
     spec_revision: Mapped[str] = mapped_column(String(64), default="cleaning-v2")
 
     files: Mapped[list["CleaningFile"]] = relationship(
+        back_populates="batch", cascade="all, delete-orphan"
+    )
+    model_tasks: Mapped[list["ModelCleaningTask"]] = relationship(
         back_populates="batch", cascade="all, delete-orphan"
     )
 
@@ -248,6 +264,9 @@ class CleaningFile(Base, TimestampMixin):
 
     batch: Mapped[CleaningBatch] = relationship(back_populates="files")
     documents: Mapped[list["CleaningDocument"]] = relationship(
+        back_populates="file", cascade="all, delete-orphan"
+    )
+    publication_shards: Mapped[list["DifyPublicationShard"]] = relationship(
         back_populates="file", cascade="all, delete-orphan"
     )
 
@@ -280,8 +299,101 @@ class CleaningDocument(Base, TimestampMixin):
     retryable: Mapped[bool] = mapped_column(Boolean, default=False)
     remote_parent_count: Mapped[int] = mapped_column(Integer, default=0)
     remote_child_count: Mapped[int] = mapped_column(Integer, default=0)
+    shard_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("dify_publication_shard.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    shard_parent_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     file: Mapped[CleaningFile] = relationship(back_populates="documents")
+    publication_shard: Mapped["DifyPublicationShard | None"] = relationship(
+        back_populates="documents"
+    )
+
+
+class ModelCleaningTask(Base, TimestampMixin):
+    __tablename__ = "model_cleaning_task"
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_id",
+            "prompt_version",
+            "candidate_fingerprint",
+            name="uq_model_cleaning_task_fingerprint",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    batch_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("cleaning_batch.id", ondelete="CASCADE"), index=True
+    )
+    mode: Mapped[str] = mapped_column(String(16), index=True)
+    model: Mapped[str] = mapped_column(String(100), default="qwen-plus")
+    prompt_version: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(40), index=True)
+    candidate_fingerprint: Mapped[str] = mapped_column(String(64))
+    candidate_count: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_cost_low: Mapped[str] = mapped_column(String(40), default="0")
+    estimated_cost_high: Mapped[str] = mapped_column(String(40), default="0")
+    price_version: Mapped[str] = mapped_column(String(100), default="")
+    price_effective_date: Mapped[str] = mapped_column(String(32), default="")
+    price_valid_until: Mapped[str] = mapped_column(String(32), default="")
+    approval_fingerprint: Mapped[str] = mapped_column(String(64), default="")
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    provider_batch_id: Mapped[str | None] = mapped_column(
+        String(100), nullable=True, index=True
+    )
+    provider_batch_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    provider_input_file_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    provider_output_file_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    provider_error_file_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    result_counts: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    actual_usage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    cleanup_status: Mapped[str] = mapped_column(String(32), default="not_started")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+
+    batch: Mapped[CleaningBatch] = relationship(back_populates="model_tasks")
+
+
+class DifyPublicationShard(Base, TimestampMixin):
+    __tablename__ = "dify_publication_shard"
+    __table_args__ = (
+        UniqueConstraint("file_id", "shard_index", name="uq_dify_shard_file_index"),
+        UniqueConstraint(
+            "file_id", "content_sha256", name="uq_dify_shard_file_content"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    file_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("cleaning_file.id", ondelete="CASCADE"), index=True
+    )
+    shard_index: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(40), default="shard_pending", index=True)
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    content_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    markdown: Mapped[str] = mapped_column(Text)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    dify_document_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+    dify_batch_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    remote_parent_count: Mapped[int] = mapped_column(Integer, default=0)
+    remote_child_count: Mapped[int] = mapped_column(Integer, default=0)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+
+    file: Mapped[CleaningFile] = relationship(back_populates="publication_shards")
+    documents: Mapped[list[CleaningDocument]] = relationship(
+        back_populates="publication_shard"
+    )
 
 
 class ExternalDeletionTask(Base, TimestampMixin):

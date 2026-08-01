@@ -13,6 +13,19 @@ TROUBLESHOOTING_DOMAINS = (
     "dify.md",
     "data-cleaning.md",
 )
+BUSINESS_SOURCE_MATERIALS = {
+    "背景介绍.txt": (
+        "V2需求规格说明.md",
+        "V2服务开发与数据设计.md",
+        "清洗策略接入与编写规范.md",
+    ),
+    "用户操作和管理员操作部分场景.md": (
+        "V2需求规格说明.md",
+        "V2产品流程与边界.md",
+        "V2决策记录.md",
+        "V2测试与验收规范.md",
+    ),
+}
 
 
 def test_project_agents_is_small_and_does_not_store_dynamic_state():
@@ -53,6 +66,44 @@ def test_document_index_routes_current_structure_and_troubleshooting():
         ROOT / "docs" / "Codex项目上下文与文档维护规则.md",
     ):
         assert stable_path.is_file()
+
+
+def test_business_source_materials_are_routed_without_becoming_baseline():
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    readme = (ROOT / "docs" / "README.md").read_text(encoding="utf-8")
+    function_index = (ROOT / "docs" / "功能与接口索引.md").read_text(
+        encoding="utf-8"
+    )
+    governance = (
+        ROOT / "docs" / "Codex项目上下文与文档维护规则.md"
+    ).read_text(encoding="utf-8")
+
+    assert "业务来源材料" in agents
+    assert "未确认增量不得指导实现" in agents
+    assert "需求来源与追踪" in readme
+    assert "来源材料映射（非需求基线）" in function_index
+    assert "来源材料不自动覆盖需求基线" in governance
+
+    source_section = readme.split("### 3.1 需求来源与追踪", 1)[1].split(
+        "## 4.", 1
+    )[0]
+    mapping_section = function_index.split(
+        "### 3.1 来源材料映射（非需求基线）", 1
+    )[1].split("### 3.2", 1)[0]
+
+    for source_name, canonical_documents in BUSINESS_SOURCE_MATERIALS.items():
+        assert (ROOT / source_name).is_file()
+        assert source_name not in agents
+        assert source_name in source_section
+        assert source_name in mapping_section
+        for canonical_name in canonical_documents:
+            assert canonical_name in source_section
+            canonical_path = (
+                ROOT / canonical_name
+                if canonical_name == "清洗策略接入与编写规范.md"
+                else ROOT / "docs" / canonical_name
+            )
+            assert canonical_path.is_file()
 
 
 def test_as_built_structure_does_not_claim_target_packages_exist():

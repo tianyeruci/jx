@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import json
+from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from knowledge_cleaner.dify import DifyKnowledgeClient
 
+from ...cache import cache
 from ...cleaning import (
     STRATEGY_REGISTRY,
+    cleaning_batch_cache_key,
     create_cleaning_batch,
     get_cleaning_batch,
     get_cleaning_item,
@@ -23,7 +27,17 @@ from ...config import get_settings
 from ...courses import rebuild_snapshot
 from ...db import get_session
 from ...errors import ServiceError
-from ...models import CleaningBatch, CleaningDocument, CleaningFile, Course, LearningRoute
+from ...models import (
+    CleaningBatch,
+    CleaningDocument,
+    CleaningFile,
+    Course,
+    CourseDirection,
+    DifyPublicationShard,
+    ExternalDeletionTask,
+    LearningRoute,
+    ModelCleaningTask,
+)
 from ...schemas import CleaningReviewDecisionRequest, DeleteDocumentRequest, DocumentStatusRequest
 from ...security import require_admin_token, require_internal_token
 from ...services.admin_settings import bump_catalog_revision
@@ -185,6 +199,26 @@ def knowledge_bases() -> dict[str, list[dict[str, Any]]]:
     return {"items": items}
 
 
+@router.get("/course/catalog-directions")
+def catalog_directions(
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    return {
+        "items": [
+            {
+                "code": item.code,
+                "name": item.name,
+                "aliases": item.aliases or [],
+                "enabled": item.enabled,
+                "review_status": item.review_status,
+            }
+            for item in session.scalars(
+                select(CourseDirection).order_by(CourseDirection.name)
+            )
+        ]
+    }
+
+
 @router.get("/{kb_code}/documents")
 def list_documents(
     kb_code: str,
@@ -254,6 +288,335 @@ def upload_batch_status(
     if payload["knowledge_base_code"] != kb_code:
         raise ServiceError("VALIDATION_ERROR", "上传批次不属于该知识库", 404, False)
     return payload
+
+
+@router.post(
+    "/{kb_code}/upload-batches/{batch_id}/model-tasks/{task_id}/approve"
+)
+def approve_model_task(
+    kb_code: str,
+    batch_id: str,
+    task_id: str,
+    candidate_fingerprint: str = Form(...),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _dataset_id(kb_code)
+    batch = session.get(CleaningBatch, batch_id)
+    task = session.get(ModelCleaningTask, task_id)
+    if (
+        batch is None
+        or task is None
+        or task.batch_id != batch_id
+        or batch.knowledge_base_code != kb_code
+    ):
+        raise ServiceError("VALIDATION_ERROR", "模型任务不存在", 404, False)
+    if task.mode != "batch" or task.status != "awaiting_approval":
+        raise ServiceError("CONFLICT", "模型任务当前不可批准", 409, False)
+    if candidate_fingerprint != task.candidate_fingerprint:
+        raise ServiceError("CONFLICT", "候选集已变化，请重新确认费用", 409, False)
+    settings = get_settings()
+    if (
+        not task.price_version
+        or not task.price_effective_date
+        or not task.price_valid_until
+        or settings.cleaning_input_price_per_million <= 0
+        or settings.cleaning_output_price_per_million <= 0
+    ):
+        raise ServiceError(
+            "CONFIGURATION_ERROR",
+            "价格版本缺失或无效，禁止产生Batch付费调用",
+            409,
+            False,
+        )
+    try:
+        price_valid_until = date.fromisoformat(task.price_valid_until)
+    except ValueError as exc:
+        raise ServiceError(
+            "CONFIGURATION_ERROR", "价格有效期格式无效", 409, False
+        ) from exc
+    if price_valid_until < datetime.now(timezone.utc).date():
+        raise ServiceError(
+            "CONFIGURATION_ERROR", "价格快照已过期，禁止产生Batch付费调用", 409, False
+        )
+    task.approval_fingerprint = candidate_fingerprint
+    task.approved_at = datetime.now(timezone.utc)
+    task.status = "approved"
+    batch.status = "model_batch_uploading"
+    session.commit()
+    # Status polling (including the test UI) may have cached the previous
+    # awaiting_approval payload.  Invalidate before queueing so a refresh
+    # cannot invite a duplicate paid approval request.
+    cache.delete(cleaning_batch_cache_key(batch_id))
+    from ...workers.tasks.model_cleaning import submit_batch_model_task
+
+    try:
+        submit_batch_model_task.apply_async(
+            args=[task.id], queue="ai_model_batch"
+        )
+    except Exception as exc:
+        task.status = "awaiting_approval"
+        task.approval_fingerprint = ""
+        task.approved_at = None
+        batch.status = "awaiting_model_approval"
+        session.commit()
+        cache.delete(cleaning_batch_cache_key(batch_id))
+        raise ServiceError(
+            "TASK_QUEUE_UNAVAILABLE",
+            "模型任务提交失败，未消耗已确认费用",
+            503,
+            True,
+        ) from exc
+    return {
+        "task_id": task.id,
+        "status": task.status,
+        "candidate_fingerprint": task.candidate_fingerprint,
+    }
+
+
+@router.post(
+    "/{kb_code}/upload-batches/{batch_id}/model-tasks/{task_id}/cancel"
+)
+def cancel_model_task(
+    kb_code: str,
+    batch_id: str,
+    task_id: str,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _dataset_id(kb_code)
+    batch = session.get(CleaningBatch, batch_id)
+    task = session.get(ModelCleaningTask, task_id)
+    if (
+        batch is None
+        or task is None
+        or task.batch_id != batch_id
+        or batch.knowledge_base_code != kb_code
+    ):
+        raise ServiceError("VALIDATION_ERROR", "模型任务不存在", 404, False)
+    if task.mode != "batch" or task.status not in {
+        "awaiting_approval",
+        "approved",
+        "batch_uploading",
+        "batch_running",
+    }:
+        raise ServiceError("CONFLICT", "模型任务当前不可取消", 409, False)
+    provider_ids = list(task.provider_batch_ids or [])
+    provider_file_ids = {
+        *(task.provider_input_file_ids or []),
+        *(task.provider_output_file_ids or []),
+        *(task.provider_error_file_ids or []),
+    }
+    if provider_ids or provider_file_ids:
+        from ...model_cleaning import BailianClient
+
+        settings = get_settings()
+        client = BailianClient(
+            api_key=settings.bailian_api_key,
+            base_url=settings.bailian_base_url,
+            timeout_seconds=60,
+        )
+        try:
+            file_ids = set(provider_file_ids)
+            for provider_id in provider_ids:
+                cancelled = client.cancel_batch(provider_id)
+                for field in ("output_file_id", "error_file_id"):
+                    if cancelled.get(field):
+                        file_ids.add(str(cancelled[field]))
+            cleanup_failed = False
+            for file_id in sorted(file_ids):
+                try:
+                    client.delete_file(file_id)
+                except Exception as exc:
+                    cleanup_failed = True
+                    session.add(
+                        ExternalDeletionTask(
+                            kind="bailian_file",
+                            external_id=file_id,
+                            payload={"model_task_id": task.id},
+                            attempts=0,
+                            last_error=str(exc)[:1000],
+                        )
+                    )
+            task.cleanup_status = (
+                "pending_retry" if cleanup_failed else "completed"
+            )
+        except Exception as exc:
+            raise ServiceError(
+                "MODEL_UNAVAILABLE", "百炼任务取消失败，未标记成功", 502, True
+            ) from exc
+        finally:
+            client.close()
+    documents = session.scalars(
+        select(CleaningDocument)
+        .join(CleaningFile)
+        .where(
+            CleaningFile.batch_id == batch_id,
+            CleaningDocument.status.in_(
+                ("awaiting_model", "model_processing")
+            ),
+        )
+        .execution_options(yield_per=500)
+    )
+    for document in documents:
+        document.status = "review_required"
+        document.stage = "review"
+        document.error_code = "MODEL_TASK_CANCELLED"
+        document.error_message = "管理员已取消模型任务，条目需复核或重新上传"
+    task.status = "cancelled"
+    batch.status = "partially_completed"
+    session.commit()
+    return {"task_id": task.id, "status": task.status}
+
+
+@router.post(
+    "/{kb_code}/upload-batches/{batch_id}/shards/{shard_id}/retry"
+)
+def retry_publication_shard(
+    kb_code: str,
+    batch_id: str,
+    shard_id: str,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _dataset_id(kb_code)
+    shard = session.scalar(
+        select(DifyPublicationShard)
+        .join(CleaningFile)
+        .where(
+            DifyPublicationShard.id == shard_id,
+            CleaningFile.batch_id == batch_id,
+        )
+    )
+    batch = session.get(CleaningBatch, batch_id)
+    if (
+        shard is None
+        or batch is None
+        or batch.knowledge_base_code != kb_code
+        or shard.status not in {"failed", "shard_pending"}
+    ):
+        raise ServiceError("VALIDATION_ERROR", "分片不存在或当前不可重试", 404, False)
+    shard.status = "shard_pending"
+    shard.last_error = ""
+    for document in shard.documents:
+        document.status = "shard_pending"
+        document.stage = "shard_pending"
+    session.commit()
+    from ...workers.tasks.model_cleaning import publish_dify_shard
+
+    publish_dify_shard.apply_async(args=[shard.id], queue="ai_publication")
+    return {"shard_id": shard.id, "status": shard.status}
+
+
+@router.post(
+    "/{kb_code}/upload-batches/{batch_id}/shards/{shard_id}/replace"
+)
+def replace_publication_shard(
+    kb_code: str,
+    batch_id: str,
+    shard_id: str,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _dataset_id(kb_code)
+    shard = session.scalar(
+        select(DifyPublicationShard)
+        .join(CleaningFile)
+        .where(
+            DifyPublicationShard.id == shard_id,
+            CleaningFile.batch_id == batch_id,
+        )
+    )
+    batch = session.get(CleaningBatch, batch_id)
+    if (
+        shard is None
+        or batch is None
+        or batch.knowledge_base_code != kb_code
+        or shard.status != "succeeded"
+    ):
+        raise ServiceError(
+            "VALIDATION_ERROR", "分片不存在或当前不可精确替换", 404, False
+        )
+    shard.status = "shard_pending"
+    for document in shard.documents:
+        document.status = "shard_pending"
+        document.stage = "shard_pending"
+    session.commit()
+    from ...workers.tasks.model_cleaning import publish_dify_shard
+
+    publish_dify_shard.apply_async(args=[shard.id], queue="ai_publication")
+    return {
+        "shard_id": shard.id,
+        "status": shard.status,
+        "replaces_document_id": shard.dify_document_id,
+    }
+
+
+@router.get(
+    "/{kb_code}/upload-batches/{batch_id}/files/{file_id}/catalog-review.xlsx"
+)
+def export_catalog_review_workbook(
+    kb_code: str,
+    batch_id: str,
+    file_id: str,
+    session: Session = Depends(get_session),
+) -> Response:
+    _dataset_id(kb_code)
+    from ...catalog_review import export_catalog_review
+
+    try:
+        content = export_catalog_review(
+            session, batch_id=batch_id, file_id=file_id
+        )
+    except ValueError as exc:
+        raise ServiceError("VALIDATION_ERROR", str(exc), 422, False) from exc
+    return Response(
+        content=content,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": 'attachment; filename="catalog-review.xlsx"'
+        },
+    )
+
+
+@router.post(
+    "/{kb_code}/upload-batches/{batch_id}/files/{file_id}/catalog-review-import"
+)
+async def import_catalog_review_workbook(
+    kb_code: str,
+    batch_id: str,
+    file_id: str,
+    review_file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _dataset_id(kb_code)
+    from ...catalog_review import import_catalog_review
+
+    content = await review_file.read()
+    try:
+        result = import_catalog_review(
+            session,
+            batch_id=batch_id,
+            file_id=file_id,
+            content=content,
+        )
+    except ValueError as exc:
+        raise ServiceError("VALIDATION_ERROR", str(exc), 422, False) from exc
+    cache.delete(cleaning_batch_cache_key(batch_id))
+    first_pending = session.scalar(
+        select(CleaningDocument.id)
+        .where(
+            CleaningDocument.file_id == file_id,
+            CleaningDocument.status == "pending",
+        )
+        .order_by(CleaningDocument.sequence)
+        .limit(1)
+    )
+    if first_pending:
+        from ...workers.tasks.cleaning import process_cleaning_document
+
+        process_cleaning_document.apply_async(
+            args=[first_pending], queue="ai_publication"
+        )
+    return {**result, "status": "publishing" if first_pending else "completed"}
 
 
 @router.post("/{kb_code}/upload-batches/{batch_id}/files/{file_id}/retry")

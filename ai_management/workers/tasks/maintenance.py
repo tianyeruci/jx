@@ -14,6 +14,7 @@ from ...context import messages_after_summary
 from ...courses import rebuild_snapshot
 from ...db import SessionLocal
 from ...dify import DifyAppClient
+from ...model_cleaning import BailianClient
 from ...models import (
     BusinessConversation,
     BusinessConversationSegment,
@@ -28,7 +29,12 @@ from ...models import (
 from ...services.admin_settings import get_history_retention_days
 from ...services.observability.events import record_event
 from ..celery_app import celery_app
-from .cleaning import _finish_batch, _remove_or_disable_document, process_cleaning_file
+from .cleaning import (
+    _finish_batch,
+    _refresh_file_state,
+    _remove_or_disable_document,
+    process_cleaning_file,
+)
 from .summary import _summarize_sync
 
 logger = logging.getLogger(__name__)
@@ -185,6 +191,16 @@ def _retry_external_deletions() -> None:
                             raise RuntimeError("Dify文档删除和停用仍然失败")
                     finally:
                         knowledge.close()
+                elif task.kind == "bailian_file":
+                    model_client = BailianClient(
+                        api_key=settings.bailian_api_key,
+                        base_url=settings.bailian_base_url,
+                        timeout_seconds=60,
+                    )
+                    try:
+                        model_client.delete_file(task.external_id)
+                    finally:
+                        model_client.close()
                 session.delete(task)
             except Exception as exc:
                 task.attempts += 1
@@ -255,6 +271,7 @@ def _cleanup_files_and_stale_tasks() -> None:
                 row.status = "failed"
                 row.error_code = "CLEANING_FAILED"
                 row.error_message = "Worker中断后自动重试仍未完成"
+            _refresh_file_state(session, row.id, commit=False)
             _finish_batch(session, row.batch_id)
 
         expired_failed = list(

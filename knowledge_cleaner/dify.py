@@ -97,8 +97,8 @@ class DifyKnowledgeClient:
     ) -> tuple[str, str]:
         rules: dict[str, Any] = {
             "pre_processing_rules": [
-                {"id": "remove_extra_spaces", "enabled": False},
-                {"id": "remove_urls_emails", "enabled": False},
+                {"id": "remove_extra_spaces", "enabled": True},
+                {"id": "remove_urls_emails", "enabled": True},
             ],
             "parent_mode": parent_mode,
         }
@@ -160,7 +160,7 @@ class DifyKnowledgeClient:
             "rules": {
                 "pre_processing_rules": [
                     {"id": "remove_extra_spaces", "enabled": True},
-                    {"id": "remove_urls_emails", "enabled": False},
+                    {"id": "remove_urls_emails", "enabled": True},
                 ],
                 "parent_mode": "paragraph",
                 "segmentation": {"separator": "\n\n", "max_tokens": 1000},
@@ -204,13 +204,53 @@ class DifyKnowledgeClient:
             raise RuntimeError("Dify原文件上传响应缺少document id或batch")
         return document_id, batch
 
-    def wait_for_indexing(self, batch: str, *, timeout_seconds: int = 900, interval: float = 2) -> None:
+    def wait_for_indexing(
+        self,
+        batch: str | None = None,
+        *,
+        document_id: str | None = None,
+        timeout_seconds: int = 900,
+        interval: float = 2,
+    ) -> None:
+        """Wait for a newly-created document to finish indexing.
+
+        Dify's batch-status endpoint is valid, but it resolves a transient
+        ``Document.batch`` value.  In Dify 1.13, that lookup can disappear
+        while the created document itself is still addressable.  Callers that
+        have the create response should therefore provide ``document_id`` and
+        use the stable per-document resource.  The batch endpoint remains a
+        compatibility fallback for older call sites and for installations
+        where a just-created document is not immediately readable.
+        """
+        if not batch and not document_id:
+            raise ValueError("等待Dify索引必须提供batch或document id")
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
-            data = self._request(
-                "GET", f"datasets/{self.dataset_id}/documents/{batch}/indexing-status"
-            )
+            data: dict[str, Any]
+            if document_id:
+                try:
+                    data = self.get_document(document_id)
+                except httpx.HTTPStatusError as exc:
+                    # Retain the former batch path as a compatibility
+                    # fallback only for an initial document lookup 404.  Any
+                    # non-404 error, or a batch-only failure, keeps its
+                    # original HTTP error semantics.
+                    if exc.response.status_code != 404 or not batch:
+                        raise
+                    data = self._request(
+                        "GET", f"datasets/{self.dataset_id}/documents/{batch}/indexing-status"
+                    )
+            else:
+                data = self._request(
+                    "GET", f"datasets/{self.dataset_id}/documents/{batch}/indexing-status"
+                )
             entries = data.get("data") or []
+            if isinstance(entries, dict):
+                entries = [entries]
+            elif not isinstance(entries, list):
+                entries = []
+            if not entries and "indexing_status" in data:
+                entries = [data]
             statuses = {str(item.get("indexing_status", "")) for item in entries}
             if statuses and statuses <= {"completed"}:
                 return
@@ -749,7 +789,11 @@ def publish_clean_output(
         try:
             new_id, batch = client.create_document(item.name, item.text)
             stage = "index"
-            client.wait_for_indexing(batch, timeout_seconds=indexing_timeout)
+            client.wait_for_indexing(
+                batch,
+                document_id=new_id,
+                timeout_seconds=indexing_timeout,
+            )
             stage = "metadata"
             client.set_metadata(new_id, item.record, fields)
             obsolete = list(dict.fromkeys([*remote_ids, previous_id]))

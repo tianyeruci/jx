@@ -1,6 +1,7 @@
 import json
 
 import httpx
+import pytest
 
 from knowledge_cleaner.batch_pipeline import BatchCleaningPipeline, BatchOptions
 from knowledge_cleaner.chunking import (
@@ -126,11 +127,111 @@ def test_dify_hierarchical_contract_and_child_verification():
     rules = captured["payload"]["process_rule"]["rules"]
     assert captured["payload"]["doc_form"] == "hierarchical_model"
     assert rules["parent_mode"] == "paragraph"
+    assert rules["pre_processing_rules"] == [
+        {"id": "remove_extra_spaces", "enabled": True},
+        {"id": "remove_urls_emails", "enabled": True},
+    ]
     assert rules["segmentation"]["separator"] == DIFY_PARENT_SEPARATOR
     assert rules["subchunk_segmentation"] == {
         "separator": DIFY_CHILD_SEPARATOR,
         "max_tokens": 350,
     }
+
+
+def test_dify_wait_for_indexing_prefers_created_document_over_transient_batch():
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        calls.append(path)
+        if path.endswith("/documents/document-uuid"):
+            return httpx.Response(200, json={"id": "document-uuid", "indexing_status": "completed"})
+        if path.endswith("/indexing-status"):
+            raise AssertionError("document id is available; batch endpoint must not be used")
+        raise AssertionError(path)
+
+    client = DifyKnowledgeClient(
+        "https://dify.example/v1",
+        "secret",
+        "dataset-1",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        client.wait_for_indexing(
+            "20260731135936553731",
+            document_id="document-uuid",
+            timeout_seconds=1,
+            interval=0,
+        )
+    finally:
+        client.close()
+    assert calls == ["/v1/datasets/dataset-1/documents/document-uuid"]
+
+
+def test_dify_wait_for_indexing_falls_back_to_batch_on_document_lookup_404():
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        calls.append(path)
+        if path.endswith("/documents/document-uuid"):
+            return httpx.Response(404, json={"message": "not found"})
+        if path.endswith("/documents/legacy-batch/indexing-status"):
+            return httpx.Response(
+                200,
+                json={"data": [{"id": "document-uuid", "indexing_status": "completed"}]},
+            )
+        raise AssertionError(path)
+
+    client = DifyKnowledgeClient(
+        "https://dify.example/v1",
+        "secret",
+        "dataset-1",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        client.wait_for_indexing(
+            "legacy-batch",
+            document_id="document-uuid",
+            timeout_seconds=1,
+            interval=0,
+        )
+    finally:
+        client.close()
+    assert calls == [
+        "/v1/datasets/dataset-1/documents/document-uuid",
+        "/v1/datasets/dataset-1/documents/legacy-batch/indexing-status",
+    ]
+
+
+def test_dify_wait_for_indexing_keeps_terminal_error_semantics():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/documents/document-uuid")
+        return httpx.Response(
+            200,
+            json={
+                "id": "document-uuid",
+                "indexing_status": "error",
+                "error": "controlled indexing error",
+            },
+        )
+
+    client = DifyKnowledgeClient(
+        "https://dify.example/v1",
+        "secret",
+        "dataset-1",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="Dify索引失败"):
+            client.wait_for_indexing(
+                "legacy-batch",
+                document_id="document-uuid",
+                timeout_seconds=1,
+                interval=0,
+            )
+    finally:
+        client.close()
 
 
 def test_semantic_rules_keep_transferable_experience_and_exclude_securities():

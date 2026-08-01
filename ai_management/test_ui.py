@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import time
+import uuid
+from collections.abc import MutableMapping
 from typing import Any
 from urllib.parse import quote
 
@@ -13,6 +15,197 @@ API_BASE = os.getenv("AI_MANAGEMENT_BASE_URL", "http://api:8000").rstrip("/")
 INTERNAL_TOKEN = os.getenv("INTERNAL_API_TOKEN", "change-me")
 ADMIN_TOKEN = os.getenv("ADMIN_API_TOKEN", "change-me")
 DEFAULT_USER = os.getenv("TEST_USER_ID", "test-user-001")
+TEST_UI_CLEANUP_RUN_METADATA_KEY = "_test_ui_cleanup_run_id"
+CLEANING_BATCH_VIEW_STATE_KEY = "cleaning_batch_view_state"
+CLEANING_BATCH_INPUT_KEY = "cleaning_batch_id_input"
+CLEANING_UPLOAD_NONCE_KEY = "cleaning_upload_nonce"
+CLEANING_UPLOAD_CONTEXT_KEY = "cleaning_upload_context"
+
+# The UI needs the business Metadata to verify the publish result, but the
+# local provenance and provider mappings must not be rendered back from a
+# remote response.  The cleanup run marker is shown separately above the
+# form, so it is intentionally not part of the rendered Metadata either.
+CLEANING_UI_VISIBLE_METADATA_FIELDS = frozenset(
+    {
+        "record_type",
+        "topic",
+        "source_title",
+        "case_id",
+        "industry",
+        "business_stage",
+        "book_id",
+        "part_index",
+        "part_count",
+        "document_type",
+        "review_status",
+        "course_id",
+        "route_id",
+        "direction",
+        "stage",
+        "source_platform",
+        "series_name",
+        "status",
+    }
+)
+CLEANING_UI_HIDDEN_RESPONSE_FIELDS = frozenset(
+    {
+        "audit",
+        "candidate_fingerprint",
+        "provider_batch_ids",
+        "dify_document_id",
+        "dify_batch_id",
+        "dify_document_name",
+        "document_key",
+        "source_file_id",
+        "source_filename",
+        "source_extension",
+        "source_sha256",
+        "upload_batch_id",
+        "cleaning_strategy",
+        "cleaning_spec_revision",
+        "source_document_index",
+        "build_version",
+        TEST_UI_CLEANUP_RUN_METADATA_KEY,
+    }
+)
+
+
+def test_ui_cleanup_run_id() -> str:
+    """Keep one explicit, non-content marker for all uploads in this UI run.
+
+    The marker is not a delete permission by itself.  The server-side cleanup
+    capture command later requires this value *and* the exact batch IDs shown
+    by the UI before it can produce a short-lived private manifest.
+    """
+
+    value = str(st.session_state.get("test_ui_cleanup_run_id") or "")
+    if not value:
+        value = f"cleaning-ui-{uuid.uuid4().hex}"
+        st.session_state["test_ui_cleanup_run_id"] = value
+    return value
+
+
+def tagged_test_ui_metadata(common_metadata: str, *, cleanup_run_id: str) -> str:
+    """Add the UI-only provenance marker without accepting malformed JSON."""
+
+    payload = json.loads(common_metadata or "{}")
+    if not isinstance(payload, dict):
+        raise ValueError("公共 Metadata 必须是 JSON 对象")
+    payload[TEST_UI_CLEANUP_RUN_METADATA_KEY] = cleanup_run_id
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def reset_cleaning_upload_state(state: MutableMapping[str, Any]) -> str:
+    """Make the next file uploader a new, empty Streamlit widget instance."""
+
+    nonce = int(state.get(CLEANING_UPLOAD_NONCE_KEY, 0)) + 1
+    state[CLEANING_UPLOAD_NONCE_KEY] = nonce
+    return f"cleaning_uploads_{nonce}"
+
+
+def cleaning_upload_widget_key(
+    state: MutableMapping[str, Any], *, knowledge_base: str, strategy_code: str
+) -> str:
+    """Scope uploads to exactly one target and strategy without mutating a widget.
+
+    Streamlit does not allow clearing a widget's session-state key after that
+    widget was instantiated.  A monotonic nonce gives the next rerun a fresh
+    uploader instead, so previously selected files cannot leak into another
+    target, strategy, or successful submission.
+    """
+
+    context = (knowledge_base, strategy_code)
+    previous_context = state.get(CLEANING_UPLOAD_CONTEXT_KEY)
+    if previous_context is not None and previous_context != context:
+        reset_cleaning_upload_state(state)
+    state[CLEANING_UPLOAD_CONTEXT_KEY] = context
+    nonce = int(state.get(CLEANING_UPLOAD_NONCE_KEY, 0))
+    return f"cleaning_uploads_{nonce}"
+
+
+def reset_cleaning_batch_view_state(
+    state: MutableMapping[str, Any], *, clear_selection_widgets: bool = False
+) -> None:
+    """Discard results that belong to the previously active batch context."""
+
+    state.pop(CLEANING_BATCH_VIEW_STATE_KEY, None)
+    if clear_selection_widgets:
+        for key in (
+            "cleaning_selected_file",
+            "cleaning_selected_item",
+            "cleaning_review_action",
+            "cleaning_review_reason",
+            "cleaning_review_metadata_patch",
+            "cleaning_replacement_markdown",
+        ):
+            state.pop(key, None)
+
+
+def set_cleaning_batch_view_state(
+    state: MutableMapping[str, Any],
+    *,
+    knowledge_base: str,
+    batch_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist a response only for its exact knowledge-base/batch context."""
+
+    view_state = {
+        "knowledge_base": knowledge_base,
+        "batch_id": batch_id,
+        "payload": payload,
+        "items_by_file": {},
+        "details_by_item": {},
+        "catalog_review_bytes_by_file": {},
+    }
+    state[CLEANING_BATCH_VIEW_STATE_KEY] = view_state
+    return view_state
+
+
+def cleaning_batch_view_state(
+    state: MutableMapping[str, Any], *, knowledge_base: str, batch_id: str
+) -> dict[str, Any] | None:
+    """Return cached UI data only when it belongs to the selected context."""
+
+    view_state = state.get(CLEANING_BATCH_VIEW_STATE_KEY)
+    if not isinstance(view_state, dict):
+        return None
+    if (
+        view_state.get("knowledge_base") != knowledge_base
+        or view_state.get("batch_id") != batch_id
+        or not isinstance(view_state.get("payload"), dict)
+    ):
+        return None
+    return view_state
+
+
+def cleaning_ui_display_payload(value: Any) -> Any:
+    """Keep useful cleaning status visible without exposing protected mappings."""
+
+    if isinstance(value, list):
+        return [cleaning_ui_display_payload(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in CLEANING_UI_HIDDEN_RESPONSE_FIELDS:
+            continue
+        if key == "metadata":
+            if isinstance(item, dict):
+                result[key] = {
+                    field: cleaning_ui_display_payload(field_value)
+                    for field, field_value in item.items()
+                    if field in CLEANING_UI_VISIBLE_METADATA_FIELDS
+                }
+            continue
+        result[key] = cleaning_ui_display_payload(item)
+    return result
+
+
+def render_cleaning_payload(payload: Any) -> None:
+    """Render the batch UI's safe response view, rather than raw API data."""
+
+    st.json(cleaning_ui_display_payload(payload))
 
 
 def render_api_notice(address: str) -> None:
@@ -73,6 +266,24 @@ def api_json(
         return response.json()
 
 
+def api_bytes(
+    method: str,
+    path: str,
+    *,
+    admin: bool = False,
+    **kwargs: Any,
+) -> bytes:
+    with httpx.Client(timeout=60) as client:
+        response = client.request(
+            method,
+            f"{API_BASE}{path}",
+            headers=headers(admin=admin),
+            **kwargs,
+        )
+        response.raise_for_status()
+        return response.content
+
+
 def consume_sse(response: httpx.Response, placeholder: Any) -> dict[str, Any]:
     answer = ""
     diagnostics: dict[str, Any] = {}
@@ -94,7 +305,11 @@ def consume_sse(response: httpx.Response, placeholder: Any) -> dict[str, Any]:
         elif event_name == "status":
             diagnostics.setdefault("status_events", []).append(payload)
             diagnostics["status"] = payload
-            if isinstance(payload, dict) and payload.get("task_id") and not diagnostics.get("task_id"):
+            if (
+                isinstance(payload, dict)
+                and payload.get("task_id")
+                and not diagnostics.get("task_id")
+            ):
                 diagnostics["task_id"] = payload.get("task_id")
         elif event_name in {
             "request_started",
@@ -106,7 +321,12 @@ def consume_sse(response: httpx.Response, placeholder: Any) -> dict[str, Any]:
             "retriever_resources",
         }:
             diagnostics[event_name] = payload
-            if event_name == "message_end" and isinstance(payload, dict) and payload.get("task_id") and not diagnostics.get("task_id"):
+            if (
+                event_name == "message_end"
+                and isinstance(payload, dict)
+                and payload.get("task_id")
+                and not diagnostics.get("task_id")
+            ):
                 diagnostics["task_id"] = payload.get("task_id")
 
     for line in response.iter_lines():
@@ -155,7 +375,9 @@ def business_tab(user_id: str) -> None:
                 "GET", "/internal/v1/business/conversations", user_id=user_id
             )
         conversation_payload = st.session_state.get("business_conversations", {})
-        conversations = conversation_payload.get("items", []) if isinstance(conversation_payload, dict) else []
+        conversations = (
+            conversation_payload.get("items", []) if isinstance(conversation_payload, dict) else []
+        )
         active_id = st.session_state.get("business_conversation_id") or ""
         options: dict[str, str | None] = {"新建会话": None}
         for item in conversations:
@@ -169,7 +391,9 @@ def business_tab(user_id: str) -> None:
         selected = st.selectbox(
             "会话",
             labels,
-            index=next((index for index, label in enumerate(labels) if options[label] == active_id), 0),
+            index=next(
+                (index for index, label in enumerate(labels) if options[label] == active_id), 0
+            ),
         )
         conversation_id = options[selected]
         st.session_state["business_conversation_id"] = conversation_id or ""
@@ -214,9 +438,7 @@ def business_tab(user_id: str) -> None:
                     user_id,
                     output,
                 )
-                result["client_elapsed_ms"] = round(
-                    (time.perf_counter() - started) * 1000, 1
-                )
+                result["client_elapsed_ms"] = round((time.perf_counter() - started) * 1000, 1)
                 st.session_state["last_business_result"] = result
                 returned_conversation_id = conversation_id_from_sse_result(result)
                 if returned_conversation_id:
@@ -236,9 +458,7 @@ def business_tab(user_id: str) -> None:
                 else None
             )
             if message_id:
-                feedback = st.radio(
-                    "回答反馈", ["like", "dislike"], horizontal=True
-                )
+                feedback = st.radio("回答反馈", ["like", "dislike"], horizontal=True)
                 reason = st.text_input("反馈原因（可选）")
                 if st.button("提交反馈"):
                     st.json(
@@ -281,9 +501,7 @@ def tool_tab(user_id: str, kind: str) -> None:
                 user_id,
                 output,
             )
-            result["client_elapsed_ms"] = round(
-                (time.perf_counter() - started) * 1000, 1
-            )
+            result["client_elapsed_ms"] = round((time.perf_counter() - started) * 1000, 1)
             if result.get("task_id"):
                 st.session_state[f"{kind}_last_task_id"] = result["task_id"]
                 st.session_state[stop_key] = result["task_id"]
@@ -348,7 +566,9 @@ def course_tab(user_id: str) -> None:
             )
             message_end = result.get("message_end") or {}
             if isinstance(message_end, dict) and message_end.get("conversation_id"):
-                st.session_state["course_test_conversation_id"] = str(message_end["conversation_id"])
+                st.session_state["course_test_conversation_id"] = str(
+                    message_end["conversation_id"]
+                )
             render_result_diagnostics(result, label="课程推荐诊断")
         except httpx.HTTPError as exc:
             st.error(str(exc))
@@ -357,7 +577,19 @@ def course_tab(user_id: str) -> None:
 def cleaning_tab() -> None:
     st.subheader("文件清洗管理")
     st.caption("此页直接调用 AI 管理服务的双 Token 管理接口，仅用于受控测试环境。")
+    cleanup_run_id = test_ui_cleanup_run_id()
+    st.caption(f"本轮精确清理标记：{cleanup_run_id}")
     knowledge_base = st.selectbox("目标知识库", ["general", "course"])
+    previous_knowledge_base = st.session_state.get("cleaning_selected_knowledge_base")
+    if previous_knowledge_base is not None and previous_knowledge_base != knowledge_base:
+        # A batch belongs to exactly one knowledge base.  Never render a
+        # previous base's cached files, items or review detail after a switch.
+        reset_cleaning_batch_view_state(
+            st.session_state,
+            clear_selection_widgets=True,
+        )
+        st.session_state.pop(CLEANING_BATCH_INPUT_KEY, None)
+    st.session_state["cleaning_selected_knowledge_base"] = knowledge_base
     try:
         strategies_payload = api_json(
             "GET",
@@ -369,10 +601,10 @@ def cleaning_tab() -> None:
         st.error(str(exc))
         strategies = []
     strategy_options = {
-        f"{item['display_name']} ({item['code']})": item["code"]
-        for item in strategies
+        f"{item['display_name']} ({item['code']})": item["code"] for item in strategies
     }
     strategy_label = st.selectbox("清洗策略", list(strategy_options) or ["无可用策略"])
+    strategy_code = strategy_options.get(strategy_label, "")
     common_metadata = st.text_area(
         "公共 Metadata(JSON)",
         value="{}",
@@ -382,7 +614,11 @@ def cleaning_tab() -> None:
     uploads = st.file_uploader(
         "选择文件",
         accept_multiple_files=True,
-        key="cleaning_uploads",
+        key=cleaning_upload_widget_key(
+            st.session_state,
+            knowledge_base=knowledge_base,
+            strategy_code=strategy_code,
+        ),
     )
     if st.button("提交上传", disabled=not uploads or not strategy_options):
         files = [
@@ -393,32 +629,103 @@ def cleaning_tab() -> None:
             for item in uploads
         ]
         try:
+            tagged_metadata = tagged_test_ui_metadata(
+                common_metadata,
+                cleanup_run_id=cleanup_run_id,
+            )
             payload = api_json(
                 "POST",
                 f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches",
                 admin=True,
                 data={
                     "upload_mode": "cleaned",
-                    "strategy_code": strategy_options[strategy_label],
-                    "common_metadata": common_metadata,
+                    "strategy_code": strategy_code,
+                    "common_metadata": tagged_metadata,
                 },
                 files=files,
             )
-            st.session_state["cleaning_batch_id"] = payload["batch_id"]
-            st.json(payload)
+            submitted_batch_id = str(payload["batch_id"])
+            # This branch runs before the batch-id widget is created, so the
+            # submitted id safely becomes the next query target.
+            reset_cleaning_batch_view_state(
+                st.session_state,
+                clear_selection_widgets=True,
+            )
+            st.session_state[CLEANING_BATCH_INPUT_KEY] = submitted_batch_id
+            set_cleaning_batch_view_state(
+                st.session_state,
+                knowledge_base=knowledge_base,
+                batch_id=submitted_batch_id,
+                payload=payload,
+            )
+            # The existing uploader cannot be cleared after construction in
+            # this run.  Advance its key and rerun so the visible next control
+            # is empty before an administrator can submit another target or
+            # strategy.
+            reset_cleaning_upload_state(st.session_state)
+            st.rerun()
         except httpx.HTTPError as exc:
             st.error(str(exc))
 
-    batch_id = st.text_input(
-        "批次 ID", value=st.session_state.get("cleaning_batch_id", "")
+    batch_id = st.text_input("批次 ID", key=CLEANING_BATCH_INPUT_KEY).strip()
+    view_state = cleaning_batch_view_state(
+        st.session_state,
+        knowledge_base=knowledge_base,
+        batch_id=batch_id,
     )
-    if st.button("查询批次") and batch_id:
-        payload = api_json(
-            "GET",
-            f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}",
-            admin=True,
+    if view_state is None and st.session_state.get(CLEANING_BATCH_VIEW_STATE_KEY):
+        # The text input changed, but the user has not queried the new id yet.
+        # Clear dependent state before any file/item widget is constructed.
+        reset_cleaning_batch_view_state(
+            st.session_state,
+            clear_selection_widgets=True,
         )
-        st.json(payload)
+    if st.button("查询批次") and batch_id:
+        try:
+            payload = api_json(
+                "GET",
+                f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}",
+                admin=True,
+            )
+            reset_cleaning_batch_view_state(
+                st.session_state,
+                clear_selection_widgets=True,
+            )
+            view_state = set_cleaning_batch_view_state(
+                st.session_state,
+                knowledge_base=knowledge_base,
+                batch_id=batch_id,
+                payload=payload,
+            )
+        except httpx.HTTPError as exc:
+            st.error(str(exc))
+            view_state = None
+
+    if view_state is not None:
+        payload = view_state["payload"]
+        render_cleaning_payload(payload)
+        for model_task in payload.get("model_tasks") or []:
+            if model_task.get("status") == "awaiting_approval":
+                st.warning("该批次将使用百炼 Batch。请核对候选数量、Token 与费用快照后批准。")
+                render_cleaning_payload(model_task)
+                if st.button(
+                    "确认费用并启动 Batch",
+                    key=f"approve_model_task_{model_task['task_id']}",
+                ):
+                    try:
+                        approval = api_json(
+                            "POST",
+                            f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}/model-tasks/{model_task['task_id']}/approve",
+                            admin=True,
+                            data={"candidate_fingerprint": model_task["candidate_fingerprint"]},
+                        )
+                        # Keep this one task out of the approval branch on
+                        # the next Streamlit rerun; a later explicit query
+                        # remains the source of full live status.
+                        model_task["status"] = approval.get("status", model_task.get("status"))
+                        render_cleaning_payload(approval)
+                    except httpx.HTTPError as exc:
+                        st.error(str(exc))
         files = payload.get("files") or []
         if files:
             labels = {
@@ -427,49 +734,133 @@ def cleaning_tab() -> None:
             }
             selected_label = st.selectbox("批次文件", list(labels), key="cleaning_selected_file")
             selected_file_id = labels[selected_label]
-            if st.button("读取条目"):
-                st.session_state["cleaning_items"] = api_json(
-                    "GET",
-                    f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}/files/{selected_file_id}/items",
-                    admin=True,
+            selected_file = next(item for item in files if item["file_id"] == selected_file_id)
+            if payload.get("strategy_code") == "course_route_catalog":
+                if st.button(
+                    "生成课程目录审核表",
+                    key=f"catalog_review_export_{selected_file_id}",
+                ):
+                    try:
+                        view_state["catalog_review_bytes_by_file"][selected_file_id] = api_bytes(
+                            "GET",
+                            f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}/files/{selected_file_id}/catalog-review.xlsx",
+                            admin=True,
+                        )
+                    except httpx.HTTPError as exc:
+                        st.error(str(exc))
+                if review_bytes := view_state["catalog_review_bytes_by_file"].get(selected_file_id):
+                    st.download_button(
+                        "下载审核表",
+                        data=review_bytes,
+                        file_name="catalog-review.xlsx",
+                        mime=("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+                    )
+                reviewed_workbook = st.file_uploader(
+                    "上传已完成的课程目录审核表",
+                    type=["xlsx"],
+                    key=f"catalog_review_upload_{selected_file_id}",
                 )
-            items_payload = st.session_state.get("cleaning_items", {})
+                if st.button(
+                    "导入审核表并发布",
+                    disabled=reviewed_workbook is None,
+                    key=f"catalog_review_import_{selected_file_id}",
+                ):
+                    try:
+                        result = api_json(
+                            "POST",
+                            f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}/files/{selected_file_id}/catalog-review-import",
+                            admin=True,
+                            files=[
+                                (
+                                    "review_file",
+                                    (
+                                        reviewed_workbook.name,
+                                        reviewed_workbook.getvalue(),
+                                        reviewed_workbook.type or "application/octet-stream",
+                                    ),
+                                )
+                            ],
+                        )
+                        view_state["items_by_file"].pop(selected_file_id, None)
+                        view_state["details_by_item"] = {
+                            key: detail
+                            for key, detail in view_state["details_by_item"].items()
+                            if not key.startswith(f"{selected_file_id}:")
+                        }
+                        render_cleaning_payload(result)
+                    except httpx.HTTPError as exc:
+                        st.error(str(exc))
+            if selected_file.get("publication_shards"):
+                st.markdown("#### Dify 发布分片")
+                render_cleaning_payload(selected_file["publication_shards"])
+            if st.button("读取条目", key=f"cleaning_items_{selected_file_id}"):
+                try:
+                    view_state["items_by_file"][selected_file_id] = api_json(
+                        "GET",
+                        f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}/files/{selected_file_id}/items",
+                        admin=True,
+                    )
+                    view_state["details_by_item"] = {
+                        key: detail
+                        for key, detail in view_state["details_by_item"].items()
+                        if not key.startswith(f"{selected_file_id}:")
+                    }
+                except httpx.HTTPError as exc:
+                    st.error(str(exc))
+            items_payload = view_state["items_by_file"].get(selected_file_id, {})
             items = items_payload.get("items") or []
             if items:
                 item_labels = {
                     f"{item['sequence']}. {item['title']} · {item['status']}": item["item_id"]
                     for item in items
                 }
-                selected_item_label = st.selectbox("条目", list(item_labels), key="cleaning_selected_item")
+                selected_item_label = st.selectbox(
+                    "条目", list(item_labels), key="cleaning_selected_item"
+                )
                 selected_item_id = item_labels[selected_item_label]
-                if st.button("读取条目详情"):
-                    st.session_state["cleaning_item_detail"] = api_json(
-                        "GET",
-                        f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}/files/{selected_file_id}/items/{selected_item_id}",
-                        admin=True,
-                    )
-                detail = st.session_state.get("cleaning_item_detail")
+                detail_key = f"{selected_file_id}:{selected_item_id}"
+                if st.button("读取条目详情", key=f"cleaning_item_detail_{detail_key}"):
+                    try:
+                        view_state["details_by_item"][detail_key] = api_json(
+                            "GET",
+                            f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}/files/{selected_file_id}/items/{selected_item_id}",
+                            admin=True,
+                        )
+                    except httpx.HTTPError as exc:
+                        st.error(str(exc))
+                detail = view_state["details_by_item"].get(detail_key)
                 if isinstance(detail, dict):
-                    st.json(detail)
+                    render_cleaning_payload(detail)
                     col1, col2 = st.columns(2)
                     with col1:
-                        if st.button("重试条目"):
-                            st.json(
-                                api_json(
+                        if st.button("重试条目", key=f"cleaning_retry_item_{detail_key}"):
+                            try:
+                                result = api_json(
                                     "POST",
                                     f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}/files/{selected_file_id}/items/{selected_item_id}/retry",
                                     admin=True,
                                 )
-                            )
+                                view_state["details_by_item"].pop(detail_key, None)
+                                render_cleaning_payload(result)
+                            except httpx.HTTPError as exc:
+                                st.error(str(exc))
                     with col2:
-                        if st.button("重试文件"):
-                            st.json(
-                                api_json(
+                        if st.button("重试文件", key=f"cleaning_retry_file_{selected_file_id}"):
+                            try:
+                                result = api_json(
                                     "POST",
                                     f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}/files/{selected_file_id}/retry",
                                     admin=True,
                                 )
-                            )
+                                view_state["items_by_file"].pop(selected_file_id, None)
+                                view_state["details_by_item"] = {
+                                    key: item_detail
+                                    for key, item_detail in view_state["details_by_item"].items()
+                                    if not key.startswith(f"{selected_file_id}:")
+                                }
+                                render_cleaning_payload(result)
+                            except httpx.HTTPError as exc:
+                                st.error(str(exc))
                     review_action = st.selectbox(
                         "复核动作",
                         ["approve", "replace_and_approve", "exclude"],
@@ -487,7 +878,10 @@ def cleaning_tab() -> None:
                         type=["md", "markdown", "txt"],
                         key="cleaning_replacement_markdown",
                     )
-                    if st.button("提交复核决定"):
+                    if st.button(
+                        "提交复核决定",
+                        key=f"cleaning_review_{detail_key}",
+                    ):
                         files_payload = None
                         if replacement is not None:
                             files_payload = [
@@ -500,8 +894,8 @@ def cleaning_tab() -> None:
                                     ),
                                 )
                             ]
-                        st.json(
-                            api_json(
+                        try:
+                            result = api_json(
                                 "POST",
                                 f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}/files/{selected_file_id}/items/{selected_item_id}/review-decisions",
                                 admin=True,
@@ -513,7 +907,11 @@ def cleaning_tab() -> None:
                                 },
                                 files=files_payload,
                             )
-                        )
+                            view_state["items_by_file"].pop(selected_file_id, None)
+                            view_state["details_by_item"].pop(detail_key, None)
+                            render_cleaning_payload(result)
+                        except httpx.HTTPError as exc:
+                            st.error(str(exc))
 
 
 def management_tab(default_user_id: str) -> None:
@@ -554,7 +952,9 @@ def management_tab(default_user_id: str) -> None:
                     "用户 ID": item.get("user_id", ""),
                     "用户名称": item.get("user_name", ""),
                     "标题": item.get("title", ""),
-                    "推荐课程": json.dumps(item.get("recommended_courses") or [], ensure_ascii=False),
+                    "推荐课程": json.dumps(
+                        item.get("recommended_courses") or [], ensure_ascii=False
+                    ),
                     "专业见解": item.get("professional_insight") or "",
                     "推荐理由": item.get("recommendation_note") or "",
                     "Token 消耗": item.get("token_usage", 0),
@@ -605,7 +1005,9 @@ def management_tab(default_user_id: str) -> None:
                         st.markdown(message.get("content") or "（无内容）")
                         message_metrics = st.columns(3)
                         message_metrics[0].metric("Token 消耗", message.get("token_usage", 0))
-                        message_metrics[1].metric("首 token(ms)", message.get("first_token_ms") or "—")
+                        message_metrics[1].metric(
+                            "首 token(ms)", message.get("first_token_ms") or "—"
+                        )
                         message_metrics[2].metric("总耗时(ms)", message.get("total_ms") or "—")
                         if message.get("recommended_courses"):
                             st.write("推荐课程", message["recommended_courses"])
@@ -629,18 +1031,16 @@ def management_tab(default_user_id: str) -> None:
         retention_payload = st.session_state.get("admin_retention_settings", {})
         if isinstance(retention_payload, dict) and retention_payload:
             st.json({"retention": retention_payload})
-        style_items = (
-            style_payload.get("items") or []
-            if isinstance(style_payload, dict)
-            else []
-        )
+        style_items = style_payload.get("items") or [] if isinstance(style_payload, dict) else []
         if style_items:
             st.dataframe(style_items, use_container_width=True, hide_index=True)
         else:
             st.caption("先读取配置后，可按服务端返回的风格项修改。")
 
         retention_days = st.number_input(
-            "历史保留天数", min_value=1, max_value=365,
+            "历史保留天数",
+            min_value=1,
+            max_value=365,
             value=int(retention_payload.get("history_retention_days", 7))
             if isinstance(retention_payload, dict)
             else 7,
@@ -689,9 +1089,7 @@ def management_tab(default_user_id: str) -> None:
 
     with knowledge_tab:
         st.markdown("#### 知识库概览、文档列表、启停与删除")
-        knowledge_base = st.selectbox(
-            "知识库", ["general", "course"], key="admin_knowledge_base"
-        )
+        knowledge_base = st.selectbox("知识库", ["general", "course"], key="admin_knowledge_base")
         col1, col2 = st.columns(2)
         if col1.button("读取知识库概览"):
             st.json(api_json("GET", "/internal/v1/admin/knowledge-bases", admin=True))
@@ -703,9 +1101,7 @@ def management_tab(default_user_id: str) -> None:
             )
         documents_payload = st.session_state.get(f"admin_documents_{knowledge_base}", {})
         documents = (
-            documents_payload.get("items") or []
-            if isinstance(documents_payload, dict)
-            else []
+            documents_payload.get("items") or [] if isinstance(documents_payload, dict) else []
         )
         if documents:
             st.dataframe(documents, use_container_width=True, hide_index=True)
@@ -726,7 +1122,8 @@ def management_tab(default_user_id: str) -> None:
 
             st.markdown("##### 启用或停用文档")
             desired_enabled = st.selectbox(
-                "目标状态", [True, False],
+                "目标状态",
+                [True, False],
                 index=0 if current_enabled else 1,
                 format_func=lambda value: "启用" if value else "停用",
                 key=f"admin_document_enabled_{document_id}",
@@ -770,8 +1167,7 @@ def management_tab(default_user_id: str) -> None:
     with destructive_tab:
         st.markdown("#### 删除指定用户的 AI 数据")
         st.warning(
-            "此操作会删除该用户的 AI 会话、消息、画像与学习路线进度；"
-            "课程日汇总点击数据会保留。"
+            "此操作会删除该用户的 AI 会话、消息、画像与学习路线进度；课程日汇总点击数据会保留。"
         )
         with st.form("admin_delete_user_form", enter_to_submit=False):
             delete_user_id = st.text_input(

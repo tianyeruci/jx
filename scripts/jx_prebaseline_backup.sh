@@ -9,7 +9,10 @@ DIFY_DB_CONTAINER="docker-db_postgres-1"
 DIFY_REDIS_CONTAINER="docker-redis-1"
 BACKUP_DIR="$APP_DIR/backups/$RUN_ID"
 REPORT_DIR="$APP_DIR/var/reports/v2/$RUN_ID"
-DATA_SCRIPT="/tmp/jx_release_data.py"
+# Snapshot evidence must be produced by the same release artifact that will
+# govern the paired cleanup.  A mutable /tmp helper can otherwise silently
+# report an older schema or redaction contract.
+DATA_SCRIPT="$APP_DIR/scripts/jx_release_data.py"
 
 cd "$APP_DIR"
 test "$(pwd -P)" = "$APP_DIR"
@@ -21,11 +24,31 @@ docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml ps \
   > "$BACKUP_DIR/compose-ps-before.txt"
 docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml images \
   > "$BACKUP_DIR/compose-images-before.txt"
-docker inspect \
-  "$(docker compose -f docker-compose.ai.yml ps -q api)" \
-  "$(docker compose -f docker-compose.ai.yml ps -q worker)" \
-  "$(docker compose -f docker-compose.ai.yml ps -q scheduler)" \
-  "$(docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml --profile test ps -q test-ui)" \
+container_ids=()
+for service in \
+  api \
+  worker \
+  model-realtime-worker \
+  model-batch-worker \
+  publication-worker \
+  scheduler
+do
+  container_id="$(
+    docker compose -f docker-compose.ai.yml ps -q "$service" 2>/dev/null || true
+  )"
+  if test -n "$container_id"; then
+    container_ids+=("$container_id")
+  fi
+done
+test_ui_id="$(
+  docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml \
+    --profile test ps -q test-ui 2>/dev/null || true
+)"
+if test -n "$test_ui_id"; then
+  container_ids+=("$test_ui_id")
+fi
+test "${#container_ids[@]}" -gt 0
+docker inspect "${container_ids[@]}" \
   --format '{{.Name}} {{.Config.Image}} {{.Image}}' \
   > "$BACKUP_DIR/container-images-before.txt"
 docker compose -f docker-compose.ai.yml exec -T api alembic current \
@@ -104,7 +127,7 @@ docker compose -f docker-compose.ai.yml run --rm --no-deps -T --user 0 \
   -v "$DATA_SCRIPT:/tmp/jx_release_data.py:ro" \
   -v "$BACKUP_DIR:/evidence" \
   api python /tmp/jx_release_data.py snapshot \
-  --output /evidence/prebaseline-state.protected.json \
+  --output /evidence/prebaseline-state.safe.json \
   > "$BACKUP_DIR/prebaseline-safe-summary.json"
 
 sha256sum \
@@ -112,7 +135,7 @@ sha256sum \
   "$BACKUP_DIR/ai-management.dump" \
   "$BACKUP_DIR/dify-redis-dump.rdb" \
   "$BACKUP_DIR/uploads.tar.gz" \
-  "$BACKUP_DIR/prebaseline-state.protected.json" \
+  "$BACKUP_DIR/prebaseline-state.safe.json" \
   > "$BACKUP_DIR/SHA256SUMS"
 sha256sum -c "$BACKUP_DIR/SHA256SUMS"
 printf '%s\n' "$BACKUP_DIR"

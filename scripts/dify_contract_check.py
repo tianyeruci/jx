@@ -124,7 +124,11 @@ def knowledge_check(write_test: bool) -> dict[str, Any]:
                     "# 契约测试\n\n这是临时文档，测试结束后删除。",
                 )
                 try:
-                    client.wait_for_indexing(batch, timeout_seconds=300)
+                    client.wait_for_indexing(
+                        batch,
+                        document_id=document_id,
+                        timeout_seconds=300,
+                    )
                     client.ensure_document_has_segments(document_id)
                     fields = client.ensure_metadata_names(["document_type"])
                     client.set_document_metadata(
@@ -205,4 +209,3 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"契约检查失败：{exc}", file=sys.stderr)
         raise
-

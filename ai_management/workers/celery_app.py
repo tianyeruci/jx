@@ -16,6 +16,7 @@ celery_app = Celery(
     include=[
         "ai_management.workers.tasks.summary",
         "ai_management.workers.tasks.cleaning",
+        "ai_management.workers.tasks.model_cleaning",
         "ai_management.workers.tasks.maintenance",
     ],
 )

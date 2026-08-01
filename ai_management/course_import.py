@@ -437,7 +437,11 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
                 _course_text(course),
             )
             created_ids.append(document_id)
-            client.wait_for_indexing(batch, timeout_seconds=1800)
+            client.wait_for_indexing(
+                batch,
+                document_id=document_id,
+                timeout_seconds=1800,
+            )
             client.ensure_document_has_segments(document_id)
             client.set_document_metadata(
                 document_id,
@@ -478,7 +482,11 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
                 _route_text(route),
             )
             created_ids.append(document_id)
-            client.wait_for_indexing(batch, timeout_seconds=1800)
+            client.wait_for_indexing(
+                batch,
+                document_id=document_id,
+                timeout_seconds=1800,
+            )
             client.ensure_document_has_segments(document_id)
             client.set_document_metadata(
                 document_id,

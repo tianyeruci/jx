@@ -29,6 +29,36 @@ services:
       - dify
     restart: unless-stopped
 
+  model-realtime-worker:
+    image: ${AI_IMAGE:-jx-now-ai-management:0.2.1}
+    env_file: .env
+    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_model_realtime --concurrency=4
+    volumes:
+      - ai_uploads:/app/var/uploads
+    networks:
+      - dify
+    restart: unless-stopped
+
+  model-batch-worker:
+    image: ${AI_IMAGE:-jx-now-ai-management:0.2.1}
+    env_file: .env
+    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_model_batch --concurrency=1
+    volumes:
+      - ai_uploads:/app/var/uploads
+    networks:
+      - dify
+    restart: unless-stopped
+
+  publication-worker:
+    image: ${AI_IMAGE:-jx-now-ai-management:0.2.1}
+    env_file: .env
+    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_publication --concurrency=1
+    volumes:
+      - ai_uploads:/app/var/uploads
+    networks:
+      - dify
+    restart: unless-stopped
+
   scheduler:
     image: ${AI_IMAGE:-jx-now-ai-management:0.2.1}
     build:

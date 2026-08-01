@@ -8,10 +8,21 @@ MANIFEST_PATH="${3:?usage: jx_prebaseline_clean.sh RUN_ID BACKUP_ID MANIFEST_PAT
 APP_DIR="/opt/ai-management"
 BACKUP_DIR="$APP_DIR/backups/$BACKUP_ID"
 REPORT_DIR="$APP_DIR/var/reports/v2/$RUN_ID"
-DATA_SCRIPT="/tmp/jx_release_data.py"
+PRIVATE_DIR="$APP_DIR/var/private-cleanup-manifests/$RUN_ID"
+# The cleanup implementation is a release artifact.  Mounting a mutable /tmp
+# copy can silently apply a previous release's deletion rules.
+DATA_SCRIPT="$APP_DIR/scripts/jx_release_data.py"
 
 cd "$APP_DIR"
 test "$(pwd -P)" = "$APP_DIR"
+MANIFEST_PATH="$(realpath -e "$MANIFEST_PATH")"
+case "$MANIFEST_PATH" in
+  "$APP_DIR"/var/private-cleanup-manifests/*) ;;
+  *)
+    printf '%s\n' "manifest must be under the private cleanup-manifests directory" >&2
+    exit 1
+    ;;
+esac
 test -f "$DATA_SCRIPT"
 test -s "$BACKUP_DIR/ai-management.dump"
 test -s "$BACKUP_DIR/dify.dump"
@@ -20,42 +31,73 @@ test -s "$BACKUP_DIR/uploads.tar.gz"
 test -s "$MANIFEST_PATH"
 sha256sum -c "$BACKUP_DIR/SHA256SUMS"
 mkdir -p "$REPORT_DIR"
-
-restart_services() {
-  docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml --profile test \
-    up -d --no-deps --no-build api worker scheduler test-ui
-}
-trap restart_services EXIT
-
-docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml --profile test \
-  stop api worker scheduler test-ui
-docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml --profile test ps \
-  > "$REPORT_DIR/compose-ps-stopped.txt"
+mkdir -p "$PRIVATE_DIR"
+chmod 700 "$PRIVATE_DIR"
 
 docker compose -f docker-compose.ai.yml run --rm --no-deps -T --user 0 \
   -v "$DATA_SCRIPT:/tmp/jx_release_data.py:ro" \
   -v "$MANIFEST_PATH:/input/run-manifest.json:ro" \
-  -v "$REPORT_DIR:/evidence" \
+  -v "$PRIVATE_DIR:/private" \
   api python /tmp/jx_release_data.py plan-clean \
   --manifest /input/run-manifest.json \
-  --output /evidence/prebaseline-clean-plan.json \
+  --output /private/clean-plan.json \
   > "$REPORT_DIR/prebaseline-clean-plan-summary.json"
+
+restart_services() {
+  docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml --profile test \
+    up -d --no-deps --no-build \
+    api worker model-realtime-worker model-batch-worker publication-worker scheduler test-ui
+}
+trap restart_services EXIT
+
+docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml --profile test \
+  stop worker model-realtime-worker model-batch-worker publication-worker scheduler test-ui
+docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml --profile test ps \
+  > "$REPORT_DIR/compose-ps-stopped.txt"
 
 docker compose -f docker-compose.ai.yml run --rm --no-deps -T --user 0 \
   -e AI_REDIS_EXCLUSIVE=1 -e REDIS_BACKUP_CONFIRMED=1 \
   -v "$DATA_SCRIPT:/tmp/jx_release_data.py:ro" \
+  -v "$PRIVATE_DIR:/private" \
   -v "$REPORT_DIR:/evidence" \
   api python /tmp/jx_release_data.py clean \
-  --plan /evidence/prebaseline-clean-plan.json \
+  --plan /private/clean-plan.json \
+  --private-result /private/clean-result.json \
   --output /evidence/prebaseline-clean-result.json \
   > "$REPORT_DIR/prebaseline-clean-safe-summary.json"
 
+UPLOAD_BATCH_IDS="$PRIVATE_DIR/removed-cleaning-batch-ids.txt"
+jq -r '.removed_cleaning_batch_ids[]?' \
+  "$PRIVATE_DIR/clean-result.json" > "$UPLOAD_BATCH_IDS"
+while IFS= read -r batch_id; do
+  case "$batch_id" in
+    ????????-????-????-????-????????????) ;;
+    *) printf '%s\n' "invalid upload batch ID in verified cleanup result" >&2; exit 1 ;;
+  esac
+done < "$UPLOAD_BATCH_IDS"
 docker volume inspect ai-management_ai_uploads \
   > "$REPORT_DIR/uploads-volume-inspect-before-clean.json"
-docker run --rm -v ai-management_ai_uploads:/data alpine:3.20 \
-  sh -c 'find /data -mindepth 1 -delete'
-docker run --rm -v ai-management_ai_uploads:/data:ro alpine:3.20 \
-  sh -c 'test -z "$(find /data -mindepth 1 -print -quit)"'
+docker run --rm -i -v ai-management_ai_uploads:/data alpine:3.20 \
+  sh -eu -c '
+    while IFS= read -r batch_id; do
+      case "$batch_id" in
+        ????????-????-????-????-????????????) ;;
+        *) exit 1 ;;
+      esac
+      target="/data/$batch_id"
+      test ! -L "$target"
+      if test -d "$target"; then
+        rm -rf -- "$target"
+      fi
+    done
+  ' < "$UPLOAD_BATCH_IDS"
+docker run --rm -i -v ai-management_ai_uploads:/data:ro alpine:3.20 \
+  sh -eu -c '
+    while IFS= read -r batch_id; do
+      target="/data/$batch_id"
+      test ! -e "$target"
+    done
+  ' < "$UPLOAD_BATCH_IDS"
 
 restart_services
 trap - EXIT

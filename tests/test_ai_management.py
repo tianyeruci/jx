@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,6 +15,7 @@ from ai_management.api.routers import knowledge_admin as knowledge_admin_router
 from ai_management.cache import cache
 from ai_management.cleaning import (
     STRATEGY_REGISTRY,
+    cleaning_batch_cache_key,
     cleaning_batch_files_cache_key,
     dify_document_name,
     normalized_original_filename,
@@ -570,7 +572,9 @@ def test_cleaning_strategy_and_filename_rules(tmp_path):
     )
     name = dify_document_name(original, hashlib.sha256(b"x").hexdigest(), 1)
     assert "/" not in name and "\\" not in name
-    assert name.endswith("__001.md")
+    assert name == (
+        f"cleaned-{hashlib.sha256(b'x').hexdigest()[:16]}__001.md"
+    )
     assert len(name) <= 300
 
     source = tmp_path / "sample.md"
@@ -592,9 +596,9 @@ def test_cleaning_strategy_and_filename_rules(tmp_path):
     )
     assert cleaned[0].metadata == {
         "record_type": "article",
-        "topic": "战略与商业模式",
         "source_title": "定位复盘",
     }
+    assert cleaned[0].disposition == "awaiting_model"
     assert cleaned[0].parent_separator == "<<<DIFY_PARENT>>>"
     assert cleaned[0].child_separator == "<<<DIFY_CHILD>>>"
 
@@ -608,7 +612,7 @@ def test_cleaning_batch_upload_reports_each_file(
     from ai_management.tasks import process_cleaning_file
 
     monkeypatch.setattr(get_settings(), "upload_root", tmp_path)
-    monkeypatch.setattr(cleaning_module, "_preflight_remote_duplicates", lambda **_: None)
+    monkeypatch.setattr(cleaning_module, "_preflight_local_duplicates", lambda **_: None)
     queued: list[str] = []
     monkeypatch.setattr(
         process_cleaning_file,
@@ -641,6 +645,125 @@ def test_cleaning_batch_upload_reports_each_file(
         "原始名称.md",
         "不支持.exe",
     }
+
+
+def test_preflight_duplicate_has_an_explicit_excluded_cleaning_item(service_db):
+    from ai_management import cleaning as cleaning_module
+
+    with service_db() as session:
+        existing_batch = CleaningBatch(
+            strategy_code="personal_business_consultation",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            build_version="test-build",
+            spec_revision="commercial-cleaning-v3",
+        )
+        session.add(existing_batch)
+        session.flush()
+        session.add(
+            CleaningFile(
+                batch_id=existing_batch.id,
+                original_filename="admin-only.docx",
+                storage_filename="existing.docx",
+                extension=".docx",
+                source_sha256="a" * 64,
+                size_bytes=1,
+                status="succeeded",
+                stage="completed",
+            )
+        )
+        batch = CleaningBatch(
+            strategy_code="personal_business_consultation",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            build_version="test-build",
+            spec_revision="commercial-cleaning-v3",
+        )
+        session.add(batch)
+        session.flush()
+        row = CleaningFile(
+            batch_id=batch.id,
+            original_filename="admin-only.docx",
+            storage_filename="source.docx",
+            extension=".docx",
+            source_sha256="a" * 64,
+            size_bytes=1,
+            status="pending",
+            stage="upload",
+        )
+        session.add(row)
+        session.flush()
+        cleaning_module._preflight_local_duplicates(
+            session=session,
+            knowledge_base_code="general",
+            rows=[row],
+        )
+        session.flush()
+
+        assert row.status == "excluded"
+        assert row.outcome == "excluded"
+        assert row.stage == "duplicate_noop"
+        assert len(row.documents) == 1
+        item = row.documents[0]
+        assert item.status == "excluded"
+        assert item.error_code == "EXACT_CONTENT_DUPLICATE"
+        assert item.cleaned_markdown == ""
+        assert item.metadata_json["cleaning_strategy"] == "personal_business_consultation"
+        assert item.metadata_json["cleaning_spec_revision"] == "commercial-cleaning-v3"
+
+
+def test_preflight_duplicate_reprocesses_an_older_cleaning_spec_revision(service_db):
+    from ai_management import cleaning as cleaning_module
+
+    with service_db() as session:
+        existing_batch = CleaningBatch(
+            strategy_code="personal_business_consultation",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            spec_revision="commercial-cleaning-v2",
+        )
+        session.add(existing_batch)
+        session.flush()
+        session.add(
+            CleaningFile(
+                batch_id=existing_batch.id,
+                original_filename="admin-only.docx",
+                storage_filename="existing.docx",
+                extension=".docx",
+                source_sha256="b" * 64,
+                size_bytes=1,
+                status="succeeded",
+                stage="completed",
+            )
+        )
+        batch = CleaningBatch(
+            strategy_code="personal_business_consultation",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            spec_revision="commercial-cleaning-v3",
+        )
+        session.add(batch)
+        session.flush()
+        row = CleaningFile(
+            batch_id=batch.id,
+            original_filename="admin-only.docx",
+            storage_filename="source.docx",
+            extension=".docx",
+            source_sha256="b" * 64,
+            size_bytes=1,
+            status="pending",
+            stage="upload",
+        )
+        session.add(row)
+        session.flush()
+        cleaning_module._preflight_local_duplicates(
+            session=session,
+            knowledge_base_code="general",
+            rows=[row],
+        )
+
+        assert row.status == "pending"
+        assert row.documents == []
 
 
 def test_admin_knowledge_batch_status_and_retry_handle_datetime_cache(
@@ -1257,6 +1380,76 @@ def test_review_exclude_refreshes_file_and_batch_state(service_db):
     assert payload["files"][0]["outcome"] == "excluded"
 
 
+def test_finish_batch_serializes_summary_without_refreshing_sibling_files(
+    service_db, monkeypatch
+):
+    """A multi-file completion must not lock and rewrite every sibling file."""
+    from ai_management.workers.tasks import cleaning as cleaning_tasks
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="book",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="processing",
+        )
+        session.add(batch)
+        session.flush()
+        first = CleaningFile(
+            batch_id=batch.id,
+            original_filename="first.md",
+            storage_filename="first.md",
+            extension=".md",
+            source_sha256="4" * 64,
+            size_bytes=1,
+            status="succeeded",
+            outcome="succeeded",
+            stage="completed",
+        )
+        second = CleaningFile(
+            batch_id=batch.id,
+            original_filename="second.md",
+            storage_filename="second.md",
+            extension=".md",
+            source_sha256="5" * 64,
+            size_bytes=1,
+            status="processing",
+            outcome="processing",
+            stage="publishing",
+        )
+        session.add_all([first, second])
+        session.commit()
+        batch_id = batch.id
+        second_id = second.id
+
+    cache.set_json(cleaning_batch_cache_key(batch_id), {"stale": True}, ttl=60)
+    refresh_calls: list[str] = []
+    monkeypatch.setattr(
+        cleaning_tasks,
+        "_refresh_file_state",
+        lambda _session, file_id, **_kwargs: refresh_calls.append(file_id),
+    )
+    with service_db() as session:
+        cleaning_tasks._finish_batch(session, batch_id)
+        session.commit()
+        assert session.get(CleaningBatch, batch_id).status == "processing"
+    assert refresh_calls == []
+    assert cache.get_json(cleaning_batch_cache_key(batch_id)) is None
+
+    with service_db() as session:
+        second = session.get(CleaningFile, second_id)
+        assert second is not None
+        second.status = "excluded"
+        second.outcome = "excluded"
+        cleaning_tasks._finish_batch(session, batch_id)
+        session.commit()
+        assert session.get(CleaningBatch, batch_id).status == "completed"
+
+    source = inspect.getsource(cleaning_tasks._finish_batch)
+    assert ".with_for_update()" in source
+    assert "CleaningFile.outcome" in source
+
+
 def test_cleaning_worker_enqueues_pending_items(service_db, monkeypatch, tmp_path):
     from ai_management.tasks import process_cleaning_document, process_cleaning_file
 
@@ -1316,10 +1509,18 @@ def test_cleaning_worker_enqueues_pending_items(service_db, monkeypatch, tmp_pat
         assert items[0].chunking_json["parent_separator"] == "<<<DIFY_PARENT>>>"
 
 
-def test_cleaning_worker_marks_review_required_files_terminal(service_db, monkeypatch, tmp_path):
-    from ai_management.tasks import process_cleaning_file
+def test_book_scope_is_trusted_and_enqueued_without_model(
+    service_db, monkeypatch, tmp_path
+):
+    from ai_management.tasks import process_cleaning_document, process_cleaning_file
 
     monkeypatch.setattr(get_settings(), "upload_root", tmp_path)
+    queued: list[str] = []
+    monkeypatch.setattr(
+        process_cleaning_document,
+        "apply_async",
+        lambda *, args, queue: queued.append(args[0]),
+    )
 
     with service_db() as session:
         batch = CleaningBatch(
@@ -1363,13 +1564,14 @@ def test_cleaning_worker_marks_review_required_files_terminal(service_db, monkey
         )
         assert batch is not None
         assert row is not None
-        assert batch.status == "completed"
-        assert row.status == "review_required"
-        assert row.outcome == "review_required"
-        assert row.stage == "review"
+        assert batch.status == "processing"
+        assert row.status == "processing"
+        assert row.outcome == "processing"
+        assert row.stage == "publishing"
         assert len(items) == 1
-        assert items[0].status == "review_required"
+        assert items[0].status == "pending"
         assert items[0].retryable is False
+        assert queued == [items[0].id]
 
 
 def test_dsl_and_gold_data_are_complete():

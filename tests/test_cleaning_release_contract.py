@@ -1,0 +1,138 @@
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _source(relative_path: str) -> str:
+    return (ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def test_remote_cleaning_acceptance_uses_anonymous_names_and_covers_new_flow():
+    source = _source("scripts/full_cleaning_acceptance.py")
+
+    assert "dify_document_name" in source
+    assert "course_route_catalog" in source
+    assert "model-tasks/" in source
+    assert "publication_shards" in source
+    assert "source_name" not in source[source.index("def _expected_remote_name") : source.index("class AcceptanceRunner")]
+    assert 'r"commercial-shard-[a-f0-9]{16}\\.md"' in source
+    assert 'r"commercial-shard-[a-f0-9]{16}\\\\.md"' not in source
+
+
+def test_remote_acceptance_generates_all_controlled_catalog_and_raw_inputs():
+    source = _source("scripts/full_cleaning_acceptance.py")
+
+    for case_id in (
+        "lead_synthetic",
+        "course_synthetic",
+        "route_synthetic",
+        "raw_synthetic",
+    ):
+        assert f'"{case_id}":' in source
+    assert "if case_id not in generated" in source
+    assert "consult_safe_multi_docx" in source
+    assert "consult_safe_multi_pdf_three" in source
+    assert '"min_succeeded_items": 1' in source
+
+
+def test_remote_acceptance_covers_multi_file_consultation_and_storage_sanitization():
+    source = _source("scripts/full_cleaning_acceptance.py")
+
+    assert "run_multi_case" in source
+    assert "consultation_docx_pdf_same_batch" in source
+    assert "consultation_multiple_pdf_same_batch" in source
+    assert "_storage_sanitization_failures" in source
+    assert "require_toc_removed" in source
+    assert "os.chmod(self.manifest_path, 0o600)" in source
+    assert 'body.get("status") in {"completed", "partially_completed"}' in source
+    baseline = _source("scripts/jx_full_cleaning_baseline.sh")
+    assert 'RUNNER="$APP_DIR/scripts/full_cleaning_acceptance.py"' in baseline
+    assert 'RUNNER="/tmp/full_cleaning_acceptance.py"' not in baseline
+
+
+def test_remote_acceptance_checks_batch_submission_without_reporting_provider_ids():
+    source = _source("scripts/full_cleaning_acceptance.py")
+
+    assert "xiaobot_batch_submission" in source
+    assert "--skip-batch-submission" in source
+    assert "run_batch_submission_case" in source
+    assert "_wait_for_batch_submission" in source
+    assert "REMOTE_PROVENANCE_FIELDS" in source
+    assert '"source_filename"' not in source[source.index("REMOTE_PROVENANCE_FIELDS") : source.index("REMOTE_ALLOWED_FIELDS")]
+    assert '"source_sha256"' not in source[source.index("REMOTE_PROVENANCE_FIELDS") : source.index("REMOTE_ALLOWED_FIELDS")]
+
+
+def test_jx_release_scripts_manage_all_cleaning_workers_and_exact_upload_targets():
+    deploy = _source("scripts/jx_deploy_release.sh")
+    backup = _source("scripts/jx_prebaseline_backup.sh")
+    clean = _source("scripts/jx_prebaseline_clean.sh")
+
+    for worker in (
+        "model-realtime-worker",
+        "model-batch-worker",
+        "publication-worker",
+    ):
+        assert worker in deploy
+        assert worker in backup
+        assert worker in clean
+
+    assert "removed-cleaning-batch-ids" in clean
+    assert "OPENPYXL_WHEEL" in deploy
+    assert "ET_XMLFILE_WHEEL" in deploy
+    assert "MIGRATION_FILES" in deploy
+    assert "docker-compose.ai.yml.before-release" in deploy
+    assert 'h4e5f6a7b8c9_expand_cleaning_batch_status.py' in deploy
+    assert 'DIFY_PUBLISH_WINDOW_END_HOUR "24"' in deploy
+    assert 'DIFY_PARENT_MAX_TOKENS "2000"' in deploy
+    assert 'CLEANING_SPEC_REVISION "commercial-cleaning-v3"' in deploy
+    assert 'MAX_UPLOAD_FILES "100"' in deploy
+    assert "require_cleaning_price_snapshot" in deploy
+    assert "jx_capture_ui_cleanup_manifest.sh" in deploy
+    assert "find /data -mindepth 1 -delete" not in clean
+
+
+def test_precise_cleanup_accepts_a_relative_private_manifest_path_safely():
+    clean = _source("scripts/jx_prebaseline_clean.sh")
+
+    assert 'MANIFEST_PATH="$(realpath -e "$MANIFEST_PATH")"' in clean
+    assert '"$APP_DIR"/var/private-cleanup-manifests/*' in clean
+    assert 'DATA_SCRIPT="$APP_DIR/scripts/jx_release_data.py"' in clean
+    assert 'DATA_SCRIPT="/tmp/jx_release_data.py"' not in clean
+
+
+def test_cleaning_batch_status_accepts_all_runtime_states_and_has_migration():
+    models = _source("ai_management/models.py")
+    migration = _source(
+        "migrations/versions/h4e5f6a7b8c9_expand_cleaning_batch_status.py"
+    )
+
+    assert 'status: Mapped[str] = mapped_column(String(32)' in models
+    assert 'revision: str = "h4e5f6a7b8c9"' in migration
+    assert 'down_revision: str | None = "g3b7c9d1e5f2"' in migration
+
+
+def test_default_production_cleaning_window_is_all_day():
+    config = _source("ai_management/config.py")
+
+    assert "dify_publish_window_end_hour: int = Field(default=24" in config
+    assert 'cleaning_spec_revision: str = "commercial-cleaning-v3"' in config
+
+
+def test_dify_shard_parent_limit_is_separate_from_model_candidate_limit():
+    config = _source("ai_management/config.py")
+    worker = _source("ai_management/workers/tasks/model_cleaning.py")
+    publish = worker[worker.index("def publish_dify_shard") : worker.index("__all__")]
+
+    assert "dify_parent_max_tokens: int = Field(default=2000, ge=50, le=4000)" in config
+    assert "parent_max_tokens=settings.dify_parent_max_tokens" in publish
+    assert "parent_max_tokens=settings.cleaning_candidate_max_tokens" not in publish
+
+
+def test_test_ui_tags_each_upload_for_exact_cleanup_capture_only():
+    ui = _source("ai_management/test_ui.py")
+    cleaning = _source("ai_management/cleaning.py")
+
+    assert "_test_ui_cleanup_run_id" in ui
+    assert "tagged_test_ui_metadata" in ui
+    assert "cleanup_run_id=cleanup_run_id" in ui
+    assert '"_test_ui_cleanup_run_id"' in cleaning

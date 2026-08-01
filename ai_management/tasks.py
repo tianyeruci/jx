@@ -26,6 +26,13 @@ from .workers.tasks.maintenance import (
     _retry_external_deletions,
     nightly_maintenance,
 )
+from .workers.tasks.model_cleaning import (
+    maybe_plan_model_task,
+    poll_batch_model_task,
+    process_realtime_model_task,
+    publish_dify_shard,
+    submit_batch_model_task,
+)
 from .workers.tasks.summary import (
     CONFIRMED_PROFILE_FIELDS,
     _merge_profile_payload,
@@ -54,8 +61,13 @@ __all__ = [
     "_summary_payload",
     "celery_app",
     "nightly_maintenance",
+    "maybe_plan_model_task",
+    "poll_batch_model_task",
     "process_cleaning_document",
     "process_cleaning_file",
+    "process_realtime_model_task",
+    "publish_dify_shard",
     "settings",
     "summarize_conversation",
+    "submit_batch_model_task",
 ]

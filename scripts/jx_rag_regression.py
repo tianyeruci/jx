@@ -49,7 +49,12 @@ def main() -> int:
             args.general_fixture.name,
             args.general_fixture.read_text(encoding="utf-8-sig"),
         )
-        client.wait_for_indexing(batch, timeout_seconds=300, interval=2)
+        client.wait_for_indexing(
+            batch,
+            document_id=document_id,
+            timeout_seconds=300,
+            interval=2,
+        )
         client.ensure_document_has_segments(document_id)
         field_ids = client.ensure_metadata_names(["doc_id"])
         metadata = {"doc_id": args.general_fixture.name}
