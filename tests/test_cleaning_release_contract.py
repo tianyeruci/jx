@@ -1,4 +1,9 @@
+import os
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -88,6 +93,8 @@ def test_jx_release_scripts_manage_all_cleaning_workers_and_exact_upload_targets
     assert 'MAX_UPLOAD_FILES "100"' in deploy
     assert "require_cleaning_price_snapshot" in deploy
     assert "jx_capture_ui_cleanup_manifest.sh" in deploy
+    assert "jx_quick_deploy.sh" in deploy
+    assert "jx_reset_cleaning_local_state.sh" in deploy
     assert "find /data -mindepth 1 -delete" not in clean
 
 
@@ -98,6 +105,103 @@ def test_precise_cleanup_accepts_a_relative_private_manifest_path_safely():
     assert '"$APP_DIR"/var/private-cleanup-manifests/*' in clean
     assert 'DATA_SCRIPT="$APP_DIR/scripts/jx_release_data.py"' in clean
     assert 'DATA_SCRIPT="/tmp/jx_release_data.py"' not in clean
+
+
+def test_local_cleaning_state_reset_is_explicit_recoverable_and_never_deletes_dify():
+    reset = _source("scripts/jx_reset_cleaning_local_state.sh")
+
+    assert 'MODE="${1:-plan}"' in reset
+    assert "RESET_LOCAL_CLEANING_STATE" in reset
+    assert 'APP_DIR="/opt/ai-management"' in reset
+    assert 'BACKUP_SCRIPT="$APP_DIR/scripts/jx_prebaseline_backup.sh"' in reset
+    for terminal_status in (
+        "completed",
+        "partially_completed",
+        "failed",
+        "review_required",
+        "cancelled",
+        "succeeded",
+        "excluded",
+        "mixed",
+    ):
+        assert terminal_status in reset
+    assert "TERMINAL_BATCH_STATUSES" in reset
+    assert "TERMINAL_FILE_STATUSES" in reset
+    assert "TERMINAL_DOCUMENT_STATUSES" in reset
+    assert "TERMINAL_MODEL_TASK_STATUSES" in reset
+    assert "TERMINAL_SHARD_STATUSES" in reset
+    assert 'RESET_SERVICES_MAY_NEED_RESTART=0' in reset
+    assert "cleanup_reset_on_exit" in reset
+    assert "local services_may_need_restart" not in reset
+    assert "kind = 'dify_document'" in reset
+    assert 'DELETE FROM cleaning_batch' in reset
+    assert 'match="ai:cleaning:*"' in reset
+    assert "flushdb" not in reset.lower()
+    assert "delete_document" not in reset
+    assert "DifyKnowledgeClient" not in reset
+    assert "cleaning-batch-ids.txt" in reset
+    assert 'target="/data/$batch_id"' in reset
+    assert "external_deletion_task" in reset
+    assert "/health/ready" in reset
+
+
+def test_local_cleaning_state_reset_is_routed_from_operator_documentation():
+    runbook = _source("docs/jx文档清洗本地状态归零操作说明.md")
+    readme = _source("docs/README.md")
+    ui_guide = _source("docs/AI管理页文档清洗操作说明-2026-07-28.md")
+    deploy = _source("docs/V2从开发到服务器部署与回滚手册.md")
+
+    for source in (runbook, deploy):
+        assert "jx_reset_cleaning_local_state.sh plan" in source
+        assert "execute RESET_LOCAL_CLEANING_STATE" in source
+    assert "不调用 Dify 删除接口" in runbook
+    assert "jx文档清洗本地状态归零操作说明.md" in readme
+    assert "jx文档清洗本地状态归零操作说明.md" in ui_guide
+
+
+def test_local_cleaning_state_reset_exit_trap_keeps_restart_state_in_scope(tmp_path):
+    reset = _source("scripts/jx_reset_cleaning_local_state.sh")
+    function_source = reset.split("cleanup_reset_on_exit() {", 1)[1].split(
+        "\n}\n\nverify_reset()", 1
+    )[0]
+    function_source = "cleanup_reset_on_exit() {" + function_source + "\n}"
+
+    bash = None
+    if os.name == "nt":
+        candidate = Path("C:/Program Files/Git/bin/bash.exe")
+        bash = str(candidate) if candidate.is_file() else None
+    if bash is None:
+        bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is required for the EXIT trap regression test")
+
+    app_dir = (tmp_path / "app").as_posix()
+    harness = f"""
+set -u
+APP_DIR='{app_dir}'
+RESET_TEMP_DIR="$APP_DIR/var/.cleaning-local-reset.regression"
+RESET_SERVICES_MAY_NEED_RESTART=1
+mkdir -p "$RESET_TEMP_DIR"
+restart_services() {{ printf '%s\\n' restarted > "$APP_DIR/restarted.txt"; }}
+{function_source}
+trap cleanup_reset_on_exit EXIT
+exit 7
+"""
+    result = subprocess.run(
+        [bash, "-c", harness],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode == 7
+    assert "unbound variable" not in result.stderr
+    assert (tmp_path / "app" / "restarted.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "restarted"
+    assert not (tmp_path / "app" / "var" / ".cleaning-local-reset.regression").exists()
 
 
 def test_cleaning_batch_status_accepts_all_runtime_states_and_has_migration():

@@ -111,6 +111,8 @@ for file in \
   jx_prebaseline_backup.sh \
   jx_prebaseline_clean.sh \
   jx_capture_ui_cleanup_manifest.sh \
+  jx_quick_deploy.sh \
+  jx_reset_cleaning_local_state.sh \
   jx_release_data.py
 do
   test -f "$STAGE_DIR/$file"
