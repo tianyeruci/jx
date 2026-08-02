@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 from knowledge_cleaner.dify import DifyKnowledgeClient
 
 from ...cache import cache
+from ...cleaning import maintain_conversion_markdown_artifacts
 from ...config import get_settings
 from ...context import messages_after_summary
 from ...courses import rebuild_snapshot
@@ -268,7 +269,10 @@ def _cleanup_files_and_stale_tasks() -> None:
         for row in stale:
             if row.attempts < 2:
                 row.status = "pending"
-                process_cleaning_file.apply_async(args=[row.id], queue="ai_cleaning")
+                process_cleaning_file.apply_async(
+                    args=[row.id],
+                    queue="ai_cleaning",
+                )
             else:
                 row.status = "failed"
                 row.error_code = "CLEANING_FAILED"
@@ -357,6 +361,12 @@ def _cleanup_system_event_logs() -> None:
         session.commit()
 
 
+def _cleanup_conversion_markdown() -> None:
+    maintain_conversion_markdown_artifacts(
+        delete_all=not settings.save_conversion_markdown
+    )
+
+
 def _refresh_course_snapshot() -> None:
     """Rebuild the effective recommendation catalogue from its DB authority."""
     with SessionLocal() as session:
@@ -372,6 +382,7 @@ def nightly_maintenance() -> dict[str, bool]:
         ("clicks", _flush_clicks),
         ("files", _cleanup_files_and_stale_tasks),
         ("model_watchdog", _terminalize_stale_model_tasks),
+        ("conversion_markdown", _cleanup_conversion_markdown),
         ("system_event_logs", _cleanup_system_event_logs),
         ("course_snapshot", _refresh_course_snapshot),
     ):
@@ -407,6 +418,7 @@ def nightly_maintenance() -> dict[str, bool]:
 
 __all__ = [
     "_cleanup_files_and_stale_tasks",
+    "_cleanup_conversion_markdown",
     "_cleanup_history",
     "_cleanup_system_event_logs",
     "_refresh_course_snapshot",

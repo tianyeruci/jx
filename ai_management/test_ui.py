@@ -15,6 +15,9 @@ API_BASE = os.getenv("AI_MANAGEMENT_BASE_URL", "http://api:8000").rstrip("/")
 INTERNAL_TOKEN = os.getenv("INTERNAL_API_TOKEN", "change-me")
 ADMIN_TOKEN = os.getenv("ADMIN_API_TOKEN", "change-me")
 DEFAULT_USER = os.getenv("TEST_USER_ID", "test-user-001")
+COURSE_CATALOG_AUTO_PUBLISH = os.getenv(
+    "COURSE_CATALOG_AUTO_PUBLISH", "true"
+).strip().lower() in {"1", "true", "yes", "on"}
 TEST_UI_CLEANUP_RUN_METADATA_KEY = "_test_ui_cleanup_run_id"
 CLEANING_BATCH_VIEW_STATE_KEY = "cleaning_batch_view_state"
 CLEANING_BATCH_INPUT_KEY = "cleaning_batch_id_input"
@@ -206,6 +209,17 @@ def render_cleaning_payload(payload: Any) -> None:
     """Render the batch UI's safe response view, rather than raw API data."""
 
     st.json(cleaning_ui_display_payload(payload))
+
+
+def model_task_mode_label(task: dict[str, Any]) -> str:
+    """Expose the actual provider mode without exposing provider identifiers."""
+
+    mode = str(task.get("mode") or "").strip().lower()
+    if mode == "batch":
+        return "百炼 Batch（batch）"
+    if mode == "realtime":
+        return "实时调用（realtime）"
+    return "未知模式"
 
 
 def render_api_notice(address: str) -> None:
@@ -704,8 +718,27 @@ def cleaning_tab() -> None:
     if view_state is not None:
         payload = view_state["payload"]
         render_cleaning_payload(payload)
+        if (
+            payload.get("strategy_code") == "course_route_catalog"
+            and COURSE_CATALOG_AUTO_PUBLISH
+        ):
+            if payload.get("all_succeeded"):
+                st.success("课程目录已完成自动校验并发布到知识库。")
+            elif payload.get("failed"):
+                st.error("课程目录自动流程已阻断；请查看服务日志中的脱敏阻断原因。")
+            elif payload.get("review_required"):
+                st.warning("课程目录等待内部复核，当前没有发布分片。")
+            else:
+                st.info("课程目录正在自动解析、模型补全或发布，请继续查询批次。")
         for model_task in payload.get("model_tasks") or []:
-            if model_task.get("status") == "awaiting_approval":
+            st.caption(f"模型调用模式：{model_task_mode_label(model_task)}")
+            if (
+                model_task.get("status") == "awaiting_approval"
+                and not (
+                    payload.get("strategy_code") == "course_route_catalog"
+                    and COURSE_CATALOG_AUTO_PUBLISH
+                )
+            ):
                 st.warning("该批次将使用百炼 Batch。请核对候选数量、Token 与费用快照后批准。")
                 render_cleaning_payload(model_task)
                 if st.button(
@@ -762,7 +795,10 @@ def cleaning_tab() -> None:
                     )
                 except httpx.HTTPError as exc:
                     st.error(str(exc))
-            if payload.get("strategy_code") == "course_route_catalog":
+            if (
+                payload.get("strategy_code") == "course_route_catalog"
+                and not COURSE_CATALOG_AUTO_PUBLISH
+            ):
                 if st.button(
                     "生成课程目录审核表",
                     key=f"catalog_review_export_{selected_file_id}",

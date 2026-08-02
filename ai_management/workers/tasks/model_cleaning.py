@@ -5,6 +5,7 @@ import json
 import logging
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -14,6 +15,7 @@ from sqlalchemy.orm import selectinload
 from knowledge_cleaner.chunking import prepare_chunks
 
 from ...config import get_settings
+from ...course_import import _course_text, _route_text
 from ...db import SessionLocal
 from ...model_cleaning import (
     BailianClient,
@@ -34,9 +36,12 @@ from ...models import (
     DifyPublicationShard,
     ExternalDeletionTask,
     ModelCleaningTask,
+    utcnow,
 )
 from ...publication_shards import ShardItem, plan_post_shards
 from ...sanitization import sanitize_for_knowledge
+from ...schemas import CourseRecord, RouteRecord
+from ...services.observability import record_event
 from ..celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -158,6 +163,12 @@ def _model_contract_retry_hint(exc: Exception) -> str:
         return "不得增加来源块未出现的数字、日期、比例或金额。"
     if "人物归属" in message:
         return "不得增加或变更来源块中的人物归属。"
+    if "课程目录模型未返回课程描述" in message:
+        return "课程记录若有来源依据请填写 description；只能依据输入来源块概括，不得编造事实；无依据时留空，由服务按来源事实兜底或阻断。"
+    if "课程目录模型未返回方向候选" in message:
+        return "课程记录只有在输入来源有依据时才填写 direction_candidate；不得猜测或改名、改链接，无依据时留空并接受自动原子阻断。"
+    if "学习路线模型未返回路线目标" in message:
+        return "路线记录只有在输入来源有依据时才填写 route_target；只能概括来源中的适用目标，不得从名称或顺序猜测、不得编造收益承诺。"
     return "字段、枚举值、来源块引用和 JSON 类型必须完全符合系统提示。"
 
 
@@ -171,9 +182,95 @@ def _candidate_fingerprint(
     return digest.hexdigest()
 
 
+def _price_snapshot(mode: str) -> tuple[str, str, str, float, float, float]:
+    """Return the price snapshot and discount for the selected call mode."""
+
+    if mode == "batch":
+        return (
+            settings.cleaning_price_version,
+            settings.cleaning_price_effective_date,
+            settings.cleaning_price_valid_until,
+            settings.cleaning_input_price_per_million,
+            settings.cleaning_output_price_per_million,
+            0.5,
+        )
+    return (
+        settings.cleaning_realtime_price_version,
+        settings.cleaning_realtime_price_effective_date,
+        settings.cleaning_realtime_price_valid_until,
+        settings.cleaning_realtime_input_price_per_million,
+        settings.cleaning_realtime_output_price_per_million,
+        1.0,
+    )
+
+
+def _catalog_auto_block_reason(
+    *,
+    estimated_cost_high: float,
+    price_version: str,
+    effective_date: str,
+    valid_until: str,
+    input_price: float,
+    output_price: float,
+) -> str:
+    """Return a stable reason when upload-only catalogue automation is unsafe."""
+
+    if not price_version:
+        return "价格版本缺失"
+    if not effective_date:
+        return "价格生效日期缺失"
+    if not valid_until:
+        return "价格有效期缺失"
+    if input_price <= 0 or output_price <= 0:
+        return "模型价格未配置"
+    try:
+        effective = datetime.fromisoformat(effective_date).date()
+        valid_until_date = datetime.fromisoformat(valid_until).date()
+    except ValueError:
+        return "价格日期格式无效"
+    today = datetime.now(timezone.utc).date()
+    if effective > today:
+        return "价格快照尚未生效"
+    if valid_until_date < today:
+        return "价格快照已过期"
+    if estimated_cost_high > settings.course_catalog_auto_approve_cost_max:
+        return "预估费用超过自动审批上限"
+    return ""
+
+
+def _fail_catalog_auto_run(session, batch: CleaningBatch, reason: str) -> None:
+    """Fail every source item together; never publish a partial catalogue."""
+
+    error_code = "CATALOG_AUTO_PUBLISH_BLOCKED"
+    error_message = f"课程目录自动发布已阻断：{reason}"
+    documents = session.scalars(
+        select(CleaningDocument)
+        .join(CleaningFile)
+        .where(CleaningFile.batch_id == batch.id)
+    )
+    for document in documents:
+        if document.status == "excluded":
+            continue
+        document.status = "failed"
+        document.stage = "failed"
+        document.error_code = error_code
+        document.error_message = error_message
+        document.retryable = False
+    for file_row in session.scalars(
+        select(CleaningFile).where(CleaningFile.batch_id == batch.id)
+    ):
+        file_row.status = "failed"
+        file_row.outcome = "failed"
+        file_row.stage = "failed"
+        file_row.error_code = error_code
+        file_row.error_message = error_message
+    batch.status = "completed"
+
+
 def maybe_plan_model_task(batch_id: str) -> str | None:
     """Create exactly one model plan after every source file is parsed."""
 
+    submit_realtime = False
     with SessionLocal() as session:
         batch = session.scalar(
             select(CleaningBatch)
@@ -201,17 +298,25 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
         )
         if existing is not None:
             return existing.id
+        auto_catalog = (
+            batch.strategy_code == "course_route_catalog"
+            and settings.course_catalog_auto_publish
+        )
         candidate_count = 0
         estimated_input = 0
         fingerprint_digest = hashlib.sha256()
+        oversized_reason = ""
         for document in _iter_documents_for_batch(session, batch_id):
             request = _request(document, batch.strategy_code)
             tokens = _estimated_tokens(request)
             if tokens > settings.cleaning_candidate_max_tokens:
-                document.status = "review_required"
-                document.stage = "review"
-                document.error_code = "MODEL_INPUT_TOO_LARGE"
-                document.error_message = "单候选超过自动模型清洗上限，需要人工复核"
+                if auto_catalog:
+                    oversized_reason = "单候选超过模型输入上限"
+                else:
+                    document.status = "review_required"
+                    document.stage = "review"
+                    document.error_code = "MODEL_INPUT_TOO_LARGE"
+                    document.error_message = "单候选超过自动模型清洗上限，需要人工复核"
                 continue
             candidate_count += 1
             estimated_input += tokens
@@ -219,6 +324,8 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
                 f"{document.id}:{document.content_sha256}\n".encode("utf-8")
             )
         if not candidate_count:
+            if oversized_reason:
+                _fail_catalog_auto_run(session, batch, oversized_reason)
             session.commit()
             return None
         fingerprint_digest.update(
@@ -230,22 +337,31 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
             estimated_input,
             batch_candidate_threshold=settings.cleaning_batch_candidate_threshold,
             batch_token_threshold=settings.cleaning_batch_token_threshold,
+            batch_enabled=settings.bailian_batch_enabled,
         )
         fingerprint = fingerprint_digest.hexdigest()
-        batch_discount = 0.5 if mode == "batch" else 1.0
+        (
+            price_version,
+            price_effective_date,
+            price_valid_until,
+            input_price_per_million,
+            output_price_per_million,
+            price_discount,
+        ) = _price_snapshot(mode)
         input_cost = (
             estimated_input
             / 1_000_000
-            * settings.cleaning_input_price_per_million
-            * batch_discount
+            * input_price_per_million
+            * price_discount
         )
         estimated_output = max(500, candidate_count * 500)
         output_cost = (
             estimated_output
             / 1_000_000
-            * settings.cleaning_output_price_per_million
-            * batch_discount
+            * output_price_per_million
+            * price_discount
         )
+        estimated_cost_high = input_cost + output_cost
         task = ModelCleaningTask(
             batch_id=batch_id,
             mode=mode,
@@ -257,23 +373,94 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
             estimated_input_tokens=estimated_input,
             estimated_output_tokens=estimated_output,
             estimated_cost_low=f"{input_cost:.6f}",
-            estimated_cost_high=f"{input_cost + output_cost:.6f}",
-            price_version=settings.cleaning_price_version,
-            price_effective_date=settings.cleaning_price_effective_date,
-            price_valid_until=settings.cleaning_price_valid_until,
+            estimated_cost_high=f"{estimated_cost_high:.6f}",
+            price_version=price_version,
+            price_effective_date=price_effective_date,
+            price_valid_until=price_valid_until,
         )
         session.add(task)
+        auto_submit_batch = False
+        if auto_catalog:
+            reason = oversized_reason or _catalog_auto_block_reason(
+                estimated_cost_high=estimated_cost_high,
+                price_version=price_version,
+                effective_date=price_effective_date,
+                valid_until=price_valid_until,
+                input_price=input_price_per_million,
+                output_price=output_price_per_million,
+            )
+            if reason:
+                task.status = "failed"
+                task.last_error = f"课程目录自动发布已阻断：{reason}"
+                _fail_catalog_auto_run(session, batch, reason)
+                record_event(
+                    level="WARNING",
+                    category="task",
+                    component="model_cleaning_worker",
+                    event_code="CATALOG_AUTO_PUBLISH_BLOCKED",
+                    status="failed",
+                    message="课程目录自动发布已阻断",
+                    resource_type="cleaning_batch",
+                    resource_id=batch.id,
+                    details={"reason": reason, "candidate_count": candidate_count},
+                    session=session,
+                )
+            elif mode == "batch":
+                task.status = "approved"
+                task.approval_fingerprint = fingerprint
+                task.approved_at = utcnow()
+                auto_submit_batch = True
+                record_event(
+                    level="INFO",
+                    category="task",
+                    component="model_cleaning_worker",
+                    event_code="CATALOG_MODEL_AUTO_APPROVED",
+                    status="succeeded",
+                    message="课程目录模型任务已按内部费用门禁自动批准",
+                    resource_type="cleaning_batch",
+                    resource_id=batch.id,
+                    details={
+                        "candidate_count": candidate_count,
+                        "estimated_cost_high": round(estimated_cost_high, 6),
+                        "mode": mode,
+                    },
+                    session=session,
+                )
         batch.status = (
-            "awaiting_model_approval" if mode == "batch" else "model_validating"
+            "model_batch_uploading"
+            if auto_submit_batch
+            else (
+                "completed"
+                if auto_catalog and task.status == "failed"
+                else ("awaiting_model_approval" if mode == "batch" else "model_validating")
+            )
         )
-        for document in _iter_documents_for_batch(session, batch_id):
-            document.stage = "model_queued"
+        if task.status != "failed":
+            for document in _iter_documents_for_batch(session, batch_id):
+                document.stage = "model_queued"
+            submit_realtime = mode == "realtime"
         session.commit()
         task_id = task.id
-    if mode == "realtime":
+    if submit_realtime:
         process_realtime_model_task.apply_async(
             args=[task_id], queue="ai_model_realtime"
         )
+    elif auto_submit_batch:
+        try:
+            submit_batch_model_task.apply_async(
+                args=[task_id], queue="ai_model_batch"
+            )
+        except Exception:
+            logger.exception("course catalogue auto model queue failed")
+            with SessionLocal() as session:
+                task = session.get(ModelCleaningTask, task_id)
+                if task is not None:
+                    batch = session.get(CleaningBatch, task.batch_id)
+                    task.status = "failed"
+                    task.last_error = "课程目录自动模型任务入队失败"
+                    if batch is not None:
+                        _fail_catalog_auto_run(session, batch, "模型任务入队失败")
+                    session.commit()
     return task_id
 
 
@@ -387,10 +574,90 @@ def _apply_model_payload(
         result = CourseEnrichmentResponse.model_validate(payload)
         audit["ai_candidate"] = result.model_dump(mode="json")
         audit["model_result"] = result.model_dump(mode="json")
-        document.status = "review_required"
-        document.stage = "review"
-        document.error_code = "CATALOG_HUMAN_REVIEW_REQUIRED"
-        document.error_message = "AI字段、方向和路线顺序必须人工审核"
+        draft = dict(audit.get("catalog_draft") or {})
+        kind = str(audit.get("catalog_kind") or "")
+        direction = result.direction_candidate.strip() or str(
+            draft.get("direction") or ""
+        ).strip()
+        if not direction:
+            raise ValueError("课程目录模型未返回方向候选")
+        if kind == "course":
+            description = result.description.strip()
+            if not description:
+                # The description is semantic, but a sparse catalogue row can
+                # legitimately leave the model with no safe paraphrase.  A
+                # deterministic source-field summary is still factual and
+                # keeps the course publishable without asking the model to
+                # invent content or choose identity fields.
+                source_facts = [
+                    str(value).strip()
+                    for value in (request.blocks or {}).values()
+                    if str(value).strip()
+                ]
+                description = "；".join(source_facts)
+            if not description:
+                raise ValueError("课程目录模型未返回课程描述")
+            draft.update(
+                {
+                    "direction": direction,
+                    "description": description,
+                    "audience": result.audience.strip(),
+                    "highlights": list(result.highlights),
+                    "learning_outcomes": list(result.learning_outcomes),
+                    "enabled": True,
+                    "review_status": "approved",
+                }
+            )
+            record = CourseRecord.model_validate(draft)
+            document.cleaned_markdown = sanitize_for_knowledge(_course_text(record))
+            document.metadata_json = {
+                **(document.metadata_json or {}),
+                "document_type": "course",
+                "course_id": record.course_id,
+                "direction": record.direction,
+                "stage": record.stage,
+                "source_platform": record.source_platform,
+                "series_name": record.series_name or "",
+                "status": "active",
+                "review_status": "approved",
+            }
+        elif kind == "route":
+            route_target = result.route_target.strip() or str(
+                draft.get("target") or ""
+            ).strip()
+            if not route_target:
+                raise ValueError("学习路线模型未返回路线目标")
+            draft.update(
+                {
+                    "direction": direction,
+                    "target": route_target,
+                    "enabled": True,
+                    "review_status": "approved",
+                }
+            )
+            record = RouteRecord.model_validate(draft)
+            document.cleaned_markdown = sanitize_for_knowledge(_route_text(record))
+            document.metadata_json = {
+                **(document.metadata_json or {}),
+                "document_type": "learning_route",
+                "route_id": record.route_id,
+                "direction": record.direction,
+                "status": "active",
+                "review_status": "approved",
+            }
+        else:
+            raise ValueError("课程目录记录类型无效")
+        audit["catalog_draft"] = draft
+        audit["catalog_record"] = record.model_dump(mode="json")
+        audit["automatic_review"] = {
+            "approved": True,
+            "source": "course_catalog_auto_publish",
+        }
+        document.status = "pending"
+        document.stage = "pending"
+        document.error_code = None
+        document.error_message = None
+        document.retryable = True
     else:
         raise ValueError("未知模型清洗策略")
     document.audit_json = audit
@@ -416,11 +683,21 @@ def _post_child_for_dify(text: str, *, title: str) -> str | None:
 
 
 def _mark_contract_failure(
-    document: CleaningDocument, exc: Exception, *, final: bool
+    document: CleaningDocument,
+    exc: Exception,
+    *,
+    final: bool,
+    auto_fail: bool = False,
 ) -> None:
-    document.status = "review_required" if final else "awaiting_model"
-    document.stage = "review" if final else "model_retry"
-    document.error_code = "MODEL_CONTRACT_INVALID"
+    if final and auto_fail:
+        document.status = "failed"
+        document.stage = "failed"
+        document.error_code = "CATALOG_AUTO_PUBLISH_BLOCKED"
+        document.retryable = False
+    else:
+        document.status = "review_required" if final else "awaiting_model"
+        document.stage = "review" if final else "model_retry"
+        document.error_code = "MODEL_CONTRACT_INVALID"
     document.error_message = str(exc)[:1000]
 
 
@@ -522,6 +799,32 @@ def _finish_model_task(task_id: str) -> None:
         )
         for file_id in file_ids:
             _refresh_file_state(session, str(file_id), commit=False)
+        if batch and batch.strategy_code == "course_route_catalog" and settings.course_catalog_auto_publish:
+            catalog_documents = list(
+                session.scalars(
+                    select(CleaningDocument)
+                    .join(CleaningFile)
+                    .where(CleaningFile.batch_id == batch.id)
+                )
+            )
+            if any(item.status == "failed" for item in catalog_documents):
+                # A catalogue source is atomic.  Successful candidates must
+                # not be published when a sibling model result failed.
+                for item in catalog_documents:
+                    if item.status not in {"failed", "excluded"}:
+                        item.status = "failed"
+                        item.stage = "failed"
+                        item.error_code = "CATALOG_AUTO_PUBLISH_BLOCKED"
+                        item.error_message = "同源课程目录存在模型失败条目，整文件未发布"
+                        item.retryable = False
+                # The first refresh ran before the atomic sibling failure was
+                # applied, so refresh again to prevent a terminal failed
+                # catalogue from being left at file-level ``processing``.
+                for file_id in file_ids:
+                    _refresh_file_state(session, str(file_id), commit=False)
+                _finish_batch(session, batch.id)
+                session.commit()
+                return
         if batch and batch.strategy_code in POST_STRATEGIES:
             # A batch can contain a publishable post file and an all-review
             # file.  Refresh every file before queuing shards so the latter
@@ -651,7 +954,15 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                         usage["input_tokens"] += item_usage["input_tokens"]
                         usage["output_tokens"] += item_usage["output_tokens"]
                     except Exception as retry_exc:
-                        _mark_contract_failure(document, retry_exc, final=True)
+                        _mark_contract_failure(
+                            document,
+                            retry_exc,
+                            final=True,
+                            auto_fail=(
+                                batch.strategy_code == "course_route_catalog"
+                                and settings.course_catalog_auto_publish
+                            ),
+                        )
                         counts["review"] += 1
                 session.commit()
             task.result_counts = counts
@@ -666,6 +977,13 @@ def process_realtime_model_task(self, task_id: str) -> bool:
             if task is not None:
                 task.status = "failed"
                 task.last_error = str(exc)[:2000]
+                batch = session.get(CleaningBatch, task.batch_id)
+                if (
+                    batch is not None
+                    and batch.strategy_code == "course_route_catalog"
+                    and settings.course_catalog_auto_publish
+                ):
+                    _fail_catalog_auto_run(session, batch, "模型任务执行异常")
                 session.commit()
         return False
     finally:
@@ -826,19 +1144,40 @@ def submit_batch_model_task(self, task_id: str) -> bool:
                             *(task.provider_error_file_ids or []),
                         ],
                     )
-                    task.status = "awaiting_approval"
-                    task.approval_fingerprint = ""
-                    task.approved_at = None
-                    if batch:
-                        batch.status = "awaiting_model_approval"
+                    if (
+                        batch is not None
+                        and batch.strategy_code == "course_route_catalog"
+                        and settings.course_catalog_auto_publish
+                    ):
+                        task.status = "failed"
+                        _fail_catalog_auto_run(session, batch, "模型批量任务提交异常")
+                    else:
+                        task.status = "awaiting_approval"
+                        task.approval_fingerprint = ""
+                        task.approved_at = None
+                        if batch:
+                            batch.status = "awaiting_model_approval"
                 else:
-                    task.status = "superseded"
-                    replan_batch_id = task.batch_id
-                    if batch:
-                        batch.status = "processing"
-                for document in _iter_documents_for_batch(session, task.batch_id):
-                    document.status = "awaiting_model"
-                    document.stage = "model_retry"
+                    if (
+                        batch is not None
+                        and batch.strategy_code == "course_route_catalog"
+                        and settings.course_catalog_auto_publish
+                    ):
+                        task.status = "failed"
+                        _fail_catalog_auto_run(session, batch, "模型批量任务初始化异常")
+                    else:
+                        task.status = "superseded"
+                        replan_batch_id = task.batch_id
+                        if batch:
+                            batch.status = "processing"
+                if not (
+                    batch is not None
+                    and batch.strategy_code == "course_route_catalog"
+                    and settings.course_catalog_auto_publish
+                ):
+                    for document in _iter_documents_for_batch(session, task.batch_id):
+                        document.status = "awaiting_model"
+                        document.stage = "model_retry"
                     document.error_code = "MODEL_BATCH_SUBMIT_FAILED"
                     document.error_message = "Batch提交未完成，未发布到知识库"
                 session.commit()
@@ -965,30 +1304,44 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                     **(task.result_counts or {}),
                     "provider_retry_reason": sorted(state_values),
                 }
-                task.status = "awaiting_approval"
-                task.approval_fingerprint = ""
-                task.approved_at = None
+                auto_catalog = (
+                    batch is not None
+                    and batch.strategy_code == "course_route_catalog"
+                    and settings.course_catalog_auto_publish
+                )
+                task.status = "failed" if auto_catalog else "awaiting_approval"
+                if not auto_catalog:
+                    task.approval_fingerprint = ""
+                    task.approved_at = None
                 task.provider_batch_id = None
                 task.provider_batch_ids = []
                 task.provider_input_file_ids = []
                 task.provider_output_file_ids = []
                 task.provider_error_file_ids = []
                 task.last_error = (
-                    "百炼Batch未成功完成，精确清理后等待重新批准："
-                    f"{sorted(state_values)}"
-                )
-                for document in _iter_documents_for_batch(
-                    session,
-                    task.batch_id,
-                ):
-                    document.status = "awaiting_model"
-                    document.stage = "model_retry"
-                    document.error_code = (
-                        "MODEL_PROVIDER_RETRY_APPROVAL_REQUIRED"
+                    "百炼Batch未成功完成，精确清理后自动流程已阻断："
+                    if auto_catalog
+                    else "百炼Batch未成功完成，精确清理后等待重新批准："
+                ) + f"{sorted(state_values)}"
+                if auto_catalog:
+                    _fail_catalog_auto_run(
+                        session,
+                        batch,
+                        f"供应商 Batch 状态：{sorted(state_values)}",
                     )
-                    document.error_message = "Batch未完成，需重新确认费用后重试"
-                if batch:
-                    batch.status = "awaiting_model_approval"
+                else:
+                    for document in _iter_documents_for_batch(
+                        session,
+                        task.batch_id,
+                    ):
+                        document.status = "awaiting_model"
+                        document.stage = "model_retry"
+                        document.error_code = (
+                            "MODEL_PROVIDER_RETRY_APPROVAL_REQUIRED"
+                        )
+                        document.error_message = "Batch未完成，需重新确认费用后重试"
+                    if batch:
+                        batch.status = "awaiting_model_approval"
                 session.commit()
                 return True
             task.status = "validating"
@@ -1091,7 +1444,13 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                             ]
                         except Exception as exc:
                             _mark_contract_failure(
-                                document, exc, final=True
+                                document,
+                                exc,
+                                final=True,
+                                auto_fail=(
+                                    batch.strategy_code == "course_route_catalog"
+                                    and settings.course_catalog_auto_publish
+                                ),
                             )
                         counts[
                             "excluded"
@@ -1154,6 +1513,10 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                             or "Batch补偿重试仍未得到有效结果"
                         ),
                         final=True,
+                        auto_fail=(
+                            batch.strategy_code == "course_route_catalog"
+                            and settings.course_catalog_auto_publish
+                        ),
                     )
                     counts["review"] += 1
             previous = task.result_counts or {}
@@ -1180,12 +1543,23 @@ def poll_batch_model_task(self, task_id: str) -> bool:
         return True
     except Exception as exc:
         logger.exception("batch model polling failed")
-        with SessionLocal() as session:
-            task = session.get(ModelCleaningTask, task_id)
-            if task:
-                task.status = "failed"
-                task.last_error = str(exc)[:2000]
-                session.commit()
+        # A provider/DB connection failure is not evidence that the remote
+        # Batch reached a terminal state.  Keep the task observable and poll
+        # again; only an explicit provider terminal status may atomically fail
+        # an automatic course catalogue run.  Scheduling is deliberately done
+        # outside the database context so a dropped connection cannot orphan
+        # the remote Batch by preventing the next poll from being queued.
+        try:
+            with SessionLocal() as session:
+                task = session.get(ModelCleaningTask, task_id)
+                if task is not None and task.status == "batch_running":
+                    task.last_error = f"Batch轮询暂时失败：{exc}"[:2000]
+                    session.commit()
+        except Exception:
+            logger.exception("failed to persist transient batch polling error")
+        poll_batch_model_task.apply_async(
+            args=[task_id], queue="ai_model_batch", countdown=60
+        )
         return False
     finally:
         if client:

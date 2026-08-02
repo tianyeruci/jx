@@ -252,11 +252,14 @@ def choose_call_mode(
     *,
     batch_candidate_threshold: int = 100,
     batch_token_threshold: int = 200_000,
+    batch_enabled: bool = True,
 ) -> Literal["realtime", "batch"]:
     if strategy_code == "personal_business_consultation":
         return "realtime"
     if strategy_code not in MODEL_STRATEGIES:
         raise ValueError("策略不使用大模型")
+    if not batch_enabled:
+        return "realtime"
     if (
         candidate_count >= batch_candidate_threshold
         or estimated_input_tokens > batch_token_threshold
@@ -618,7 +621,15 @@ class BailianClient:
         return response.content
 
     def delete_file(self, file_id: str) -> None:
-        self._request("DELETE", f"files/{file_id}")
+        try:
+            self._request("DELETE", f"files/{file_id}")
+        except httpx.HTTPStatusError as exc:
+            # Provider Batch completion may remove its transient input/output
+            # files before our cleanup task runs.  Deletion is idempotent for
+            # this resource, so a missing file is already the desired state.
+            if exc.response is not None and exc.response.status_code == 404:
+                return
+            raise
 
 
 def batch_request_line(

@@ -906,6 +906,20 @@ def delete_uploaded_source(
     file_row.status = "excluded"
     file_row.outcome = "excluded"
     file_row.stage = "source_deleted"
+    batch_outcomes = list(
+        session.scalars(
+            select(CleaningFile.outcome)
+            .where(CleaningFile.batch_id == file_row.batch_id)
+            .order_by(CleaningFile.id)
+        )
+    )
+    if batch_outcomes and all(
+        str(outcome) in {"succeeded", "excluded", "review_required", "failed", "mixed"}
+        for outcome in batch_outcomes
+    ):
+        batch = session.get(CleaningBatch, file_row.batch_id)
+        if batch is not None:
+            batch.status = "completed"
     session.commit()
     cache.delete(cleaning_batch_cache_key(file_row.batch_id))
     record_event(

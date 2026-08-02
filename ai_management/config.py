@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     cleaning_batch_max_bytes: int = Field(
         default=400 * 1024 * 1024, ge=1024, le=500 * 1024 * 1024
     )
+    # Batch is the default for backwards compatibility.  Test deployments
+    # may disable it so new model-cleaning tasks use the bounded realtime
+    # worker instead; an existing task keeps the mode stored on its record.
+    bailian_batch_enabled: bool = True
     cleaning_candidate_max_tokens: int = Field(default=12_000, ge=1000)
     # Dify validates this independently from the model prompt candidate cap.
     # Its custom hierarchical segment API accepts only 50..4000.
@@ -60,6 +64,17 @@ class Settings(BaseSettings):
     cleaning_price_valid_until: str = ""
     cleaning_input_price_per_million: float = Field(default=0, ge=0)
     cleaning_output_price_per_million: float = Field(default=0, ge=0)
+    # Realtime calls use an independent, non-discounted price snapshot.
+    cleaning_realtime_price_version: str = ""
+    cleaning_realtime_price_effective_date: str = ""
+    cleaning_realtime_price_valid_until: str = ""
+    cleaning_realtime_input_price_per_million: float = Field(default=0, ge=0)
+    cleaning_realtime_output_price_per_million: float = Field(default=0, ge=0)
+    # The course catalogue is an upload-only workflow.  It may auto-approve
+    # its own model task, but only while the configured price snapshot is
+    # valid and the estimated upper bound stays below this internal cap.
+    course_catalog_auto_publish: bool = True
+    course_catalog_auto_approve_cost_max: float = Field(default=1.0, ge=0)
     dify_publish_window_start_hour: int = Field(default=0, ge=0, le=23)
     dify_publish_window_end_hour: int = Field(default=24, ge=1, le=24)
     dify_shard_max_items: int = Field(default=200, ge=1, le=200)
@@ -85,10 +100,11 @@ class Settings(BaseSettings):
     max_active_cleaning_batches: int = Field(default=5, ge=1, le=1000)
     cleaning_worker_concurrency: int = Field(default=4, ge=1, le=32)
     upload_disk_reserve_mb: int = Field(default=1024, ge=128)
-    # Test environments may keep conversion output for server-side diagnosis;
-    # production defaults to false and never exposes this path through API.
+    # Server-side diagnostic artifact. Deployments decide whether it is kept;
+    # the path is never exposed through HTTP and must be a dedicated directory.
     save_conversion_markdown: bool = False
     conversion_markdown_root: Path = Path("var/conversion-markdown")
+    conversion_markdown_retention_days: int = Field(default=7, ge=1, le=30)
     failed_file_retention_hours: int = Field(default=24, ge=1)
     cleaning_status_retention_days: int = Field(default=7, ge=1)
     cleaning_source_error_retention_days: int = Field(default=7, ge=0, le=30)

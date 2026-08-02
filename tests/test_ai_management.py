@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,9 +16,11 @@ from ai_management.api.routers import knowledge_admin as knowledge_admin_router
 from ai_management.cache import cache
 from ai_management.cleaning import (
     STRATEGY_REGISTRY,
+    _save_conversion_markdown,
     cleaning_batch_cache_key,
     cleaning_batch_files_cache_key,
     dify_document_name,
+    maintain_conversion_markdown_artifacts,
     normalized_original_filename,
 )
 from ai_management.config import get_settings
@@ -51,6 +54,57 @@ HEADERS = {
     "X-Internal-Token": "test-internal-token",
     "X-User-Id": "user-001",
 }
+
+
+def test_conversion_markdown_toggle_naming_and_retention(tmp_path, monkeypatch):
+    settings = get_settings()
+    artifact_root = tmp_path / "conversion-markdown"
+    monkeypatch.setattr(settings, "save_conversion_markdown", True)
+    monkeypatch.setattr(settings, "conversion_markdown_root", artifact_root)
+    monkeypatch.setattr(settings, "conversion_markdown_retention_days", 7)
+
+    source = tmp_path / "batch-001" / "file-001.pdf"
+    source.parent.mkdir()
+    source.write_bytes(b"%PDF-test")
+    target = _save_conversion_markdown(source, "测试?报告.pdf", "# 转换结果")
+
+    assert target is not None
+    assert target.name == "batch-001__file-001__测试_报告.pdf.md"
+    assert target.read_text(encoding="utf-8") == "# 转换结果"
+
+    created_at = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    os.utime(target, (created_at.timestamp(), created_at.timestamp()))
+    retained = maintain_conversion_markdown_artifacts(
+        now=created_at + timedelta(days=6)
+    )
+    assert retained == {"removed": 0, "retained": 1, "skipped_directories": 0}
+    assert target.exists()
+
+    expired = maintain_conversion_markdown_artifacts(
+        now=created_at + timedelta(days=8)
+    )
+    assert expired == {"removed": 1, "retained": 0, "skipped_directories": 0}
+    assert not target.exists()
+
+    orphan = artifact_root / "old-artifact.md"
+    orphan.write_text("旧产物", encoding="utf-8")
+    monkeypatch.setattr(settings, "save_conversion_markdown", False)
+    assert _save_conversion_markdown(source, "测试报告.pdf", "不会保存") is None
+    disabled = maintain_conversion_markdown_artifacts()
+    assert disabled["removed"] == 1
+    assert not orphan.exists()
+
+
+def test_conversion_markdown_root_must_be_dedicated(tmp_path, monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "save_conversion_markdown", True)
+    monkeypatch.setattr(settings, "conversion_markdown_root", tmp_path / "uploads")
+    source = tmp_path / "batch-001" / "file-001.docx"
+    source.parent.mkdir()
+    source.write_bytes(b"docx")
+
+    with pytest.raises(ValueError, match="专用目录"):
+        _save_conversion_markdown(source, "测试.docx", "# 转换结果")
 
 
 def test_hmac_identifiers_are_stable_and_anonymous():

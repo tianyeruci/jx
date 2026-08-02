@@ -16,7 +16,12 @@ from .api.routers.entry import router as entry_router
 from .api.routers.health import router as health_router
 from .api.routers.knowledge_admin import router as knowledge_admin_router
 from .api.routers.tools import router as tools_router
-from .cleaning import router as cleaning_router
+from .cleaning import (
+    maintain_conversion_markdown_artifacts,
+)
+from .cleaning import (
+    router as cleaning_router,
+)
 from .config import get_settings
 from .db import create_schema
 from .errors import ServiceError
@@ -32,16 +37,15 @@ logger = logging.getLogger(__name__)
 async def lifespan(_: FastAPI):
     settings = get_settings()
     settings.upload_root.mkdir(parents=True, exist_ok=True)
-    if settings.save_conversion_markdown:
-        artifact_root = settings.conversion_markdown_root.resolve()
-        artifact_root.mkdir(parents=True, exist_ok=True)
-        for child in artifact_root.iterdir():
-            if child.is_file() or child.is_symlink():
-                child.unlink(missing_ok=True)
-            elif child.is_dir():
-                import shutil
-
-                shutil.rmtree(child)
+    artifact_cleanup = maintain_conversion_markdown_artifacts(
+        delete_all=not settings.save_conversion_markdown
+    )
+    logger.info(
+        "conversion markdown artifact maintenance completed enabled=%s removed=%s retained=%s",
+        settings.save_conversion_markdown,
+        artifact_cleanup["removed"],
+        artifact_cleanup["retained"],
+    )
     if settings.app_env != "production":
         create_schema()
     yield

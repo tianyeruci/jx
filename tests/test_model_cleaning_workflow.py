@@ -130,6 +130,524 @@ def test_model_plan_requires_approval_only_for_large_batch(service_db, monkeypat
         assert task.batch.status == "awaiting_model_approval"
 
 
+def test_catalog_batch_switch_forces_realtime_with_its_own_price_snapshot(
+    service_db,
+    monkeypatch,
+):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    monkeypatch.setattr(worker.settings, "course_catalog_auto_publish", True)
+    monkeypatch.setattr(worker.settings, "bailian_batch_enabled", False)
+    monkeypatch.setattr(worker.settings, "cleaning_batch_candidate_threshold", 1)
+    monkeypatch.setattr(worker.settings, "cleaning_batch_token_threshold", 1)
+    monkeypatch.setattr(
+        worker.settings,
+        "cleaning_realtime_price_version",
+        "qwen-plus-cn-realtime-2026-08-02",
+    )
+    monkeypatch.setattr(
+        worker.settings, "cleaning_realtime_price_effective_date", "2026-08-02"
+    )
+    monkeypatch.setattr(
+        worker.settings, "cleaning_realtime_price_valid_until", "2099-01-01"
+    )
+    monkeypatch.setattr(
+        worker.settings, "cleaning_realtime_input_price_per_million", 0.8
+    )
+    monkeypatch.setattr(
+        worker.settings, "cleaning_realtime_output_price_per_million", 2.0
+    )
+    # A valid but deliberately different Batch snapshot proves the selected
+    # task stores and prices the realtime snapshot instead.
+    monkeypatch.setattr(worker.settings, "cleaning_price_version", "batch-price")
+    monkeypatch.setattr(worker.settings, "cleaning_price_effective_date", "2026-01-01")
+    monkeypatch.setattr(worker.settings, "cleaning_price_valid_until", "2099-01-01")
+    monkeypatch.setattr(worker.settings, "cleaning_input_price_per_million", 100)
+    monkeypatch.setattr(worker.settings, "cleaning_output_price_per_million", 100)
+    queued: list[dict] = []
+    monkeypatch.setattr(
+        worker.process_realtime_model_task,
+        "apply_async",
+        lambda **kwargs: queued.append(kwargs),
+    )
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="course_route_catalog",
+            knowledge_base_code="course",
+            upload_mode="cleaned",
+            status="processing",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        file_row.original_filename = "catalog.xlsx"
+        file_row.extension = ".xlsx"
+        session.add(file_row)
+        session.flush()
+        session.add(
+            CleaningDocument(
+                file_id=file_row.id,
+                sequence=1,
+                title="具体课程标题",
+                dify_document_name="cleaned-aaaaaaaaaaaaaaaa__001.md",
+                document_key="course-1",
+                status="awaiting_model",
+                stage="model_queued",
+                content_sha256="b" * 64,
+                metadata_json={"document_type": "course"},
+                chunking_json={},
+                audit_json={
+                    "catalog_kind": "course",
+                    "model_blocks": {"b001": "课程内容用于验证客户问题与产品定位。"},
+                },
+                warnings_json=[],
+                cleaned_markdown="待模型补全",
+            )
+        )
+        session.commit()
+        batch_id = batch.id
+
+    task_id = worker.maybe_plan_model_task(batch_id)
+
+    with service_db() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        assert task.mode == "realtime"
+        assert task.status == "queued"
+        assert task.price_version == "qwen-plus-cn-realtime-2026-08-02"
+        assert float(task.estimated_cost_high) < 1.0
+        assert task.batch.status == "model_validating"
+    assert queued == [{"args": [task_id], "queue": "ai_model_realtime"}]
+
+
+def test_catalog_realtime_price_missing_blocks_source_atomically(
+    service_db,
+    monkeypatch,
+):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    monkeypatch.setattr(worker.settings, "course_catalog_auto_publish", True)
+    monkeypatch.setattr(worker.settings, "bailian_batch_enabled", False)
+    monkeypatch.setattr(worker.settings, "cleaning_realtime_price_version", "")
+    monkeypatch.setattr(worker.settings, "cleaning_realtime_price_effective_date", "")
+    monkeypatch.setattr(worker.settings, "cleaning_realtime_price_valid_until", "")
+    monkeypatch.setattr(
+        worker.settings, "cleaning_realtime_input_price_per_million", 0
+    )
+    monkeypatch.setattr(
+        worker.settings, "cleaning_realtime_output_price_per_million", 0
+    )
+    queued: list[dict] = []
+    monkeypatch.setattr(
+        worker.process_realtime_model_task,
+        "apply_async",
+        lambda **kwargs: queued.append(kwargs),
+    )
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="course_route_catalog",
+            knowledge_base_code="course",
+            upload_mode="cleaned",
+            status="processing",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        session.add(
+            CleaningDocument(
+                file_id=file_row.id,
+                sequence=1,
+                title="课程",
+                dify_document_name="cleaned-aaaaaaaaaaaaaaaa__001.md",
+                document_key="course-1",
+                status="awaiting_model",
+                stage="model_queued",
+                content_sha256="c" * 64,
+                metadata_json={"document_type": "course"},
+                chunking_json={},
+                audit_json={"model_blocks": {"b001": "有效课程内容。"}},
+                warnings_json=[],
+                cleaned_markdown="待模型补全",
+            )
+        )
+        session.commit()
+        batch_id = batch.id
+
+    task_id = worker.maybe_plan_model_task(batch_id)
+
+    with service_db() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        file_row = session.scalar(select(CleaningFile))
+        document = session.scalar(select(CleaningDocument))
+        assert task.mode == "realtime"
+        assert task.status == "failed"
+        assert task.batch.status == "completed"
+        assert file_row.status == "failed"
+        assert document.status == "failed"
+        assert document.error_code == "CATALOG_AUTO_PUBLISH_BLOCKED"
+    assert queued == []
+
+
+def test_catalog_auto_model_task_is_approved_and_queued(service_db, monkeypatch):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    monkeypatch.setattr(worker.settings, "course_catalog_auto_publish", True)
+    monkeypatch.setattr(worker.settings, "cleaning_batch_candidate_threshold", 1)
+    monkeypatch.setattr(worker.settings, "cleaning_batch_token_threshold", 999999)
+    monkeypatch.setattr(worker.settings, "cleaning_price_version", "qwen-plus-2026-01")
+    monkeypatch.setattr(worker.settings, "cleaning_price_effective_date", "2026-01-01")
+    monkeypatch.setattr(worker.settings, "cleaning_price_valid_until", "2099-01-01")
+    monkeypatch.setattr(worker.settings, "cleaning_input_price_per_million", 1)
+    monkeypatch.setattr(worker.settings, "cleaning_output_price_per_million", 1)
+    queued: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        worker.submit_batch_model_task,
+        "apply_async",
+        lambda *args, **kwargs: queued.append((args, kwargs)),
+    )
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="course_route_catalog",
+            knowledge_base_code="course",
+            upload_mode="cleaned",
+            status="processing",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        file_row.original_filename = "catalog.xlsx"
+        file_row.extension = ".xlsx"
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="具体课程标题",
+            dify_document_name="cleaned-aaaaaaaaaaaaaaaa__001.md",
+            document_key="course-1",
+            status="awaiting_model",
+            stage="model_queued",
+            content_sha256="b" * 64,
+            metadata_json={"document_type": "course"},
+            chunking_json={},
+            audit_json={
+                "catalog_kind": "course",
+                "catalog_draft": {
+                    "course_id": "course_1",
+                    "name": "具体课程标题",
+                    "official_url": "https://example.com/course/1",
+                    "stage": "入门阶段",
+                    "source_platform": "小鹅通",
+                    "series_name": "合集",
+                    "direction": "",
+                    "description": "",
+                    "enabled": False,
+                    "review_status": "pending_review",
+                },
+                "model_blocks": {"b001": "课程内容用于验证客户问题与产品定位。"},
+            },
+            warnings_json=[],
+            cleaned_markdown="待模型补全",
+        )
+        session.add(document)
+        session.commit()
+        batch_id = batch.id
+
+    task_id = worker.maybe_plan_model_task(batch_id)
+
+    with service_db() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        document = session.scalar(select(CleaningDocument))
+        batch = session.get(CleaningBatch, batch_id)
+        assert task is not None
+        assert task.status == "approved"
+        assert task.approval_fingerprint == task.candidate_fingerprint
+        assert batch.status == "model_batch_uploading"
+        assert document.stage == "model_queued"
+        assert queued and queued[0][1]["args"] == [task_id]
+
+
+def test_catalog_auto_price_gate_fails_source_atomically(service_db, monkeypatch):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    monkeypatch.setattr(worker.settings, "course_catalog_auto_publish", True)
+    monkeypatch.setattr(worker.settings, "cleaning_batch_candidate_threshold", 1)
+    monkeypatch.setattr(worker.settings, "cleaning_price_version", "")
+    monkeypatch.setattr(worker.settings, "cleaning_price_effective_date", "")
+    monkeypatch.setattr(worker.settings, "cleaning_price_valid_until", "")
+    queued: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        worker.submit_batch_model_task,
+        "apply_async",
+        lambda *args, **kwargs: queued.append((args, kwargs)),
+    )
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="course_route_catalog",
+            knowledge_base_code="course",
+            upload_mode="cleaned",
+            status="processing",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        for sequence, status in ((1, "awaiting_model"), (2, "model_queued")):
+            session.add(
+                CleaningDocument(
+                    file_id=file_row.id,
+                    sequence=sequence,
+                    title=f"课程{sequence}",
+                    dify_document_name=f"cleaned-aaaaaaaaaaaaaaaa__00{sequence}.md",
+                    document_key=f"course-{sequence}",
+                    status=status,
+                    stage="model_queued",
+                    content_sha256=(str(sequence) * 64)[:64],
+                    metadata_json={"document_type": "course"},
+                    chunking_json={},
+                    audit_json={
+                        "catalog_kind": "course",
+                        "catalog_draft": {
+                            "course_id": f"course_{sequence}",
+                            "name": f"课程{sequence}",
+                            "official_url": f"https://example.com/course/{sequence}",
+                            "stage": "入门",
+                            "source_platform": "小鹅通",
+                            "direction": "",
+                            "description": "",
+                            "enabled": False,
+                            "review_status": "pending_review",
+                        },
+                        "model_blocks": {"b001": "有效课程内容。"},
+                    },
+                    warnings_json=[],
+                    cleaned_markdown="待模型补全",
+                )
+            )
+        session.commit()
+        batch_id = batch.id
+
+    task_id = worker.maybe_plan_model_task(batch_id)
+
+    with service_db() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        batch = session.get(CleaningBatch, batch_id)
+        file_row = session.scalar(select(CleaningFile))
+        documents = list(session.scalars(select(CleaningDocument)))
+        assert task is not None and task.status == "failed"
+        assert batch.status == "completed"
+        assert file_row is not None and file_row.status == "failed"
+        assert all(item.status == "failed" for item in documents)
+        assert all(item.error_code == "CATALOG_AUTO_PUBLISH_BLOCKED" for item in documents)
+        assert not queued
+
+
+def test_catalog_model_payload_preserves_source_identity_and_only_enriches_semantics():
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    document = CleaningDocument(
+        title="原始课程名称",
+        status="model_processing",
+        stage="model_running",
+        audit_json={
+            "catalog_kind": "course",
+            "catalog_draft": {
+                "course_id": "course_1",
+                "name": "原始课程名称",
+                "official_url": "https://example.com/course/1",
+                "stage": "入门阶段",
+                "source_platform": "小鹅通",
+                "series_name": "课程合集",
+                "direction": "",
+                "description": "",
+                "enabled": False,
+                "review_status": "pending_review",
+            },
+        },
+        metadata_json={},
+    )
+    request = PromptRequest(
+        strategy_code="course_route_catalog",
+        item_id="item-1",
+        content_sha256="a" * 64,
+        title="原始课程名称",
+        blocks={"b001": "课程帮助创业者验证客户需求和产品定位。"},
+    )
+
+    worker._apply_model_payload(
+        document,
+        "course_route_catalog",
+        request,
+        {
+            "direction_candidate": "产品与客户",
+            "description": "帮助创业者验证客户需求和产品定位。",
+            "audience": "创业者",
+            "highlights": ["客户访谈"],
+            "learning_outcomes": ["形成定位假设"],
+            "problems": ["客户需求不清"],
+            "route_target": "",
+        },
+    )
+
+    record = document.audit_json["catalog_record"]
+    assert record["name"] == "原始课程名称"
+    assert record["course_id"] == "course_1"
+    assert record["official_url"] == "https://example.com/course/1"
+    assert document.status == "pending"
+    assert document.audit_json["automatic_review"]["approved"] is True
+    assert "https://" not in document.cleaned_markdown
+
+
+def test_catalog_model_payload_uses_source_facts_when_description_is_empty():
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    document = CleaningDocument(
+        title="原始课程名称",
+        status="model_processing",
+        stage="model_running",
+        audit_json={
+            "catalog_kind": "course",
+            "catalog_draft": {
+                "course_id": "course_1",
+                "name": "原始课程名称",
+                "official_url": "https://example.com/course/1",
+                "stage": "入门阶段",
+                "source_platform": "小鹅通",
+                "series_name": "课程合集",
+                "direction": "",
+                "description": "",
+                "enabled": False,
+                "review_status": "pending_review",
+            },
+        },
+        metadata_json={},
+    )
+    request = PromptRequest(
+        strategy_code="course_route_catalog",
+        item_id="item-1",
+        content_sha256="a" * 64,
+        title="原始课程名称",
+        blocks={"b001": "课程名称：原始课程名称", "b002": "阶段：入门阶段"},
+    )
+
+    worker._apply_model_payload(
+        document,
+        "course_route_catalog",
+        request,
+        {
+            "direction_candidate": "产品与客户",
+            "description": "",
+            "audience": "创业者",
+            "highlights": [],
+            "learning_outcomes": [],
+            "problems": [],
+            "route_target": "",
+        },
+    )
+
+    assert document.status == "pending"
+    assert "课程名称：原始课程名称" in document.audit_json["catalog_record"]["description"]
+
+
+def test_catalog_model_payload_preserves_nonempty_source_semantics_when_model_is_blank():
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    course = CleaningDocument(
+        title="原始课程名称",
+        status="model_processing",
+        stage="model_running",
+        audit_json={
+            "catalog_kind": "course",
+            "catalog_draft": {
+                "course_id": "course_1",
+                "name": "原始课程名称",
+                "official_url": "https://example.com/course/1",
+                "stage": "入门阶段",
+                "source_platform": "小鹅通",
+                "series_name": "课程合集",
+                "direction": "来源方向",
+                "description": "",
+                "enabled": False,
+                "review_status": "pending_review",
+            },
+        },
+        metadata_json={},
+    )
+    worker._apply_model_payload(
+        course,
+        "course_route_catalog",
+        PromptRequest(
+            strategy_code="course_route_catalog",
+            item_id="item-course-source",
+            content_sha256="a" * 64,
+            title="原始课程名称",
+            blocks={"b001": "课程名称：原始课程名称"},
+        ),
+        {
+            "direction_candidate": "",
+            "description": "来源事实描述",
+            "audience": "",
+            "highlights": [],
+            "learning_outcomes": [],
+            "problems": [],
+            "route_target": "",
+        },
+    )
+    assert course.audit_json["catalog_record"]["direction"] == "来源方向"
+
+    route = CleaningDocument(
+        title="来源路线",
+        status="model_processing",
+        stage="model_running",
+        audit_json={
+            "catalog_kind": "route",
+            "catalog_draft": {
+                "route_id": "route_1",
+                "name": "来源路线",
+                "direction": "来源方向",
+                "target": "来源目标",
+                "stages": [
+                    {
+                        "stage_id": "stage_1",
+                        "name": "入门阶段",
+                        "order": 1,
+                        "course_ids": ["course_1"],
+                    }
+                ],
+            },
+        },
+        metadata_json={},
+    )
+    worker._apply_model_payload(
+        route,
+        "course_route_catalog",
+        PromptRequest(
+            strategy_code="course_route_catalog",
+            item_id="item-route-source",
+            content_sha256="b" * 64,
+            title="来源路线",
+            blocks={"b001": "路线名称：来源路线"},
+        ),
+        {
+            "direction_candidate": "",
+            "description": "",
+            "audience": "",
+            "highlights": [],
+            "learning_outcomes": [],
+            "problems": [],
+            "route_target": "",
+        },
+    )
+    assert route.audit_json["catalog_record"]["direction"] == "来源方向"
+    assert route.audit_json["catalog_record"]["target"] == "来源目标"
+
+
 def test_batch_approval_invalidates_cached_batch_status(service_db, monkeypatch):
     """A second poll must not re-submit the same paid Batch approval."""
     from ai_management.api.routers import knowledge_admin
@@ -497,6 +1015,161 @@ def test_in_progress_provider_batch_persists_aggregate_progress(
         }
 
 
+def test_transient_batch_poll_failure_keeps_remote_batch_pollable(
+    service_db,
+    monkeypatch,
+):
+    """A dropped provider/DB connection must not orphan an in-progress Batch."""
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    scheduled: list[dict] = []
+
+    class FakeClient:
+        def get_batch(self, _batch_id):
+            raise ConnectionError("provider connection reset")
+
+        def close(self):
+            return None
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="course_route_catalog",
+            knowledge_base_code="course",
+            upload_mode="cleaned",
+            status="model_batch_running",
+        )
+        session.add(batch)
+        session.flush()
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="batch",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="batch_running",
+            candidate_fingerprint="f" * 64,
+            candidate_count=1,
+            estimated_input_tokens=100,
+            estimated_output_tokens=100,
+            provider_batch_ids=["provider-1"],
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+
+    monkeypatch.setattr(worker, "_client", FakeClient)
+    monkeypatch.setattr(
+        worker.poll_batch_model_task,
+        "apply_async",
+        lambda **kwargs: scheduled.append(kwargs),
+    )
+
+    assert worker.poll_batch_model_task.run(task_id) is False
+    assert scheduled == [{"args": [task_id], "queue": "ai_model_batch", "countdown": 60}]
+    with service_db() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        assert task.status == "batch_running"
+        assert task.provider_batch_ids == ["provider-1"]
+        assert "provider connection reset" in (task.last_error or "")
+
+
+def test_bailian_delete_file_treats_missing_file_as_cleaned(monkeypatch):
+    import httpx
+
+    from ai_management.model_cleaning import BailianClient
+
+    client = BailianClient(api_key="test-key", base_url="https://example.test/v1")
+    request = httpx.Request("DELETE", "https://example.test/v1/files/missing")
+    response = httpx.Response(404, request=request)
+
+    def missing_file(*_args, **_kwargs):
+        raise httpx.HTTPStatusError("missing", request=request, response=response)
+
+    monkeypatch.setattr(client, "_request", missing_file)
+    client.delete_file("missing")
+    client.close()
+
+
+def test_catalog_auto_provider_terminal_failure_blocks_source_atomically(
+    service_db,
+    monkeypatch,
+):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    monkeypatch.setattr(worker.settings, "course_catalog_auto_publish", True)
+    deleted: list[str] = []
+
+    class FakeClient:
+        def get_batch(self, _batch_id):
+            return {"status": "expired", "error_file_id": "error-1"}
+
+        def delete_file(self, file_id):
+            deleted.append(file_id)
+
+        def close(self):
+            return None
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="course_route_catalog",
+            knowledge_base_code="course",
+            upload_mode="cleaned",
+            status="model_batch_running",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        file_row.original_filename = "catalog.xlsx"
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="课程",
+            dify_document_name="cleaned-aaaaaaaaaaaaaaaa__001.md",
+            document_key="course-1",
+            status="model_processing",
+            stage="model_batch_running",
+            content_sha256="b" * 64,
+            metadata_json={"document_type": "course"},
+            chunking_json={},
+            audit_json={"model_blocks": {"b001": "有效课程内容。"}},
+            warnings_json=[],
+            cleaned_markdown="待模型补全",
+        )
+        session.add(document)
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="batch",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="batch_running",
+            candidate_fingerprint="f" * 64,
+            approval_fingerprint="f" * 64,
+            candidate_count=1,
+            estimated_input_tokens=100,
+            estimated_output_tokens=100,
+            provider_batch_ids=["provider-1"],
+            provider_input_file_ids=["input-1"],
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+
+    monkeypatch.setattr(worker, "_client", FakeClient)
+    assert worker.poll_batch_model_task.run(task_id) is True
+
+    assert set(deleted) == {"input-1", "error-1"}
+    with service_db() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        file_row = session.scalar(select(CleaningFile))
+        document = session.scalar(select(CleaningDocument))
+        assert task.status == "failed"
+        assert task.batch.status == "completed"
+        assert file_row.status == "failed"
+        assert document.status == "failed"
+        assert document.error_code == "CATALOG_AUTO_PUBLISH_BLOCKED"
+
+
 def test_post_model_result_keeps_only_evidenced_blocks():
     from ai_management.workers.tasks.model_cleaning import _apply_model_payload
 
@@ -782,6 +1455,70 @@ def test_finished_normal_model_task_refreshes_review_only_file(service_db):
         assert task is not None
         assert file_row.status == "review_required"
         assert file_row.outcome == "review_required"
+        assert task.batch.status == "completed"
+
+
+def test_finished_catalog_model_task_refreshes_atomic_failure_file_state(service_db):
+    """Sibling failure propagation must also close the source file aggregate."""
+
+    from ai_management.workers.tasks.model_cleaning import _finish_model_task
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="course_route_catalog",
+            knowledge_base_code="course",
+            upload_mode="cleaned",
+            status="model_validating",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        for sequence, status in ((1, "failed"), (2, "pending")):
+            session.add(
+                CleaningDocument(
+                    file_id=file_row.id,
+                    sequence=sequence,
+                    title=f"课程{sequence}",
+                    dify_document_name=f"cleaned-{sequence:016d}__001.md",
+                    document_key=f"course-{sequence}",
+                    status=status,
+                    stage="failed" if status == "failed" else "pending",
+                    error_code="MODEL_CONTRACT_INVALID" if status == "failed" else None,
+                    content_sha256=str(sequence) * 64,
+                    metadata_json={"document_type": "course"},
+                    chunking_json={},
+                    audit_json={},
+                    warnings_json=[],
+                    cleaned_markdown="课程内容",
+                )
+            )
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="realtime",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="running",
+            candidate_fingerprint="f" * 64,
+            candidate_count=2,
+            estimated_input_tokens=100,
+            estimated_output_tokens=100,
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+        file_id = file_row.id
+
+    _finish_model_task(task_id)
+
+    with service_db() as session:
+        file_row = session.get(CleaningFile, file_id)
+        task = session.get(ModelCleaningTask, task_id)
+        assert file_row is not None
+        assert task is not None
+        assert file_row.status == "failed"
+        assert file_row.outcome == "failed"
         assert task.batch.status == "completed"
 
 

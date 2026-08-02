@@ -10,6 +10,7 @@ services:
       - "${AI_BIND_ADDRESS:-127.0.0.1}:8000:8000"
     volumes:
       - ai_uploads:/app/var/uploads
+      - ${CONVERSION_MARKDOWN_HOST_ROOT:-./var/conversion-markdown}:/app/var/conversion-markdown
     networks:
       dify:
         aliases:
@@ -25,6 +26,7 @@ services:
     command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_default,ai_cleaning --concurrency=${CLEANING_WORKER_CONCURRENCY:-4}
     volumes:
       - ai_uploads:/app/var/uploads
+      - ${CONVERSION_MARKDOWN_HOST_ROOT:-./var/conversion-markdown}:/app/var/conversion-markdown
     networks:
       - dify
     restart: unless-stopped

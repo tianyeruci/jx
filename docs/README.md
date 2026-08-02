@@ -2,7 +2,7 @@
 
 > 状态：当前有效  
 > 用途：按任务定位权威文档、源码和测试，避免每次全局扫描  
-> 最后核对：2026-07-30
+> 最后核对：2026-08-02
 
 ## 1. 使用方式
 
@@ -56,7 +56,7 @@
 | 应用入口、健康、鉴权 | [V2 需求](V2需求规格说明.md)、[API 与 SSE](API与SSE说明.md) | `ai_management/main.py`、`api/routers/health.py`、`security.py` | `test_ai_management.py`、`test_app_routing.py` | API/SSE、接口标准、测试指南 |
 | 商业会话、SSE、隐私 | [接口交互版本](小程序后端与%20AI%20管理服务接口对接交互版本.md)、[正式接口标准](小程序后端与AI管理服务接口对接标准.md) | `conversations.py`、`sse.py`、`privacy.py`、`stream_filter.py` | `test_ai_management.py`、`test_release_acceptance_contract.py` | 两份接口文档、Prompt、验收测试 |
 | 朋友圈、写作、画像 | [V2 产品流程](V2产品流程与边界.md)、[Dify 绑定指南](Dify创建导入绑定与契约测试.md) | `dify.py`、`context.py`、`workers/tasks/summary.py` | `test_ai_management.py`、Dify 契约脚本 | DSL、Prompt、Dify 指南、契约证据 |
-| 课程、路线、点击 | [V2 需求](V2需求规格说明.md)、[日志与点击](日志与点击说明.md) | `courses.py`、`course_import.py`、`cli.py` | `test_course_route_catalog.py`、`test_seed_data_contract.py` | 需求/设计、接口、测试样本 |
+| 课程、路线、点击 | [V2 需求](V2需求规格说明.md)、[日志与点击](日志与点击说明.md)、[课程与学习路线合并清洗策略规格计划](课程与学习路线合并清洗策略规格计划.md) | `courses.py`、`course_import.py`、`course_route_catalog.py`、`cleaning.py`、`api/routers/knowledge_admin.py`、`cli.py` | `test_course_route_catalog.py`、`test_model_cleaning_workflow.py`、`test_seed_data_contract.py` | 课程/路线规范、清洗策略、接口、测试样本、当前状态 |
 | 文档清洗、复核、重试 | [清洗策略接入说明](清洗策略接入说明.md)、[清洗策略编写规范](../清洗策略接入与编写规范.md) | `cleaning.py`、`workers/tasks/cleaning.py`、`knowledge_cleaner/` | `test_batch_cleaner.py`、`test_release_acceptance_contract.py` | 清洗规范、接口、验收/排坑 |
 | 数据库、Redis、任务 | [V2 数据设计](V2服务开发与数据设计.md)、[部署备份回滚](部署备份回滚与故障.md) | `db.py`、`models.py`、`cache.py`、`workers/`、`migrations/` | `test_v2_hardening.py`、迁移检查 | 数据设计、迁移、备份与恢复 |
 | 测试页和运维页 | [AI 管理页操作说明](AI管理页文档清洗操作说明-2026-07-28.md)、[测试与验收指南](测试与验收指南.md) | `ai_management/test_ui.py`、`api/routers/admin*.py` | `test_app_routing.py`、浏览器验收 | 操作说明、验收记录、状态交接 |

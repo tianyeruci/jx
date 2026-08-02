@@ -4,6 +4,29 @@
 > 用途：保存最新线上事实、回滚点、数据状态和开放事项。新任务先读 `AGENTS.md` 与 `docs/README.md`，再按功能域读取本文顶部最新状态。  
 > 本文不是需求或设计基线；权威顺序以 `docs/V2决策记录.md` 和 `docs/README.md` 为准。第 1～8 节为历史过程记录，不再作为当前执行指令。
 
+## 0.14 2026-08-02 Batch 开关、实时回归与课程样本入库（当前）
+
+- 本地最终相关回归：模型清洗工作流 `27/27`、课程样本 `9/9`、AI 管理 `34/34`；课程/发布契约/测试页合并 `35/35`，最新 Batch 开关/课程字段兜底定向回归通过，compileall、Ruff、项目索引和发布脚本语法检查通过。接口交互文档保持冻结，未改 HTTP 路径、字段或枚举。
+- jx 当前核心/UI 版本为 `20260802-course-catalog-context-fix-db4f37c71fd8`，7 个服务同源运行；`BAILIAN_BATCH_ENABLED=false`、实时价格快照 `qwen-plus-cn-realtime-2026-08-02`（输入 0.8、输出 2.0，单位为每百万 token）已由容器实际回读，`SAVE_CONVERSION_MARKDOWN=false`；近 20 分钟无 ERROR、CRITICAL、Traceback、OperationalError 或权限错误。发布前备份：`/opt/ai-management/backups/20260802-catalog-context-fix-pre`；发布报告：`/opt/ai-management/var/reports/v2/20260802-course-catalog-context-fix-db4f37c71fd8-deploy`。
+- 真实样本批次已使用实时 Worker 完成：110/110 模型候选成功，0 失败、0 待复核；随后 110/110 Dify 文档发布回读成功，文件聚合为 `succeeded/completed`，未产生 Batch provider ID。输出包含 105 个课程实体和 5 条路线，正式库总量由基线 `9/2` 变为 `114/7`；课程/路线文档 Dify 引用 110 个，正文和 Metadata 均未含 URL，文档名均为原文件名加三位序号。
+- 同名/同内容重复保护和精确源删除已现场验证：历史测试占位和失败批次均按精确 file ID 删除并释放去重；删除接口现在同步把已无活动文件的批次聚合为 `completed`。当前成功源的原始上传文件已按成功清洗生命周期删除，但未执行源级“重新上传”删除，因此同名再次上传仍会被保护，符合“先删除才能重传”。
+- 真实样本暴露并已修复两个链路缺口：模型输出描述为空时仅使用输入来源字段组成事实摘要，不补造业务事实；路线模型请求补充确定性阶段/课程上下文，方向/路线目标仅在有来源值时兜底，源和模型均为空仍按同源原子门禁阻断。结构解析仍固定为 137 条源行、105 课程、5 路线，名称、链接、ID、路线归属和顺序未交给模型选择。
+
+## 0.13 2026-08-02 课程目录自动链路部署与样本重传（历史快照）
+
+- 本地目标套件第二轮通过：课程解析/模型工作流/发布契约共 `60/60`，AI 管理与路由 `47/47`；Ruff、compileall、项目索引检查通过。接口交互文档 SHA-256 保持冻结值，未改 HTTP 路径、字段或枚举。
+- jx 已发布核心/UI 版本 `20260802-course-auto-3638cef104ce`，7 个服务统一该版本；`/health/ready` 的数据库、Redis、Dify 应用/知识库和可达性均为 true，近 5 分钟 API/Worker 无 ERROR、CRITICAL、Traceback、panic 或权限错误。发布前备份：`/opt/ai-management/backups/20260802-course-auto-pre`；报告：`/opt/ai-management/var/reports/v2/20260802-course-auto-3638cef104ce-deploy`。
+- 旧课程目录源文件已通过精确源文件删除接口完成删除，数据库文件状态为 `excluded/source_deleted`，远端文档/分片引用为 0，重复保护已释放；正式课程/路线数量删除前后仍为 `9/2`。
+- 同源样本已重新上传为 110 个候选（105 课程 + 5 路线）。自动费用门禁已通过，模型任务预估上限约 `0.056907`；当前百炼 Batch 状态为 `in_progress`（总 110、完成 0、失败 0），本地批次为 `model_batch_running`，尚未进入 Dify 发布阶段。该状态是供应商 Batch 调度等待，不是应用错误；终态和发布回读完成后需在本节追加更新。
+
+## 0.12 2026-08-02 转换前置 Markdown 可配置持久化（当前最新）
+
+- PDF/DOCX 在“转换完成、清洗策略处理前”可由 `SAVE_CONVERSION_MARKDOWN` 独立控制是否保存；开启不受 `APP_ENV` 限制。开启后 API 与清洗 Worker 共享 `/app/var/conversion-markdown`，jx 宿主机目录为 `/opt/ai-management/var/conversion-markdown`。
+- 文件名为 `批次ID__文件ID__规范化原文件名.md`，文件权限 `0600`、目录权限 `0700`。开启时跨服务重启保留，默认保留 7 天并由夜间维护清理；关闭时不再写入，并在 API 启动及夜间维护时删除旧产物。只影响新上传或重试的 PDF/DOCX，不回填历史文件，也不提供 HTTP/测试页下载入口。
+- jx 测试环境当前已关闭：API 与 Worker 均回读 `save=false`；共享 bind mount、目录属主和 7 天保留配置仍保持可随时开启。合成 DOCX 走真实转换/保存函数的历史验证仍有效；测试产物已精确删除，未调用上传 API、未写数据库或 Dify。
+- 已发布核心/UI 版本 `20260802-conversion-md-be372c68d875`；7 个服务运行同一批版本，`/health/ready` 的数据库、Redis、Dify 配置和可达性均正常，近 5 分钟 API/Worker 无 ERROR、Exception、Traceback 或权限错误。发布前备份：`/opt/ai-management/backups/20260802-conversion-markdown-pre`；发布报告：`/opt/ai-management/var/reports/v2/20260802-conversion-md-be372c68d875-deploy`，校验和通过且未触发回滚。
+- 正式发布脚本仍固定默认 `SAVE_CONVERSION_MARKDOWN=false`；如把 jx 从测试用途切换为正式环境，应显式关闭并重建 API/清洗 Worker。发布脚本已修复为从待发布镜像读取运行 UID/GID 后创建挂载目录，避免 `root:root 0700` 导致容器启动失败。
+
 ## 0.9 2026-08-02 当前源码 ZIP 快速部署复验（当前最新）
 
 - 当前核心/UI 镜像：`quick-20260802-001946-4f369596b756`；上一回滚版本：`quick-20260801-230240-513925f01cf9`；Alembic 头未改变。
@@ -13,7 +36,7 @@
 - 浏览器测试页 9 个页签可见，“诊断 → 就绪检查”全部为 ready/true，控制台 0 error/0 warning。
 - 发布报告：`/opt/ai-management/var/reports/v2/quick-20260802-001946-4f369596b756-quick-deploy`；备份：`/opt/ai-management/backups/quick-20260802-001946-4f369596b756-predeploy`；证据见 `docs/jx快速代码测试部署验证记录-2026-08-02.md`。
 
-## 0.11 2026-08-02 清洗链路修复与 jx 发布（当前最新）
+## 0.11 2026-08-02 清洗链路修复与 jx 发布（历史快照）
 
 - 本地完成并部署清洗链路修复：默认单批 10 文件、5 个活动批次、单文件 200MB、批次 500MB、磁盘保留；同内容或同名必须先显式删除；新增源文件级删除入口并同步本地远端删除墓碑；Dify 文件名保留规范化原名，拆分时追加序号。
 - PDF/DOCX 转换保持正文、标题、列表、缩进、表格在原顺序；PDF 表格不可靠时线性化并记录 WARNING，只有无正文、OCR 禁用或敏感信息残留才进入 `review_required`。测试环境可用 `SAVE_CONVERSION_MARKDOWN=true` 临时保存转换后/策略前 Markdown，服务重启清空，生产强制禁止。
@@ -856,3 +879,21 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改原因：远端 Dify 分片已经按“原文件名+序号”命名，但历史分片的本地 `CleaningDocument.dify_document_name` 仍保留旧的内部 hash 名；这会在 Dify 响应缺少名称时造成管理端投影不一致。
 - 修改前：模型分片发布函数只更新远端 ID，没有把实际创建的 Dify 名称回写到分片内的本地条目。
 - 修改后：发布函数缓存并回写实际远端名称；发布 `20260802-cleaning-fix5-e924d99fd6c0`，发布前完成备份，ready、Alembic head、7 服务、双包导入和近期严重日志复核通过；对当前 3 个成功分片的 42 个条目做了精确本地名称回填，未删除任何正式知识库文档。
+
+### 2026-08-02：转换前置 Markdown 改为可配置持久化并发布
+
+- 修改原因：原实现只在 Worker 临时层保存，服务重启即丢失，并把测试保存能力与 `APP_ENV=production` 硬绑定，不能满足“测试环境保存、正式环境关闭并删除”的运维要求。
+- 修改前：jx 无可从宿主机稳定查看的共享 Markdown 目录；开启配置可能被 production 校验拒绝；没有保留期、关闭清理、共享挂载或发布脚本目录权限保障。
+- 修改后：新增独立开关、专用共享目录、安全命名与原子写入、7 天保留、API 启动/夜间清理和正式发布默认关闭；发布 `20260802-conversion-md-be372c68d875`，jx 当前按测试用途开启。API/Worker 配置、挂载、权限、ready、日志和发布报告均已核验；合成 DOCX 实测生成成功后已精确删除，未写数据库或 Dify。发布中发现并修复 bind mount 属主问题，脚本现从镜像派生运行 UID/GID。
+
+### 2026-08-02：Batch 开关、实时课程回归与源删除聚合修复
+
+- 修改原因：Batch 供应商返回慢影响测试；实时模式需要独立价格快照；真实课程批次还暴露了同源失败后文件聚合停在 processing、源删除后批次聚合未收敛，以及路线模型上下文过少的问题。
+- 修改前：新任务按候选规模可能进入 Batch；实时任务沿用 Batch 价格字段；课程同源原子失败只更新文档，文件/批次可能残留处理中；路线模型只看到路线名和空目标。
+- 修改后：新增 `BAILIAN_BATCH_ENABLED`（默认 true，jx 测试设 false），实时调用使用独立价格快照并保留现有 RPM/TPM 限制；原子失败后刷新所有文件，精确源删除同步收敛批次；路线请求增加确定性阶段/课程上下文，空语义字段仅允许来源字段兜底，不允许猜测。发布版本为 `20260802-course-catalog-context-fix-db4f37c71fd8`，备份和报告见顶部 0.14。
+
+### 2026-08-02：同步本轮实现的权威文档口径
+
+- 修改原因：代码和 jx 真实回归已完成，但课程规格、管理页手册、RAG 计划和验收指南仍有“默认人工审核”“重复文件可能跳过”“仅 general 知识库”等过期表述，容易导致后续测试沿错误路径执行。
+- 修改前：Batch 开关、课程自动门禁、精确源删除、转换 Markdown 服务器诊断产物和实时独立价格快照主要只记录在当前状态与排障文档，产品决策和操作手册未完全对齐。
+- 修改后：同步更新 `docs/V2决策记录.md`（ADR-022～025）、课程目录规格、清洗接入说明、AI 管理页手册、RAG 全链路计划、V2 数据设计、测试验收指南、README 与功能索引；明确 `BAILIAN_BATCH_ENABLED` 只影响新任务、`COURSE_CATALOG_AUTO_PUBLISH` 的自动/人工回退边界、同名/同内容必须精确删除后重传，以及 `SAVE_CONVERSION_MARKDOWN` 仅供测试服务器查看。未修改冻结接口文档，未改变运行代码、线上数据或部署版本。

@@ -760,14 +760,18 @@ def process_cleaning_file(self, file_id: str) -> bool:
             if batch.upload_mode == "raw":
                 from ...cleaning import CleanedDocument, _load_markdown_like
 
+                conversion: dict[str, Any] = {}
                 raw_title, raw_markdown = _load_markdown_like(
-                    target, row.original_filename
+                    target,
+                    row.original_filename,
+                    diagnostics=conversion,
                 )
                 cleaned_documents = [
                     CleanedDocument(
                         markdown=raw_markdown,
                         title=raw_title,
                         metadata={"document_type": "raw_upload", "review_status": "approved"},
+                        audit={"pdf_conversion": conversion} if conversion else {},
                     )
                 ]
             else:
@@ -775,6 +779,27 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 cleaned_documents = strategy.clean(target, row.original_filename)
             if not cleaned_documents:
                 raise ValueError("策略没有生成任何可入库文档")
+            if batch.strategy_code == "course_route_catalog":
+                resolved_name_conflicts = sum(
+                    warning.get("code") == "duplicate_link_name_auto_resolved"
+                    for document in cleaned_documents
+                    for warning in (document.audit or {})
+                    .get("catalog_audit", {})
+                    .get("warnings", [])
+                )
+                if resolved_name_conflicts:
+                    record_event(
+                        level="WARNING",
+                        category="task",
+                        component="cleaning_worker",
+                        event_code="CATALOG_NAME_CONFLICT_AUTO_RESOLVED",
+                        status="succeeded",
+                        message="课程目录名称冲突已按具体标题规则确定",
+                        resource_type="cleaning_file",
+                        resource_id=row.id,
+                        details={"resolved_count": resolved_name_conflicts},
+                        session=session,
+                    )
 
             for sequence, document in enumerate(cleaned_documents, start=1):
                 document.markdown = sanitize_for_knowledge(document.markdown)

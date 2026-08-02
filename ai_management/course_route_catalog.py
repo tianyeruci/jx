@@ -33,6 +33,13 @@ _TRACKING_QUERY_KEYS = frozenset(
     {"spm", "from", "source", "ref", "share", "share_id"}
 )
 _ORDER_PREFIX_RE = re.compile(r"^\s*([1-9]\d*)\s*[/／]\s*")
+# A row such as “【某合集】1讲（2小时）” is a collection label copied into
+# the link column, not a better course title.  Keep this deliberately narrow:
+# ambiguous ordinary titles must remain a hard stop instead of being guessed.
+_COLLECTION_TITLE_RE = re.compile(
+    r"^\s*【[^】]+】\s*[1-9]\d*\s*讲"
+    r"(?:\s*[（(][^）)]*[）)])?\s*$"
+)
 MAX_CATALOG_ROWS = 100_000
 MAX_CATALOG_COLUMNS = 64
 
@@ -99,6 +106,38 @@ def _strip_order_prefix(value: str) -> tuple[str, int | None]:
     if match is None:
         return value.strip(), None
     return value[match.end() :].strip(), int(match.group(1))
+
+
+def _auto_resolve_name_conflict(
+    name_candidates: list[str],
+    series_candidates: list[str],
+) -> tuple[str, list[str], bool]:
+    """Resolve only the known collection-label/real-title pattern.
+
+    The function returns ``(name, series_candidates, resolved)``.  A single
+    non-collection candidate is safe to select; two ordinary titles remain
+    unresolved and continue through the existing structural-review gate.
+    """
+
+    if len(name_candidates) <= 1:
+        return name_candidates[0] if name_candidates else "", series_candidates, False
+    specific = [
+        candidate
+        for candidate in name_candidates
+        if not _COLLECTION_TITLE_RE.fullmatch(candidate)
+    ]
+    collections = [
+        candidate
+        for candidate in name_candidates
+        if _COLLECTION_TITLE_RE.fullmatch(candidate)
+    ]
+    if len(specific) != 1 or not collections:
+        return name_candidates[0], series_candidates, False
+    # A collection-like *linked* title is still a course title.  The source
+    # rule defines a collection only by an empty-link row, so do not promote
+    # this title into ``series_name``; preserve only the series values already
+    # derived from empty-link headers/explicit series columns.
+    return specific[0], series_candidates, True
 
 
 @dataclass(slots=True)
@@ -192,6 +231,7 @@ def _nonempty_sheets(path: Path) -> list[tuple[str, list[list[Any]]]]:
             # worksheet cells instead of silently truncating the source.
             sheet.reset_dimensions()
             rows: list[list[Any]] = []
+            has_values = False
             for row_number, row in enumerate(sheet.iter_rows(values_only=True), start=1):
                 if row_number > MAX_CATALOG_ROWS + 1:
                     raise ValueError(
@@ -202,9 +242,13 @@ def _nonempty_sheets(path: Path) -> list[tuple[str, list[list[Any]]]]:
                     raise ValueError(
                         f"课程目录列数超过上限：{MAX_CATALOG_COLUMNS}"
                     )
-                if any(value not in (None, "") for value in values):
-                    rows.append(values)
-            if rows:
+                has_values = has_values or any(
+                    value not in (None, "") for value in values
+                )
+                # Keep the worksheet's bounded row extent for audit counts;
+                # the parser itself still ignores completely empty records.
+                rows.append(values)
+            if rows and has_values:
                 sheets.append((sheet.title, rows))
     finally:
         workbook.close()
@@ -232,13 +276,15 @@ def _legacy_parse_course_route_catalog(
             for index, header in enumerate(headers)
             if header
         }
+        source_rows.append((row_number, record))
         if not any(_value(record, key) for key in REQUIRED_COLUMNS):
             continue
-        source_rows.append((row_number, record))
 
     grouped: dict[str, list[tuple[int, dict[str, Any]]]] = {}
     warnings: list[dict[str, Any]] = []
     for row_number, row in source_rows:
+        if not any(_value(row, key) for key in REQUIRED_COLUMNS):
+            continue
         raw_url = _value(row, "课程链接")
         if not raw_url:
             warnings.append(
@@ -517,9 +563,9 @@ def parse_course_route_catalog(
             for index, header in enumerate(headers)
             if header
         }
+        source_rows.append((row_number, record))
         if not any(_value(record, key) for key in REQUIRED_COLUMNS):
             continue
-        source_rows.append((row_number, record))
         name = _value(record, "课程名称")
         raw_url = _value(record, "课程链接")
         if not name:
@@ -655,8 +701,11 @@ def parse_course_route_catalog(
                 ]
             )
         )
+        preferred_name, series_candidates, name_conflict_resolved = (
+            _auto_resolve_name_conflict(name_candidates, series_candidates)
+        )
         conflicts: list[dict[str, Any]] = []
-        if len(name_candidates) > 1:
+        if len(name_candidates) > 1 and not name_conflict_resolved:
             conflicts.append(
                 {
                     "code": "duplicate_link_name_conflict",
@@ -669,6 +718,14 @@ def parse_course_route_catalog(
                     "code": "duplicate_link_name_conflict",
                     "row": members[0]["row_number"],
                     "message": "同一课程链接对应多个课程名称，需结构审核",
+                }
+            )
+        elif name_conflict_resolved:
+            warnings.append(
+                {
+                    "code": "duplicate_link_name_auto_resolved",
+                    "row": members[0]["row_number"],
+                    "message": "同一课程链接同时出现合集式标题和具体标题，已按具体标题入库",
                 }
             )
         if len(series_candidates) > 1:
@@ -689,7 +746,7 @@ def parse_course_route_catalog(
         course = CourseDraft(
             course_id=existing_course_ids_by_url.get(normalized_url)
             or _stable_id("course", normalized_url),
-            name=name_candidates[0],
+            name=preferred_name,
             normalized_url=normalized_url,
             stage=next(
                 (_value(item["row"], "阶段") for item in members if _value(item["row"], "阶段")),
@@ -730,6 +787,8 @@ def parse_course_route_catalog(
         courses.append(course)
         course_by_url[normalized_url] = course
         for field_name in ("课程名称", "阶段", "系列名称", "课程方向"):
+            if field_name == "课程名称" and name_conflict_resolved:
+                continue
             distinct = {
                 _value(item["row"], field_name)
                 for item in members
@@ -849,7 +908,15 @@ def parse_course_route_catalog(
             source_rows=len(source_rows),
             unknown_columns=unknown,
             duplicate_link_groups=sum(len(items) > 1 for items in grouped.values()),
-            group_headers=len(group_names),
+            # Count every non-linked row carrying source data for audit, even
+            # when its missing course name makes it invalid and it cannot open
+            # a usable collection group.
+            group_headers=sum(
+                1
+                for _, record in source_rows
+                if not _value(record, "课程链接")
+                and any(_value(record, key) for key in REQUIRED_COLUMNS)
+            ),
             effective_groups=sum(bool(items) for items in members_by_group.values()),
             invalid_rows=sum(
                 1

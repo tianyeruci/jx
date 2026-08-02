@@ -7,9 +7,10 @@ import logging
 import re
 import shutil
 import unicodedata
+import uuid
 import zipfile
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePath
 from typing import Any, Iterable, Protocol
 
@@ -168,10 +169,31 @@ def _read_text_markdown(path: Path, suffix: str) -> str:
     return markdown.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
-def _read_pdf_markdown(path: Path) -> str:
+def _conversion_audit(result: Any) -> dict[str, Any]:
+    if callable(getattr(result, "to_dict", None)):
+        return dict(result.to_dict(include_page_markdown=False))
+    return {
+        key: getattr(result, key)
+        for key in (
+            "document_id",
+            "source_checksum",
+            "backend",
+            "status",
+            "needs_review",
+            "review_reasons",
+            "metadata",
+            "route",
+        )
+        if hasattr(result, key)
+    }
+
+
+def _read_pdf_markdown(path: Path, *, diagnostics: dict[str, Any] | None = None) -> str:
     from knowledge_cleaner.pdf_convert import convert_pdf
 
     result = convert_pdf(path, enable_ocr=False)
+    if diagnostics is not None:
+        diagnostics.update(_conversion_audit(result))
     blocking_reasons = [
         reason
         for reason in result.review_reasons
@@ -186,16 +208,104 @@ def _read_pdf_markdown(path: Path) -> str:
     return result.markdown.strip()
 
 
-def _save_conversion_markdown(path: Path, original_filename: str, markdown: str) -> None:
+def _conversion_artifact_component(value: str, *, max_bytes: int) -> str:
+    cleaned = re.sub(
+        r"[^0-9A-Za-z\u4e00-\u9fff._ -]",
+        "_",
+        normalized_original_filename(value),
+    )
+    result: list[str] = []
+    size = 0
+    for char in cleaned:
+        encoded_size = len(char.encode("utf-8"))
+        if size + encoded_size > max_bytes:
+            break
+        result.append(char)
+        size += encoded_size
+    return "".join(result).strip(" .") or "未命名文件"
+
+
+def _conversion_artifact_root() -> Path:
     settings = get_settings()
-    if not settings.save_conversion_markdown or path.suffix.lower() not in {".pdf", ".docx"}:
-        return
     root = settings.conversion_markdown_root.resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    safe_name = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._ -]", "_", normalized_original_filename(original_filename))
-    target = root / f"{path.stem}__{safe_name}.md"
-    target.write_text(markdown, encoding="utf-8")
+    if root.name != "conversion-markdown":
+        raise ValueError("CONVERSION_MARKDOWN_ROOT 必须是名为 conversion-markdown 的专用目录")
+    return root
+
+
+def _save_conversion_markdown(
+    path: Path,
+    original_filename: str,
+    markdown: str,
+) -> Path | None:
+    settings = get_settings()
+    if (
+        not settings.save_conversion_markdown
+        or path.suffix.lower() not in {".pdf", ".docx"}
+    ):
+        return None
+    root = _conversion_artifact_root()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root.chmod(0o700)
+    batch_id = _conversion_artifact_component(path.parent.name, max_bytes=64)
+    file_id = _conversion_artifact_component(path.stem, max_bytes=64)
+    safe_name = _conversion_artifact_component(original_filename, max_bytes=96)
+    target = root / f"{batch_id}__{file_id}__{safe_name}.md"
+    temporary = root / f".{target.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        temporary.write_text(markdown, encoding="utf-8")
+        temporary.chmod(0o600)
+        temporary.replace(target)
+        target.chmod(0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
     logger.info("saved conversion markdown artifact source=%s artifact=%s", path.name, target.name)
+    return target
+
+
+def maintain_conversion_markdown_artifacts(
+    *,
+    delete_all: bool | None = None,
+    now: datetime | None = None,
+) -> dict[str, int]:
+    """Delete disabled or expired conversion artifacts from the dedicated root."""
+
+    settings = get_settings()
+    root = _conversion_artifact_root()
+    if not root.exists():
+        return {"removed": 0, "retained": 0, "skipped_directories": 0}
+    if not root.is_dir():
+        raise ValueError("CONVERSION_MARKDOWN_ROOT 不是目录")
+    remove_everything = (
+        not settings.save_conversion_markdown if delete_all is None else delete_all
+    )
+    current = now or datetime.now(timezone.utc)
+    cutoff = current.timestamp() - (
+        settings.conversion_markdown_retention_days * 24 * 60 * 60
+    )
+    removed = 0
+    retained = 0
+    skipped_directories = 0
+    for child in root.iterdir():
+        if child.is_symlink():
+            child.unlink(missing_ok=True)
+            removed += 1
+            continue
+        if child.is_dir():
+            skipped_directories += 1
+            continue
+        expired = child.stat().st_mtime <= cutoff
+        managed = child.suffix == ".md" or child.name.endswith(".tmp")
+        if remove_everything or (managed and expired):
+            child.unlink(missing_ok=True)
+            removed += 1
+        else:
+            retained += 1
+    return {
+        "removed": removed,
+        "retained": retained,
+        "skipped_directories": skipped_directories,
+    }
 
 
 def _content_title(markdown: str) -> str:
@@ -210,10 +320,15 @@ def _content_title(markdown: str) -> str:
     return "未命名文档"
 
 
-def _load_markdown_like(path: Path, original_filename: str) -> tuple[str, str]:
+def _load_markdown_like(
+    path: Path,
+    original_filename: str,
+    *,
+    diagnostics: dict[str, Any] | None = None,
+) -> tuple[str, str]:
     suffix = path.suffix.lower()
     if suffix == ".pdf":
-        markdown = _read_pdf_markdown(path)
+        markdown = _read_pdf_markdown(path, diagnostics=diagnostics)
     else:
         markdown = _read_text_markdown(path, suffix)
     _save_conversion_markdown(path, original_filename, markdown)
@@ -233,7 +348,10 @@ class TestDocumentStrategy:
     dify_metadata_fields = frozenset({"document_type", "review_status"})
 
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
-        title, markdown = _load_markdown_like(file_path, original_filename)
+        conversion: dict[str, Any] = {}
+        title, markdown = _load_markdown_like(
+            file_path, original_filename, diagnostics=conversion
+        )
         if not markdown.strip():
             raise ValueError("文档没有可入库正文")
         return [
@@ -241,6 +359,7 @@ class TestDocumentStrategy:
                 markdown=markdown,
                 title=title,
                 metadata={"document_type": "test_document", "review_status": "approved"},
+                audit={"pdf_conversion": conversion} if conversion else {},
             )
         ]
 
@@ -255,7 +374,10 @@ class StandardDocumentStrategy:
     dify_metadata_fields = frozenset({"document_type", "review_status"})
 
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
-        title, markdown = _load_markdown_like(file_path, original_filename)
+        conversion: dict[str, Any] = {}
+        title, markdown = _load_markdown_like(
+            file_path, original_filename, diagnostics=conversion
+        )
         if not markdown.strip():
             raise ValueError("文档没有可入库正文")
         return [
@@ -263,6 +385,7 @@ class StandardDocumentStrategy:
                 markdown=markdown,
                 title=title,
                 metadata={"document_type": "standard_document", "review_status": "approved"},
+                audit={"pdf_conversion": conversion} if conversion else {},
             )
         ]
 
@@ -279,12 +402,12 @@ class PersonalBusinessConsultationStrategy:
         from knowledge_cleaner.pdf_convert import (
             anonymize_consultation,
             convert_consultation_pdf,
-            convert_pdf,
             scan_residual_pii,
         )
 
         suffix = file_path.suffix.lower()
         aliases: dict[str, str]
+        conversion_audit: dict[str, Any] = {}
         if suffix == ".docx":
             raw_markdown = _docx_markdown(file_path)
             _save_conversion_markdown(file_path, original_filename, raw_markdown)
@@ -306,15 +429,21 @@ class PersonalBusinessConsultationStrategy:
             needs_review = bool(review_reasons)
         elif suffix == ".pdf":
             aliases = consultation_aliases("", original_filename)
-            # OCR and image content recognition remain explicitly out of scope
-            # for automatic publication. A scan-only PDF becomes a review item.
+            from knowledge_cleaner.pdf_convert import convert_pdf
+
             raw_result = convert_pdf(file_path, enable_ocr=False)
-            _save_conversion_markdown(file_path, original_filename, str(raw_result.markdown or ""))
+            _save_conversion_markdown(
+                file_path, original_filename, str(raw_result.markdown or "")
+            )
             result = convert_consultation_pdf(
                 file_path,
                 enable_ocr=False,
                 extra_entities=aliases,
             )
+            _save_conversion_markdown(
+                file_path, original_filename, str(result.markdown or "")
+            )
+            conversion_audit = _conversion_audit(result)
             markdown = str(result.markdown or "")
             redactions = list(getattr(result, "redactions", []) or [])
             residual_pii = list(getattr(result, "residual_pii", []) or [])
@@ -388,6 +517,7 @@ class PersonalBusinessConsultationStrategy:
                 warnings=review_reasons,
                 audit={
                     "privacy_level": "private_anonymized",
+                    **({"pdf_conversion": conversion_audit} if conversion_audit else {}),
                     "identity_aliases": aliases,
                     "forbidden_public_names": sorted(aliases),
                     "redaction_summary": redaction_summary,
@@ -675,7 +805,10 @@ class LeadMagnetStrategy:
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
         from .document_structure import remove_reliable_toc
 
-        title, markdown = _load_markdown_like(file_path, original_filename)
+        conversion: dict[str, Any] = {}
+        title, markdown = _load_markdown_like(
+            file_path, original_filename, diagnostics=conversion
+        )
         toc = remove_reliable_toc(markdown)
         document = _build_article_document(
             title=title,
@@ -691,6 +824,8 @@ class LeadMagnetStrategy:
         document.warnings.extend(toc.warnings)
         document.audit["toc_detected"] = toc.detected
         document.audit["toc_headings"] = toc.headings
+        if conversion:
+            document.audit["pdf_conversion"] = conversion
         if not document.markdown.strip():
             raise ValueError(f"{original_filename} 没有可清洗正文")
         return [document]
@@ -741,7 +876,10 @@ class BookStrategy:
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
         from .document_structure import remove_reliable_toc
 
-        title, markdown = _load_markdown_like(file_path, original_filename)
+        conversion: dict[str, Any] = {}
+        title, markdown = _load_markdown_like(
+            file_path, original_filename, diagnostics=conversion
+        )
         toc = remove_reliable_toc(markdown)
         markdown = toc.markdown
         parts = _split_book_markdown(markdown, get_settings().cleaning_markdown_split_bytes)
@@ -803,6 +941,7 @@ class BookStrategy:
                         "privacy_level": "public_source",
                         "toc_detected": toc.detected,
                         "toc_headings": toc.headings,
+                        **({"pdf_conversion": conversion} if conversion else {}),
                     },
                 )
             )
@@ -1043,7 +1182,28 @@ class CourseRouteCatalogStrategy:
                     },
                 )
             )
+        course_names_by_id = {item.course_id: item.name for item in catalog.courses}
         for item in catalog.routes:
+            stage_context: list[str] = []
+            for stage in item.stages:
+                names = [
+                    course_names_by_id.get(str(course_id), str(course_id))
+                    for course_id in stage.get("course_ids", [])
+                ]
+                if names:
+                    stage_context.append(
+                        f"{stage.get('name', '')}：" + "、".join(names)
+                    )
+            route_blocks = {
+                "b001": f"路线名称：{item.name}",
+                "b002": f"路线目标：{item.target_candidate}",
+                "b003": "路线阶段与课程：" + "；".join(stage_context),
+            }
+            route_blocks = {
+                key: value
+                for key, value in route_blocks.items()
+                if value.split("：", 1)[-1].strip()
+            }
             documents.append(
                 CleanedDocument(
                     markdown=f"# {item.name}\n\n学习路线等待审核和排序后发布。",
@@ -1072,10 +1232,7 @@ class CourseRouteCatalogStrategy:
                             "enabled": False,
                             "review_status": "pending_review",
                         },
-                        "model_blocks": {
-                            "b001": f"路线名称：{item.name}",
-                            "b002": f"路线目标：{item.target_candidate}",
-                        },
+                        "model_blocks": route_blocks,
                         "field_sources": {
                             "name": "source",
                             "route_id": "deterministic",
@@ -1811,7 +1968,10 @@ async def create_cleaning_batch(
         try:
             from .tasks import process_cleaning_file
 
-            process_cleaning_file.apply_async(args=[file_id], queue="ai_cleaning")
+            process_cleaning_file.apply_async(
+                args=[file_id],
+                queue="ai_cleaning",
+            )
         except Exception as exc:
             row = session.get(CleaningFile, file_id)
             if row:

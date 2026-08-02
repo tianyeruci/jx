@@ -150,33 +150,84 @@ upsert_env() {
   fi
 }
 
+set_default_env() {
+  key="$1"
+  value="$2"
+  if ! grep -q "^${key}=" .env; then
+    printf '%s=%s\n' "$key" "$value" >> .env
+  fi
+}
+
 require_cleaning_price_snapshot() {
+  local mode="$1"
+  local price_version_key effective_date_key valid_until_key input_price_key output_price_key
+  case "$mode" in
+    batch)
+      price_version_key="CLEANING_PRICE_VERSION"
+      effective_date_key="CLEANING_PRICE_EFFECTIVE_DATE"
+      valid_until_key="CLEANING_PRICE_VALID_UNTIL"
+      input_price_key="CLEANING_INPUT_PRICE_PER_MILLION"
+      output_price_key="CLEANING_OUTPUT_PRICE_PER_MILLION"
+      ;;
+    realtime)
+      price_version_key="CLEANING_REALTIME_PRICE_VERSION"
+      effective_date_key="CLEANING_REALTIME_PRICE_EFFECTIVE_DATE"
+      valid_until_key="CLEANING_REALTIME_PRICE_VALID_UNTIL"
+      input_price_key="CLEANING_REALTIME_INPUT_PRICE_PER_MILLION"
+      output_price_key="CLEANING_REALTIME_OUTPUT_PRICE_PER_MILLION"
+      ;;
+    *)
+      printf 'unknown cleaning price mode: %s\n' "$mode" >&2
+      exit 1
+      ;;
+  esac
   local price_version effective_date valid_until input_price output_price
-  price_version="$(sed -n 's/^CLEANING_PRICE_VERSION=//p' .env | tail -n 1)"
-  effective_date="$(sed -n 's/^CLEANING_PRICE_EFFECTIVE_DATE=//p' .env | tail -n 1)"
-  valid_until="$(sed -n 's/^CLEANING_PRICE_VALID_UNTIL=//p' .env | tail -n 1)"
-  input_price="$(sed -n 's/^CLEANING_INPUT_PRICE_PER_MILLION=//p' .env | tail -n 1)"
-  output_price="$(sed -n 's/^CLEANING_OUTPUT_PRICE_PER_MILLION=//p' .env | tail -n 1)"
+  price_version="$(sed -n "s/^${price_version_key}=//p" .env | tail -n 1)"
+  effective_date="$(sed -n "s/^${effective_date_key}=//p" .env | tail -n 1)"
+  valid_until="$(sed -n "s/^${valid_until_key}=//p" .env | tail -n 1)"
+  input_price="$(sed -n "s/^${input_price_key}=//p" .env | tail -n 1)"
+  output_price="$(sed -n "s/^${output_price_key}=//p" .env | tail -n 1)"
   test -n "$price_version"
   test -n "$effective_date"
   test -n "$valid_until"
   test -n "$input_price"
   test -n "$output_price"
-  python3 - "$effective_date" "$valid_until" "$input_price" "$output_price" <<'PY'
+  python3 - "$mode" "$effective_date" "$valid_until" "$input_price" "$output_price" <<'PY'
 from datetime import date
 import sys
 
-effective, valid_until, input_price, output_price = sys.argv[1:]
+mode, effective, valid_until, input_price, output_price = sys.argv[1:]
 if date.fromisoformat(effective) > date.today():
-    raise SystemExit("CLEANING_PRICE_EFFECTIVE_DATE cannot be in the future")
+    raise SystemExit(f"{mode} cleaning price effective date cannot be in the future")
 if date.fromisoformat(valid_until) < date.today():
-    raise SystemExit("CLEANING_PRICE_VALID_UNTIL has expired")
+    raise SystemExit(f"{mode} cleaning price snapshot has expired")
 if float(input_price) <= 0 or float(output_price) <= 0:
-    raise SystemExit("CLEANING price values must be positive")
+    raise SystemExit(f"{mode} cleaning price values must be positive")
 PY
 }
 
-require_cleaning_price_snapshot
+require_cleaning_price_snapshots() {
+  local batch_enabled
+  batch_enabled="$(sed -n 's/^BAILIAN_BATCH_ENABLED=//p' .env | tail -n 1 | tr '[:upper:]' '[:lower:]')"
+  case "$batch_enabled" in
+    true|1|yes|on) require_cleaning_price_snapshot batch ;;
+    false|0|no|off) : ;;
+    *) printf 'BAILIAN_BATCH_ENABLED must be true or false\n' >&2; exit 1 ;;
+  esac
+  # Realtime is also used for small tasks and personal consultations when
+  # Batch is enabled, so its independent snapshot is always required.
+  require_cleaning_price_snapshot realtime
+}
+
+set_default_env BAILIAN_BATCH_ENABLED "true"
+require_cleaning_price_snapshots
+APP_RUNTIME_UID="$(docker run --rm --entrypoint id "$CORE_IMAGE" -u)"
+APP_RUNTIME_GID="$(docker run --rm --entrypoint id "$CORE_IMAGE" -g)"
+case "$APP_RUNTIME_UID:$APP_RUNTIME_GID" in
+  *[!0-9:]*|:|*:|:*) printf 'invalid runtime uid/gid\n' >&2; exit 1 ;;
+esac
+install -d -o "$APP_RUNTIME_UID" -g "$APP_RUNTIME_GID" -m 0700 \
+  "$APP_DIR/var/conversion-markdown"
 upsert_env AI_IMAGE "$CORE_IMAGE"
 upsert_env AI_UI_IMAGE "$UI_IMAGE"
 upsert_env BUILD_VERSION "$RELEASE_ID"
@@ -190,7 +241,12 @@ upsert_env CLEANING_SPEC_REVISION "commercial-cleaning-v3"
 upsert_env MAX_UPLOAD_FILES "10"
 upsert_env MAX_ACTIVE_CLEANING_BATCHES "5"
 upsert_env CLEANING_WORKER_CONCURRENCY "4"
+upsert_env COURSE_CATALOG_AUTO_PUBLISH "true"
+upsert_env COURSE_CATALOG_AUTO_APPROVE_COST_MAX "1.0"
 upsert_env SAVE_CONVERSION_MARKDOWN "false"
+upsert_env CONVERSION_MARKDOWN_ROOT "/app/var/conversion-markdown"
+upsert_env CONVERSION_MARKDOWN_HOST_ROOT "/opt/ai-management/var/conversion-markdown"
+upsert_env CONVERSION_MARKDOWN_RETENTION_DAYS "7"
 SWITCHED=1
 unset AI_IMAGE AI_UI_IMAGE BUILD_VERSION
 

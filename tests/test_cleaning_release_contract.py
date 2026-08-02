@@ -1,3 +1,4 @@
+import hashlib
 import os
 import shutil
 import subprocess
@@ -10,6 +11,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _source(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def test_miniapp_interface_document_is_frozen_for_internal_cleaning_changes():
+    path = ROOT / "docs/小程序后端与 AI 管理服务接口对接交互版本.md"
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert digest == "b3c1765041fba7f9081c81fbbac04fc21a30100b5a92f6df486c08e5685e1fbd"
 
 
 def test_remote_cleaning_acceptance_uses_anonymous_names_and_covers_new_flow():
@@ -92,7 +99,11 @@ def test_jx_release_scripts_manage_all_cleaning_workers_and_exact_upload_targets
     assert 'CLEANING_SPEC_REVISION "commercial-cleaning-v3"' in deploy
     assert 'MAX_UPLOAD_FILES "10"' in deploy
     assert 'MAX_ACTIVE_CLEANING_BATCHES "5"' in deploy
-    assert "require_cleaning_price_snapshot" in deploy
+    assert "require_cleaning_price_snapshots" in deploy
+    assert 'set_default_env BAILIAN_BATCH_ENABLED "true"' in deploy
+    assert 'upsert_env BAILIAN_BATCH_ENABLED "true"' not in deploy
+    assert "CLEANING_REALTIME_PRICE_VERSION" in deploy
+    assert "CLEANING_REALTIME_INPUT_PRICE_PER_MILLION" in deploy
     assert "jx_capture_ui_cleanup_manifest.sh" in deploy
     assert "jx_quick_deploy.sh" in deploy
     assert "jx_reset_cleaning_local_state.sh" in deploy
@@ -221,6 +232,23 @@ def test_default_production_cleaning_window_is_all_day():
 
     assert "dify_publish_window_end_hour: int = Field(default=24" in config
     assert 'cleaning_spec_revision: str = "commercial-cleaning-v3"' in config
+
+
+def test_conversion_markdown_is_configurable_persistent_and_expiring():
+    config = _source("ai_management/config.py")
+    compose = _source("docker-compose.ai.yml")
+    release = _source("scripts/jx_deploy_release.sh")
+    maintenance = _source("ai_management/workers/tasks/maintenance.py")
+
+    assert "生产环境禁止保存转换前策略 Markdown" in config
+    assert "conversion_markdown_retention_days: int = Field(default=7" in config
+    assert compose.count("CONVERSION_MARKDOWN_HOST_ROOT") == 2
+    assert "/app/var/conversion-markdown" in compose
+    assert 'upsert_env SAVE_CONVERSION_MARKDOWN "false"' in release
+    assert 'upsert_env CONVERSION_MARKDOWN_RETENTION_DAYS "7"' in release
+    assert 'APP_RUNTIME_UID="$(docker run --rm --entrypoint id "$CORE_IMAGE" -u)"' in release
+    assert 'install -d -o "$APP_RUNTIME_UID" -g "$APP_RUNTIME_GID" -m 0700' in release
+    assert '"conversion_markdown", _cleanup_conversion_markdown' in maintenance
 
 
 def test_dify_shard_parent_limit_is_separate_from_model_candidate_limit():

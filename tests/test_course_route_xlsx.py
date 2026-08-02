@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import re
+from pathlib import Path
 from zipfile import ZipFile
 
 from openpyxl import Workbook
@@ -284,6 +284,33 @@ def test_course_route_catalog_reuses_course_id_across_routes_and_flags_name_conf
     assert catalog.routes[0].stages[0]["course_ids"] == catalog.routes[1].stages[0]["course_ids"]
 
 
+def test_course_route_catalog_prefers_specific_title_over_collection_label(tmp_path):
+    from ai_management.course_route_catalog import parse_course_route_catalog
+
+    path = tmp_path / "collection-title-conflict.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["课程名称", "课程链接", "阶段", "学习路线"])
+    sheet.append(["【合集】1讲（2小时）", None, "入门阶段", "路线A"])
+    sheet.append(["【合集】1讲（2小时）", "https://example.com/shared", "入门阶段", "路线A"])
+    sheet.append(["具体课程标题", "https://example.com/shared", "入门阶段", "路线A"])
+    workbook.save(path)
+
+    catalog = parse_course_route_catalog(path, existing_course_ids_by_url={})
+
+    course = catalog.courses[0]
+    assert course.name == "具体课程标题"
+    assert course.series_name == "【合集】1讲（2小时）"
+    assert not any(
+        conflict["code"] == "duplicate_link_name_conflict"
+        for conflict in course.structure_conflicts
+    )
+    assert any(
+        warning["code"] == "duplicate_link_name_auto_resolved"
+        for warning in catalog.audit.warnings
+    )
+
+
 def test_real_catalog_sample_matches_verified_baseline():
     from ai_management.course_route_catalog import parse_course_route_catalog
 
@@ -298,3 +325,8 @@ def test_real_catalog_sample_matches_verified_baseline():
     assert catalog.audit.duplicate_link_groups == 2
     assert catalog.audit.invalid_rows == 1
     assert all(not item.name.startswith(tuple(f"{n}/" for n in range(1, 20))) for item in catalog.courses)
+    assert not any(
+        conflict["code"] == "duplicate_link_name_conflict"
+        for item in catalog.courses
+        for conflict in item.structure_conflicts
+    )

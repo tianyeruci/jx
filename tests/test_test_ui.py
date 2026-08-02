@@ -180,6 +180,12 @@ def test_cleaning_success_advances_the_uploader_key_before_rerun():
     assert "reset_cleaning_upload_state(st.session_state)\n            st.rerun()" in source
 
 
+def test_model_task_mode_label_is_explicit():
+    assert test_ui.model_task_mode_label({"mode": "batch"}) == "百炼 Batch（batch）"
+    assert test_ui.model_task_mode_label({"mode": "realtime"}) == "实时调用（realtime）"
+    assert test_ui.model_task_mode_label({}) == "未知模式"
+
+
 def test_cleaning_ui_display_hides_protected_metadata_but_keeps_business_metadata():
     payload = {
         "batch_id": "batch-safe",
