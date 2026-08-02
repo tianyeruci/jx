@@ -3,6 +3,7 @@ from __future__ import annotations
 import codecs
 import hashlib
 import json
+import logging
 import re
 import shutil
 import unicodedata
@@ -13,8 +14,9 @@ from pathlib import Path, PurePath
 from typing import Any, Iterable, Protocol
 
 from docx import Document
+from docx.oxml.ns import qn
 from fastapi import APIRouter, Depends, File, Form, UploadFile
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from knowledge_cleaner.chunking import (
@@ -50,6 +52,7 @@ router = APIRouter(
     tags=["knowledge-cleaning"],
     dependencies=[Depends(require_internal_token), Depends(require_admin_token)],
 )
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -105,27 +108,54 @@ class CleaningStrategy(Protocol):
 
 def _docx_markdown(path: Path) -> str:
     document = Document(path)
+    paragraphs = {id(item._p): item for item in document.paragraphs}
+    tables = {id(item._tbl): item for item in document.tables}
     parts: list[str] = []
-    for paragraph in document.paragraphs:
-        text = paragraph.text.strip()
-        if not text:
-            continue
-        style = paragraph.style.name.lower() if paragraph.style else ""
-        if "heading" in style:
-            match = re.search(r"(\d+)", style)
-            level = min(int(match.group(1)), 6) if match else 2
-            parts.append(f"{'#' * level} {text}")
-        else:
-            parts.append(text)
-    for table in document.tables:
-        rows = [[cell.text.strip().replace("|", "\\|") for cell in row.cells] for row in table.rows]
-        if not rows:
-            continue
-        width = max(len(row) for row in rows)
-        rows = [row + [""] * (width - len(row)) for row in rows]
-        parts.append("| " + " | ".join(rows[0]) + " |")
-        parts.append("| " + " | ".join(["---"] * width) + " |")
-        parts.extend("| " + " | ".join(row) + " |" for row in rows[1:])
+    for child in document.element.body.iterchildren():
+        if child.tag == qn("w:p"):
+            paragraph = paragraphs.get(id(child))
+            if paragraph is None:
+                continue
+            text = paragraph.text.strip()
+            if not text:
+                continue
+            style = paragraph.style.name.lower() if paragraph.style else ""
+            prefix = ""
+            if "heading" in style:
+                match = re.search(r"(\d+)", style)
+                level = min(int(match.group(1)), 6) if match else 2
+                parts.append(f"{'#' * level} {text}")
+                continue
+            num_pr = paragraph._p.find(qn("w:pPr"))
+            num_pr = num_pr.find(qn("w:numPr")) if num_pr is not None else None
+            if num_pr is not None:
+                ilvl = num_pr.find(qn("w:ilvl"))
+                level = int(ilvl.get(qn("w:val"), "0")) if ilvl is not None else 0
+                prefix = "  " * max(0, min(level, 8)) + "- "
+            else:
+                indentation = paragraph.paragraph_format.left_indent
+                if indentation is not None and indentation.pt:
+                    prefix = "  " * max(0, min(round(indentation.pt / 18), 8))
+            parts.append(f"{prefix}{text}")
+        elif child.tag == qn("w:tbl"):
+            table = tables.get(id(child))
+            if table is None:
+                continue
+            rows = [[cell.text.strip().replace("|", "\\|") for cell in row.cells] for row in table.rows]
+            if not rows:
+                continue
+            width = max(len(row) for row in rows)
+            rows = [row + [""] * (width - len(row)) for row in rows]
+            parts.append("| " + " | ".join(rows[0]) + " |")
+            parts.append("| " + " | ".join(["---"] * width) + " |")
+            parts.extend("| " + " | ".join(row) + " |" for row in rows[1:])
+    # Some malformed DOCX files expose a body child that python-docx cannot
+    # map.  Preserve the old fallback rather than silently dropping text.
+    if not parts:
+        for paragraph in document.paragraphs:
+            text = paragraph.text.strip()
+            if text:
+                parts.append(text)
     return "\n\n".join(parts).strip()
 
 
@@ -147,10 +177,25 @@ def _read_pdf_markdown(path: Path) -> str:
         for reason in result.review_reasons
         if not str(reason).startswith("table_review:")
     ]
+    for warning in result.review_reasons:
+        if str(warning).startswith("table_review:"):
+            logger.warning("PDF表格结构不可靠，已线性化并继续处理 source=%s warning=%s", path.name, warning)
     if blocking_reasons or not result.markdown.strip():
         reason = "；".join(blocking_reasons[:3]) or "没有可提取正文"
         raise ValueError(f"PDF不支持清洗入库：{reason}")
     return result.markdown.strip()
+
+
+def _save_conversion_markdown(path: Path, original_filename: str, markdown: str) -> None:
+    settings = get_settings()
+    if not settings.save_conversion_markdown or path.suffix.lower() not in {".pdf", ".docx"}:
+        return
+    root = settings.conversion_markdown_root.resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    safe_name = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._ -]", "_", normalized_original_filename(original_filename))
+    target = root / f"{path.stem}__{safe_name}.md"
+    target.write_text(markdown, encoding="utf-8")
+    logger.info("saved conversion markdown artifact source=%s artifact=%s", path.name, target.name)
 
 
 def _content_title(markdown: str) -> str:
@@ -171,6 +216,7 @@ def _load_markdown_like(path: Path, original_filename: str) -> tuple[str, str]:
         markdown = _read_pdf_markdown(path)
     else:
         markdown = _read_text_markdown(path, suffix)
+    _save_conversion_markdown(path, original_filename, markdown)
     # The original filename is administrative provenance only. It must not
     # change the semantic title, model prompt or content identity.
     title = _content_title(markdown)
@@ -233,6 +279,7 @@ class PersonalBusinessConsultationStrategy:
         from knowledge_cleaner.pdf_convert import (
             anonymize_consultation,
             convert_consultation_pdf,
+            convert_pdf,
             scan_residual_pii,
         )
 
@@ -240,6 +287,7 @@ class PersonalBusinessConsultationStrategy:
         aliases: dict[str, str]
         if suffix == ".docx":
             raw_markdown = _docx_markdown(file_path)
+            _save_conversion_markdown(file_path, original_filename, raw_markdown)
             aliases = consultation_aliases(raw_markdown, original_filename)
             markdown, redactions = anonymize_consultation(
                 raw_markdown,
@@ -260,6 +308,8 @@ class PersonalBusinessConsultationStrategy:
             aliases = consultation_aliases("", original_filename)
             # OCR and image content recognition remain explicitly out of scope
             # for automatic publication. A scan-only PDF becomes a review item.
+            raw_result = convert_pdf(file_path, enable_ocr=False)
+            _save_conversion_markdown(file_path, original_filename, str(raw_result.markdown or ""))
             result = convert_consultation_pdf(
                 file_path,
                 enable_ocr=False,
@@ -277,6 +327,13 @@ class PersonalBusinessConsultationStrategy:
                 or f"case_{source_checksum[:16]}"
             )
             review_reasons = list(getattr(result, "review_reasons", []) or [])
+            for warning in review_reasons:
+                if str(warning).startswith("table_review:"):
+                    logger.warning(
+                        "PDF表格结构不可靠，已线性化并继续处理 source=%s warning=%s",
+                        file_path.name,
+                        warning,
+                    )
             blocking_reasons = [
                 reason
                 for reason in review_reasons
@@ -886,8 +943,20 @@ class CourseRouteCatalogStrategy:
             "source_rows": catalog.audit.source_rows,
             "unknown_columns": catalog.audit.unknown_columns,
             "duplicate_link_groups": catalog.audit.duplicate_link_groups,
+            "group_headers": catalog.audit.group_headers,
+            "effective_groups": catalog.audit.effective_groups,
+            "invalid_rows": catalog.audit.invalid_rows,
             "warnings": catalog.audit.warnings,
         }
+        structure_blocked = any(
+            item.structure_conflicts for item in catalog.courses
+        ) or any(
+            warning.get("code") in {
+                "duplicate_course_order",
+                "route_course_stage_conflict",
+            }
+            for warning in catalog.audit.warnings
+        )
         documents: list[CleanedDocument] = []
         for item in catalog.courses:
             blocks = {
@@ -919,14 +988,24 @@ class CourseRouteCatalogStrategy:
                         "status": "inactive",
                         "review_status": "pending_review",
                     },
-                    disposition="awaiting_model",
-                    error_code=None,
-                    error_message=None,
+                    disposition="review_required" if structure_blocked else "awaiting_model",
+                    error_code=(
+                        "CATALOG_STRUCTURE_REVIEW_REQUIRED"
+                        if item.structure_conflicts
+                        else ("CATALOG_STRUCTURE_REVIEW_BLOCKED" if structure_blocked else None)
+                    ),
+                    error_message=(
+                        "同一课程链接存在结构字段冲突，需先人工确定最终名称/合集"
+                        if item.structure_conflicts
+                        else ("同一文件存在结构冲突，需先完成结构审核" if structure_blocked else None)
+                    ),
                     audit={
                         "catalog_kind": "course",
                         "catalog_draft": {
                             "course_id": item.course_id,
                             "name": item.name,
+                            "name_candidates": item.name_candidates,
+                            "series_candidates": item.series_candidates,
                             "official_url": item.normalized_url,
                             "stage": item.stage,
                             "source_platform": "小鹅通",
@@ -951,6 +1030,7 @@ class CourseRouteCatalogStrategy:
                             "enabled": False,
                             "review_status": "pending_review",
                         },
+                        "structure_conflicts": item.structure_conflicts,
                         "model_blocks": blocks,
                         "field_sources": {
                             "name": "source",
@@ -974,9 +1054,13 @@ class CourseRouteCatalogStrategy:
                         "status": "inactive",
                         "review_status": "pending_review",
                     },
-                    disposition="awaiting_model",
-                    error_code=None,
-                    error_message=None,
+                    disposition="review_required" if structure_blocked else "awaiting_model",
+                    error_code=(
+                        "CATALOG_STRUCTURE_REVIEW_BLOCKED" if structure_blocked else None
+                    ),
+                    error_message=(
+                        "同一文件存在结构冲突，需先完成结构审核" if structure_blocked else None
+                    ),
                     audit={
                         "catalog_kind": "route",
                         "catalog_draft": {
@@ -1146,12 +1230,36 @@ def normalized_original_filename(value: str) -> str:
     return name[:500] or "未命名文件"
 
 
-def dify_document_name(original_filename: str, sha256: str, sequence: int) -> str:
-    del original_filename
-    digest = re.sub(r"[^a-fA-F0-9]", "", sha256)[:16].lower()
-    if len(digest) < 12:
-        raise ValueError("Dify文档命名需要有效内容校验值")
-    return f"cleaned-{digest}__{sequence:03d}.md"
+def normalized_filename_key(value: str) -> str:
+    """Case/Unicode/whitespace-insensitive local duplicate key."""
+    return re.sub(r"\s+", " ", normalized_original_filename(value)).strip().casefold()
+
+
+def dify_document_name(
+    original_filename: str,
+    sha256: str,
+    sequence: int,
+    *,
+    split: bool = False,
+) -> str:
+    del sha256
+    if sequence < 1:
+        raise ValueError("Dify文档序号必须为正整数")
+    original = normalized_original_filename(original_filename)
+    path = PurePath(original)
+    suffix = path.suffix
+    stem = path.name[: -len(suffix)] if suffix else path.name
+    # Keep the user's filename as the stable visible identity.  A sequence is
+    # only added at the publication boundary so split documents remain easy to
+    # locate while retaining their original extension.
+    stem = re.sub(r"[\\/:*?\"<>|]", "_", stem).strip(" .") or "未命名文件"
+    suffix = suffix[:40]
+    if not split:
+        max_stem = max(1, 300 - len(suffix))
+        return f"{stem[:max_stem]}{suffix}"
+    max_stem = max(1, 300 - len(suffix) - 5)
+    stem = stem[:max_stem]
+    return f"{stem}__{sequence:03d}{suffix}"
 
 
 def _serialize_item(item: CleaningDocument) -> dict[str, Any]:
@@ -1422,39 +1530,71 @@ def _preflight_local_duplicates(
     rows = [row for row in rows if row.source_sha256]
     if not rows:
         return
+    # PostgreSQL advisory locks close the race between two simultaneous
+    # uploads with the same content/name.  SQLite serializes the write
+    # transaction itself, while other dialects retain the row-lock query.
+    if session.bind is not None and session.bind.dialect.name == "postgresql":
+        for lock_key in sorted({
+            f"{knowledge_base_code}:sha:{row.source_sha256}"
+            for row in rows
+        } | {
+            f"{knowledge_base_code}:name:{row.source_name_key or normalized_filename_key(row.original_filename)}"
+            for row in rows
+        }):
+            session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": lock_key})
     submitted_ids = {row.id for row in rows}
     source_hashes = {row.source_sha256 for row in rows}
+    source_names = {
+        row.source_name_key or normalized_filename_key(row.original_filename)
+        for row in rows
+    }
     existing = session.execute(
         select(CleaningFile, CleaningBatch)
         .join(CleaningBatch, CleaningFile.batch_id == CleaningBatch.id)
         .where(
-            CleaningFile.source_sha256.in_(source_hashes),
-            CleaningFile.status == "succeeded",
+            (
+                CleaningFile.source_sha256.in_(source_hashes)
+                | CleaningFile.source_name_key.in_(source_names)
+                | CleaningFile.source_name_key.is_(None)
+            ),
+            CleaningFile.status.in_(
+                ["pending", "processing", "awaiting_model", "model_processing", "succeeded", "review_required", "mixed", "excluded"]
+            ),
+            CleaningFile.dedupe_released_at.is_(None),
             CleaningBatch.knowledge_base_code == knowledge_base_code,
         )
+        .with_for_update()
     ).all()
-    existing_by_key = {
-        (file_row.source_sha256, batch.strategy_code, batch.spec_revision)
-        for file_row, batch in existing
+    existing_by_hash = {
+        file_row.source_sha256 for file_row, _batch in existing
+        if file_row.id not in submitted_ids and file_row.source_sha256
+    }
+    existing_by_name = {
+        file_row.source_name_key or normalized_filename_key(file_row.original_filename)
+        for file_row, _batch in existing
         if file_row.id not in submitted_ids
     }
     seen_batch_hashes: set[str] = set()
+    seen_batch_names: set[str] = set()
     for row in rows:
-        if row.source_sha256 in seen_batch_hashes:
+        name_key = row.source_name_key or normalized_filename_key(row.original_filename)
+        if row.source_sha256 in seen_batch_hashes or name_key in seen_batch_names:
             _mark_preflight_duplicate(
                 row,
-                message="同批次内容完全相同，未重复索引",
+                message="同批次内容或文件名重复，未重复索引",
             )
             continue
         seen_batch_hashes.add(row.source_sha256)
-        if (
-            row.source_sha256,
-            row.batch.strategy_code,
-            row.batch.spec_revision,
-        ) in existing_by_key:
+        seen_batch_names.add(name_key)
+        if row.source_sha256 in existing_by_hash:
             _mark_preflight_duplicate(
                 row,
-                message="内容校验值已存在，未重复索引",
+                message="相同内容已存在；请先删除原文档后再上传",
+            )
+        elif name_key in existing_by_name:
+            _mark_preflight_duplicate(
+                row,
+                message="同名文件已存在；请先删除原文档后再上传",
             )
 
 
@@ -1481,6 +1621,16 @@ async def create_cleaning_batch(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     settings = get_settings()
+    max_batch_bytes = settings.max_upload_batch_mb * 1024 * 1024
+    disk_free = shutil.disk_usage(settings.upload_root.resolve()).free
+    reserve = settings.upload_disk_reserve_mb * 1024 * 1024
+    if disk_free < max_batch_bytes + reserve:
+        raise ServiceError(
+            "RESOURCE_EXHAUSTED",
+            "上传磁盘空间不足，已拒绝创建清洗批次",
+            507,
+            True,
+        )
     upload_mode = upload_mode.strip().lower()
     if upload_mode not in {"cleaned", "raw"}:
         raise ServiceError("VALIDATION_ERROR", "上传方式只能是 cleaned 或 raw", 422, False)
@@ -1503,6 +1653,27 @@ async def create_cleaning_batch(
             f"一个批次最多上传 {settings.max_upload_files} 个文件",
             422,
             False,
+        )
+    # Admission control is deliberately at batch level.  Uploads are streamed
+    # to disk, while Celery workers consume at a bounded queue concurrency.
+    # Lock active rows on PostgreSQL so concurrent API requests cannot both
+    # pass the same capacity check.
+    if session.bind is not None and session.bind.dialect.name == "postgresql":
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+            {"lock_key": "ai-cleaning-admission"},
+        )
+    active_batch_ids = session.scalars(
+        select(CleaningBatch.id)
+        .where(CleaningBatch.status.in_(["accepted", "processing", "awaiting_model", "model_processing", "publishing"]))
+        .with_for_update()
+    ).all()
+    if len(active_batch_ids) >= settings.max_active_cleaning_batches:
+        raise ServiceError(
+            "RESOURCE_EXHAUSTED",
+            f"当前清洗批次已达到并发上限 {settings.max_active_cleaning_batches}，请等待已有批次完成",
+            429,
+            True,
         )
     try:
         parsed_metadata = json.loads(common_metadata or "{}")
@@ -1546,6 +1717,7 @@ async def create_cleaning_batch(
             storage_filename="",
             extension=suffix,
             source_sha256="",
+            source_name_key=normalized_filename_key(original),
             size_bytes=0,
             status="pending",
             stage="upload",

@@ -179,6 +179,7 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
             select(CleaningBatch)
             .where(CleaningBatch.id == batch_id)
             .options(selectinload(CleaningBatch.files))
+            .with_for_update()
         )
         if batch is None:
             return None
@@ -1247,8 +1248,16 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 document.status = "shard_indexing"
                 document.stage = "shard_indexing"
             session.commit()
+            from ...cleaning import dify_document_name
+
+            remote_name = dify_document_name(
+                shard.file.original_filename,
+                shard.content_sha256,
+                shard.shard_index + 1,
+                split=True,
+            )
             document_id, dify_batch_id = client.create_document(
-                f"commercial-shard-{shard.content_sha256[:16]}.md",
+                remote_name,
                 shard.markdown,
                 doc_form="hierarchical_model",
                 process_mode="hierarchical",
@@ -1286,6 +1295,11 @@ def publish_dify_shard(self, shard_id: str) -> bool:
             shard.status = "succeeded"
             shard.last_error = ""
             for document in shard.documents:
+                # A model task publishes one remote document per shard.  Keep
+                # the local item projection in sync with the actual Dify
+                # management name instead of retaining the pre-sharding item
+                # name generated during the cleaning phase.
+                document.dify_document_name = remote_name
                 document.dify_document_id = document_id
                 document.dify_batch_id = dify_batch_id
                 document.remote_parent_count = 1

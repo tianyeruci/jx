@@ -16,6 +16,7 @@ ET_XMLFILE_WHEEL="et_xmlfile-2.0.0-py3-none-any.whl"
 MIGRATION_FILES=(
   "g3b7c9d1e5f2_add_large_scale_cleaning.py"
   "h4e5f6a7b8c9_expand_cleaning_batch_status.py"
+  "i5f6a7b8c9d0_upload_dedupe_tombstones.py"
 )
 CORE_IMAGE="jx-now-ai-management:$RELEASE_ID"
 UI_IMAGE="jx-now-ai-management-ui:$RELEASE_ID"
@@ -186,7 +187,10 @@ upsert_env DIFY_PUBLISH_WINDOW_START_HOUR "0"
 upsert_env DIFY_PUBLISH_WINDOW_END_HOUR "24"
 upsert_env DIFY_PARENT_MAX_TOKENS "2000"
 upsert_env CLEANING_SPEC_REVISION "commercial-cleaning-v3"
-upsert_env MAX_UPLOAD_FILES "100"
+upsert_env MAX_UPLOAD_FILES "10"
+upsert_env MAX_ACTIVE_CLEANING_BATCHES "5"
+upsert_env CLEANING_WORKER_CONCURRENCY "4"
+upsert_env SAVE_CONVERSION_MARKDOWN "false"
 SWITCHED=1
 unset AI_IMAGE AI_UI_IMAGE BUILD_VERSION
 

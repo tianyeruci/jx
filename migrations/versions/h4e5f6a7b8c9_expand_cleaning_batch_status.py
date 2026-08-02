@@ -16,6 +16,10 @@ depends_on: str | None = None
 
 
 def upgrade() -> None:
+    if op.get_bind().dialect.name == "sqlite":
+        # SQLite does not enforce VARCHAR length and cannot execute ALTER
+        # COLUMN TYPE; the wider model field is already compatible.
+        return
     op.alter_column(
         "cleaning_batch",
         "status",
@@ -26,6 +30,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if op.get_bind().dialect.name == "sqlite":
+        return
     op.execute(
         "UPDATE cleaning_batch SET status = 'processing' WHERE length(status) > 16"
     )

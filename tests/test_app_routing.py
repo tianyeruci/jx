@@ -41,6 +41,7 @@ EXPECTED_ROUTES = {
     ("POST", "/internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}/review-decisions"),
     ("PATCH", "/internal/v1/admin/knowledge-bases/{kb_code}/documents/{document_id}/status"),
     ("DELETE", "/internal/v1/admin/knowledge-bases/{kb_code}/documents/{document_id}"),
+    ("DELETE", "/internal/v1/admin/knowledge-bases/{kb_code}/sources/{file_id}"),
     ("GET", "/internal/v1/admin/logs"),
     ("GET", "/internal/v1/admin/logs/{log_id}"),
     ("GET", "/health/live"),

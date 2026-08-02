@@ -735,6 +735,33 @@ def cleaning_tab() -> None:
             selected_label = st.selectbox("批次文件", list(labels), key="cleaning_selected_file")
             selected_file_id = labels[selected_label]
             selected_file = next(item for item in files if item["file_id"] == selected_file_id)
+            st.markdown("#### 删除上传源文件（含全部知识库分片）")
+            st.warning("删除源文件会删除该上传产生的所有 Dify 分片；删除成功后才能使用同名文件重新上传。")
+            source_delete_confirm = st.text_input(
+                f"输入完整上传文件名以删除：{selected_file.get('original_filename') or ''}",
+                key=f"cleaning_source_delete_name_{selected_file_id}",
+            )
+            if st.button(
+                "删除上传源文件及全部分片",
+                type="secondary",
+                key=f"cleaning_source_delete_{selected_file_id}",
+                disabled=source_delete_confirm != str(selected_file.get("original_filename") or ""),
+            ):
+                try:
+                    result = api_json(
+                        "DELETE",
+                        f"/internal/v1/admin/knowledge-bases/{knowledge_base}/sources/{selected_file_id}",
+                        admin=True,
+                        json={"confirm_name": source_delete_confirm},
+                    )
+                    render_cleaning_payload(result)
+                    view_state["payload"] = api_json(
+                        "GET",
+                        f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}",
+                        admin=True,
+                    )
+                except httpx.HTTPError as exc:
+                    st.error(str(exc))
             if payload.get("strategy_code") == "course_route_catalog":
                 if st.button(
                     "生成课程目录审核表",
@@ -760,8 +787,11 @@ def cleaning_tab() -> None:
                     type=["xlsx"],
                     key=f"catalog_review_upload_{selected_file_id}",
                 )
+                structure_review_phase = selected_file.get("stage") == "catalog_structure_review"
                 if st.button(
-                    "导入审核表并发布",
+                    "导入结构审核表并进入模型候选"
+                    if structure_review_phase
+                    else "导入语义审核表并发布",
                     disabled=reviewed_workbook is None,
                     key=f"catalog_review_import_{selected_file_id}",
                 ):

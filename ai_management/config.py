@@ -80,8 +80,15 @@ class Settings(BaseSettings):
     max_query_chars: int = Field(default=12000, ge=100)
 
     max_upload_file_mb: int = Field(default=200, ge=1, le=200)
-    max_upload_files: int = Field(default=100, ge=1, le=100)
+    max_upload_files: int = Field(default=10, ge=1, le=100)
     max_upload_batch_mb: int = Field(default=500, ge=1)
+    max_active_cleaning_batches: int = Field(default=5, ge=1, le=1000)
+    cleaning_worker_concurrency: int = Field(default=4, ge=1, le=32)
+    upload_disk_reserve_mb: int = Field(default=1024, ge=128)
+    # Test environments may keep conversion output for server-side diagnosis;
+    # production defaults to false and never exposes this path through API.
+    save_conversion_markdown: bool = False
+    conversion_markdown_root: Path = Path("var/conversion-markdown")
     failed_file_retention_hours: int = Field(default=24, ge=1)
     cleaning_status_retention_days: int = Field(default=7, ge=1)
     cleaning_source_error_retention_days: int = Field(default=7, ge=0, le=30)
@@ -107,6 +114,8 @@ class Settings(BaseSettings):
             raise ValueError("课程目录夜间刷新必须为 Asia/Shanghai 02:00")
         if self.app_env != "production":
             return self
+        if self.save_conversion_markdown:
+            raise ValueError("生产环境禁止保存转换前策略 Markdown")
         missing: list[str] = []
         if (
             self.internal_api_token.startswith("development-")

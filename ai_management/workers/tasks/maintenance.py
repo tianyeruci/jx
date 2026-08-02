@@ -20,10 +20,12 @@ from ...models import (
     BusinessConversationSegment,
     BusinessMessage,
     CleaningBatch,
+    CleaningDocument,
     CleaningFile,
     Course,
     CourseClickDaily,
     ExternalDeletionTask,
+    ModelCleaningTask,
     SystemEventLog,
 )
 from ...services.admin_settings import get_history_retention_days
@@ -308,6 +310,46 @@ def _cleanup_files_and_stale_tasks() -> None:
             folder.rmdir()
 
 
+def _terminalize_stale_model_tasks() -> None:
+    """Stop orphaned async model tasks from keeping a batch indefinitely open."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
+    active_states = {
+        "running", "validating", "batch_uploading", "batch_running",
+    }
+    with SessionLocal() as session:
+        tasks = list(
+            session.scalars(
+                select(ModelCleaningTask).where(
+                    ModelCleaningTask.status.in_(active_states),
+                    ModelCleaningTask.updated_at <= cutoff,
+                )
+            )
+        )
+        for task in tasks:
+            task.status = "failed"
+            task.last_error = "模型异步任务超过6小时未更新，已由维护看门狗终止"
+            documents = list(
+                session.scalars(
+                    select(CleaningDocument).where(
+                        CleaningDocument.file_id.in_(
+                            select(CleaningFile.id).where(CleaningFile.batch_id == task.batch_id)
+                        ),
+                        CleaningDocument.status.in_(["model_processing", "awaiting_model"]),
+                    )
+                )
+            )
+            for document in documents:
+                document.status = "review_required"
+                document.stage = "review"
+                document.error_code = "MODEL_TASK_WATCHDOG_TIMEOUT"
+                document.error_message = "模型异步任务超时，需要人工重试或复核"
+                document.retryable = True
+            batch = session.get(CleaningBatch, task.batch_id)
+            if batch is not None:
+                _finish_batch(session, batch.id)
+        session.commit()
+
+
 def _cleanup_system_event_logs() -> None:
     cutoff = datetime.now(timezone.utc) - timedelta(days=settings.system_log_retention_days)
     with SessionLocal() as session:
@@ -329,6 +371,7 @@ def nightly_maintenance() -> dict[str, bool]:
         ("external_deletions", _retry_external_deletions),
         ("clicks", _flush_clicks),
         ("files", _cleanup_files_and_stale_tasks),
+        ("model_watchdog", _terminalize_stale_model_tasks),
         ("system_event_logs", _cleanup_system_event_logs),
         ("course_snapshot", _refresh_course_snapshot),
     ):

@@ -261,6 +261,12 @@ class CleaningFile(Base, TimestampMixin):
     outcome: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     source_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Normalized administrative filename used for upload-time duplicate
+    # protection.  It is deliberately local-only and never sent to Dify.
+    source_name_key: Mapped[str | None] = mapped_column(String(500), nullable=True, index=True)
+    # Set only after an explicit source-level delete has completed (or been
+    # tombstoned for retry), allowing a deliberate re-upload of the same name.
+    dedupe_released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     batch: Mapped[CleaningBatch] = relationship(back_populates="files")
     documents: Mapped[list["CleaningDocument"]] = relationship(
@@ -299,6 +305,7 @@ class CleaningDocument(Base, TimestampMixin):
     retryable: Mapped[bool] = mapped_column(Boolean, default=False)
     remote_parent_count: Mapped[int] = mapped_column(Integer, default=0)
     remote_child_count: Mapped[int] = mapped_column(Integer, default=0)
+    remote_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     shard_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("dify_publication_shard.id", ondelete="SET NULL"),
@@ -385,6 +392,7 @@ class DifyPublicationShard(Base, TimestampMixin):
         String(64), nullable=True, index=True
     )
     dify_batch_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    remote_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     remote_parent_count: Mapped[int] = mapped_column(Integer, default=0)
     remote_child_count: Mapped[int] = mapped_column(Integer, default=0)
     attempts: Mapped[int] = mapped_column(Integer, default=0)

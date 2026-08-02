@@ -156,19 +156,15 @@ def test_wechat_strategy_hides_account_name_and_person_name(tmp_path):
     assert "作者" in serialized
 
 
-def test_dify_child_document_names_use_content_hash_and_three_digit_sequence():
+def test_dify_child_document_names_use_source_name_and_three_digit_sequence():
     source_hash = hashlib.sha256(b"same-source").hexdigest()
-    assert dify_document_name("访谈记录.docx", source_hash, 1) == (
-        f"cleaned-{source_hash[:16]}__001.md"
-    )
-    assert dify_document_name("另一个名字.pdf", source_hash, 12) == (
-        f"cleaned-{source_hash[:16]}__012.md"
-    )
+    assert dify_document_name("访谈记录.docx", source_hash, 1) == "访谈记录.docx"
+    assert dify_document_name("另一个名字.pdf", source_hash, 12, split=True) == "另一个名字__012.pdf"
     long_name = "非常长的来源文件名" + "甲" * 200 + ".pdf"
-    first = dify_document_name(long_name, source_hash, 3)
-    second = dify_document_name(long_name, source_hash, 3)
+    first = dify_document_name(long_name, source_hash, 3, split=True)
+    second = dify_document_name(long_name, source_hash, 3, split=True)
     assert first == second
-    assert first.endswith("__003.md")
+    assert first.endswith("__003.pdf")
     assert len(first) <= 300
 
 

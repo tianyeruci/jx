@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
+from zipfile import ZipFile
 
 from openpyxl import Workbook
 
@@ -201,9 +203,98 @@ def test_course_route_strategy_sends_each_course_and_route_to_model(
     )
 
     assert len(documents) == 3
-    assert all(item.disposition == "awaiting_model" for item in documents)
+    assert all(item.disposition == "review_required" for item in documents)
+    assert any(
+        item.error_code == "CATALOG_STRUCTURE_REVIEW_REQUIRED"
+        for item in documents
+    )
     assert all((item.audit or {}).get("model_blocks") for item in documents)
     assert all(
         "https://" not in str((item.audit or {}).get("model_blocks"))
         for item in documents
     )
+
+
+def test_course_route_catalog_resets_stale_xlsx_dimension_and_preserves_collection_order(tmp_path):
+    from ai_management.course_route_catalog import parse_course_route_catalog
+
+    path = tmp_path / "stale-dimension.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["课程名称", "课程链接", "阶段", "学习路线"])
+    sheet.append(["课程合集", "", "入门阶段", "路线A"])
+    sheet.append(["2/第二门", "https://example.com/2", "入门阶段", "路线A"])
+    sheet.append(["1/第一门", "https://example.com/1", "入门阶段", "路线A"])
+    sheet.append(["无编号课程", "https://example.com/3", "入门阶段", "路线A"])
+    sheet.append(["第二组", "", "进阶阶段", "路线A"])
+    sheet.append(["1/重启第一门", "https://example.com/4", "进阶阶段", "路线A"])
+    workbook.save(path)
+
+    rewritten = tmp_path / "stale-dimension-rewritten.xlsx"
+    with ZipFile(path) as source, ZipFile(rewritten, "w") as target:
+        for info in source.infolist():
+            content = source.read(info.filename)
+            if info.filename == "xl/worksheets/sheet1.xml":
+                xml = content.decode("utf-8")
+                xml = re.sub(
+                    r'<dimension ref="[^"]+"',
+                    '<dimension ref="A1"',
+                    xml,
+                    count=1,
+                )
+                content = xml.encode("utf-8")
+            target.writestr(info, content)
+
+    catalog = parse_course_route_catalog(rewritten, existing_course_ids_by_url={})
+
+    assert len(catalog.courses) == 4
+    assert [item.name for item in catalog.courses] == [
+        "第一门",
+        "第二门",
+        "无编号课程",
+        "重启第一门",
+    ]
+    assert catalog.courses[0].series_name == "课程合集"
+    assert catalog.courses[3].series_name == "第二组"
+    assert catalog.audit.group_headers == 2
+    assert catalog.audit.effective_groups == 2
+
+
+def test_course_route_catalog_reuses_course_id_across_routes_and_flags_name_conflict(tmp_path):
+    from ai_management.course_route_catalog import parse_course_route_catalog
+
+    path = tmp_path / "multi-route-conflict.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["课程名称", "课程链接", "阶段", "学习路线"])
+    sheet.append(["合集", "", "入门阶段", "路线A"])
+    sheet.append(["1/课程甲", "https://example.com/shared", "入门阶段", "路线A"])
+    sheet.append(["2/课程乙", "https://example.com/shared", "入门阶段", "路线B"])
+    workbook.save(path)
+
+    catalog = parse_course_route_catalog(path, existing_course_ids_by_url={})
+
+    assert len(catalog.courses) == 1
+    assert len(catalog.routes) == 2
+    assert len(catalog.courses[0].name_candidates) == 2
+    assert any(
+        conflict["code"] == "duplicate_link_name_conflict"
+        for conflict in catalog.courses[0].structure_conflicts
+    )
+    assert catalog.routes[0].stages[0]["course_ids"] == catalog.routes[1].stages[0]["course_ids"]
+
+
+def test_real_catalog_sample_matches_verified_baseline():
+    from ai_management.course_route_catalog import parse_course_route_catalog
+
+    path = Path("文件清洗样本/课程信息与学习路线/课程信息与学习路线.xlsx")
+    catalog = parse_course_route_catalog(path, existing_course_ids_by_url={})
+
+    assert len(catalog.courses) == 105
+    assert len(catalog.routes) == 5
+    assert catalog.audit.source_rows == 137
+    assert catalog.audit.group_headers == 29
+    assert catalog.audit.effective_groups == 28
+    assert catalog.audit.duplicate_link_groups == 2
+    assert catalog.audit.invalid_rows == 1
+    assert all(not item.name.startswith(tuple(f"{n}/" for n in range(1, 20))) for item in catalog.courses)

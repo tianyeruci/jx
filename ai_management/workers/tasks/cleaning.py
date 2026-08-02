@@ -324,6 +324,13 @@ def _refresh_file_state(session, file_id: str, *, commit: bool = True) -> str:
         row.status = "mixed"
         row.outcome = "mixed"
         row.stage = "completed"
+    # A prior atomic rollback or transient worker error must not remain as the
+    # file-level error after every retryable child has reached a terminal
+    # succeeded/excluded/review state.  The item-level audit retains the
+    # original evidence.
+    if row.outcome in {"succeeded", "excluded", "review_required", "mixed"}:
+        row.error_code = None
+        row.error_message = None
     if row.outcome in {"succeeded", "excluded"}:
         target = settings.upload_root.resolve() / row.batch_id / row.storage_filename
         target.unlink(missing_ok=True)
@@ -795,6 +802,16 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 }
                 chunking = document.chunking or ChunkingConfig()
                 status = document.disposition or "pending"
+                structure_review = (
+                    status == "review_required"
+                    and (
+                        bool((document.audit or {}).get("structure_conflicts"))
+                        or document.error_code in {
+                            "CATALOG_STRUCTURE_REVIEW_REQUIRED",
+                            "CATALOG_STRUCTURE_REVIEW_BLOCKED",
+                        }
+                    )
+                )
                 item = CleaningDocument(
                     file_id=row.id,
                     sequence=sequence,
@@ -803,10 +820,19 @@ def process_cleaning_file(self, file_id: str) -> bool:
                         row.original_filename,
                         row.source_sha256,
                         sequence,
+                        split=len(cleaned_documents) > 1,
                     ),
                     document_key=f"{row.id}:{sequence}:{row.source_sha256[:12]}",
                     status=status,
-                    stage="review" if status == "review_required" else ("excluded" if status == "excluded" else "pending"),
+                    stage=(
+                        "catalog_structure_review"
+                        if structure_review
+                        else (
+                            "review"
+                            if status == "review_required"
+                            else ("excluded" if status == "excluded" else "pending")
+                        )
+                    ),
                     error_code=document.error_code,
                     error_message=document.error_message,
                     metadata_json=metadata,

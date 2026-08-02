@@ -32,6 +32,16 @@ logger = logging.getLogger(__name__)
 async def lifespan(_: FastAPI):
     settings = get_settings()
     settings.upload_root.mkdir(parents=True, exist_ok=True)
+    if settings.save_conversion_markdown:
+        artifact_root = settings.conversion_markdown_root.resolve()
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        for child in artifact_root.iterdir():
+            if child.is_file() or child.is_symlink():
+                child.unlink(missing_ok=True)
+            elif child.is_dir():
+                import shutil
+
+                shutil.rmtree(child)
     if settings.app_env != "production":
         create_schema()
     yield

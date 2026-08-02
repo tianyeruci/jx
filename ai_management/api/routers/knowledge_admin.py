@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from knowledge_cleaner.dify import DifyKnowledgeClient
 
@@ -815,6 +815,28 @@ def delete_document(
         raise ServiceError("DIFY_UNAVAILABLE", "Dify 删除失败，未标记为成功", 502, True) from exc
     finally:
         client.close()
+    local_document = session.scalar(
+        select(CleaningDocument)
+        .where(CleaningDocument.dify_document_id == document_id)
+        .options(selectinload(CleaningDocument.file))
+    )
+    if local_document is not None:
+        local_document.remote_deleted_at = datetime.now(timezone.utc)
+        local_document.dify_document_id = None
+        for shard in session.scalars(
+            select(DifyPublicationShard).where(
+                DifyPublicationShard.dify_document_id == document_id
+            )
+        ):
+            shard.remote_deleted_at = datetime.now(timezone.utc)
+            shard.dify_document_id = None
+        if local_document.file and not any(
+            item.dify_document_id
+            for item in local_document.file.documents
+            if item.id != local_document.id
+        ):
+            local_document.file.dedupe_released_at = datetime.now(timezone.utc)
+        session.commit()
     record_event(
         level="INFO", category="operation", component="knowledge_admin_api",
         event_code="KNOWLEDGE_DOCUMENT_DELETED", status="succeeded", message="知识库文档已删除",
@@ -822,3 +844,75 @@ def delete_document(
         details={"kb_code": kb_code, "name": actual_name},
     )
     return {"deleted": True, "document_id": document_id}
+
+
+@router.delete("/{kb_code}/sources/{file_id}")
+def delete_uploaded_source(
+    kb_code: str,
+    file_id: str,
+    payload: DeleteDocumentRequest,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Delete every Dify publication shard belonging to one uploaded source.
+
+    The source file is the duplicate-protection unit: re-upload is released
+    only after all known remote document IDs have been deleted successfully.
+    """
+    file_row = session.scalar(
+        select(CleaningFile)
+        .join(CleaningBatch, CleaningBatch.id == CleaningFile.batch_id)
+        .where(
+            CleaningFile.id == file_id,
+            CleaningBatch.knowledge_base_code == kb_code,
+        )
+        .options(
+            selectinload(CleaningFile.documents),
+            selectinload(CleaningFile.publication_shards),
+        )
+    )
+    if file_row is None:
+        raise ServiceError("VALIDATION_ERROR", "上传源文件不存在", 404, False)
+    if payload.confirm_name != file_row.original_filename:
+        raise ServiceError("CONFLICT", "confirm_name 与上传源文件名不一致", 409, False)
+    ids = {
+        str(item.dify_document_id)
+        for item in file_row.documents
+        if item.dify_document_id
+    } | {
+        str(item.dify_document_id)
+        for item in file_row.publication_shards
+        if item.dify_document_id
+    }
+    client = _client(kb_code) if ids else None
+    try:
+        for document_id in sorted(ids):
+            client.delete_document(document_id)
+    except Exception as exc:
+        raise ServiceError("DIFY_UNAVAILABLE", "源文件仍有知识库文档未删除", 502, True) from exc
+    finally:
+        if client is not None:
+            client.close()
+    deleted_at = datetime.now(timezone.utc)
+    for item in file_row.documents:
+        if item.dify_document_id:
+            item.remote_deleted_at = deleted_at
+            item.dify_document_id = None
+    for item in file_row.publication_shards:
+        if item.dify_document_id:
+            item.remote_deleted_at = deleted_at
+        item.dify_document_id = None
+    file_row.dedupe_released_at = deleted_at
+    file_row.source_deleted_at = deleted_at
+    file_row.status = "excluded"
+    file_row.outcome = "excluded"
+    file_row.stage = "source_deleted"
+    session.commit()
+    cache.delete(cleaning_batch_cache_key(file_row.batch_id))
+    record_event(
+        level="INFO", category="operation", component="knowledge_admin_api",
+        event_code="KNOWLEDGE_SOURCE_DELETED", status="succeeded",
+        message="上传源文件及其全部知识库分片已删除", actor_hash="admin",
+        resource_type="cleaning_file", resource_id=file_id,
+        details={"kb_code": kb_code, "deleted_document_count": len(ids)},
+    )
+    return {"deleted": True, "file_id": file_id, "deleted_document_count": len(ids)}

@@ -570,11 +570,10 @@ def test_cleaning_strategy_and_filename_rules(tmp_path):
     original = normalized_original_filename(
         "../很长的 客户：案例<>名称" + "甲" * 80 + ".md"
     )
-    name = dify_document_name(original, hashlib.sha256(b"x").hexdigest(), 1)
+    name = dify_document_name(original, hashlib.sha256(b"x").hexdigest(), 1, split=True)
     assert "/" not in name and "\\" not in name
-    assert name == (
-        f"cleaned-{hashlib.sha256(b'x').hexdigest()[:16]}__001.md"
-    )
+    assert name.startswith("很长的 客户：案例__名称")
+    assert name.endswith("__001.md")
     assert len(name) <= 300
 
     source = tmp_path / "sample.md"
@@ -712,7 +711,7 @@ def test_preflight_duplicate_has_an_explicit_excluded_cleaning_item(service_db):
         assert item.metadata_json["cleaning_spec_revision"] == "commercial-cleaning-v3"
 
 
-def test_preflight_duplicate_reprocesses_an_older_cleaning_spec_revision(service_db):
+def test_preflight_duplicate_blocks_an_older_cleaning_spec_revision(service_db):
     from ai_management import cleaning as cleaning_module
 
     with service_db() as session:
@@ -762,8 +761,8 @@ def test_preflight_duplicate_reprocesses_an_older_cleaning_spec_revision(service
             rows=[row],
         )
 
-        assert row.status == "pending"
-        assert row.documents == []
+        assert row.status == "excluded"
+        assert len(row.documents) == 1
 
 
 def test_admin_knowledge_batch_status_and_retry_handle_datetime_cache(

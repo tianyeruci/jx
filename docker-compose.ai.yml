@@ -22,7 +22,7 @@ services:
       context: .
       dockerfile: Dockerfile.offline
     env_file: .env
-    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_default,ai_cleaning --concurrency=4
+    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_default,ai_cleaning --concurrency=${CLEANING_WORKER_CONCURRENCY:-4}
     volumes:
       - ai_uploads:/app/var/uploads
     networks:
