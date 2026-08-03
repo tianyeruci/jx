@@ -195,18 +195,31 @@ def test_contract_retry_prompt_is_structural_and_has_no_filename():
 
 
 @pytest.mark.parametrize(
-    ("strategy", "candidates", "tokens", "expected"),
+    ("strategy", "candidates", "tokens", "batch_enabled", "expected"),
     [
-        ("personal_business_consultation", 500, 1_000_000, "realtime"),
-        ("zsxq_post", 99, 199_999, "realtime"),
-        ("zsxq_post", 100, 1, "batch"),
-        ("wechat_public_account_cognition", 1, 200_001, "batch"),
+        ("personal_business_consultation", 500, 1_000_000, False, "realtime"),
+        ("zsxq_post", 99, 199_999, False, "realtime"),
+        ("zsxq_post", 100, 1, True, "batch"),
+        ("wechat_public_account_cognition", 1, 200_001, True, "batch"),
     ],
 )
-def test_model_channel_planner(strategy, candidates, tokens, expected):
+def test_model_channel_planner(
+    strategy, candidates, tokens, batch_enabled, expected
+):
     from ai_management.model_cleaning import choose_call_mode
 
-    assert choose_call_mode(strategy, candidates, tokens) == expected
+    assert (
+        choose_call_mode(
+            strategy, candidates, tokens, batch_enabled=batch_enabled
+        )
+        == expected
+    )
+
+
+def test_model_channel_planner_defaults_to_realtime():
+    from ai_management.model_cleaning import choose_call_mode
+
+    assert choose_call_mode("zsxq_post", 100, 1) == "realtime"
 
 
 def test_semantic_response_rejects_unknown_or_uncovered_blocks():

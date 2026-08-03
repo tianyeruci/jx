@@ -517,8 +517,11 @@ curl -s "$AI_SERVICE_BASE_URL/internal/v1/admin/knowledge-bases/course/cleaning-
 | xiaobot_post | 小报童文章 | general | .md、.markdown |
 | lead_magnet | 资料钩子 | general | .md、.markdown、.txt、.docx、.pdf |
 | book | 书籍/课程讲义 | general | .md、.markdown、.txt、.docx、.pdf |
-| course_information | 课程信息 | course | .md、.markdown、.txt、.docx |
-| learning_route | 学习路线 | course | .md、.markdown、.txt、.docx |
+| course_route_catalog | 课程信息与学习路线（合并） | course | .xlsx |
+| course_information | 课程信息（兼容） | course | .md、.markdown、.txt、.docx |
+| learning_route | 学习路线（兼容） | course | .md、.markdown、.txt、.docx |
+
+本轮测试页必须验收个人商业咨询、公众号认知分享、知识星球、小报童、资料钩子和 `course_route_catalog` 六种指定策略；`book` 保持既有独立能力。`course_information`、`learning_route` 仅用于兼容历史批次/旧调用，不作为本轮页面测试路径。
 
 ### 4.2 创建上传批次（必须对接）
 

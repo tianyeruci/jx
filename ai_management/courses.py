@@ -14,8 +14,15 @@ from sqlalchemy.orm import Session
 
 from .cache import cache
 from .config import get_settings
+from .course_route_catalog import _collection_header
 from .errors import ServiceError
-from .models import Course, LearningRoute, LearningRouteProgress
+from .models import (
+    Course,
+    CourseCollection,
+    CourseCollectionMember,
+    LearningRoute,
+    LearningRouteProgress,
+)
 from .schemas import RecommendationDecision
 from .services.admin_settings import get_catalog_revision
 from .timeutil import business_today
@@ -174,6 +181,22 @@ def _route_dict(route: LearningRoute) -> dict[str, Any]:
     }
 
 
+def _collection_dict(collection: CourseCollection, members: list[CourseCollectionMember]) -> dict[str, Any]:
+    ordered = sorted(members, key=lambda item: (item.order_rank, item.course_id))
+    return {
+        "collection_id": collection.collection_id,
+        "name": collection.name,
+        "raw_title": collection.raw_title,
+        "declared_lessons": collection.declared_lessons,
+        "total_minutes": collection.total_minutes,
+        "entry_course_id": collection.entry_course_id,
+        "course_ids": [item.course_id for item in ordered],
+        "member_orders": [item.order_rank for item in ordered],
+        "enabled": collection.enabled,
+        "review_status": collection.review_status,
+    }
+
+
 def _p95(values: list[float]) -> float:
     if not values:
         return 0.0
@@ -205,10 +228,64 @@ def rebuild_snapshot(session: Session) -> dict[str, Any]:
             for course_id in (stage.get("course_ids", []) if isinstance(stage, dict) else [])
         )
     ]
+    collection_rows = list(
+        session.scalars(
+            select(CourseCollection).where(
+                CourseCollection.enabled.is_(True),
+                CourseCollection.review_status == "approved",
+            )
+        )
+    )
+    collection_ids = {item.collection_id for item in collection_rows}
+    collection_members = list(
+        session.scalars(
+            select(CourseCollectionMember).where(
+                CourseCollectionMember.collection_id.in_(collection_ids)
+            )
+        )
+    ) if collection_ids else []
+    members_by_collection: dict[str, list[CourseCollectionMember]] = {}
+    for member in collection_members:
+        if member.course_id in active_course_ids:
+            members_by_collection.setdefault(member.collection_id, []).append(member)
+    collections = {
+        item.collection_id: _collection_dict(item, members_by_collection.get(item.collection_id, []))
+        for item in collection_rows
+        if members_by_collection.get(item.collection_id)
+    }
+    if not collections:
+        # Backward-compatible read path for catalogs published before the
+        # collection tables existed. New publishes fill the authoritative
+        # tables, while this fallback keeps direct-course matching available
+        # during the additive migration window.
+        fallback: dict[str, dict[str, Any]] = {}
+        for course in courses:
+            raw_series = str(course.series_name or "").strip()
+            if not raw_series:
+                continue
+            parsed_header = _collection_header(raw_series)
+            name = parsed_header[0] if parsed_header else raw_series
+            collection_id = "collection_" + __import__("hashlib").sha256(name.casefold().encode("utf-8")).hexdigest()[:12]
+            current = fallback.setdefault(
+                collection_id,
+                {
+                    "collection_id": collection_id,
+                    "name": name,
+                    "raw_title": raw_series,
+                    "declared_lessons": parsed_header[1] if parsed_header else None,
+                    "total_minutes": parsed_header[2] if parsed_header else None,
+                    "course_ids": [],
+                    "enabled": True,
+                    "review_status": "approved",
+                },
+            )
+            current["course_ids"].append(course.course_id)
+        collections = fallback
     snapshot = {
         "catalog_revision": get_catalog_revision(session),
         "courses": {item.course_id: _course_dict(item) for item in courses},
         "routes": {item.route_id: _route_dict(item) for item in routes},
+        "collections": collections,
     }
     cache.atomic_json_swap(COURSE_SNAPSHOT_KEY, snapshot)
     serialized_bytes = len(json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
@@ -229,6 +306,7 @@ def get_snapshot(session: Session) -> dict[str, Any]:
         isinstance(snapshot, dict)
         and "courses" in snapshot
         and "routes" in snapshot
+        and "collections" in snapshot
         and snapshot.get("catalog_revision") == revision
     ):
         _SNAPSHOT_PARSE_SAMPLES_MS.append((time.perf_counter() - started) * 1000)
@@ -328,6 +406,24 @@ def _latest_course_ids(query: str, courses: dict[str, dict[str, Any]]) -> list[s
     ]
 
 
+def _collection_match_score(query: str, collection: dict[str, Any]) -> int:
+    name = str(collection.get("name") or "")
+    normalized_query = _normalize_text(query)
+    normalized_name = _normalize_text(name)
+    if not normalized_query or not normalized_name:
+        return 0
+    # Accept the common conversational suffix while keeping partial matches
+    # conservative; e.g. "AI写作" matches "AI写作课" but not another
+    # unrelated collection that merely contains "写作".
+    candidates = {normalized_name}
+    for suffix in ("课程", "课"):
+        if normalized_name.endswith(suffix) and len(normalized_name) > len(suffix):
+            candidates.add(normalized_name[: -len(suffix)])
+    if normalized_query in candidates or any(candidate in normalized_query for candidate in candidates):
+        return max(20, len(max(candidates, key=len)) * 3)
+    return _score_query_match(query, name) if len(normalized_name) >= 4 else 0
+
+
 def infer_recommendation_decision(
     session: Session,
     *,
@@ -366,6 +462,30 @@ def infer_recommendation_decision(
                 "按首次发布时间最新" if latest_with_published_at else "按当前目录收录时间最新"
             ),
         )
+
+    # Resolve a unique collection before route scoring. A collection is a
+    # bounded direct-course recommendation; it must never silently expand into
+    # the larger learning route that happens to contain its members.
+    collection_matches: list[tuple[int, dict[str, Any]]] = []
+    for collection in (snapshot.get("collections") or {}).values():
+        if not collection.get("enabled") or collection.get("review_status") != "approved":
+            continue
+        ids = [course_id for course_id in collection.get("course_ids", []) if course_id in approved_courses]
+        if not ids:
+            continue
+        score = _collection_match_score(query, collection)
+        if score > 0:
+            collection_matches.append((score, {**collection, "course_ids": ids}))
+    collection_matches.sort(key=lambda item: (item[0], str(item[1].get("collection_id") or "")), reverse=True)
+    if collection_matches:
+        best_score, best_collection = collection_matches[0]
+        second_score = collection_matches[1][0] if len(collection_matches) > 1 else -1
+        if best_score >= 20 and best_score - second_score >= 4:
+            return RecommendationDecision(
+                intent="direct_course",
+                candidate_course_ids=list(best_collection["course_ids"])[:5],
+                answer_plan=f"匹配课程合集：{best_collection['name']}",
+            )
 
     route_scores: list[tuple[int, str]] = []
     for route_id, route in approved_routes.items():
@@ -649,16 +769,36 @@ def validate_recommendation(
         card["redirect_url"] = f"{get_settings().public_base_url.rstrip('/')}/r/{token}"
         valid_courses.append(card)
 
+    expert_insight = str(getattr(decision, "expert_insight", "") or "").strip()
+    expert_ids = list(dict.fromkeys(str(item).strip() for item in getattr(decision, "expert_course_ids", []) if str(item).strip()))
+    final_ids = [str(item.get("course_id") or "") for item in valid_courses]
+    if expert_insight and expert_ids == final_ids:
+        # The model is not allowed to leak internal identifiers or direct
+        # links. A failed content gate suppresses only the expert portion;
+        # validated course cards remain usable.
+        forbidden = set(final_ids) | set(routes) | set(courses)
+        if not any(value and value in expert_insight for value in forbidden) and not re.search(
+            r"https?://|www\.", expert_insight, flags=re.IGNORECASE
+        ):
+            expert_insight = expert_insight[:800]
+        else:
+            expert_insight = ""
+    else:
+        expert_insight = ""
+
     if progress_applied:
         cache.delete(f"ai:route-progress:{user_hash}")
 
-    return {
+    result = {
         "intent": decision.intent,
         "course_cards": valid_courses,
         "learning_route": route,
         "recommendation_note": decision.answer_plan if valid_courses else "",
         "progress_applied": progress_applied,
     }
+    if expert_insight:
+        result["expert_insight"] = expert_insight
+    return result
 
 
 def record_click(session: Session, token: str) -> str:

@@ -21,6 +21,7 @@ ALL_COMPOSE=(
 SERVICES=(
   api
   worker
+  ai-ocr-worker
   model-realtime-worker
   model-batch-worker
   publication-worker
@@ -606,7 +607,7 @@ execute_reset() {
   cp -a "$RESET_TEMP_DIR/prebackup/." "$evidence_dir/prebackup/"
 
   "${ALL_COMPOSE[@]}" stop \
-    scheduler publication-worker model-batch-worker model-realtime-worker worker api
+    scheduler publication-worker model-batch-worker model-realtime-worker ai-ocr-worker worker api
   capture_targets "$evidence_dir/poststop"
   capture_upload_entries "$evidence_dir/poststop"
 

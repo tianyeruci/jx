@@ -133,8 +133,10 @@ def reset_cleaning_batch_view_state(
 
     state.pop(CLEANING_BATCH_VIEW_STATE_KEY, None)
     if clear_selection_widgets:
+        for key in list(state):
+            if key == "cleaning_selected_file" or key.startswith("cleaning_selected_file_"):
+                state.pop(key, None)
         for key in (
-            "cleaning_selected_file",
             "cleaning_selected_item",
             "cleaning_review_action",
             "cleaning_review_reason",
@@ -193,6 +195,9 @@ def cleaning_ui_display_payload(value: Any) -> Any:
     for key, item in value.items():
         if key in CLEANING_UI_HIDDEN_RESPONSE_FIELDS:
             continue
+        if key == "error_message":
+            result[key] = "详细原因已记录在服务端脱敏日志"
+            continue
         if key == "metadata":
             if isinstance(item, dict):
                 result[key] = {
@@ -233,6 +238,45 @@ def render_result_diagnostics(result: Any, *, label: str = "诊断与原始结�
     with st.expander(label, expanded=False):
         payload = result
         st.json(payload)
+
+
+def render_course_recommendation(result: Any, *, label: str = "课程推荐") -> None:
+    """Render validated cards and one combined recommendation note.
+
+    The page never constructs a course URL. It only opens the signed
+    ``redirect_url`` returned by the service so click PV/UV accounting remains
+    server-controlled.
+    """
+
+    if not isinstance(result, dict):
+        return
+    cards_payload = result.get("course_cards") or {}
+    cards = cards_payload.get("items") if isinstance(cards_payload, dict) else cards_payload
+    if isinstance(cards, list) and cards:
+        st.markdown(f"#### {label}")
+        for index, card in enumerate(cards[:5], start=1):
+            if not isinstance(card, dict):
+                continue
+            name = str(card.get("name") or "未命名课程")
+            stage = str(card.get("stage") or "").strip()
+            series = str(card.get("series_name") or "").strip()
+            caption = " · ".join(value for value in (stage, series) if value)
+            st.write(f"{index}. **{name}**" + (f"（{caption}）" if caption else ""))
+            redirect_url = str(card.get("redirect_url") or "").strip()
+            if redirect_url:
+                link_button = getattr(st, "link_button", None)
+                if callable(link_button):
+                    link_button("打开课程", redirect_url, key=f"course_card_link_{index}")
+                else:
+                    st.markdown(f"[打开课程]({redirect_url})")
+    route = result.get("learning_route")
+    if isinstance(route, dict) and route:
+        state = route.get("state") or route.get("progress_status") or ""
+        st.caption(f"学习路线：{route.get('name') or route.get('route_id') or '未命名'} · {state}")
+    note_payload = result.get("course_recommendation_note")
+    note = note_payload.get("content") if isinstance(note_payload, dict) else note_payload
+    if str(note or "").strip() and isinstance(cards, list) and cards:
+        st.info(str(note).strip())
 
 
 def delete_confirmation_valid(user_id: str, phrase: str) -> bool:
@@ -465,6 +509,7 @@ def business_tab(user_id: str) -> None:
         if result := st.session_state.get("last_business_result"):
             if result.get("task_id"):
                 st.caption(f"最近任务 ID：{result['task_id']}")
+            render_course_recommendation(result)
             render_result_diagnostics(result, label="课程、引用和诊断")
             message_id = (
                 result.get("message_end", {}).get("message_id")
@@ -559,8 +604,51 @@ def course_tab(user_id: str) -> None:
     reuse_conversation = st.checkbox("复用上次课程测试会话", value=True)
     if st.session_state["course_test_conversation_id"]:
         st.caption(f"当前课程测试会话：{st.session_state['course_test_conversation_id']}")
+        if st.button("加载课程测试历史"):
+            try:
+                st.session_state["course_test_history"] = api_json(
+                    "GET",
+                    f"/internal/v1/business/conversations/{st.session_state['course_test_conversation_id']}/messages",
+                    user_id=user_id,
+                )
+            except httpx.HTTPError as exc:
+                st.error(str(exc))
+        history_payload = st.session_state.get("course_test_history")
+        history_items = history_payload.get("items") if isinstance(history_payload, dict) else []
+        if history_items:
+            with st.expander("历史课程卡片与专家建议", expanded=False):
+                for message in history_items:
+                    if not isinstance(message, dict) or message.get("role") != "assistant":
+                        continue
+                    recommendation = message.get("recommendation") or {}
+                    if not isinstance(recommendation, dict):
+                        continue
+                    history_result = {
+                        "course_cards": {"items": recommendation.get("course_cards") or []},
+                        "learning_route": recommendation.get("learning_route"),
+                        "course_recommendation_note": {
+                            "content": "\n".join(
+                                value
+                                for value in (
+                                    (
+                                        f"匹配理由：{recommendation.get('recommendation_note')}"
+                                        if recommendation.get("recommendation_note")
+                                        else ""
+                                    ),
+                                    (
+                                        f"专家建议：{recommendation.get('expert_insight')}"
+                                        if recommendation.get("expert_insight")
+                                        else ""
+                                    ),
+                                )
+                                if value
+                            )
+                        },
+                    }
+                    render_course_recommendation(history_result, label="历史课程推荐")
     if st.button("新建课程测试会话"):
         st.session_state["course_test_conversation_id"] = ""
+        st.session_state.pop("course_test_history", None)
         st.rerun()
     if st.button("执行课程推荐测试"):
         output = st.empty()
@@ -583,6 +671,7 @@ def course_tab(user_id: str) -> None:
                 st.session_state["course_test_conversation_id"] = str(
                     message_end["conversation_id"]
                 )
+            render_course_recommendation(result)
             render_result_diagnostics(result, label="课程推荐诊断")
         except httpx.HTTPError as exc:
             st.error(str(exc))
@@ -765,7 +854,11 @@ def cleaning_tab() -> None:
                 f"{item['original_filename']} · {item['outcome']}": item["file_id"]
                 for item in files
             }
-            selected_label = st.selectbox("批次文件", list(labels), key="cleaning_selected_file")
+            selected_label = st.selectbox(
+                "批次文件",
+                list(labels),
+                key=f"cleaning_selected_file_{batch_id}",
+            )
             selected_file_id = labels[selected_label]
             selected_file = next(item for item in files if item["file_id"] == selected_file_id)
             st.markdown("#### 删除上传源文件（含全部知识库分片）")

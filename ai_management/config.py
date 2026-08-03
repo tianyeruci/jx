@@ -49,10 +49,10 @@ class Settings(BaseSettings):
     cleaning_batch_max_bytes: int = Field(
         default=400 * 1024 * 1024, ge=1024, le=500 * 1024 * 1024
     )
-    # Batch is the default for backwards compatibility.  Test deployments
-    # may disable it so new model-cleaning tasks use the bounded realtime
-    # worker instead; an existing task keeps the mode stored on its record.
-    bailian_batch_enabled: bool = True
+    # Batch is opt-in.  New deployments and test runs use the bounded
+    # realtime worker unless an operator explicitly enables Bailian Batch;
+    # an existing task keeps the mode stored on its record.
+    bailian_batch_enabled: bool = False
     cleaning_candidate_max_tokens: int = Field(default=12_000, ge=1000)
     # Dify validates this independently from the model prompt candidate cap.
     # Its custom hierarchical segment API accepts only 50..4000.
@@ -99,6 +99,19 @@ class Settings(BaseSettings):
     max_upload_batch_mb: int = Field(default=500, ge=1)
     max_active_cleaning_batches: int = Field(default=5, ge=1, le=1000)
     cleaning_worker_concurrency: int = Field(default=4, ge=1, le=32)
+    # OCR is deliberately opt-in.  The page limit only applies to scanned
+    # PDFs which need the PaddleOCR path; text-layer PDFs are not limited.
+    pdf_ocr_enabled: bool = False
+    pdf_ocr_max_pages: int = Field(default=10, ge=1, le=50)
+    pdf_ocr_task_timeout_seconds: int = Field(default=600, ge=600, le=3600)
+    pdf_ocr_render_dpi: int = Field(default=200, ge=72, le=600)
+    pdf_ocr_retry_dpi: int = Field(default=300, ge=72, le=600)
+    pdf_ocr_auto_confidence: float = Field(default=0.90, ge=0, le=1)
+    pdf_ocr_min_confidence: float = Field(default=0.75, ge=0, le=1)
+    pdf_ocr_max_low_conf_ratio: float = Field(default=0.10, ge=0, le=1)
+    pdf_ocr_cpu_threads: int = Field(default=4, ge=1, le=64)
+    pdf_ocr_model_root: Path = Path("var/ocr-models")
+    pdf_ocr_model_manifest: Path = Path("var/ocr-models/manifest.json")
     upload_disk_reserve_mb: int = Field(default=1024, ge=128)
     # Server-side diagnostic artifact. Deployments decide whether it is kept;
     # the path is never exposed through HTTP and must be a dedicated directory.
@@ -123,6 +136,20 @@ class Settings(BaseSettings):
     @property
     def dify_url(self) -> str:
         return self.dify_base_url.rstrip("/")
+
+    @model_validator(mode="after")
+    def validate_ocr_limits(self) -> "Settings":
+        minimum_timeout = max(600, self.pdf_ocr_max_pages * 60)
+        if self.pdf_ocr_task_timeout_seconds < minimum_timeout:
+            raise ValueError(
+                "PDF_OCR_TASK_TIMEOUT_SECONDS 必须 >= "
+                f"max(600, PDF_OCR_MAX_PAGES*60) ({minimum_timeout})"
+            )
+        if self.pdf_ocr_retry_dpi < self.pdf_ocr_render_dpi:
+            raise ValueError("PDF_OCR_RETRY_DPI 不能低于 PDF_OCR_RENDER_DPI")
+        if self.pdf_ocr_min_confidence > self.pdf_ocr_auto_confidence:
+            raise ValueError("PDF_OCR_MIN_CONFIDENCE 不能高于 PDF_OCR_AUTO_CONFIDENCE")
+        return self
 
     @model_validator(mode="after")
     def validate_production_secrets(self) -> "Settings":

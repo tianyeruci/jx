@@ -77,6 +77,35 @@ def test_admin_routes_require_both_tokens(service_db) -> None:
     assert accepted.json() == {"courses": [], "routes": []}
 
 
+def test_cleaning_strategy_listing_uses_merged_course_route_entry(service_db) -> None:
+    headers = {
+        "X-Internal-Token": "test-internal-token",
+        "X-Admin-Token": "test-admin-token",
+    }
+    with TestClient(app) as client:
+        general = client.get(
+            "/internal/v1/admin/knowledge-bases/general/cleaning-strategies",
+            headers=headers,
+        )
+        course = client.get(
+            "/internal/v1/admin/knowledge-bases/course/cleaning-strategies",
+            headers=headers,
+        )
+    assert general.status_code == 200
+    assert course.status_code == 200
+    general_codes = {item["code"] for item in general.json()["items"]}
+    course_codes = {item["code"] for item in course.json()["items"]}
+    assert {
+        "personal_business_consultation",
+        "wechat_public_account_cognition",
+        "zsxq_post",
+        "xiaobot_post",
+        "lead_magnet",
+    } <= general_codes
+    assert "course_route_catalog" in course_codes
+    assert not {"course_information", "learning_route"} & (general_codes | course_codes)
+
+
 def test_catalog_document_disable_updates_authority_and_delete_is_blocked(service_db, monkeypatch) -> None:
     from ai_management.api.routers import knowledge_admin
     from ai_management.courses import get_snapshot

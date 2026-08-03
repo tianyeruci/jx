@@ -543,6 +543,60 @@ def _apply_model_payload(
             document.error_code = None
             document.error_message = None
     elif strategy_code == "personal_business_consultation":
+        # v2 is opt-in by an explicit schema marker so historical model tasks
+        # remain replayable under the existing sections contract.
+        if str(payload.get("schema_version") or "") == "consulting_case_v2":
+            from knowledge_cleaner.consultation_v2 import (
+                CaseDisposition,
+                render_case_markdown,
+                validate_case_payload,
+            )
+
+            case = validate_case_payload(payload, source_blocks=request.blocks)
+            audit["model_result"] = case.model_dump(mode="json")
+            if case.disposition == CaseDisposition.EXCLUDE:
+                document.status = "excluded"
+                document.stage = "completed"
+                document.error_code = "CONSULTATION_EXCLUDED"
+                document.error_message = "模型判定案例不适合进入商业顾问知识库"
+                document.audit_json = audit
+                return
+            if case.disposition == CaseDisposition.REVIEW:
+                document.status = "review_required"
+                document.stage = "review"
+                document.error_code = "CONSULTATION_REVIEW_REQUIRED"
+                document.error_message = "咨询案例证据或背景需要人工复核"
+                document.audit_json = audit
+                return
+            rendered = render_case_markdown(case)
+            from knowledge_cleaner.pdf_convert import scan_residual_pii
+
+            residual = scan_residual_pii(rendered)
+            forbidden_names = [
+                str(value)
+                for value in audit.get("forbidden_public_names") or []
+                if str(value)
+            ]
+            if residual or any(value in rendered for value in forbidden_names):
+                raise ValueError("咨询模型输出仍含潜在PII或受保护身份")
+            document.cleaned_markdown = sanitize_for_knowledge(rendered)
+            document.metadata_json = {
+                **(document.metadata_json or {}),
+                "record_type": "consulting_case_v2",
+                "case_id": case.case_id,
+                "case_group_id": case.case_group_id or "",
+                "topic": "；".join(unit.topic for unit in case.decision_units),
+                "evidence_level": case.overall_evidence_level.value,
+                "background_sufficiency": case.background_sufficiency.value,
+                "time_sensitive": case.time_sensitive,
+                "review_status": "awaiting_model",
+            }
+            document.status = "pending"
+            document.stage = "pending"
+            document.error_code = None
+            document.error_message = None
+            document.audit_json = audit
+            return
         result = validate_consultation_response(
             payload,
             available_block_ids=available,
@@ -648,7 +702,22 @@ def _apply_model_payload(
         else:
             raise ValueError("课程目录记录类型无效")
         audit["catalog_draft"] = draft
-        audit["catalog_record"] = record.model_dump(mode="json")
+        catalog_record = record.model_dump(mode="json")
+        if kind == "course":
+            for key in (
+                "collection_id",
+                "collection_name",
+                "collection_order",
+                "collection_entry",
+                "collection_declared_lessons",
+                "collection_total_minutes",
+                "collection_raw_title",
+                "collection_entry_course_id",
+                "collection_warnings",
+            ):
+                if key in draft:
+                    catalog_record[key] = draft[key]
+        audit["catalog_record"] = catalog_record
         audit["automatic_review"] = {
             "approved": True,
             "source": "course_catalog_auto_publish",

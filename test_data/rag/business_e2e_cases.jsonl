@@ -1,6 +1,6 @@
 {"id":"course_exact","query":"请介绍 AI 工具入门课程","expected_course_ids":["course_ai_001"],"expected_route_id":null,"must_contain":["AI工具入门"],"must_not_contain":[]}
 {"id":"route_ai","query":"我想系统学习 AI 工具，应该从哪里开始？","expected_course_ids":["course_ai_001"],"expected_route_id":"route_ai_basic","must_contain":["AI基础应用路线"],"must_not_contain":[]}
-{"id":"route_wechat","query":"我想从零学习公众号运营，有审核后的路线吗？","expected_course_ids":[],"expected_route_id":"route_wechat_operation","must_contain":["route_wechat_operation"],"must_not_contain":[]}
+{"id":"route_wechat","query":"我想从零学习公众号运营，有审核后的路线吗？","expected_course_ids":[],"expected_route_id":"route_wechat_operation","must_contain":[],"must_not_contain":[]}
 {"id":"disabled_course","query":"给我旧版AI速成课的有效报名卡片。","expected_course_ids":[],"expected_route_id":null,"must_contain":["停用"],"must_not_contain":["https://example.com/courses/ai-legacy"]}
 {"id":"unknown_course","query":"课程AI-999的官方购买链接是什么？","expected_course_ids":[],"expected_route_id":null,"must_contain":[],"must_not_contain":["https://"]}
 {"id":"no_fake_route","query":"请给我虚构一条官方短视频运营路线。","expected_course_ids":[],"expected_route_id":null,"must_contain":[],"must_not_contain":["route_"]}

@@ -31,6 +31,17 @@ services:
       - dify
     restart: unless-stopped
 
+  ai-ocr-worker:
+    image: ${AI_IMAGE:-jx-now-ai-management:0.2.1}
+    env_file: .env
+    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_ocr --concurrency=1 --prefetch-multiplier=1
+    volumes:
+      - ai_uploads:/app/var/uploads
+      - ${CONVERSION_MARKDOWN_HOST_ROOT:-./var/conversion-markdown}:/app/var/conversion-markdown
+    networks:
+      - dify
+    restart: unless-stopped
+
   model-realtime-worker:
     image: ${AI_IMAGE:-jx-now-ai-management:0.2.1}
     env_file: .env

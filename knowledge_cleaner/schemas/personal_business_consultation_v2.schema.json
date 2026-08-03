@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "personal_business_consultation_v2.schema.json",
+  "title": "Personal business consultation case v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "case_id", "disposition", "title", "decision_units", "overall_evidence_level", "background_sufficiency", "source_coverage"],
+  "properties": {
+    "schema_version": {"const": "consulting_case_v2"},
+    "case_id": {"type": "string", "pattern": "^case_[A-Za-z0-9_-]{4,80}$"},
+    "case_group_id": {"type": ["string", "null"]},
+    "disposition": {"enum": ["keep_as_case", "review_required", "exclude"]},
+    "title": {"type": "string", "minLength": 1, "maxLength": 200},
+    "source_date": {"type": "string"},
+    "shared_context": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+    "objectives": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+    "decision_units": {"type": "array", "maxItems": 5, "items": {"$ref": "#/$defs/unit"}},
+    "overall_evidence_level": {"enum": ["E0", "E1", "E2", "E3"]},
+    "background_sufficiency": {"enum": ["high", "medium", "low"]},
+    "time_sensitive": {"type": "boolean"},
+    "time_sensitive_items": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+    "source_coverage": {"$ref": "#/$defs/coverage"},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["text", "status", "source_block_ids"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1, "maxLength": 3000},
+        "status": {"enum": ["customer_fact", "consultant_judgment", "decision", "planned_action", "observed_result", "derived_condition"]},
+        "source_block_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "priority": {"enum": ["primary", "secondary", null]}
+      }
+    },
+    "unit": {
+      "type": "object", "additionalProperties": false,
+      "required": ["unit_id", "topic", "result_status", "evidence_level", "retrieval_summary"],
+      "properties": {
+        "unit_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{1,80}$"},
+        "topic": {"type": "string", "minLength": 1, "maxLength": 160},
+        "local_context": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+        "problem": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+        "mechanism_or_diagnosis": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+        "actions": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+        "observed_outcomes": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+        "result_status": {"enum": ["unverified", "partially_verified", "verified", "not_applicable"]},
+        "stated_conditions": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+        "derived_conditions": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+        "risks_or_limits": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+        "evidence_level": {"enum": ["E0", "E1", "E2", "E3"]},
+        "retrieval_summary": {"type": "string", "minLength": 1, "maxLength": 1000}
+      }
+    },
+    "coverage_entry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["block_id", "reason"],
+      "properties": {"block_id": {"type": "string"}, "reason": {"type": "string", "minLength": 1}}
+    },
+    "coverage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kept", "dropped", "unresolved"],
+      "properties": {
+        "kept": {"type": "array", "items": {"$ref": "#/$defs/coverage_entry"}},
+        "dropped": {"type": "array", "items": {"$ref": "#/$defs/coverage_entry"}},
+        "unresolved": {"type": "array", "items": {"$ref": "#/$defs/coverage_entry"}}
+      }
+    }
+  }
+}

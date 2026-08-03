@@ -40,6 +40,11 @@ _COLLECTION_TITLE_RE = re.compile(
     r"^\s*【[^】]+】\s*[1-9]\d*\s*讲"
     r"(?:\s*[（(][^）)]*[）)])?\s*$"
 )
+_COLLECTION_HEADER_RE = re.compile(
+    r"^\s*【(?P<name>[^】]+)】\s*(?:[1-9]\d*版\s*)?(?P<count>[1-9]\d*)\s*讲"
+    r"(?:\s*[（(]\s*(?P<hours>[\d.]+)\s*小时[^）)]*[）)])?"
+    r"|^\s*【(?P<name2>[^】]+)】\s*(?:[1-9]\d*版\s*)?(?P<count2>[1-9]\d*)\s*讲\s*(?P<hours2>[\d.]+)\s*小时\s*$"
+)
 MAX_CATALOG_ROWS = 100_000
 MAX_CATALOG_COLUMNS = 64
 
@@ -108,6 +113,20 @@ def _strip_order_prefix(value: str) -> tuple[str, int | None]:
     return value[match.end() :].strip(), int(match.group(1))
 
 
+def _collection_header(value: str) -> tuple[str, int | None, int | None] | None:
+    """Parse a bracketed collection label without guessing ordinary titles."""
+
+    match = _COLLECTION_HEADER_RE.fullmatch(value.strip())
+    if match is None:
+        return None
+    name = (match.group("name") or match.group("name2") or "").strip()
+    count_raw = match.group("count") or match.group("count2")
+    hours_raw = match.group("hours") or match.group("hours2")
+    count = int(count_raw) if count_raw else None
+    hours = float(hours_raw) if hours_raw else None
+    return name, count, round(hours * 60) if hours is not None else None
+
+
 def _auto_resolve_name_conflict(
     name_candidates: list[str],
     series_candidates: list[str],
@@ -172,6 +191,10 @@ class CourseDraft:
     series_candidates: list[str] = field(default_factory=list)
     structure_conflicts: list[dict[str, Any]] = field(default_factory=list)
     first_order_rank: int = 0
+    collection_id: str = ""
+    collection_clean_name: str = ""
+    collection_order: int | None = None
+    collection_entry: bool = False
 
     @property
     def model_text(self) -> str:
@@ -213,10 +236,24 @@ class RouteDraft:
 
 
 @dataclass(slots=True)
+class CollectionDraft:
+    collection_id: str
+    name: str
+    raw_title: str
+    declared_lessons: int | None
+    total_minutes: int | None
+    entry_course_id: str = ""
+    member_course_ids: list[str] = field(default_factory=list)
+    member_orders: list[int] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class CourseRouteCatalogDraft:
     courses: list[CourseDraft]
     routes: list[RouteDraft]
     audit: CatalogAudit
+    collections: list[CollectionDraft] = field(default_factory=list)
 
 
 def _nonempty_sheets(path: Path) -> list[tuple[str, list[list[Any]]]]:
@@ -553,6 +590,9 @@ def parse_course_route_catalog(
     grouped: dict[str, list[dict[str, Any]]] = {}
     members_by_group: dict[int, list[dict[str, Any]]] = {}
     group_names: dict[int, str] = {}
+    group_clean_names: dict[int, str] = {}
+    group_declared_lessons: dict[int, int | None] = {}
+    group_total_minutes: dict[int, int | None] = {}
     group_header_rows: dict[int, int] = {}
     current_group = 0
     next_group = 0
@@ -581,9 +621,32 @@ def parse_course_route_catalog(
             next_group += 1
             current_group = next_group
             group_names[current_group] = name
+            parsed_header = _collection_header(name)
+            group_clean_names[current_group] = (
+                parsed_header[0] if parsed_header else name
+            )
+            group_declared_lessons[current_group] = (
+                parsed_header[1] if parsed_header else None
+            )
+            group_total_minutes[current_group] = (
+                parsed_header[2] if parsed_header else None
+            )
             group_header_rows[current_group] = row_number
             members_by_group.setdefault(current_group, [])
             continue
+        parsed_header = _collection_header(name)
+        if parsed_header:
+            # A linked collection title starts a new group too.  Keep its
+            # linked card as an entry course, but never let it occupy the
+            # numbered member sequence when child rows follow.
+            next_group += 1
+            current_group = next_group
+            group_names[current_group] = name
+            group_clean_names[current_group] = parsed_header[0]
+            group_declared_lessons[current_group] = parsed_header[1]
+            group_total_minutes[current_group] = parsed_header[2]
+            group_header_rows[current_group] = row_number
+            members_by_group.setdefault(current_group, [])
         try:
             normalized_url = normalize_course_url(raw_url)
         except ValueError as exc:
@@ -625,6 +688,10 @@ def parse_course_route_catalog(
             "order_marker": explicit_order if explicit_order is not None else name_order,
             "group_id": current_group,
             "group_name": group_names.get(current_group, ""),
+            "group_clean_name": group_clean_names.get(current_group, ""),
+            "group_declared_lessons": group_declared_lessons.get(current_group),
+            "group_total_minutes": group_total_minutes.get(current_group),
+            "collection_entry": bool(parsed_header),
         }
         grouped.setdefault(normalized_url, []).append(member)
         members_by_group.setdefault(current_group, []).append(member)
@@ -805,6 +872,66 @@ def parse_course_route_catalog(
                 )
 
     courses.sort(key=lambda item: item.first_order_rank or min(item.source_rows))
+    collections: list[CollectionDraft] = []
+    collection_by_course: dict[str, str] = {}
+    for group_id in sorted(members_by_group, key=lambda item: group_header_rows.get(item, 1)):
+        raw_group_members = [
+            member for member in members_by_group[group_id] if "order_rank" in member
+        ]
+        if not raw_group_members:
+            continue
+        raw_group_members.sort(key=lambda item: item["order_rank"])
+        entry_members = [item for item in raw_group_members if item.get("collection_entry")]
+        numbered_members = [item for item in raw_group_members if not item.get("collection_entry")]
+        member_source = numbered_members or entry_members[:1]
+        collection_name = group_clean_names.get(group_id) or group_names.get(group_id, "")
+        collection_id = _stable_id("collection", collection_name.casefold())
+        draft = CollectionDraft(
+            collection_id=collection_id,
+            name=collection_name,
+            raw_title=group_names.get(group_id, collection_name),
+            declared_lessons=group_declared_lessons.get(group_id),
+            total_minutes=group_total_minutes.get(group_id),
+        )
+        if entry_members and numbered_members:
+            entry_course = course_by_url.get(entry_members[0]["normalized_url"])
+            if entry_course is not None:
+                draft.entry_course_id = entry_course.course_id
+        for order_rank, member in enumerate(member_source, start=1):
+            course = course_by_url.get(member["normalized_url"])
+            if course is None:
+                continue
+            if course.course_id in collection_by_course and collection_by_course[course.course_id] != collection_id:
+                warning = f"课程 {course.course_id} 同时归属多个合集"
+                draft.warnings.append(warning)
+                warnings.append(
+                    {
+                        "code": "course_multiple_collections",
+                        "row": member["row_number"],
+                        "message": warning,
+                    }
+                )
+                continue
+            collection_by_course[course.course_id] = collection_id
+            draft.member_course_ids.append(course.course_id)
+            draft.member_orders.append(order_rank)
+            course.collection_id = collection_id
+            course.collection_clean_name = collection_name
+            course.collection_order = order_rank
+            course.collection_entry = bool(member.get("collection_entry"))
+        if draft.declared_lessons and len(draft.member_course_ids) < draft.declared_lessons:
+            draft.warnings.append(
+                f"合集声明 {draft.declared_lessons} 讲，实际识别 {len(draft.member_course_ids)} 门"
+            )
+            warnings.append(
+                {
+                    "code": "collection_lesson_count_gap",
+                    "row": group_header_rows.get(group_id, 0),
+                    "message": draft.warnings[-1],
+                }
+            )
+        collections.append(draft)
+
     route_members: dict[str, list[dict[str, Any]]] = {}
     route_order: dict[str, tuple[int, float, int]] = {}
     course_routes: dict[str, list[str]] = {}
@@ -908,16 +1035,23 @@ def parse_course_route_catalog(
             source_rows=len(source_rows),
             unknown_columns=unknown,
             duplicate_link_groups=sum(len(items) > 1 for items in grouped.values()),
-            # Count every non-linked row carrying source data for audit, even
-            # when its missing course name makes it invalid and it cannot open
-            # a usable collection group.
+            # Keep the legacy audit counters comparable with earlier catalog
+            # reports (only rows without a link opened a legacy group). The
+            # richer ``collections`` field below includes linked titles too.
             group_headers=sum(
                 1
                 for _, record in source_rows
                 if not _value(record, "课程链接")
                 and any(_value(record, key) for key in REQUIRED_COLUMNS)
             ),
-            effective_groups=sum(bool(items) for items in members_by_group.values()),
+            effective_groups=sum(
+                bool(items)
+                for group_id, items in members_by_group.items()
+                if not any(
+                    member.get("collection_entry")
+                    for member in items
+                )
+            ),
             invalid_rows=sum(
                 1
                 for warning in warnings
@@ -925,11 +1059,13 @@ def parse_course_route_catalog(
             ),
             warnings=warnings,
         ),
+        collections=collections,
     )
 
 
 __all__ = [
     "CatalogAudit",
+    "CollectionDraft",
     "CourseDraft",
     "CourseRouteCatalogDraft",
     "RouteDraft",

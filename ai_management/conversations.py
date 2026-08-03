@@ -35,7 +35,7 @@ from .security import dify_user
 from .services.observability import record_event
 from .services.style_settings import get_style_prompt
 from .sse import SSEEmitter
-from .stream_filter import StreamingPublicRedactor
+from .stream_filter import StreamingPublicRedactor, redact_internal_ids
 from .timeutil import business_today
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,17 @@ def _decision_from_outputs(outputs: Any) -> RecommendationDecision | None:
     # the whole mapping when it actually contains decision fields; arbitrary
     # node outputs such as ``{"answer": ...}`` or ``{"text": prose}``
     # must not become a valid all-default decision and overwrite the real one.
-    if any(key in outputs for key in ("intent", "candidate_course_ids", "candidate_route_id")):
+    if any(
+        key in outputs
+        for key in (
+            "intent",
+            "candidate_course_ids",
+            "candidate_route_id",
+            "expert_insight",
+            "expert_course_ids",
+            "final_answer",
+        )
+    ):
         candidates.append(outputs)
     for candidate in candidates:
         value = extract_json_object(candidate)
@@ -534,8 +544,22 @@ def prepare_business_chat(
             yield emit("learning_route", recommendation["learning_route"])
         if recommendation.get("course_cards"):
             yield emit("course_cards", {"items": recommendation["course_cards"]})
-        if recommendation.get("recommendation_note"):
-            yield emit("course_recommendation_note", {"content": recommendation["recommendation_note"]})
+        recommendation_note = redact_internal_ids(
+            str(recommendation.get("recommendation_note") or "").strip()
+        )
+        expert_insight = redact_internal_ids(
+            str(recommendation.get("expert_insight") or "").strip()
+        )
+        if recommendation_note or expert_insight:
+            if expert_insight:
+                content_parts: list[str] = []
+                if recommendation_note:
+                    content_parts.append(f"匹配理由：{recommendation_note}")
+                content_parts.append(f"专家建议：{expert_insight}")
+                content = "\n".join(content_parts)
+            else:
+                content = recommendation_note
+            yield emit("course_recommendation_note", {"content": content})
         if error_to_emit:
             yield emit(
                 "error",
@@ -657,6 +681,9 @@ def list_conversation_messages(
             cards.append(card)
         if "course_cards" in recommendation:
             recommendation["course_cards"] = cards
+        for field in ("recommendation_note", "expert_insight"):
+            if field in recommendation:
+                recommendation[field] = redact_internal_ids(str(recommendation[field] or ""))
         return recommendation
 
     items = [

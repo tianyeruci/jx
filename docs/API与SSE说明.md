@@ -115,15 +115,18 @@ GET  /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}
 POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/retry
 ```
 
-以上接口还要求 `X-Admin-Token`；`kb_code` 只能为 `general` 或 `course`。课程信息和学习路线必须上传至 `course`，并分别选择 `course_information`、`learning_route` 策略。完整条目查询、复核、启停和删除接口以 [小程序后端与 AI 管理服务接口对接标准](小程序后端与AI管理服务接口对接标准.md) 为准。
+以上接口还要求 `X-Admin-Token`；`kb_code` 只能为 `general` 或 `course`。当前测试页的课程与路线资料统一使用 `course_route_catalog`（`.xlsx`）；`course_information`、`learning_route` 仍由后端兼容历史批次和旧调用，但不在页面展示或本轮页面验收。完整条目查询、复核、启停和删除接口以 [小程序后端与 AI 管理服务接口对接标准](小程序后端与AI管理服务接口对接标准.md) 为准。
 
 上传为 `multipart/form-data`：
 
+当前课程目录示例：
+
 ```text
-strategy_code=course_information
-common_metadata={"document_type":"test"}
-files=<多个文件>
+strategy_code=course_route_catalog
+files=<一个 .xlsx 文件>
 ```
+
+旧接口调用若仍使用 `course_information` 或 `learning_route`，仅按兼容策略处理，不作为当前页面验收路径。
 
 课程上传成功的最终条件不是 HTTP 200，而是批次和所有条目完成、Dify 索引/Metadata 回读成功、数据库目录已写入、Redis 有效快照已重建。
 

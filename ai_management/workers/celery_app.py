@@ -16,6 +16,7 @@ celery_app = Celery(
     include=[
         "ai_management.workers.tasks.summary",
         "ai_management.workers.tasks.cleaning",
+        "ai_management.workers.tasks.ocr",
         "ai_management.workers.tasks.model_cleaning",
         "ai_management.workers.tasks.maintenance",
     ],
@@ -30,6 +31,9 @@ celery_app.conf.update(
     task_default_queue="ai_default",
     worker_prefetch_multiplier=1,
     worker_hijack_root_logger=False,
+    task_routes={
+        "ai_management.process_ocr_cleaning_file": {"queue": "ai_ocr"},
+    },
     beat_schedule={
         "nightly-maintenance": {
             "task": "ai_management.nightly_maintenance",

@@ -326,7 +326,26 @@ def _import_semantic_review(
             }
         else:
             raise ValueError(f"第{row_number}行记录类型无效")
-        audit["catalog_record"] = record.model_dump(mode="json")
+        catalog_record = record.model_dump(mode="json")
+        # Collection provenance is an internal contract and intentionally is
+        # not part of the public CourseRecord schema. Preserve it alongside
+        # the validated record so the atomic publisher can upsert the
+        # CourseCollection/Member rows in the same transaction.
+        if kind == "course":
+            for key in (
+                "collection_id",
+                "collection_name",
+                "collection_order",
+                "collection_entry",
+                "collection_declared_lessons",
+                "collection_total_minutes",
+                "collection_raw_title",
+                "collection_entry_course_id",
+                "collection_warnings",
+            ):
+                if key in draft:
+                    catalog_record[key] = draft[key]
+        audit["catalog_record"] = catalog_record
         audit["human_review"] = {
             "approved": True,
             "source": "review_workbook",

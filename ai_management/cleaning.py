@@ -56,6 +56,32 @@ router = APIRouter(
 logger = logging.getLogger(__name__)
 
 
+def _cleaning_queue_for_filename(filename: str) -> str:
+    """Keep PDF conversion isolated from the general cleaning worker."""
+
+    return "ai_ocr" if Path(filename).suffix.lower() == ".pdf" else "ai_cleaning"
+
+
+def _enqueue_cleaning_file(file_id: str, filename: str) -> None:
+    queue = _cleaning_queue_for_filename(filename)
+    if queue == "ai_ocr":
+        from .workers.tasks.ocr import process_ocr_cleaning_file
+
+        process_ocr_cleaning_file.apply_async(args=[file_id], queue=queue)
+        return
+    from .tasks import process_cleaning_file
+
+    process_cleaning_file.apply_async(args=[file_id], queue=queue)
+
+
+def _enqueue_cleaning_document(item_id: str, filename: str) -> None:
+    from .tasks import process_cleaning_document
+
+    process_cleaning_document.apply_async(
+        args=[item_id], queue=_cleaning_queue_for_filename(filename)
+    )
+
+
 @dataclass(slots=True)
 class ChunkingConfig:
     doc_form: str = "hierarchical_model"
@@ -191,7 +217,17 @@ def _conversion_audit(result: Any) -> dict[str, Any]:
 def _read_pdf_markdown(path: Path, *, diagnostics: dict[str, Any] | None = None) -> str:
     from knowledge_cleaner.pdf_convert import convert_pdf
 
-    result = convert_pdf(path, enable_ocr=False)
+    settings = get_settings()
+    result = convert_pdf(
+        path,
+        enable_ocr=settings.pdf_ocr_enabled,
+        ocr_max_pages=settings.pdf_ocr_max_pages,
+        ocr_render_dpi=settings.pdf_ocr_render_dpi,
+        ocr_retry_dpi=settings.pdf_ocr_retry_dpi,
+        ocr_auto_confidence=settings.pdf_ocr_auto_confidence,
+        ocr_min_confidence=settings.pdf_ocr_min_confidence,
+        ocr_max_low_conf_ratio=settings.pdf_ocr_max_low_conf_ratio,
+    )
     if diagnostics is not None:
         diagnostics.update(_conversion_audit(result))
     blocking_reasons = [
@@ -429,15 +465,16 @@ class PersonalBusinessConsultationStrategy:
             needs_review = bool(review_reasons)
         elif suffix == ".pdf":
             aliases = consultation_aliases("", original_filename)
-            from knowledge_cleaner.pdf_convert import convert_pdf
-
-            raw_result = convert_pdf(file_path, enable_ocr=False)
-            _save_conversion_markdown(
-                file_path, original_filename, str(raw_result.markdown or "")
-            )
+            settings = get_settings()
             result = convert_consultation_pdf(
                 file_path,
-                enable_ocr=False,
+                enable_ocr=settings.pdf_ocr_enabled,
+                ocr_max_pages=settings.pdf_ocr_max_pages,
+                ocr_render_dpi=settings.pdf_ocr_render_dpi,
+                ocr_retry_dpi=settings.pdf_ocr_retry_dpi,
+                ocr_auto_confidence=settings.pdf_ocr_auto_confidence,
+                ocr_min_confidence=settings.pdf_ocr_min_confidence,
+                ocr_max_low_conf_ratio=settings.pdf_ocr_max_low_conf_ratio,
                 extra_entities=aliases,
             )
             _save_conversion_markdown(
@@ -1084,6 +1121,20 @@ class CourseRouteCatalogStrategy:
             "duplicate_link_groups": catalog.audit.duplicate_link_groups,
             "group_headers": catalog.audit.group_headers,
             "effective_groups": catalog.audit.effective_groups,
+            "collections": [
+                {
+                    "collection_id": item.collection_id,
+                    "name": item.name,
+                    "raw_title": item.raw_title,
+                    "declared_lessons": item.declared_lessons,
+                    "total_minutes": item.total_minutes,
+                    "entry_course_id": item.entry_course_id,
+                    "member_course_ids": item.member_course_ids,
+                    "member_orders": item.member_orders,
+                    "warnings": item.warnings,
+                }
+                for item in catalog.collections
+            ],
             "invalid_rows": catalog.audit.invalid_rows,
             "warnings": catalog.audit.warnings,
         }
@@ -1123,7 +1174,7 @@ class CourseRouteCatalogStrategy:
                         "course_id": item.course_id,
                         "stage": item.stage,
                         "source_platform": "小鹅通",
-                        "series_name": item.series_name,
+                        "series_name": item.collection_clean_name or item.series_name,
                         "status": "inactive",
                         "review_status": "pending_review",
                     },
@@ -1148,7 +1199,51 @@ class CourseRouteCatalogStrategy:
                             "official_url": item.normalized_url,
                             "stage": item.stage,
                             "source_platform": "小鹅通",
-                            "series_name": item.series_name,
+                            "series_name": item.collection_clean_name or item.series_name,
+                            "collection_id": item.collection_id,
+                            "collection_name": item.collection_clean_name,
+                            "collection_order": item.collection_order,
+                            "collection_entry": item.collection_entry,
+                            "collection_declared_lessons": next(
+                                (
+                                    collection.declared_lessons
+                                    for collection in catalog.collections
+                                    if collection.collection_id == item.collection_id
+                                ),
+                                None,
+                            ),
+                            "collection_total_minutes": next(
+                                (
+                                    collection.total_minutes
+                                    for collection in catalog.collections
+                                    if collection.collection_id == item.collection_id
+                                ),
+                                None,
+                            ),
+                            "collection_raw_title": next(
+                                (
+                                    collection.raw_title
+                                    for collection in catalog.collections
+                                    if collection.collection_id == item.collection_id
+                                ),
+                                "",
+                            ),
+                            "collection_entry_course_id": next(
+                                (
+                                    collection.entry_course_id
+                                    for collection in catalog.collections
+                                    if collection.collection_id == item.collection_id
+                                ),
+                                "",
+                            ),
+                            "collection_warnings": next(
+                                (
+                                    collection.warnings
+                                    for collection in catalog.collections
+                                    if collection.collection_id == item.collection_id
+                                ),
+                                [],
+                            ),
                             "direction": item.direction_candidate,
                             "description": item.description_candidate,
                             "audience": item.audience_candidate,
@@ -1966,12 +2061,10 @@ async def create_cleaning_batch(
     )
     for file_id in pending_ids:
         try:
-            from .tasks import process_cleaning_file
-
-            process_cleaning_file.apply_async(
-                args=[file_id],
-                queue="ai_cleaning",
-            )
+            queued_row = session.get(CleaningFile, file_id)
+            if queued_row is None:
+                raise ValueError("清洗文件在入队前不存在")
+            _enqueue_cleaning_file(file_id, queued_row.original_filename)
         except Exception as exc:
             row = session.get(CleaningFile, file_id)
             if row:
@@ -2128,14 +2221,10 @@ def retry_cleaning_file(
     session.commit()
     cache.delete(cleaning_batch_cache_key(batch_id))
     if retryable_documents:
-        from .tasks import process_cleaning_document
-
         for item in retryable_documents:
-            process_cleaning_document.apply_async(args=[item.id], queue="ai_cleaning")
+            _enqueue_cleaning_document(item.id, row.original_filename)
     else:
-        from .tasks import process_cleaning_file
-
-        process_cleaning_file.apply_async(args=[file_id], queue="ai_cleaning")
+        _enqueue_cleaning_file(file_id, row.original_filename)
     record_event(
         level="INFO",
         category="operation",
@@ -2171,9 +2260,7 @@ def retry_cleaning_item(batch_id: str, file_id: str, item_id: str, session: Sess
     row.retryable = True
     session.commit()
     cache.delete(cleaning_batch_cache_key(batch_id))
-    from .tasks import process_cleaning_document
-
-    process_cleaning_document.apply_async(args=[item_id], queue="ai_cleaning")
+    _enqueue_cleaning_document(item_id, row.file.original_filename)
     return {"item_id": item_id, "status": "pending"}
 
 
@@ -2235,7 +2322,5 @@ def review_cleaning_item(
     _finish_batch(session, row.file.batch_id)
     session.commit()
     if action != "exclude":
-        from .tasks import process_cleaning_document
-
-        process_cleaning_document.apply_async(args=[item_id], queue="ai_cleaning")
+        _enqueue_cleaning_document(item_id, row.file.original_filename)
     return {"item_id": item_id, "status": row.status, "review_revision": row.review_revision}

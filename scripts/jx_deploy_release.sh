@@ -17,6 +17,7 @@ MIGRATION_FILES=(
   "g3b7c9d1e5f2_add_large_scale_cleaning.py"
   "h4e5f6a7b8c9_expand_cleaning_batch_status.py"
   "i5f6a7b8c9d0_upload_dedupe_tombstones.py"
+  "j6a7b8c9d0e1_course_collections.py"
 )
 CORE_IMAGE="jx-now-ai-management:$RELEASE_ID"
 UI_IMAGE="jx-now-ai-management-ui:$RELEASE_ID"
@@ -47,7 +48,7 @@ rollback() {
     unset AI_IMAGE AI_UI_IMAGE BUILD_VERSION
     docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml \
       --profile test up -d --force-recreate \
-      api worker model-realtime-worker model-batch-worker publication-worker scheduler test-ui \
+      api worker ai-ocr-worker model-realtime-worker model-batch-worker publication-worker scheduler test-ui \
       >> "$REPORT_DIR/rollback.log" 2>&1 || true
   fi
   if test -f "$BACKUP_DIR/$WHEEL_FILE.before-release"; then
@@ -114,7 +115,9 @@ for file in \
   jx_capture_ui_cleanup_manifest.sh \
   jx_quick_deploy.sh \
   jx_reset_cleaning_local_state.sh \
-  jx_release_data.py
+  jx_release_data.py \
+  backfill_course_collections.py \
+  evaluate_business_e2e.py
 do
   test -f "$STAGE_DIR/$file"
   install -m 0644 "$STAGE_DIR/$file" "scripts/$file"
@@ -219,7 +222,7 @@ require_cleaning_price_snapshots() {
   require_cleaning_price_snapshot realtime
 }
 
-set_default_env BAILIAN_BATCH_ENABLED "true"
+set_default_env BAILIAN_BATCH_ENABLED "false"
 require_cleaning_price_snapshots
 APP_RUNTIME_UID="$(docker run --rm --entrypoint id "$CORE_IMAGE" -u)"
 APP_RUNTIME_GID="$(docker run --rm --entrypoint id "$CORE_IMAGE" -g)"
@@ -241,6 +244,17 @@ upsert_env CLEANING_SPEC_REVISION "commercial-cleaning-v3"
 upsert_env MAX_UPLOAD_FILES "10"
 upsert_env MAX_ACTIVE_CLEANING_BATCHES "5"
 upsert_env CLEANING_WORKER_CONCURRENCY "4"
+upsert_env PDF_OCR_ENABLED "false"
+upsert_env PDF_OCR_MAX_PAGES "10"
+upsert_env PDF_OCR_TASK_TIMEOUT_SECONDS "600"
+upsert_env PDF_OCR_RENDER_DPI "200"
+upsert_env PDF_OCR_RETRY_DPI "300"
+upsert_env PDF_OCR_AUTO_CONFIDENCE "0.90"
+upsert_env PDF_OCR_MIN_CONFIDENCE "0.75"
+upsert_env PDF_OCR_MAX_LOW_CONF_RATIO "0.10"
+upsert_env PDF_OCR_CPU_THREADS "4"
+upsert_env PDF_OCR_MODEL_ROOT "/app/var/ocr-models"
+upsert_env PDF_OCR_MODEL_MANIFEST "/app/var/ocr-models/manifest.json"
 upsert_env COURSE_CATALOG_AUTO_PUBLISH "true"
 upsert_env COURSE_CATALOG_AUTO_APPROVE_COST_MAX "1.0"
 upsert_env SAVE_CONVERSION_MARKDOWN "false"
@@ -255,7 +269,7 @@ docker compose -f docker-compose.ai.yml run --rm --no-deps -T api \
   > "$REPORT_DIR/alembic-upgrade.txt" 2>&1
 docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml \
   --profile test up -d --force-recreate \
-  api worker model-realtime-worker model-batch-worker publication-worker scheduler test-ui \
+  api worker ai-ocr-worker model-realtime-worker model-batch-worker publication-worker scheduler test-ui \
   > "$REPORT_DIR/compose-up.txt" 2>&1
 
 for _ in $(seq 1 90); do
@@ -279,6 +293,7 @@ docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml \
 docker inspect \
   "$(docker compose -f docker-compose.ai.yml ps -q api)" \
   "$(docker compose -f docker-compose.ai.yml ps -q worker)" \
+  "$(docker compose -f docker-compose.ai.yml ps -q ai-ocr-worker)" \
   "$(docker compose -f docker-compose.ai.yml ps -q model-realtime-worker)" \
   "$(docker compose -f docker-compose.ai.yml ps -q model-batch-worker)" \
   "$(docker compose -f docker-compose.ai.yml ps -q publication-worker)" \

@@ -1,8 +1,35 @@
 # AI 管理服务当前状态与后续测试交接
 
-> 更新时间：2026-08-02
+> 更新时间：2026-08-03
 > 用途：保存最新线上事实、回滚点、数据状态和开放事项。新任务先读 `AGENTS.md` 与 `docs/README.md`，再按功能域读取本文顶部最新状态。  
 > 本文不是需求或设计基线；权威顺序以 `docs/V2决策记录.md` 和 `docs/README.md` 为准。第 1～8 节为历史过程记录，不再作为当前执行指令。
+
+## 0.18 2026-08-03 统一改造 fix8、页面回归与开放阻塞（当前）
+
+- jx 已发布统一改造 fix8；发布前备份 `/opt/ai-management/backups/20260803-unified-fix8-pre`，报告 `/opt/ai-management/var/reports/v2/20260803-unified-fix8-deploy`，应用 wheel SHA-256 为 `a228e10d44a4083f3f123bd2c162ab08f455e4e2cf74f252a039314cba56c2ce`。`/health/live` 为 `ok`、`/health/ready` 为 `ready`，Alembic 为 `j6a7b8c9d0e1 (head)`，各服务使用同一 fix8 版本；容器实际回读 `BAILIAN_BATCH_ENABLED=false`。
+- 公开测试页固定使用 `http://112.74.37.111/ai-management-test/`。六种当前清洗策略已逐一完成上传、异步清洗、复核/发布、状态回读和精确源删除；公众号正确 GB18030 样本、知识星球、小报童、资料钩子成功到条目详情；课程路线目录保持预期结构复核门禁；个人咨询保持模型契约复核。兼容策略 `course_information`、`learning_route` 未展示、未测试。
+- 页面修改功能与接口覆盖已完成：课程推荐/路线确认/阶段确认内部标识已脱敏，课程入口和点击统计通过；商业顾问、朋友圈顾问、日常写作有正常终态/提示；商业顾问反馈与停止任务返回 200；管理接口读操作、删除错误确认校验、日志和诊断页均通过。未执行真实用户数据删除。
+- 本地隔离回归：核心/API/UI `39 passed`，OCR/咨询/课程 `27 passed`；compileall、Ruff、脚本语法、功能索引和统一 DSL 检查通过。远端只读 Dify 契约应用调用通过，但两个知识库检索为 0；商业顾问轻量语义 E2E 为 `1/6`。
+- 开放事项：个人咨询实时模型输出未通过既有 schema；课程目录需业务复核后才能决定发布；候选统一 DSL 尚未导入/发布，缺少安全 Dify 管理员会话或受控 Enterprise API/HTTPS 管理通道。不得把当前状态宣称为完整业务验收通过。
+
+## 0.17 2026-08-03 商业顾问应用访问 Key 切换（当前）
+
+- jx 的 `DIFY_BUSINESS_APP_API_KEY` 已按用户最新指令切换到新的商业顾问 Dify 应用访问 Key；Key 明文未写入仓库、报告或终端输出。
+- 修改前已备份服务器 `.env` 至 `/opt/ai-management/backups/20260803-024021-business-app-key-sync` 并验证副本一致；未修改 DSL 文件、Dify 数据库、知识库、PostgreSQL 或 Redis。
+- 已强制重建 `api`、`worker`、`scheduler`；容器配置哈希与目标一致，商业顾问 Dify `/parameters` 返回 HTTP `200`，AI 服务 `/health/ready` 为 `ready` 且全部依赖检查通过，三个服务均为 running；本次未触发回滚。
+
+## 0.16 2026-08-03 商业顾问应用访问 Key 再同步（当前）
+
+- 用户在执行前把目标从另一候选 Key 改回上一轮指定的商业顾问应用访问 Key；jx 已按最新指令重新同步 `DIFY_BUSINESS_APP_API_KEY`，未写入被撤回的候选 Key。
+- 修改前已备份服务器 `.env` 至 `/opt/ai-management/backups/20260803-023502-business-app-key-sync` 并验证副本一致；未修改 DSL 文件、Dify 数据库、知识库、PostgreSQL 或 Redis。
+- 已强制重建 `api`、`worker`、`scheduler`；容器配置哈希与最新目标一致，商业顾问 Dify `/parameters` 返回 HTTP `200`，AI 服务 `/health/ready` 为 `ready` 且全部依赖检查通过，三个服务均为 running。
+
+## 0.15 2026-08-03 商业顾问应用访问 Key 同步（当前）
+
+- jx 的 `DIFY_BUSINESS_APP_API_KEY` 已同步到用户指定的商业顾问 Dify 应用访问 Key；Key 明文未写入仓库、报告或终端输出。
+- 最新一次修改前已备份服务器 `.env` 至 `/opt/ai-management/backups/20260803-022555-business-app-key-sync`，并验证备份与原文件一致；本次未修改 DSL 文件、Dify 数据库、知识库、PostgreSQL 或 Redis。
+- 已强制重建 `api`、`worker`、`scheduler`；容器内配置哈希与目标一致，商业顾问 Dify `/parameters` 返回 HTTP `200`，AI 服务 `/health/ready` 为 `ready` 且全部依赖检查通过，三个服务均为 running。
+- 2026-08-03 02:25 的最新轮换已直接通过全部门禁且未触发回滚；更早一次切换中的一次性校验脚本问题已自动回滚并在修正后完成，不构成应用或 Dify 故障。
 
 ## 0.14 2026-08-02 Batch 开关、实时回归与课程样本入库（当前）
 
@@ -897,3 +924,33 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改原因：代码和 jx 真实回归已完成，但课程规格、管理页手册、RAG 计划和验收指南仍有“默认人工审核”“重复文件可能跳过”“仅 general 知识库”等过期表述，容易导致后续测试沿错误路径执行。
 - 修改前：Batch 开关、课程自动门禁、精确源删除、转换 Markdown 服务器诊断产物和实时独立价格快照主要只记录在当前状态与排障文档，产品决策和操作手册未完全对齐。
 - 修改后：同步更新 `docs/V2决策记录.md`（ADR-022～025）、课程目录规格、清洗接入说明、AI 管理页手册、RAG 全链路计划、V2 数据设计、测试验收指南、README 与功能索引；明确 `BAILIAN_BATCH_ENABLED` 只影响新任务、`COURSE_CATALOG_AUTO_PUBLISH` 的自动/人工回退边界、同名/同内容必须精确删除后重传，以及 `SAVE_CONVERSION_MARKDOWN` 仅供测试服务器查看。未修改冻结接口文档，未改变运行代码、线上数据或部署版本。
+
+### 2026-08-03：同步商业顾问 Dify 应用访问 Key
+
+- 修改原因：用户要求把 jx 上商业顾问 DSL 的访问 API 切换到新应用访问 Key。
+- 修改前：AI 服务使用旧的 `DIFY_BUSINESS_APP_API_KEY`；服务器 `.env` 尚未包含本次指定映射。
+- 修改后：服务器 `.env` 已在备份后精确替换该键，并重建 `api`、`worker`、`scheduler`；容器配置哈希、Dify `/parameters`、AI 服务 `ready` 和服务运行状态均通过验证。未记录 Key 明文，未修改 DSL、数据库或知识库。
+
+### 2026-08-03：按最新指令再次同步商业顾问应用访问 Key
+
+- 修改原因：用户先给出另一候选 Key，随后在执行前明确改回上一轮指定值；应以最后一条指令为准。
+- 修改前：jx 上的当前配置与最新目标哈希不一致；被撤回的候选 Key 尚未由本轮写入。
+- 修改后：备份 `.env` 后仅替换 `DIFY_BUSINESS_APP_API_KEY`，重建 `api`、`worker`、`scheduler`；容器配置哈希、Dify `/parameters`、AI 服务 `ready` 和运行状态验证通过。Key 明文仍未进入仓库或报告。
+
+### 2026-08-03：切换商业顾问 Dify 应用访问 Key
+
+- 修改原因：用户明确要求把 jx 上商业顾问 DSL 的访问 API 切换到另一应用访问 Key。
+- 修改前：服务器 `DIFY_BUSINESS_APP_API_KEY` 与本次目标哈希不一致。
+- 修改后：备份 `.env` 后精确替换该键并重建 `api`、`worker`、`scheduler`；容器配置哈希、Dify `/parameters`、AI 服务 `ready` 和服务运行状态验证通过，未触发回滚。Key 明文未进入仓库或报告，DSL、数据库和知识库未修改。
+
+### 2026-08-03：再次轮换商业顾问 Dify 应用访问 Key
+
+- 修改原因：用户提供新的商业顾问 Dify 应用访问 Key，要求再次同步 jx 配置。
+- 修改前：AI 服务仍使用当天上一轮已验证的商业顾问应用访问 Key。
+- 修改后：服务器 `.env` 已备份至 `/opt/ai-management/backups/20260803-022555-business-app-key-sync` 后精确替换，并重建 `api`、`worker`、`scheduler`；容器配置哈希匹配目标，Dify `/parameters` 返回 HTTP `200`，AI 服务 `ready` 和三个服务运行状态通过。未记录 Key 明文，未修改 DSL、数据库、Redis 或知识库。
+
+### 2026-08-03：统一改造 fix8 发布、六策略页面回归与接口覆盖
+
+- 修改原因：按统一执行计划完成 fix8 红线修复、jx 发布、六种当前清洗策略全链路、修改功能页面回归和接口文档覆盖，并把未闭环问题集中记录。
+- 修改前：课程/路线推荐在中文相邻位置仍可能展示内部标识；页面和接口回归证据分散，公众号首轮样本编码混用，课程目录和个人咨询状态尚未按最新计划归类；功能索引仍有自动区过期提示。
+- 修改后：fix8 已发布并经备份、wheel 校验、迁移 head、live/ready 和服务一致性核验；内部标识正则改为 ASCII 邻接边界并补回归测试；公众号改用完整 GB18030 样本复测通过；六策略、修改功能及管理/日志/诊断页面结果写入脱敏 `var/reports/20260803-unified-fix7-cleaning-ui/issues.jsonl`；功能索引已生成并通过 `--check`。个人咨询模型契约、课程目录业务复核和候选 DSL 发布权限仍保持开放阻塞，未绕过安全门禁。

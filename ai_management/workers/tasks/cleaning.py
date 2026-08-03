@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -941,7 +942,11 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 )
                 process_cleaning_document.apply_async(
                     args=[ordered_ids[0]],
-                    queue="ai_cleaning",
+                    queue=(
+                        "ai_ocr"
+                        if Path(row.original_filename).suffix.lower() == ".pdf"
+                        else "ai_cleaning"
+                    ),
                 )
             awaiting_model_documents = list(
                 session.scalars(

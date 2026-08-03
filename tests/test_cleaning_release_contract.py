@@ -13,6 +13,16 @@ def _source(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
 
 
+def test_bailian_batch_is_opt_in_when_no_environment_override(monkeypatch):
+    """Provider Batch must never become the implicit test/deploy path."""
+
+    monkeypatch.delenv("BAILIAN_BATCH_ENABLED", raising=False)
+    from ai_management.config import Settings
+
+    settings = Settings(_env_file=None)
+    assert settings.bailian_batch_enabled is False
+
+
 def test_miniapp_interface_document_is_frozen_for_internal_cleaning_changes():
     path = ROOT / "docs/小程序后端与 AI 管理服务接口对接交互版本.md"
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -100,7 +110,7 @@ def test_jx_release_scripts_manage_all_cleaning_workers_and_exact_upload_targets
     assert 'MAX_UPLOAD_FILES "10"' in deploy
     assert 'MAX_ACTIVE_CLEANING_BATCHES "5"' in deploy
     assert "require_cleaning_price_snapshots" in deploy
-    assert 'set_default_env BAILIAN_BATCH_ENABLED "true"' in deploy
+    assert 'set_default_env BAILIAN_BATCH_ENABLED "false"' in deploy
     assert 'upsert_env BAILIAN_BATCH_ENABLED "true"' not in deploy
     assert "CLEANING_REALTIME_PRICE_VERSION" in deploy
     assert "CLEANING_REALTIME_INPUT_PRICE_PER_MILLION" in deploy
@@ -242,7 +252,8 @@ def test_conversion_markdown_is_configurable_persistent_and_expiring():
 
     assert "生产环境禁止保存转换前策略 Markdown" in config
     assert "conversion_markdown_retention_days: int = Field(default=7" in config
-    assert compose.count("CONVERSION_MARKDOWN_HOST_ROOT") == 2
+    assert compose.count("CONVERSION_MARKDOWN_HOST_ROOT") == 3
+    assert "ai-ocr-worker" in compose
     assert "/app/var/conversion-markdown" in compose
     assert 'upsert_env SAVE_CONVERSION_MARKDOWN "false"' in release
     assert 'upsert_env CONVERSION_MARKDOWN_RETENTION_DAYS "7"' in release

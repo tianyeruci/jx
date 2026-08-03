@@ -68,10 +68,17 @@ def run_case(
             for name, payload in events
             if name == "answer_delta" and isinstance(payload, dict)
         )
-        cards = next(
+        cards_payload = next(
             (payload for name, payload in events if name == "course_cards"),
             [],
         )
+        # The v2 SSE contract wraps structured card data in ``items``.  Keep
+        # accepting the historical bare-list form so the evaluator can be
+        # used against both deployed protocol versions.
+        if isinstance(cards_payload, dict):
+            cards = cards_payload.get("items") or []
+        else:
+            cards = cards_payload or []
         route = next(
             (payload for name, payload in events if name == "learning_route"),
             None,

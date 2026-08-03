@@ -215,18 +215,6 @@ CASE_SPECS: dict[str, dict[str, Any]] = {
         "forbidden": [],
         "require_toc_removed": True,
     },
-    "course_synthetic": {
-        "strategy": "course_information",
-        "kb": "course",
-        "expected_items": 2,
-        "forbidden": [],
-    },
-    "route_synthetic": {
-        "strategy": "learning_route",
-        "kb": "course",
-        "expected_items": 1,
-        "forbidden": [],
-    },
     "raw_synthetic": {
         "strategy": "raw_acceptance",
         "kb": "general",

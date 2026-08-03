@@ -15,6 +15,7 @@ UI_REPOSITORY="jx-now-ai-management-ui"
 CORE_SERVICES=(
   api
   worker
+  ai-ocr-worker
   model-realtime-worker
   model-batch-worker
   publication-worker

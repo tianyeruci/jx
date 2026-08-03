@@ -182,6 +182,55 @@ class Course(Base, TimestampMixin):
     dify_document_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
+class CourseCollection(Base, TimestampMixin):
+    """Internal, deterministic grouping of related course cards.
+
+    Collections are deliberately not part of the public API.  They provide a
+    stable authority for matching a user's collection query without making the
+    Dify knowledge base depend on an additional document type.
+    """
+
+    __tablename__ = "course_collection"
+
+    collection_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), index=True)
+    raw_title: Mapped[str] = mapped_column(String(300), default="")
+    declared_lessons: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    entry_course_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    review_status: Mapped[str] = mapped_column(String(32), default="approved", index=True)
+    source_file: Mapped[str] = mapped_column(String(300), default="")
+    warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+    members: Mapped[list["CourseCollectionMember"]] = relationship(
+        back_populates="collection", cascade="all, delete-orphan"
+    )
+
+
+class CourseCollectionMember(Base, TimestampMixin):
+    """Ordered membership; ``is_entry`` marks a linked collection landing card."""
+
+    __tablename__ = "course_collection_member"
+    __table_args__ = (
+        UniqueConstraint("collection_id", "course_id", name="uq_course_collection_course"),
+        UniqueConstraint("collection_id", "order_rank", name="uq_course_collection_order"),
+        Index("ix_course_collection_member_course", "course_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    collection_id: Mapped[str] = mapped_column(
+        String(100), ForeignKey("course_collection.collection_id", ondelete="CASCADE"), index=True
+    )
+    course_id: Mapped[str] = mapped_column(
+        String(100), ForeignKey("course.course_id", ondelete="CASCADE"), index=True
+    )
+    order_rank: Mapped[int] = mapped_column(Integer)
+    is_entry: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    collection: Mapped[CourseCollection] = relationship(back_populates="members")
+
+
 class LearningRoute(Base, TimestampMixin):
     __tablename__ = "learning_route"
 

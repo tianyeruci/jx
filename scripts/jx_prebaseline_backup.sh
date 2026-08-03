@@ -28,6 +28,7 @@ container_ids=()
 for service in \
   api \
   worker \
+  ai-ocr-worker \
   model-realtime-worker \
   model-batch-worker \
   publication-worker \

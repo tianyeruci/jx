@@ -46,12 +46,12 @@ docker compose -f docker-compose.ai.yml run --rm --no-deps -T --user 0 \
 restart_services() {
   docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml --profile test \
     up -d --no-deps --no-build \
-    api worker model-realtime-worker model-batch-worker publication-worker scheduler test-ui
+    api worker ai-ocr-worker model-realtime-worker model-batch-worker publication-worker scheduler test-ui
 }
 trap restart_services EXIT
 
 docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml --profile test \
-  stop worker model-realtime-worker model-batch-worker publication-worker scheduler test-ui
+  stop worker ai-ocr-worker model-realtime-worker model-batch-worker publication-worker scheduler test-ui
 docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml --profile test ps \
   > "$REPORT_DIR/compose-ps-stopped.txt"
 

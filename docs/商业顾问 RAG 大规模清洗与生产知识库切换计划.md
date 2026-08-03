@@ -7,7 +7,7 @@
 生产清洗模型不再使用 Dify Workflow。程序直接调用百炼：
 
 - 小任务及匿名化咨询走实时 `qwen-plus`。
-- 大批量公众号、知识星球、小报童默认走 Batch API；测试或低延迟验收可通过 `BAILIAN_BATCH_ENABLED=false` 将新文档任务切到实时 Worker。
+- 大批量公众号、知识星球、小报童只有在显式设置 `BAILIAN_BATCH_ENABLED=true` 时才走 Batch API；默认关闭，测试或低延迟验收保持实时 Worker，避免供应商 Batch 等待阻塞流程。
 - Dify 只负责知识库存储、索引和商业顾问问答。
 - 多帖文件改为“帖子本地独立＋Dify 分片原子”，替换此前不适合十万级数据的整文件原子规则。
 
@@ -30,7 +30,7 @@
 ### 模型调用双通道
 
 - 咨询始终先匿名化，再使用实时 API。
-- `BAILIAN_BATCH_ENABLED=true`（默认）时沿用候选数/Token 阈值选择 Batch；设为 `false` 时所有新文档清洗任务不再创建 Batch，改走 `ai_model_realtime`。已经创建的任务保持其数据库中记录的调用模式，不自动切换。
+- `BAILIAN_BATCH_ENABLED=true` 时沿用候选数/Token 阈值选择 Batch；默认 `false` 时所有新文档清洗任务不再创建 Batch，改走 `ai_model_realtime`。已经创建的任务保持其数据库中记录的调用模式，不自动切换。
 - Batch 与实时分别保存价格版本、生效/失效日期及每百万 token 单价；实时调用不套用 Batch 折扣，并继续受 RPM/TPM 和实时 Worker 并发限制。
 - 其他三类满足以下任一条件时使用 Batch API：
   - 候选数超过 100；

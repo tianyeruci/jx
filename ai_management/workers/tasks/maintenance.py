@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import selectinload
@@ -38,6 +39,7 @@ from .cleaning import (
     _remove_or_disable_document,
     process_cleaning_file,
 )
+from .ocr import process_ocr_cleaning_file
 from .summary import _summarize_sync
 
 logger = logging.getLogger(__name__)
@@ -269,10 +271,10 @@ def _cleanup_files_and_stale_tasks() -> None:
         for row in stale:
             if row.attempts < 2:
                 row.status = "pending"
-                process_cleaning_file.apply_async(
-                    args=[row.id],
-                    queue="ai_cleaning",
-                )
+                if Path(row.original_filename).suffix.lower() == ".pdf":
+                    process_ocr_cleaning_file.apply_async(args=[row.id], queue="ai_ocr")
+                else:
+                    process_cleaning_file.apply_async(args=[row.id], queue="ai_cleaning")
             else:
                 row.status = "failed"
                 row.error_code = "CLEANING_FAILED"

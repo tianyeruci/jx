@@ -232,6 +232,16 @@ def test_cleaning_ui_display_hides_protected_metadata_but_keeps_business_metadat
         assert protected not in serialized
 
 
+def test_cleaning_ui_display_replaces_raw_model_error_messages():
+    rendered = test_ui.cleaning_ui_display_payload(
+        {"error_code": "MODEL_CONTRACT_INVALID", "error_message": "raw provider payload"}
+    )
+    assert rendered == {
+        "error_code": "MODEL_CONTRACT_INVALID",
+        "error_message": "详细原因已记录在服务端脱敏日志",
+    }
+
+
 def test_cleaning_actions_render_from_persistent_view_state_not_query_button_body():
     source = (ROOT / "ai_management" / "test_ui.py").read_text(encoding="utf-8")
     cleaning_tab = next(

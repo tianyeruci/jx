@@ -187,7 +187,15 @@ source_block_ids、fact_state。heading 仅可从背景与目标、关键问题�
 fact_state 必须只使用以下机器值，不能使用中文：client_statement、advisor_judgment、
 decision、plan、actual_result。背景与目标、关键问题对应 client_statement；顾问判断对应
 advisor_judgment；已确认决定对应 decision；行动计划对应 plan 或 decision；实际结果对应
-actual_result。"""
+actual_result。
+
+当前版本优先输出 schema_version 为 consulting_case_v2 的证据优先结构：使用
+shared_context、objectives、decision_units、source_coverage、overall_evidence_level 和
+background_sufficiency；每条 EvidenceItem 必须保留 status 与 source_block_ids，且
+source_coverage 必须完整覆盖输入 block ID。decision_units 最多 5 个，不能把推导条件
+伪装成客户事实，E2/E3 必须有 observed_outcomes。若背景不足、隐私风险或证据无法闭合，
+使用 disposition=review_required；明确不适合时使用 disposition=exclude。旧 sections
+结构仍被接受用于兼容历史任务，但不得混用两种结构。"""
 
 _COURSE_SYSTEM_PROMPT = """你是课程目录语义补全助手。请输出严格 JSON。
 只可提出方向候选、内容/问题、适用人群、课程重点、学习目标和路线目标。
@@ -252,7 +260,7 @@ def choose_call_mode(
     *,
     batch_candidate_threshold: int = 100,
     batch_token_threshold: int = 200_000,
-    batch_enabled: bool = True,
+    batch_enabled: bool = False,
 ) -> Literal["realtime", "batch"]:
     if strategy_code == "personal_business_consultation":
         return "realtime"

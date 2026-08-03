@@ -137,3 +137,9 @@ class RecommendationDecision(BaseModel):
     clarification_question: str = ""
     answer_plan: str = ""
     progress_action: dict[str, Any] = Field(default_factory=dict)
+    # Internal outputs from the main Dify answer node. These are validated
+    # against the final server-side course cards and never exposed as a new
+    # HTTP/SSE event.
+    final_answer: str = ""
+    expert_insight: str = Field(default="", max_length=2000)
+    expert_course_ids: list[str] = Field(default_factory=list, max_length=5)

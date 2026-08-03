@@ -16,7 +16,13 @@ from knowledge_cleaner.dify import DifyKnowledgeClient
 from .config import get_settings
 from .courses import rebuild_snapshot
 from .db import SessionLocal
-from .models import Course, ExternalDeletionTask, LearningRoute
+from .models import (
+    Course,
+    CourseCollection,
+    CourseCollectionMember,
+    ExternalDeletionTask,
+    LearningRoute,
+)
 from .schemas import CourseRecord, RouteRecord
 from .services.admin_settings import bump_catalog_revision
 from .services.observability import record_event
@@ -286,6 +292,12 @@ def sync_cleaning_catalog_record(
         }
         row.source_file = source_file
         row.dify_document_id = dify_document_id or None
+        _sync_collection_membership(
+            session,
+            payload=payload,
+            course_id=row.course_id,
+            source_file=source_file,
+        )
         return old_document_id or ""
 
     if strategy_code == "learning_route":
@@ -314,6 +326,85 @@ def sync_cleaning_catalog_record(
         return old_document_id or ""
 
     return ""
+
+
+def _sync_collection_membership(
+    session,
+    *,
+    payload: dict[str, Any],
+    course_id: str,
+    source_file: str,
+) -> None:
+    """Synchronize one validated course's internal collection membership.
+
+    The operation is additive and runs in the same transaction as the course
+    row.  Legacy course records without collection metadata remain untouched.
+    """
+
+    collection_id = str(payload.get("collection_id") or "").strip()
+    collection_name = str(payload.get("collection_name") or payload.get("series_name") or "").strip()
+    if not collection_id or not collection_name:
+        return
+    collection = session.get(CourseCollection, collection_id)
+    if collection is None:
+        collection = CourseCollection(
+            collection_id=collection_id,
+            name=collection_name,
+            raw_title=str(payload.get("collection_raw_title") or collection_name),
+            declared_lessons=(
+                int(payload["collection_declared_lessons"])
+                if payload.get("collection_declared_lessons") not in (None, "")
+                else None
+            ),
+            total_minutes=(
+                int(payload["collection_total_minutes"])
+                if payload.get("collection_total_minutes") not in (None, "")
+                else None
+            ),
+            entry_course_id=str(payload.get("collection_entry_course_id") or "") or None,
+            source_file=source_file,
+            warnings=list(payload.get("collection_warnings") or []),
+        )
+        session.add(collection)
+        session.flush()
+    else:
+        collection.name = collection_name
+        collection.source_file = source_file
+        if payload.get("collection_declared_lessons") not in (None, ""):
+            collection.declared_lessons = int(payload["collection_declared_lessons"])
+        if payload.get("collection_total_minutes") not in (None, ""):
+            collection.total_minutes = int(payload["collection_total_minutes"])
+        if payload.get("collection_entry_course_id"):
+            collection.entry_course_id = str(payload["collection_entry_course_id"])
+    previous = list(
+        session.scalars(
+            select(CourseCollectionMember).where(
+                CourseCollectionMember.course_id == course_id,
+                CourseCollectionMember.collection_id != collection_id,
+            )
+        )
+    )
+    for member in previous:
+        session.delete(member)
+    order_rank = int(payload.get("collection_order") or 1)
+    member = session.scalar(
+        select(CourseCollectionMember).where(
+            CourseCollectionMember.collection_id == collection_id,
+            CourseCollectionMember.course_id == course_id,
+        )
+    )
+    if member is None:
+        session.add(
+            CourseCollectionMember(
+                collection_id=collection_id,
+                course_id=course_id,
+                order_rank=order_rank,
+                is_entry=bool(payload.get("collection_entry")),
+            )
+        )
+    else:
+        member.order_rank = order_rank
+        member.is_entry = bool(payload.get("collection_entry"))
 
 
 def _course_text(course: CourseRecord) -> str:
