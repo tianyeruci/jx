@@ -72,3 +72,15 @@
 - 预防：所有新增 bind mount 在切换服务前同时验证目标路径、读写模式、镜像运行 UID/GID 和最小目录权限。
 - 证据：jx 发布 `20260802-conversion-md-be372c68d875` 及其发布报告；`scripts/jx_deploy_release.sh` 已改为从镜像派生 UID/GID。
 - 最后验证：2026-08-02。
+
+## DEPLOY-007：大包传输必须先通过主机资源门禁
+
+- 适用：jx 测试服务器上的离线运行时传输、Docker 构建和发布前置操作。
+- 触发：无速率限制地递归传输 OCR 离线运行时，或让 Docker 构建上下文包含归档、分片和无关 `var/` 内容。
+- 根因：本次已验证为主机内存压力引发 Swap 换入换出，进一步造成磁盘 I/O 饥饿；SSH、Docker、Dify 和 ai-management 健康检查因此超时。新 OCR Worker 当时未运行；没有磁盘已满、文件系统硬件错误或 OOM-killer 证据。
+- 解决：OCR 暂停使用；在传输/构建前运行 `bash /opt/ai-management/scripts/jx_resource_guard.sh check`，使用单任务锁、断点续传和限速；构建使用对应的 `Dockerfile.*.dockerignore` 排除重复归档/分片；失败只暂停本次任务，不停止核心服务。
+- 非解决：直接重启作为常规方案、无保护的 `scp -r`、并行构建、`docker system prune`、删除 Docker 持久卷或清空 Redis。
+- 验证：上一启动周期的 journal/top/vmstat/iostat 记录了 Swap 压力、97% I/O wait 和健康检查超时；恢复后资源门禁通过：MemAvailable 约 26.52 GiB、Swap 0 MiB、I/O wait 0%、D 状态进程 0。
+- 预防：可用内存、Swap、I/O wait、负载、D 状态进程、磁盘和 inode 任一越过门槛即 fail-closed；OCR 部署必须显式设置 `JX_OCR_DEPLOYMENT_ENABLED=true`，当前默认暂停。
+- 证据：[OCR 部署故障脱敏记录](../../var/reports/ocr-deployment-20260803/issues.jsonl)、[资源防护脚本](../../scripts/jx_resource_guard.sh)。
+- 最后验证：2026-08-03。

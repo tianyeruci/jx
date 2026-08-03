@@ -37,8 +37,9 @@ test = [
   "streamlit>=1.41,<2",
 ]
 ocr = [
-  "paddleocr>=3,<4",
-  "paddlepaddle>=3,<4",
+  "paddleocr[doc-parser]==3.4.1",
+  "paddlex==3.4.2",
+  "paddlepaddle==3.2.2",
 ]
 
 [project.scripts]

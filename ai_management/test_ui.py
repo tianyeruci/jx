@@ -11,7 +11,7 @@ from urllib.parse import quote
 import httpx
 import streamlit as st
 
-API_BASE = os.getenv("AI_MANAGEMENT_BASE_URL", "http://api:8000").rstrip("/")
+API_BASE = os.getenv("AI_MANAGEMENT_BASE_URL", "http://ai-management-api:8000").rstrip("/")
 INTERNAL_TOKEN = os.getenv("INTERNAL_API_TOKEN", "change-me")
 ADMIN_TOKEN = os.getenv("ADMIN_API_TOKEN", "change-me")
 DEFAULT_USER = os.getenv("TEST_USER_ID", "test-user-001")

@@ -47,7 +47,15 @@ bash scripts/jx_reset_cleaning_local_state.sh plan
 bash scripts/jx_reset_cleaning_local_state.sh execute RESET_LOCAL_CLEANING_STATE
 ```
 
-确认词必须完全一致。脚本不提供跳过备份或强制忽略门禁的参数。
+确认词必须完全一致。普通 `execute` 不跳过备份，也不忽略活动状态门禁。
+
+如果确认当前所有清洗记录都是测试数据，且需要连仍在 `pending`/`processing` 的本地批次一起删除，使用受控强制模式：
+
+```bash
+bash scripts/jx_reset_cleaning_local_state.sh force FORCE_RESET_LOCAL_CLEANING_STATE
+```
+
+强制模式会先停止测试页、API、清洗 Worker、模型 Worker、发布 Worker 和 Scheduler，完成备份后再删除同一范围的本地状态。它不会取消供应商侧仍在运行的模型任务；发现活动模型任务时会停止并恢复服务。强制模式仍不调用 Dify 删除接口，知识库文档由管理员自行处理。
 
 ## 3. 执行门禁
 
@@ -62,6 +70,8 @@ bash scripts/jx_reset_cleaning_local_state.sh execute RESET_LOCAL_CLEANING_STATE
 - 备份前后批次、Redis 键、Dify 关联 ID 或上传目录发生变化；
 - 服务重启后 `/health/ready` 不为 `ready`；
 - 清洗表、Redis 键或上传目录仍有残留。
+
+普通 `execute` 遇到活动批次会拒绝执行；只有确认全部为测试数据时，才允许使用上面的 `force` 命令。强制模式仍会拒绝活动模型任务、待处理 `dify_document` 外部删除任务和无法证明属于当前批次的上传目录。
 
 执行阶段会短暂停止测试页、API、清洗 Worker、模型 Worker、发布 Worker 和 Scheduler；退出 trap 使用脚本级状态保存恢复边界，预检失败也会恢复这些服务。
 

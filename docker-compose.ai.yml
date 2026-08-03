@@ -32,15 +32,28 @@ services:
     restart: unless-stopped
 
   ai-ocr-worker:
-    image: ${AI_IMAGE:-jx-now-ai-management:0.2.1}
+    image: ${AI_OCR_IMAGE:-jx-now-ai-management-ocr:0.2.1}
     env_file: .env
-    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_ocr --concurrency=1 --prefetch-multiplier=1
+    entrypoint: ["/app/scripts/ocr_worker_entrypoint.sh"]
+    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_ocr --concurrency=1 --prefetch-multiplier=1 --max-tasks-per-child=1 --hostname=ai-ocr@%h
+    environment:
+      HOME: /app
+      PADDLE_PDX_MODEL_SOURCE: bos
+      OMP_NUM_THREADS: ${PDF_OCR_CPU_THREADS:-4}
+      OPENBLAS_NUM_THREADS: ${PDF_OCR_CPU_THREADS:-4}
+      MKL_NUM_THREADS: ${PDF_OCR_CPU_THREADS:-4}
+      NUMEXPR_NUM_THREADS: ${PDF_OCR_CPU_THREADS:-4}
     volumes:
       - ai_uploads:/app/var/uploads
       - ${CONVERSION_MARKDOWN_HOST_ROOT:-./var/conversion-markdown}:/app/var/conversion-markdown
     networks:
       - dify
-    restart: unless-stopped
+    hostname: jx-ai-ocr-worker
+    init: true
+    cpus: "4.0"
+    mem_limit: 8g
+    stop_grace_period: 660s
+    restart: "no"
 
   model-realtime-worker:
     image: ${AI_IMAGE:-jx-now-ai-management:0.2.1}

@@ -47,3 +47,15 @@
 - 预防：证据压缩测试同时覆盖“首条超长”“多条累计超长”“关键 ID 保留”和“无关 Metadata 剔除”。
 - 证据：[商业顾问 DSL 优化与隔离验收记录](../商业顾问DSL优化与隔离验收记录-2026-07-31.md:61)、`tests/test_business_advisor_optimized_dsl.py`。
 - 最后验证：2026-07-31（本地代码节点回归）；隔离 Dify 运行态验证待完成。
+
+## DIFY-005：共享 Docker 网络中的 `api` 别名会让 Dify 请求误路由
+
+- 适用：jx 与 Dify 共用外部 Docker 网络的测试部署。
+- 触发：Dify 控制台请求出现 502、重试或长期 pending；Nginx 日志显示连接到错误项目的 `api:5001`，或 `getent hosts api` 同时返回 jx 与 Dify 服务。
+- 根因：Docker Compose 会把两个项目的服务名都暴露为 `api`；Dify Nginx 和内部配置访问 `http://api:5001` 时，DNS 结果混入 jx API（端口不匹配）或其他同网容器。
+- 解决：给 Dify API 配置独占的 `dify-api` 网络别名，并把 Nginx、`PLUGIN_DIFY_INNER_API_URL`、`INTERNAL_FILES_URL` 统一切换到该别名；jx 测试页使用 `ai-management-api:8000`。同时给 API healthcheck 的 curl 增加客户端 `--max-time`，防止异常 Worker 时检查进程堆积。
+- 非解决：只重启 Nginx、只刷新浏览器、只重启 jx API，或用 `--remove-orphans` 删除历史容器；这些不能消除同名 DNS 冲突且可能破坏回滚证据。
+- 验证：`getent hosts dify-api` 只返回 Dify API 副本；两个 API/Worker healthy；Dify `/apps`、`/console/api/system-features`、`/v1/parameters` 连续 smoke 无超时；jx 测试页返回 200；登录态 Chatflow 预览页的 `advanced-chat/workflows/draft/run` 返回 HTTP 200 `text/event-stream` 并完成流式响应，浏览器无 Console 错误。
+- 预防：共享网络变更后检查所有服务别名和 `proxy_pass`/内部 URL；禁止跨项目依赖通用服务名；健康检查必须同时设置服务端和客户端超时。
+- 证据：`var/reports/20260803-dify-pending/issues.jsonl`、远端备份 `/opt/ai-management/backups/20260803-193603-dify-pending-root-cause-fix`。
+- 最后验证：2026-08-03（jx 测试环境基础链路与登录态 Chatflow SSE 已验证）。

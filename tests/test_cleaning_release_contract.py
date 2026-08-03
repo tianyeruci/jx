@@ -120,6 +120,36 @@ def test_jx_release_scripts_manage_all_cleaning_workers_and_exact_upload_targets
     assert "find /data -mindepth 1 -delete" not in clean
 
 
+def test_ocr_runtime_is_separate_and_deployed_scale_to_zero():
+    compose = _source("docker-compose.ai.yml")
+    dockerfile = _source("Dockerfile.ocr-offline")
+    entrypoint = _source("scripts/ocr_worker_entrypoint.sh")
+    autoscaler = _source("scripts/jx_ocr_autoscale.sh")
+    deploy = _source("scripts/jx_deploy_release.sh")
+
+    assert "${AI_OCR_IMAGE:-jx-now-ai-management-ocr:0.2.1}" in compose
+    assert "ocr_worker_entrypoint.sh" in compose
+    assert 'restart: "no"' in compose
+    assert "mem_limit: 8g" in compose
+    assert "--max-tasks-per-child=1" in compose
+    assert "COPY var/ocr-runtime/site-packages" in dockerfile
+    assert "requirements-ocr.lock" in dockerfile
+    assert "pip check" in dockerfile
+    assert "validate_offline_ocr_models" in entrypoint
+    assert "ai_ocr" in autoscaler
+    assert "IDLE_SECONDS=600" in autoscaler
+    assert 'docker exec -i "$id" python -' in autoscaler
+    assert "returned no worker response" in autoscaler
+    assert "worker_ready" in autoscaler
+    assert 'OCR_IMAGE="jx-now-ai-management-ocr:$RELEASE_ID"' in deploy
+    assert 'upsert_env PDF_OCR_ENABLED "true"' in deploy
+    assert 'upsert_env AI_OCR_IMAGE "$OCR_IMAGE"' in deploy
+    assert "ocr-image-id.txt" in deploy
+    assert 'OCR_DEPLOYMENT_ENABLED="${JX_OCR_DEPLOYMENT_ENABLED:-false}"' in deploy
+    assert "OCR deployment is paused" in deploy
+    assert 'Persistent=false' in _source("deploy/systemd/jx-ocr-autoscaler.timer")
+
+
 def test_precise_cleanup_accepts_a_relative_private_manifest_path_safely():
     clean = _source("scripts/jx_prebaseline_clean.sh")
 
@@ -134,6 +164,10 @@ def test_local_cleaning_state_reset_is_explicit_recoverable_and_never_deletes_di
 
     assert 'MODE="${1:-plan}"' in reset
     assert "RESET_LOCAL_CLEANING_STATE" in reset
+    assert "FORCE_RESET_LOCAL_CLEANING_STATE" in reset
+    assert "force_reset()" in reset
+    assert 'ALLOW_ACTIVE=$allow_active' in reset
+    assert "active model-cleaning tasks exist; cancel provider work before force reset" in reset
     assert 'APP_DIR="/opt/ai-management"' in reset
     assert 'BACKUP_SCRIPT="$APP_DIR/scripts/jx_prebaseline_backup.sh"' in reset
     for terminal_status in (
@@ -167,6 +201,22 @@ def test_local_cleaning_state_reset_is_explicit_recoverable_and_never_deletes_di
     assert "/health/ready" in reset
 
 
+def test_force_reset_has_a_separate_confirmation_and_preserves_dify_boundary():
+    reset = _source("scripts/jx_reset_cleaning_local_state.sh")
+
+    assert "force FORCE_RESET_LOCAL_CLEANING_STATE" in reset
+    assert 'case "$MODE" in' in reset
+    assert "plan|execute|force)" in reset
+    assert '"${ALL_COMPOSE[@]}" stop \\' in reset
+    assert 'scheduler publication-worker model-batch-worker model-realtime-worker' in reset
+    assert '"${ALL_COMPOSE[@]}" stop api' in reset
+    assert 'capture_targets "$RESET_TEMP_DIR/prequiesce" 1' in reset
+    assert 'capture_targets "$evidence_dir/poststop" 1' in reset
+    assert 'delete_local_state "$evidence_dir/poststop" 1' in reset
+    assert 'dify_delete_operations": 0' in reset
+    assert 'DifyKnowledgeClient' not in reset
+
+
 def test_local_cleaning_state_reset_is_routed_from_operator_documentation():
     runbook = _source("docs/jx文档清洗本地状态归零操作说明.md")
     readme = _source("docs/README.md")
@@ -177,6 +227,7 @@ def test_local_cleaning_state_reset_is_routed_from_operator_documentation():
         assert "jx_reset_cleaning_local_state.sh plan" in source
         assert "execute RESET_LOCAL_CLEANING_STATE" in source
     assert "不调用 Dify 删除接口" in runbook
+    assert "force FORCE_RESET_LOCAL_CLEANING_STATE" in runbook
     assert "jx文档清洗本地状态归零操作说明.md" in readme
     assert "jx文档清洗本地状态归零操作说明.md" in ui_guide
 

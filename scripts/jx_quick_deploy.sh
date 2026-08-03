@@ -4,7 +4,8 @@ umask 077
 
 APP_DIR="/opt/ai-management"
 INCOMING_ZIP="$APP_DIR/incoming/ai_management.zip"
-LOCK_FILE="$APP_DIR/var/jx-quick-deploy.lock"
+LOCK_FILE="$APP_DIR/var/jx-deploy.lock"
+RESOURCE_GUARD="$APP_DIR/scripts/jx_resource_guard.sh"
 UPLOAD_VOLUME="ai-management_ai_uploads"
 DIFY_DIR="/opt/dify/docker"
 DIFY_DB_CONTAINER="docker-db_postgres-1"
@@ -12,10 +13,10 @@ DIFY_STORAGE="$DIFY_DIR/volumes/app/storage"
 RESET_CONFIRMATION="RESET_JX_TEST_ENVIRONMENT"
 CORE_REPOSITORY="jx-now-ai-management"
 UI_REPOSITORY="jx-now-ai-management-ui"
+OCR_REPOSITORY="jx-now-ai-management-ocr"
 CORE_SERVICES=(
   api
   worker
-  ai-ocr-worker
   model-realtime-worker
   model-batch-worker
   publication-worker
@@ -37,6 +38,9 @@ SERVICES_STOPPED=0
 WHEEL_REPLACED=0
 SOURCE_SWAPPED=0
 OLD_SOURCE=""
+OCR_AUTOSCALER_WAS_ACTIVE=0
+OCR_WORKER_WAS_RUNNING=0
+OCR_DEPLOYMENT_ENABLED="${JX_OCR_DEPLOYMENT_ENABLED:-false}"
 
 usage() {
   cat <<'EOF'
@@ -59,6 +63,32 @@ die() {
 
 compose() {
   docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml --profile test "$@"
+}
+
+pause_ocr_autoscaler() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  if systemctl cat jx-ocr-autoscaler.timer >/dev/null 2>&1; then
+    if systemctl is-active --quiet jx-ocr-autoscaler.timer; then
+      systemctl stop jx-ocr-autoscaler.timer
+      OCR_AUTOSCALER_WAS_ACTIVE=1
+    fi
+    systemctl stop jx-ocr-autoscaler.service >/dev/null 2>&1 || true
+  fi
+  local ocr_id
+  ocr_id="$(docker compose -f docker-compose.ai.yml ps -q ai-ocr-worker 2>/dev/null || true)"
+  if test -n "$ocr_id" && test "$(docker inspect --format '{{.State.Status}}' "$ocr_id" 2>/dev/null || true)" = running; then
+    docker compose -f docker-compose.ai.yml stop -t 660 ai-ocr-worker
+    OCR_WORKER_WAS_RUNNING=1
+  fi
+}
+
+restore_ocr_autoscaler() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  if test "$OCR_AUTOSCALER_WAS_ACTIVE" -eq 1; then
+    systemctl start jx-ocr-autoscaler.timer >/dev/null 2>&1 || true
+  elif test "$OCR_WORKER_WAS_RUNNING" -eq 1; then
+    docker compose -f docker-compose.ai.yml up -d ai-ocr-worker >/dev/null 2>&1 || true
+  fi
 }
 
 read_env_value() {
@@ -87,7 +117,7 @@ restore_old_wheel() {
 }
 
 restart_previous_services() {
-  unset AI_IMAGE AI_UI_IMAGE BUILD_VERSION
+  unset AI_IMAGE AI_UI_IMAGE AI_OCR_IMAGE BUILD_VERSION
   compose up -d --force-recreate "${ALL_SERVICES[@]}" >/dev/null 2>&1 || true
 }
 
@@ -117,6 +147,7 @@ cleanup() {
   else
     restore_old_wheel
   fi
+  restore_ocr_autoscaler
   if test -n "$TEMP_ROOT"; then
     case "$(realpath -m "$TEMP_ROOT")" in
       "$APP_DIR"/var/.quick-deploy.*) rm -rf -- "$TEMP_ROOT" ;;
@@ -152,6 +183,8 @@ while test "$#" -gt 0; do
 done
 
 test "$(id -u)" -eq 0 || die "run as root on the jx test server"
+test "$OCR_DEPLOYMENT_ENABLED" = true || \
+  die "OCR deployment is paused; set JX_OCR_DEPLOYMENT_ENABLED=true only after explicit approval"
 cd "$APP_DIR"
 test "$(pwd -P)" = "$APP_DIR" || die "unexpected application directory"
 mkdir -p incoming releases backups var/reports/v2
@@ -177,17 +210,26 @@ for path in \
 do
   test -e "$path" || die "required server asset is missing: $path"
 done
+test -f "$RESOURCE_GUARD" || die "resource guard is missing: $RESOURCE_GUARD"
 test -f "$INCOMING_ZIP" || die "upload ai_management.zip to $INCOMING_ZIP"
 test "$(realpath -e "$INCOMING_ZIP")" = "$INCOMING_ZIP" || die "unexpected ZIP path"
 unzip -tq "$INCOMING_ZIP" >/dev/null || die "ZIP CRC validation failed"
 compose config --services >/dev/null
+test -f Dockerfile.ocr-offline
+test -f scripts/ocr_worker_entrypoint.sh
+test -d var/ocr-runtime/debs
+test -d var/ocr-runtime/site-packages
+test -d var/ocr-runtime/models
+test -f var/ocr-runtime/requirements-ocr.lock
 
 CURRENT_CORE_IMAGE="$(read_env_value AI_IMAGE)"
 CURRENT_UI_IMAGE="$(read_env_value AI_UI_IMAGE)"
+CURRENT_OCR_IMAGE="$(read_env_value AI_OCR_IMAGE)"
 CURRENT_BUILD_VERSION="$(read_env_value BUILD_VERSION)"
 case "$CURRENT_CORE_IMAGE" in "$CORE_REPOSITORY":*) ;; *) die "AI_IMAGE is not a jx core image" ;; esac
 case "$CURRENT_UI_IMAGE" in "$UI_REPOSITORY":*) ;; *) die "AI_UI_IMAGE is not a jx UI image" ;; esac
-docker image inspect "$CURRENT_CORE_IMAGE" "$CURRENT_UI_IMAGE" >/dev/null
+case "$CURRENT_OCR_IMAGE" in "$OCR_REPOSITORY":*) ;; *) die "AI_OCR_IMAGE is not a jx OCR image" ;; esac
+docker image inspect "$CURRENT_CORE_IMAGE" "$CURRENT_UI_IMAGE" "$CURRENT_OCR_IMAGE" >/dev/null
 docker compose -f docker-compose.ai.yml exec -T api python -c \
   "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=30).read()" \
   >/dev/null
@@ -316,10 +358,14 @@ printf 'release_id=%s\n' "$RELEASE_ID"
 printf 'source_sha256=%s\n' "$SOURCE_SHA256"
 printf 'current_core_image=%s\n' "$CURRENT_CORE_IMAGE"
 printf 'current_ui_image=%s\n' "$CURRENT_UI_IMAGE"
+printf 'current_ocr_image=%s\n' "$CURRENT_OCR_IMAGE"
 printf 'data_mode=%s\n' "$DATA_MODE"
 if test "$PLAN_ONLY" -eq 1; then
   exit 0
 fi
+
+bash "$RESOURCE_GUARD" check --phase=quick-deploy
+pause_ocr_autoscaler
 
 if test "$DATA_MODE" = "clean"; then
   test -f "$EXTRACT_ROOT/ai_management/ops/quick_reset.py" || \
@@ -359,12 +405,19 @@ cp -a "wheelhouse/$WHEEL_FILE" "$OLD_WHEEL_BACKUP"
 install -m 0644 "$RELEASE_DIR/$WHEEL_FILE" "wheelhouse/$WHEEL_FILE"
 WHEEL_REPLACED=1
 
+bash "$RESOURCE_GUARD" run --phase=quick-core-build -- \
 docker build --pull=false -f Dockerfile.offline -t "$CORE_IMAGE" . \
   > "$REPORT_DIR/core-build.log" 2>&1
+bash "$RESOURCE_GUARD" run --phase=quick-ui-build -- \
 docker build --pull=false -f Dockerfile.ui-offline -t "$UI_IMAGE" . \
   > "$REPORT_DIR/ui-build.log" 2>&1
+bash "$RESOURCE_GUARD" run --phase=quick-ocr-build -- \
+docker build --pull=false --build-arg AI_IMAGE="$CORE_IMAGE" \
+  -f Dockerfile.ocr-offline -t "$OCR_REPOSITORY:$RELEASE_ID" . \
+  > "$REPORT_DIR/ocr-build.log" 2>&1
 docker image inspect "$CORE_IMAGE" --format '{{.Id}}' > "$REPORT_DIR/core-image-id.txt"
 docker image inspect "$UI_IMAGE" --format '{{.Id}}' > "$REPORT_DIR/ui-image-id.txt"
+docker image inspect "$OCR_REPOSITORY:$RELEASE_ID" --format '{{.Id}}' > "$REPORT_DIR/ocr-image-id.txt"
 
 docker run --rm -i --env-file .env "$CORE_IMAGE" python - <<'PY' \
   > "$REPORT_DIR/core-import-smoke.txt"
@@ -383,6 +436,12 @@ PY
 docker run --rm --env-file .env "$UI_IMAGE" python -c \
   "from ai_management.config import get_settings; import ai_management.test_ui; get_settings(); print('ui-import-ok')" \
   > "$REPORT_DIR/ui-import-smoke.txt"
+docker run --rm --env-file .env \
+  -e PDF_OCR_MODEL_ROOT=/app/.paddlex/official_models \
+  -e PDF_OCR_MODEL_MANIFEST=/app/.paddlex/official_models/manifest.json \
+  "$OCR_REPOSITORY:$RELEASE_ID" python -c \
+  "import paddle, paddleocr; print('ocr-package-ok')" \
+  > "$REPORT_DIR/ocr-smoke.txt"
 restore_old_wheel
 
 bash scripts/jx_prebaseline_backup.sh "$BACKUP_ID" > "$REPORT_DIR/backup-path.txt"
@@ -441,8 +500,9 @@ install -m 0644 "$RELEASE_DIR/$WHEEL_FILE" "wheelhouse/$WHEEL_FILE"
 WHEEL_REPLACED=1
 upsert_env AI_IMAGE "$CORE_IMAGE"
 upsert_env AI_UI_IMAGE "$UI_IMAGE"
+upsert_env AI_OCR_IMAGE "$OCR_REPOSITORY:$RELEASE_ID"
 upsert_env BUILD_VERSION "$RELEASE_ID"
-unset AI_IMAGE AI_UI_IMAGE BUILD_VERSION
+unset AI_IMAGE AI_UI_IMAGE AI_OCR_IMAGE BUILD_VERSION
 SWITCHED=1
 compose up -d --force-recreate "${ALL_SERVICES[@]}" > "$REPORT_DIR/compose-up.txt" 2>&1
 SERVICES_STOPPED=0
@@ -481,6 +541,8 @@ docker inspect "${CONTAINER_IDS[@]}" --format '{{.Name}} {{.Config.Image}} {{.Im
   > "$REPORT_DIR/container-images.txt"
 test "$(grep -c "$CORE_IMAGE" "$REPORT_DIR/container-images.txt")" -eq "${#CORE_SERVICES[@]}"
 test "$(grep -c "$UI_IMAGE" "$REPORT_DIR/container-images.txt")" -eq 1
+docker image inspect "$OCR_REPOSITORY:$RELEASE_ID" --format '{{.Id}} {{.RepoTags}}' \
+  > "$REPORT_DIR/ocr-image-ref.txt"
 
 curl --fail --silent --show-error -o /dev/null -w '%{http_code}\n' \
   http://127.0.0.1/ai-management-test/ > "$REPORT_DIR/test-page-http-status.txt"
@@ -509,11 +571,11 @@ SOURCE_SWAPPED=1
 
 REMOVED_IMAGES="$REPORT_DIR/removed-old-image-tags.txt"
 : > "$REMOVED_IMAGES"
-for repository in "$CORE_REPOSITORY" "$UI_REPOSITORY"; do
+for repository in "$CORE_REPOSITORY" "$UI_REPOSITORY" "$OCR_REPOSITORY"; do
   while IFS= read -r ref; do
     test -n "$ref" || continue
     case "$ref" in
-      "$CORE_IMAGE"|"$UI_IMAGE"|"$CURRENT_CORE_IMAGE"|"$CURRENT_UI_IMAGE") continue ;;
+      "$CORE_IMAGE"|"$UI_IMAGE"|"$OCR_REPOSITORY:$RELEASE_ID"|"$CURRENT_CORE_IMAGE"|"$CURRENT_UI_IMAGE"|"$CURRENT_OCR_IMAGE") continue ;;
     esac
     if docker image rm "$ref" >> "$REMOVED_IMAGES" 2>&1; then
       :
@@ -529,6 +591,7 @@ sha256sum \
   "$REPORT_DIR/wheel-sha256.txt" \
   "$REPORT_DIR/core-image-id.txt" \
   "$REPORT_DIR/ui-image-id.txt" \
+  "$REPORT_DIR/ocr-image-id.txt" \
   "$REPORT_DIR/health-ready.json" \
   "$REPORT_DIR/container-images.txt" \
   > "$REPORT_DIR/SHA256SUMS"

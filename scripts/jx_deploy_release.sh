@@ -10,6 +10,8 @@ APP_DIR="/opt/ai-management"
 STAGE_DIR="$APP_DIR/releases/$RELEASE_ID"
 BACKUP_DIR="$APP_DIR/backups/$BACKUP_ID"
 REPORT_DIR="$APP_DIR/var/reports/v2/$RELEASE_ID-deploy"
+LOCK_FILE="$APP_DIR/var/jx-deploy.lock"
+RESOURCE_GUARD="$APP_DIR/scripts/jx_resource_guard.sh"
 WHEEL_FILE="jx_now_ai_management-0.2.1-py3-none-any.whl"
 OPENPYXL_WHEEL="openpyxl-3.1.5-py2.py3-none-any.whl"
 ET_XMLFILE_WHEEL="et_xmlfile-2.0.0-py3-none-any.whl"
@@ -21,10 +23,26 @@ MIGRATION_FILES=(
 )
 CORE_IMAGE="jx-now-ai-management:$RELEASE_ID"
 UI_IMAGE="jx-now-ai-management-ui:$RELEASE_ID"
+OCR_IMAGE="jx-now-ai-management-ocr:$RELEASE_ID"
+OCR_RUNTIME_DIR="$APP_DIR/var/ocr-runtime"
 SWITCHED=0
+OCR_AUTOSCALER_WAS_ACTIVE=0
+OCR_AUTOSCALER_INSTALLED=0
+OCR_WORKER_WAS_RUNNING=0
+OCR_DEPLOYMENT_ENABLED="${JX_OCR_DEPLOYMENT_ENABLED:-false}"
 
 cd "$APP_DIR"
+test "$(id -u)" -eq 0
 test "$(pwd -P)" = "$APP_DIR"
+test "$OCR_DEPLOYMENT_ENABLED" = true || {
+  printf '%s\n' 'OCR deployment is paused; set JX_OCR_DEPLOYMENT_ENABLED=true only after explicit approval' >&2
+  exit 1
+}
+mkdir -p "$APP_DIR/var"
+exec 9>"$LOCK_FILE"
+flock -n 9 || { printf '%s\n' 'another deployment or transfer is already running' >&2; exit 1; }
+test -f "$RESOURCE_GUARD" || { printf 'resource guard is missing: %s\n' "$RESOURCE_GUARD" >&2; exit 1; }
+RESOURCE_GUARD="$APP_DIR/scripts/jx_resource_guard.sh"
 test -d "$STAGE_DIR"
 test -d "$BACKUP_DIR"
 test -f "$STAGE_DIR/$WHEEL_FILE"
@@ -35,7 +53,43 @@ for migration in "${MIGRATION_FILES[@]}"; do
 done
 test -f "$STAGE_DIR/docker-compose.ai.yml"
 test -f "$STAGE_DIR/docker-compose.ui.yml"
+test -f "$APP_DIR/Dockerfile.ocr-offline"
+test -f "$APP_DIR/scripts/ocr_worker_entrypoint.sh"
+test -f "$APP_DIR/scripts/jx_ocr_autoscale.sh"
+test -f "$APP_DIR/scripts/jx_install_ocr_autoscaler.sh"
+test -f "$APP_DIR/deploy/systemd/jx-ocr-autoscaler.service"
+test -f "$APP_DIR/deploy/systemd/jx-ocr-autoscaler.timer"
+test -d "$OCR_RUNTIME_DIR/debs"
+test -d "$OCR_RUNTIME_DIR/site-packages"
+test -d "$OCR_RUNTIME_DIR/models"
+test -f "$OCR_RUNTIME_DIR/requirements-ocr.lock"
 mkdir -p "$REPORT_DIR"
+
+pause_ocr_autoscaler() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  if systemctl cat jx-ocr-autoscaler.timer >/dev/null 2>&1; then
+    if systemctl is-active --quiet jx-ocr-autoscaler.timer; then
+      systemctl stop jx-ocr-autoscaler.timer
+      OCR_AUTOSCALER_WAS_ACTIVE=1
+    fi
+    systemctl stop jx-ocr-autoscaler.service >/dev/null 2>&1 || true
+  fi
+  local ocr_id
+  ocr_id="$(docker compose -f docker-compose.ai.yml ps -q ai-ocr-worker 2>/dev/null || true)"
+  if test -n "$ocr_id" && test "$(docker inspect --format '{{.State.Status}}' "$ocr_id" 2>/dev/null || true)" = running; then
+    docker compose -f docker-compose.ai.yml stop -t 660 ai-ocr-worker
+    OCR_WORKER_WAS_RUNNING=1
+  fi
+}
+
+restore_ocr_autoscaler_after_failure() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  if test "$OCR_AUTOSCALER_INSTALLED" -eq 1 && test "$OCR_AUTOSCALER_WAS_ACTIVE" -eq 0; then
+    systemctl disable --now jx-ocr-autoscaler.timer >/dev/null 2>&1 || true
+  elif test "$OCR_AUTOSCALER_WAS_ACTIVE" -eq 1; then
+    systemctl start jx-ocr-autoscaler.timer >/dev/null 2>&1 || true
+  fi
+}
 
 rollback() {
   status=$?
@@ -45,11 +99,15 @@ rollback() {
   printf 'deployment_failed=%s\n' "$status" > "$REPORT_DIR/rollback-status.txt"
   if test "$SWITCHED" -eq 1; then
     cp -a "$BACKUP_DIR/env.backup" .env
-    unset AI_IMAGE AI_UI_IMAGE BUILD_VERSION
+    unset AI_IMAGE AI_UI_IMAGE AI_OCR_IMAGE BUILD_VERSION
     docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml \
       --profile test up -d --force-recreate \
-      api worker ai-ocr-worker model-realtime-worker model-batch-worker publication-worker scheduler test-ui \
+      api worker model-realtime-worker model-batch-worker publication-worker scheduler test-ui \
       >> "$REPORT_DIR/rollback.log" 2>&1 || true
+    if test "$OCR_WORKER_WAS_RUNNING" -eq 1; then
+      docker compose -f docker-compose.ai.yml up -d ai-ocr-worker \
+        >> "$REPORT_DIR/rollback.log" 2>&1 || true
+    fi
   fi
   if test -f "$BACKUP_DIR/$WHEEL_FILE.before-release"; then
     cp -a "$BACKUP_DIR/$WHEEL_FILE.before-release" "wheelhouse/$WHEEL_FILE"
@@ -77,9 +135,20 @@ rollback() {
       rm -f -- "migrations/versions/$migration"
     fi
   done
+  for unit in jx-ocr-autoscaler.service jx-ocr-autoscaler.timer; do
+    if test -f "$BACKUP_DIR/$unit.before-release"; then
+      cp -a "$BACKUP_DIR/$unit.before-release" "/etc/systemd/system/$unit"
+    elif test "$OCR_AUTOSCALER_INSTALLED" -eq 1; then
+      rm -f -- "/etc/systemd/system/$unit"
+    fi
+  done
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  restore_ocr_autoscaler_after_failure
   exit "$status"
 }
 trap rollback EXIT
+
+pause_ocr_autoscaler
 
 printf '%s  %s\n' "$WHEEL_SHA256" "$STAGE_DIR/$WHEEL_FILE" \
   | sha256sum -c -
@@ -97,6 +166,11 @@ for migration in "${MIGRATION_FILES[@]}"; do
 done
 cp -a docker-compose.ai.yml "$BACKUP_DIR/docker-compose.ai.yml.before-release"
 cp -a docker-compose.ui.yml "$BACKUP_DIR/docker-compose.ui.yml.before-release"
+for unit in jx-ocr-autoscaler.service jx-ocr-autoscaler.timer; do
+  if test -f "/etc/systemd/system/$unit"; then
+    cp -a "/etc/systemd/system/$unit" "$BACKUP_DIR/$unit.before-release"
+  fi
+done
 install -m 0644 "$STAGE_DIR/$WHEEL_FILE" "wheelhouse/$WHEEL_FILE"
 install -m 0644 "$STAGE_DIR/$OPENPYXL_WHEEL" "wheelhouse/$OPENPYXL_WHEEL"
 install -m 0644 "$STAGE_DIR/$ET_XMLFILE_WHEEL" "wheelhouse/$ET_XMLFILE_WHEEL"
@@ -115,6 +189,7 @@ for file in \
   jx_capture_ui_cleanup_manifest.sh \
   jx_quick_deploy.sh \
   jx_reset_cleaning_local_state.sh \
+  jx_resource_guard.sh \
   jx_release_data.py \
   backfill_course_collections.py \
   evaluate_business_e2e.py
@@ -127,6 +202,8 @@ install -m 0644 "$STAGE_DIR/business_advisor.yml" \
 install -m 0644 "$STAGE_DIR/business-advisor-prompt.md" \
   "dify/prompts/商业顾问提示词.md"
 
+bash "$RESOURCE_GUARD" check --phase=release
+bash "$RESOURCE_GUARD" run --phase=release-core-build -- \
 docker build --pull=false -f Dockerfile.offline -t "$CORE_IMAGE" . \
   > "$REPORT_DIR/core-build.log" 2>&1
 docker image inspect "$CORE_IMAGE" --format '{{.Id}}' \
@@ -135,6 +212,20 @@ docker run --rm "$CORE_IMAGE" python -c \
   "import ai_management.main, ai_management.privacy; print('core-package-ok')" \
   > "$REPORT_DIR/core-smoke.txt"
 
+bash "$RESOURCE_GUARD" run --phase=release-ocr-build -- \
+docker build --pull=false --build-arg AI_IMAGE="$CORE_IMAGE" \
+  -f Dockerfile.ocr-offline -t "$OCR_IMAGE" . \
+  > "$REPORT_DIR/ocr-build.log" 2>&1
+docker image inspect "$OCR_IMAGE" --format '{{.Id}}' \
+  > "$REPORT_DIR/ocr-image-id.txt"
+docker run --rm --env-file .env \
+  -e PDF_OCR_MODEL_ROOT=/app/.paddlex/official_models \
+  -e PDF_OCR_MODEL_MANIFEST=/app/.paddlex/official_models/manifest.json \
+  "$OCR_IMAGE" python -c \
+  "import paddle, paddleocr; print('ocr-package-ok')" \
+  > "$REPORT_DIR/ocr-smoke.txt"
+
+bash "$RESOURCE_GUARD" run --phase=release-ui-build -- \
 docker build --pull=false -f Dockerfile.ui-offline -t "$UI_IMAGE" . \
   > "$REPORT_DIR/ui-build.log" 2>&1
 docker image inspect "$UI_IMAGE" --format '{{.Id}}' \
@@ -244,7 +335,7 @@ upsert_env CLEANING_SPEC_REVISION "commercial-cleaning-v3"
 upsert_env MAX_UPLOAD_FILES "10"
 upsert_env MAX_ACTIVE_CLEANING_BATCHES "5"
 upsert_env CLEANING_WORKER_CONCURRENCY "4"
-upsert_env PDF_OCR_ENABLED "false"
+upsert_env PDF_OCR_ENABLED "true"
 upsert_env PDF_OCR_MAX_PAGES "10"
 upsert_env PDF_OCR_TASK_TIMEOUT_SECONDS "600"
 upsert_env PDF_OCR_RENDER_DPI "200"
@@ -253,8 +344,9 @@ upsert_env PDF_OCR_AUTO_CONFIDENCE "0.90"
 upsert_env PDF_OCR_MIN_CONFIDENCE "0.75"
 upsert_env PDF_OCR_MAX_LOW_CONF_RATIO "0.10"
 upsert_env PDF_OCR_CPU_THREADS "4"
-upsert_env PDF_OCR_MODEL_ROOT "/app/var/ocr-models"
-upsert_env PDF_OCR_MODEL_MANIFEST "/app/var/ocr-models/manifest.json"
+upsert_env PDF_OCR_MODEL_ROOT "/app/.paddlex/official_models"
+upsert_env PDF_OCR_MODEL_MANIFEST "/app/.paddlex/official_models/manifest.json"
+upsert_env AI_OCR_IMAGE "$OCR_IMAGE"
 upsert_env COURSE_CATALOG_AUTO_PUBLISH "true"
 upsert_env COURSE_CATALOG_AUTO_APPROVE_COST_MAX "1.0"
 upsert_env SAVE_CONVERSION_MARKDOWN "false"
@@ -262,14 +354,14 @@ upsert_env CONVERSION_MARKDOWN_ROOT "/app/var/conversion-markdown"
 upsert_env CONVERSION_MARKDOWN_HOST_ROOT "/opt/ai-management/var/conversion-markdown"
 upsert_env CONVERSION_MARKDOWN_RETENTION_DAYS "7"
 SWITCHED=1
-unset AI_IMAGE AI_UI_IMAGE BUILD_VERSION
+unset AI_IMAGE AI_UI_IMAGE AI_OCR_IMAGE BUILD_VERSION
 
 docker compose -f docker-compose.ai.yml run --rm --no-deps -T api \
   alembic upgrade head \
   > "$REPORT_DIR/alembic-upgrade.txt" 2>&1
 docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml \
   --profile test up -d --force-recreate \
-  api worker ai-ocr-worker model-realtime-worker model-batch-worker publication-worker scheduler test-ui \
+  api worker model-realtime-worker model-batch-worker publication-worker scheduler test-ui \
   > "$REPORT_DIR/compose-up.txt" 2>&1
 
 for _ in $(seq 1 90); do
@@ -293,7 +385,6 @@ docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml \
 docker inspect \
   "$(docker compose -f docker-compose.ai.yml ps -q api)" \
   "$(docker compose -f docker-compose.ai.yml ps -q worker)" \
-  "$(docker compose -f docker-compose.ai.yml ps -q ai-ocr-worker)" \
   "$(docker compose -f docker-compose.ai.yml ps -q model-realtime-worker)" \
   "$(docker compose -f docker-compose.ai.yml ps -q model-batch-worker)" \
   "$(docker compose -f docker-compose.ai.yml ps -q publication-worker)" \
@@ -304,9 +395,21 @@ docker inspect \
 
 grep -q "$CORE_IMAGE" "$REPORT_DIR/container-images.txt"
 grep -q "$UI_IMAGE" "$REPORT_DIR/container-images.txt"
+docker image inspect "$OCR_IMAGE" --format '{{.Id}} {{.RepoTags}}' \
+  > "$REPORT_DIR/ocr-image-ref.txt"
+bash scripts/jx_install_ocr_autoscaler.sh \
+  > "$REPORT_DIR/ocr-autoscaler-install.txt" 2>&1
+OCR_AUTOSCALER_INSTALLED=1
+systemctl is-enabled jx-ocr-autoscaler.timer > "$REPORT_DIR/ocr-autoscaler-enabled.txt"
+systemctl is-active jx-ocr-autoscaler.timer > "$REPORT_DIR/ocr-autoscaler-active.txt"
+docker compose -f docker-compose.ai.yml ps -q ai-ocr-worker \
+  > "$REPORT_DIR/ocr-worker-container-id.txt"
 sha256sum \
   "$REPORT_DIR/core-image-id.txt" \
   "$REPORT_DIR/ui-image-id.txt" \
+  "$REPORT_DIR/ocr-image-id.txt" \
+  "$REPORT_DIR/ocr-autoscaler-enabled.txt" \
+  "$REPORT_DIR/ocr-autoscaler-active.txt" \
   "$REPORT_DIR/health-ready.json" \
   "$REPORT_DIR/container-images.txt" \
   > "$REPORT_DIR/SHA256SUMS"

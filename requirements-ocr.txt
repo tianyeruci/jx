@@ -1,4 +1,5 @@
 -e .[test,ocr]
 
 # Optional local OCR/layout backend for scan-only Chinese consultation PDFs.
-# Models are downloaded and cached on first use.
+# The OCR extra is pinned in pyproject.toml; production jx builds use the
+# hash-locked offline bundle under var/ocr-runtime instead of this installer.

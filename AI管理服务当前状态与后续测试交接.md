@@ -4,13 +4,44 @@
 > 用途：保存最新线上事实、回滚点、数据状态和开放事项。新任务先读 `AGENTS.md` 与 `docs/README.md`，再按功能域读取本文顶部最新状态。  
 > 本文不是需求或设计基线；权威顺序以 `docs/V2决策记录.md` 和 `docs/README.md` 为准。第 1～8 节为历史过程记录，不再作为当前执行指令。
 
-## 0.18 2026-08-03 统一改造 fix8、页面回归与开放阻塞（当前）
+## 0.22 2026-08-03 jx 测试环境 Dify 页面 pending 根因修复（当前最新）
+
+- 已确认根因：jx 与 Dify 共用 `docker_default` 网络，jx 的 `api` 服务别名与 Dify 的 `api` 服务别名冲突；Dify Nginx 及内部配置访问 `http://api:5001` 时，Docker DNS 会同时返回 jx API、Dify API 副本和其他同网服务，导致部分请求命中错误端口或异常副本，表现为 502、重试或长期 pending。
+- 已完成远端修复：Dify API 增加专用 `dify-api` 网络别名；Nginx、Dify 内部 API 地址统一切换到 `dify-api:5001`；API healthcheck 增加 `curl --max-time 3`；重建 Dify API、Worker、插件服务并 reload Nginx。jx `test-ui` 已恢复并改用 `ai-management-api:8000`，避免测试页再次命中 `api` 冲突别名。
+- 远端配置备份：`/opt/ai-management/backups/20260803-193603-dify-pending-root-cause-fix`；jx UI 配置备份：`/opt/ai-management/backups/20260803-194249-jx-ui-api-alias-fix`。未修改 Dify 数据库、Redis、知识库或上传卷，未执行 `--remove-orphans`。
+- 已验证：Dify 两个 API、两个 Worker 均 healthy；Dify `/apps` 连续 5 次 HTTP 200，`/console/api/system-features` 连续 5 次 HTTP 200，`/v1/parameters` 连续 5 次快速返回 401；jx `/ai-management-test/` HTTP 200；测试页容器通过 `ai-management-api:8000/health/ready`，ready 且 Dify 可达。已在登录态 Dify 预览页完成最小 Chatflow 对话：工作流 draft HTTP 200、`advanced-chat/workflows/draft/run` 返回 HTTP 200 `text/event-stream`，流完成 41765 bytes，输入框清空且无浏览器 Console 错误；最近 10 分钟 Nginx 无新的上游连接错误。
+- 防复发要点：同一 Docker 网络内不得让 jx 与 Dify 依赖同名 `api`；新增服务或修改 Compose/Nginx 前必须检查 `getent hosts api` 是否出现跨项目服务，并使用项目专用别名；健康检查命令必须有客户端超时；不要用 `--remove-orphans` 清理历史测试容器。
+
+## 0.21 2026-08-03 OCR 暂停与主机资源防护（当前最新）
+
+- jx 已恢复 SSH；本次审计未执行重启。上一启动周期的日志和资源快照确认：无速率限制的 OCR 离线大包传输触发内存压力、Swap 换入换出和磁盘 I/O 饥饿，随后 Docker、Dify、ai-management 健康检查和 SSH 超时；未发现磁盘已满、文件系统硬件错误或 OOM-killer 证据。
+- 当前 OCR worker、OCR timer、OCR 镜像构建和 OCR 大包传输均暂停；不执行 `PDF_OCR_ENABLED=true`，不启动 `ai-ocr-worker`，不安装 OCR autoscaler。此前不完整的 `/opt/ai-management/var/ocr-runtime` 已仅按精确目录清理，未触碰 Docker cache、Dify 数据库、Redis、上传卷或持久卷。
+- jx 当前资源门禁已安装为 `/opt/ai-management/scripts/jx_resource_guard.sh`；Docker 构建上下文排除无关 `var/`、OCR 归档和分片。恢复 OCR 或任何大包构建前必须先通过资源门禁；失败时只停止本次任务，不停止核心服务。
+- 重启后首次只读检查：根分区约 43% 使用、MemAvailable 约 26.52 GiB、Swap 0 MiB、I/O wait 0%、D 状态进程 0；Docker build cache 约 83.19 GiB（未清理，禁止将其与 Docker 持久卷混同）。
+- 当前仍有独立开放项：`docker-api-1` 健康检查超时，且 healthcheck curl 缺少客户端超时；本任务不重启/杀掉 Dify API 容器，见脱敏问题记录 `OCR-DEPLOY-003`。测试页在重启后也需单独核对 `ai-management-test-ui-1` 状态。
+
+## 0.18 2026-08-03 统一改造 fix8、页面回归与开放阻塞（历史当前快照）
 
 - jx 已发布统一改造 fix8；发布前备份 `/opt/ai-management/backups/20260803-unified-fix8-pre`，报告 `/opt/ai-management/var/reports/v2/20260803-unified-fix8-deploy`，应用 wheel SHA-256 为 `a228e10d44a4083f3f123bd2c162ab08f455e4e2cf74f252a039314cba56c2ce`。`/health/live` 为 `ok`、`/health/ready` 为 `ready`，Alembic 为 `j6a7b8c9d0e1 (head)`，各服务使用同一 fix8 版本；容器实际回读 `BAILIAN_BATCH_ENABLED=false`。
 - 公开测试页固定使用 `http://112.74.37.111/ai-management-test/`。六种当前清洗策略已逐一完成上传、异步清洗、复核/发布、状态回读和精确源删除；公众号正确 GB18030 样本、知识星球、小报童、资料钩子成功到条目详情；课程路线目录保持预期结构复核门禁；个人咨询保持模型契约复核。兼容策略 `course_information`、`learning_route` 未展示、未测试。
 - 页面修改功能与接口覆盖已完成：课程推荐/路线确认/阶段确认内部标识已脱敏，课程入口和点击统计通过；商业顾问、朋友圈顾问、日常写作有正常终态/提示；商业顾问反馈与停止任务返回 200；管理接口读操作、删除错误确认校验、日志和诊断页均通过。未执行真实用户数据删除。
 - 本地隔离回归：核心/API/UI `39 passed`，OCR/咨询/课程 `27 passed`；compileall、Ruff、脚本语法、功能索引和统一 DSL 检查通过。远端只读 Dify 契约应用调用通过，但两个知识库检索为 0；商业顾问轻量语义 E2E 为 `1/6`。
 - 开放事项：个人咨询实时模型输出未通过既有 schema；课程目录需业务复核后才能决定发布；候选统一 DSL 尚未导入/发布，缺少安全 Dify 管理员会话或受控 Enterprise API/HTTPS 管理通道。不得把当前状态宣称为完整业务验收通过。
+
+## 0.19 2026-08-03 清洗本地状态强制归零（当前最新）
+
+- 已在现有归零脚本上新增受控 `force FORCE_RESET_LOCAL_CLEANING_STATE` 模式；普通 `execute` 仍拒绝活动批次。强制模式先停止本地清洗/模型/发布写入服务，拒绝活动模型供应商任务，完成可恢复备份后只清除本地清洗表、精确 `ai:cleaning:*` 键和批次 UUID 上传目录。
+- jx 实际强制归零成功：清理前 `34` 个批次、`621` 条清洗文档、`37` 个文件、`15` 个模型任务、`5` 个发布分片、`34` 个 Redis 清洗键；清理后上述本地清洗数据和上传目录均为 `0`，无关 `external_deletion_task` 保持 `61`，Dify 删除操作为 `0`。
+- 备份与恢复校验通过，备份目录为 `/opt/ai-management/backups/20260803-132240-forced-cleaning-local-reset`。清理后 API `ready`，测试页直连和 Nginx 均为 HTTP `200`。
+- 清理未删除 Dify 知识库；清理后只读回读为 `general=6`、`course=110` 个文档，知识库内容由管理员自行处理。后续重新上传相同文件前，应先由管理员在 Dify 中清除对应测试文档。
+- 本地脚本语法检查和清理契约/强制模式测试 `18/18` 通过；本次仅更新服务器运维脚本和操作说明，未改变服务镜像或接口。
+
+## 0.20 2026-08-03 OCR 离线运行时准备（远端部署待恢复）
+
+- 本地已完成 OCR 专用离线镜像、模型 SHA-256 启动校验、`ai_ocr` 队列按需启动/停止、systemd service/timer、发布/快速发布保护和相关契约测试；未修改 `ai_management/` 或 `knowledge_cleaner/` 业务 Python 代码。OCR 配置目标为 `PDF_OCR_ENABLED=true`、专用 `AI_OCR_IMAGE`、`/app/.paddlex/official_models` 和对应 manifest。
+- jx 旧版常驻 OCR Worker 停止前已核对 `ai_ocr` 队列为 `0`；停止结果为正常退出。新的 OCR Compose、镜像、systemd 和 `.env` 开关尚未在 jx 生效，不能把本节视为 OCR 已部署或已验收。
+- 离线模型与 Python 运行时已在本地生成并建立锁文件；传输到 `/opt/ai-management/var/ocr-runtime` 的大包中途导致 jx SSH/HTTP 应用层不返回 banner/响应。服务器可 ping，当前应先恢复主机管理面，再核对远端目录是否为完整包；不得直接使用不完整目录构建镜像。脱敏问题证据：`var/reports/ocr-deployment-20260803/issues.jsonl`。
+- 本地已通过 OCR/发布契约、文档契约、功能索引 `--check`、Bash 语法和相关测试；远端构建、OCR 真实处理、自动发布、按需停止、失败保留队列和回滚验收均待完成。
 
 ## 0.17 2026-08-03 商业顾问应用访问 Key 切换（当前）
 
@@ -954,3 +985,42 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改原因：按统一执行计划完成 fix8 红线修复、jx 发布、六种当前清洗策略全链路、修改功能页面回归和接口文档覆盖，并把未闭环问题集中记录。
 - 修改前：课程/路线推荐在中文相邻位置仍可能展示内部标识；页面和接口回归证据分散，公众号首轮样本编码混用，课程目录和个人咨询状态尚未按最新计划归类；功能索引仍有自动区过期提示。
 - 修改后：fix8 已发布并经备份、wheel 校验、迁移 head、live/ready 和服务一致性核验；内部标识正则改为 ASCII 邻接边界并补回归测试；公众号改用完整 GB18030 样本复测通过；六策略、修改功能及管理/日志/诊断页面结果写入脱敏 `var/reports/20260803-unified-fix7-cleaning-ui/issues.jsonl`；功能索引已生成并通过 `--check`。个人咨询模型契约、课程目录业务复核和候选 DSL 发布权限仍保持开放阻塞，未绕过安全门禁。
+
+### 2026-08-03：新增强制清理模式并完成 jx 本地状态归零
+
+- 修改原因：用户确认全部当前清洗记录为测试数据，要求清除仍为 `processing/pending` 的本地批次，同时禁止删除 Dify 知识库内容。
+- 修改前：现有 `execute` 仅允许所有本地清洗层进入终态；活动批次会安全拒绝，无法满足测试前强制归零。
+- 修改后：现有脚本新增独立 `force` 模式和独立确认词；先停本地写入服务并备份，拒绝活动模型供应商任务，核对前后目标清单一致后删除本地清洗状态、精确 Redis 键和批次 UUID 上传目录；Dify 删除操作固定为 `0`。本地 `18/18` 专项测试和 Bash 语法检查通过，jx 实际强制归零、备份恢复、API ready、测试页直连/Nginx `200` 全部通过。Dify 知识库只读回读为 `general=6`、`course=110`，未执行知识库删除。
+
+### 2026-08-03：准备 OCR 离线运行时并记录远端传输阻塞
+
+- 修改原因：用户确认在 jx 测试服务器启用扫描 PDF OCR，要求不修改业务代码、按需占用 OCR 资源，并把配置和后续操作写入项目文档。
+- 修改前：OCR 依赖、模型和专用 Worker 镜像不存在；旧 OCR Worker 由普通核心镜像常驻运行；没有按队列自动启停和 systemd 失败退避。
+- 修改后：本地新增离线 OCR 镜像/模型校验、Compose 专用镜像、systemd timer、按需脚本、发布保护和文档/测试映射；旧 jx OCR Worker 在队列为 0 时正常停止。由于大包传输后 jx SSH/HTTP 应用层不返回 banner，远端新镜像、`.env` OCR 开关、systemd 安装和真实验收仍未完成；不得据此宣称部署成功。
+- 证据：本地相关测试与索引检查结果、`var/reports/ocr-deployment-20260803/issues.jsonl`；远端继续操作前须先恢复 SSH 并核验 `var/ocr-runtime` 完整性。
+
+### 2026-08-03：确认 OCR 传输引发主机资源阻塞并暂停后续部署
+
+- 修改原因：用户要求先定位根因并配置防护，明确暂停 OCR worker、镜像构建、timer 和大包传输，不能影响 Dify/ai-management 数据与核心服务。
+- 修改前：上一启动周期曾出现 MemAvailable 约 285 MiB、8 GiB Swap 全满、97% I/O wait、D 状态进程和 Docker 健康检查超时；传输/构建流程缺少组合资源门禁，Docker 构建上下文还会扫描重复归档和分片。
+- 修改后：确认根因机制为内存压力→Swap 换入换出→磁盘 I/O 饥饿→Docker/Dify/ai-management/SSH 超时；OCR 保持停用，远端只清理已确认属于本次失败传输的不完整 `/opt/ai-management/var/ocr-runtime`，安装资源门禁脚本并通过恢复后检查；新增 Dockerfile 专用 ignore、部署互斥锁、资源门禁、低优先级构建和 OCR 默认暂停。未清理 Docker build cache，未重启/重建 Dify 或 ai-management 核心服务，未修改数据库、Redis、上传卷或持久卷。
+- 证据：`var/reports/ocr-deployment-20260803/issues.jsonl`；远端恢复后门禁结果为 MemAvailable 约 26.52 GiB、Swap 0 MiB、I/O wait 0%、D 状态进程 0；Dify API healthcheck 的独立超时问题保留为开放项，未在本次任务中处理。
+
+### 2026-08-03：把资源门禁接入当前 jx 发布路径
+
+- 修改原因：已确认资源阻塞根因后，需要防止现有远端快速发布和正式发布脚本绕过资源检查；远端脚本与本地版本存在差异，不能直接整体覆盖。
+- 修改前：远端发布流程缺少统一的发布互斥锁和构建前资源门禁，普通发布/回滚服务列表仍包含旧 `ai-ocr-worker`；直接传输或构建可能再次压满主机资源。
+- 修改后：先将远端现有运维脚本备份到 `/opt/ai-management/backups/20260803-resource-guard-before`，再以最小补丁接入共用锁、资源门禁和核心/UI 构建前检查，并从普通发布/回滚列表移除旧 OCR worker；远端脚本语法检查通过。OCR 仍暂停，未启动、重建或安装任何 OCR 服务，也未重启 Dify/ai-management 核心服务。
+- 证据：远端资源门禁最终检查为 `MemAvailable=26.31 GiB`、`Swap used=0 MiB`、`I/O wait=0%`、`D-state=0`、`status=pass`；故障细节见脱敏报告 `var/reports/ocr-deployment-20260803/issues.jsonl`。
+
+### 2026-08-03：修复 jx 测试环境 Dify 页面请求 pending
+
+- 修改原因：用户反馈在 jx 测试服务器使用 Dify 页面时请求一直挂起；排查需区分页面入口、Dify API、Nginx、容器 DNS 和 jx 测试页链路。
+- 修改前：`api` DNS 同时包含 jx `ai-management-api-1` 与 Dify API；Nginx 日志出现请求连接到错误的 `172.18.0.8:5001`，Dify `docker-api-1` `/health` 超过 3 秒无响应且健康检查进程持续堆积；jx `test-ui` 未运行，公网测试页为 502。
+- 修改后：远端完成可回滚备份；Dify API 使用 `dify-api` 专用别名，Nginx 与 Dify 内部 URL 切换到该别名，healthcheck 增加客户端超时；重建 Dify API/Worker/插件服务并 reload Nginx；jx `test-ui` 恢复，内部 API 地址切换到 `ai-management-api:8000`。连续 HTTP smoke 已通过；未修改 Dify 数据或执行删除。
+
+### 2026-08-03：补充 Dify 登录态对话与 SSE 回归证据
+
+- 修改原因：基础 HTTP smoke 通过后，需要补齐用户实际使用页面的登录态最小对话和流式响应证据。
+- 修改前：交接记录仅有 Dify 控制台接口和 jx 测试页 HTTP 结果，完整浏览器对话/SSE 尚未记录。
+- 修改后：在现有登录态 Dify Chatflow 预览页发送合成测试问题；工作流 draft HTTP 200，`advanced-chat/workflows/draft/run` HTTP 200 且 MIME 为 `text/event-stream`，`Network.loadingFinished` 为 41765 bytes，输入框清空、发送按钮恢复、无 Console warning/error；随后远端最近 10 分钟 Nginx 未发现上游连接失败或 502/503/504。未保留对话正文或凭据。

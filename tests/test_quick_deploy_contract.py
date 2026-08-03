@@ -55,6 +55,7 @@ def test_quick_deploy_changes_only_runtime_version_keys_and_all_services():
 
     assert source.count("upsert_env AI_IMAGE") == 1
     assert source.count("upsert_env AI_UI_IMAGE") == 1
+    assert source.count("upsert_env AI_OCR_IMAGE") == 1
     assert source.count("upsert_env BUILD_VERSION") == 1
     for service in (
         "api",
@@ -66,6 +67,52 @@ def test_quick_deploy_changes_only_runtime_version_keys_and_all_services():
         "test-ui",
     ):
         assert service in source
+
+
+def test_quick_deploy_builds_ocr_image_without_starting_ocr_worker():
+    source = _source("scripts/jx_quick_deploy.sh")
+
+    assert 'OCR_REPOSITORY="jx-now-ai-management-ocr"' in source
+    assert 'CURRENT_OCR_IMAGE="$(read_env_value AI_OCR_IMAGE)"' in source
+    assert "Dockerfile.ocr-offline" in source
+    assert "ocr-image-id.txt" in source
+    assert "unset AI_IMAGE AI_UI_IMAGE AI_OCR_IMAGE BUILD_VERSION" in source
+    services = source[source.index("CORE_SERVICES=(") : source.index("ALL_SERVICES=")]
+    assert "ai-ocr-worker" not in services
+
+
+def test_deploy_is_paused_by_default_and_has_host_resource_guard():
+    quick = _source("scripts/jx_quick_deploy.sh")
+    formal = _source("scripts/jx_deploy_release.sh")
+    guard = _source("scripts/jx_resource_guard.sh")
+
+    assert 'OCR_DEPLOYMENT_ENABLED="${JX_OCR_DEPLOYMENT_ENABLED:-false}"' in quick
+    assert 'JX_OCR_DEPLOYMENT_ENABLED=true' in quick
+    assert 'bash "$RESOURCE_GUARD" check --phase=quick-deploy' in quick
+    assert 'bash "$RESOURCE_GUARD" run --phase=quick-core-build --' in quick
+    assert 'LOCK_FILE="$APP_DIR/var/jx-deploy.lock"' in quick
+    assert 'JX_OCR_DEPLOYMENT_ENABLED=true' in formal
+    assert 'bash "$RESOURCE_GUARD" check --phase=release' in formal
+    assert 'bash "$RESOURCE_GUARD" run --phase=release-core-build --' in formal
+    assert "MemAvailable" in guard
+    assert "SwapFree" in guard
+    assert "I/O wait" in guard
+    assert "uninterruptible I/O wait processes" in guard
+    assert "ionice -c3 nice -n 19" in guard
+
+
+def test_docker_contexts_exclude_large_unrelated_runtime_artifacts():
+    core_ignore = _source("Dockerfile.offline.dockerignore")
+    ui_ignore = _source("Dockerfile.ui-offline.dockerignore")
+    ocr_ignore = _source("Dockerfile.ocr-offline.dockerignore")
+
+    assert "**" in core_ignore
+    assert "!wheelhouse/**" in core_ignore
+    assert "!ui-wheelhouse-linux/**" in ui_ignore
+    assert "!var/ocr-runtime/site-packages/**" in ocr_ignore
+    assert "!var/ocr-runtime/models/**" in ocr_ignore
+    assert "var/ocr-runtime/site-packages.tar" not in ocr_ignore
+    assert "var/ocr-runtime/site-packages-chunks" not in ocr_ignore
 
 
 def test_formal_release_carries_the_quick_deployment_script():

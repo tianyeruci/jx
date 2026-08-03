@@ -8,6 +8,7 @@ APP_DIR="/opt/ai-management"
 BACKUP_SCRIPT="$APP_DIR/scripts/jx_prebaseline_backup.sh"
 UPLOAD_VOLUME="ai-management_ai_uploads"
 CONFIRMATION_TEXT="RESET_LOCAL_CLEANING_STATE"
+FORCE_CONFIRMATION_TEXT="FORCE_RESET_LOCAL_CLEANING_STATE"
 RESET_TEMP_DIR=""
 RESET_SERVICES_MAY_NEED_RESTART=0
 
@@ -34,6 +35,7 @@ usage() {
 Usage:
   bash scripts/jx_reset_cleaning_local_state.sh plan
   bash scripts/jx_reset_cleaning_local_state.sh execute RESET_LOCAL_CLEANING_STATE
+  bash scripts/jx_reset_cleaning_local_state.sh force FORCE_RESET_LOCAL_CLEANING_STATE
 
 The execute mode resets only local document-cleaning state on jx:
   - cleaning PostgreSQL rows and their cascaded child rows;
@@ -42,6 +44,10 @@ The execute mode resets only local document-cleaning state on jx:
 
 It does not call a Dify delete API and does not remove courses, routes,
 conversations, system logs, or unrelated external deletion tasks.
+
+The force mode is only for confirmed test data. It quiesces all local
+writers, refuses active model-provider tasks, then removes the same local
+state boundary without deleting Dify documents.
 EOF
 }
 
@@ -152,14 +158,17 @@ PY
 
 capture_targets() {
   local output_dir="$1"
+  local allow_active="${2:-0}"
   mkdir -p "$output_dir"
   chmod 700 "$output_dir"
 
   "${CORE_COMPOSE[@]}" run --rm --no-deps -T --user 0 \
+    -e "ALLOW_ACTIVE=$allow_active" \
     -v "$output_dir:/evidence" \
     api python - <<'PY'
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 
@@ -180,6 +189,7 @@ TERMINAL_DOCUMENT_STATUSES = {
 }
 TERMINAL_MODEL_TASK_STATUSES = {"completed", "failed", "cancelled"}
 TERMINAL_SHARD_STATUSES = {"succeeded", "failed"}
+ALLOW_ACTIVE = os.environ.get("ALLOW_ACTIVE") == "1"
 
 
 def grouped_statuses(session, table):
@@ -197,7 +207,7 @@ with SessionLocal() as session:
         "SELECT id, status FROM cleaning_batch ORDER BY id"
     )).all()
     batch_ids = [str(batch_id) for batch_id, _ in batches]
-    if any(status not in TERMINAL_BATCH_STATUSES for _, status in batches):
+    if any(status not in TERMINAL_BATCH_STATUSES for _, status in batches) and not ALLOW_ACTIVE:
         raise RuntimeError("an active cleaning batch exists; refusing reset")
     if any(
         not re.fullmatch(
@@ -243,7 +253,11 @@ with SessionLocal() as session:
             TERMINAL_SHARD_STATUSES,
         ),
     }
-    if any(active.values()):
+    if active["model_tasks"] and ALLOW_ACTIVE:
+        raise RuntimeError(
+            "active model-cleaning tasks exist; cancel provider work before force reset"
+        )
+    if any(active.values()) and not ALLOW_ACTIVE:
         raise RuntimeError("active cleaning child state exists; refusing reset")
     retained_rows = session.execute(text("""
         SELECT b.knowledge_base_code, d.dify_document_id
@@ -285,6 +299,7 @@ targets = {
     "retained_dify_document_count": sum(len(values) for values in retained.values()),
     "pending_dify_document_deletion_tasks": 0,
     "active_state_counts": active,
+    "force_mode": ALLOW_ACTIVE,
     "dify_delete_operations": 0,
 }
 fingerprint = hashlib.sha256(
@@ -333,10 +348,13 @@ capture_upload_entries() {
 
 delete_local_state() {
   local evidence_dir="$1"
+  local allow_active="${2:-0}"
   "${CORE_COMPOSE[@]}" run --rm --no-deps -T --user 0 \
+    -e "ALLOW_ACTIVE=$allow_active" \
     -v "$evidence_dir:/evidence" \
     api python - <<'PY'
 import json
+import os
 from pathlib import Path
 
 import redis
@@ -356,6 +374,7 @@ TERMINAL_DOCUMENT_STATUSES = {
 }
 TERMINAL_MODEL_TASK_STATUSES = {"completed", "failed", "cancelled"}
 TERMINAL_SHARD_STATUSES = {"succeeded", "failed"}
+ALLOW_ACTIVE = os.environ.get("ALLOW_ACTIVE") == "1"
 
 
 def grouped_statuses(session, table):
@@ -401,7 +420,11 @@ with SessionLocal() as session:
             TERMINAL_SHARD_STATUSES,
         ),
     }
-    if any(active.values()):
+    if active["model_tasks"] and ALLOW_ACTIVE:
+        raise RuntimeError(
+            "active model-cleaning tasks exist; cancel provider work before force reset"
+        )
+    if any(active.values()) and not ALLOW_ACTIVE:
         raise RuntimeError("cleaning state became active after the verified backup")
     if session.scalar(text(
         "SELECT count(*) FROM external_deletion_task WHERE kind = 'dify_document'"
@@ -651,12 +674,110 @@ execute_reset() {
   printf 'Cleaning local state reset completed. Backup: %s\n' "$backup_dir"
 }
 
+force_reset() {
+  if test "$CONFIRMATION" != "$FORCE_CONFIRMATION_TEXT"; then
+    printf 'Force execution requires the exact confirmation: %s\n' \
+      "$FORCE_CONFIRMATION_TEXT" >&2
+    usage >&2
+    return 2
+  fi
+
+  local run_id
+  local backup_dir
+  local evidence_dir
+  RESET_TEMP_DIR="$(mktemp -d "$APP_DIR/var/.cleaning-local-reset.XXXXXX")"
+  RESET_SERVICES_MAY_NEED_RESTART=0
+  trap cleanup_reset_on_exit EXIT
+
+  # Quiesce every local writer first, but leave API up long enough for the
+  # existing backup/restore verification script to run.
+  "${ALL_COMPOSE[@]}" stop \
+    scheduler publication-worker model-batch-worker model-realtime-worker \
+    ai-ocr-worker worker test-ui
+  RESET_SERVICES_MAY_NEED_RESTART=1
+  capture_targets "$RESET_TEMP_DIR/prequiesce" 1
+  capture_upload_entries "$RESET_TEMP_DIR/prequiesce"
+  if test ! -s "$RESET_TEMP_DIR/prequiesce/cleaning-batch-ids.txt"; then
+    if test -s "$RESET_TEMP_DIR/prequiesce/cleaning-redis-keys.txt" || \
+      test -s "$RESET_TEMP_DIR/prequiesce/upload-entry-ids.txt"; then
+      printf '%s\n' \
+        'Cleaning batches are empty but Redis/upload state remains; refusing an ambiguous force reset.' \
+        >&2
+      return 1
+    fi
+    printf '%s\n' 'Cleaning state is already empty; nothing to force reset.'
+    restart_services
+    RESET_SERVICES_MAY_NEED_RESTART=0
+    trap - EXIT
+    rm -rf -- "$RESET_TEMP_DIR"
+    RESET_TEMP_DIR=""
+    return 0
+  fi
+
+  run_id="$(date +%Y%m%d-%H%M%S)-forced-cleaning-local-reset"
+  backup_dir="$APP_DIR/backups/$run_id"
+  bash "$BACKUP_SCRIPT" "$run_id"
+  test -s "$backup_dir/ai-management.dump"
+  test -s "$backup_dir/dify.dump"
+  test -s "$backup_dir/dify-redis-dump.rdb"
+  test -s "$backup_dir/uploads.tar.gz"
+  sha256sum -c "$backup_dir/SHA256SUMS" >/dev/null
+
+  evidence_dir="$backup_dir/cleaning-local-reset-force"
+  mkdir -p "$evidence_dir/prequiesce" "$evidence_dir/poststop"
+  chmod 700 "$evidence_dir" "$evidence_dir/prequiesce" "$evidence_dir/poststop"
+  cp -a "$RESET_TEMP_DIR/prequiesce/." "$evidence_dir/prequiesce/"
+
+  "${ALL_COMPOSE[@]}" stop api
+  capture_targets "$evidence_dir/poststop" 1
+  capture_upload_entries "$evidence_dir/poststop"
+
+  for target in \
+    cleaning-batch-ids.txt \
+    cleaning-redis-keys.txt \
+    retained-dify-document-ids.json \
+    targets.safe.json \
+    upload-entry-ids.txt
+  do
+    cmp "$evidence_dir/prequiesce/$target" "$evidence_dir/poststop/$target"
+  done
+  if test -n "$(comm -23 \
+    "$evidence_dir/poststop/upload-entry-ids.txt" \
+    "$evidence_dir/poststop/cleaning-batch-ids.txt")"; then
+    printf '%s\n' 'The upload volume contains a directory not owned by a captured cleaning batch.' >&2
+    return 1
+  fi
+
+  delete_local_state "$evidence_dir/poststop" 1
+  delete_upload_entries "$evidence_dir/poststop"
+  restart_services
+  RESET_SERVICES_MAY_NEED_RESTART=0
+  verify_reset "$evidence_dir/poststop"
+
+  sha256sum \
+    "$evidence_dir/prequiesce/cleaning-batch-ids.txt" \
+    "$evidence_dir/prequiesce/cleaning-redis-keys.txt" \
+    "$evidence_dir/prequiesce/retained-dify-document-ids.json" \
+    "$evidence_dir/prequiesce/targets.safe.json" \
+    "$evidence_dir/prequiesce/upload-entry-ids.txt" \
+    "$evidence_dir/poststop/upload-entry-ids.txt" \
+    "$evidence_dir/poststop/reset-result.safe.json" \
+    "$evidence_dir/poststop/verification.safe.json" \
+    > "$evidence_dir/SHA256SUMS"
+  sha256sum -c "$evidence_dir/SHA256SUMS" >/dev/null
+
+  trap - EXIT
+  rm -rf -- "$RESET_TEMP_DIR"
+  RESET_TEMP_DIR=""
+  printf 'Forced cleaning local state reset completed. Backup: %s\n' "$backup_dir"
+}
+
 case "$MODE" in
   -h|--help|help)
     usage
     exit 0
     ;;
-  plan|execute)
+  plan|execute|force)
     ;;
   *)
     usage >&2
@@ -671,5 +792,8 @@ case "$MODE" in
     ;;
   execute)
     execute_reset
+    ;;
+  force)
+    force_reset
     ;;
 esac

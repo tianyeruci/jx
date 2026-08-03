@@ -1,0 +1,16 @@
+[Unit]
+Description=jx OCR worker queue autoscaler
+After=docker.service
+Requires=docker.service
+ConditionPathExists=/opt/ai-management/.env
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/opt/ai-management/scripts/jx_ocr_autoscale.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/run/jx-ocr-autoscaler
+TimeoutStartSec=720s

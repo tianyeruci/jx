@@ -1,0 +1,12 @@
+**
+!var/
+!var/ocr-runtime/
+!var/ocr-runtime/debs/
+!var/ocr-runtime/debs/**
+!var/ocr-runtime/site-packages/
+!var/ocr-runtime/site-packages/**
+!var/ocr-runtime/models/
+!var/ocr-runtime/models/**
+!var/ocr-runtime/requirements-ocr.lock
+!scripts/
+!scripts/ocr_worker_entrypoint.sh
