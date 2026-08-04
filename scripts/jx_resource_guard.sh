@@ -115,7 +115,11 @@ check_host_resources() {
   d_state_count="$(ps -eo stat= | awk '$1 ~ /^D/ {count++} END {print count + 0}')"
   test "$d_state_count" -eq 0 || die "uninterruptible I/O wait processes: $d_state_count"
 
-  if ps -eo pid=,args= | grep -E '[s]cp|[r]sync|[t]ar .*ocr-runtime|[d]ocker build|[b]uildctl|[b]uildkitd' >/dev/null 2>&1; then
+  # The guard is invoked as `... run -- docker build ...`; its own argv would
+  # otherwise match the process scan and reject every guarded build.  Ignore
+  # the guard PID while still stopping for an independent transfer/build.
+  if ps -eo pid=,args= | awk -v self="$$" \
+    '$1 != self && $0 ~ /[s]cp|[r]sync|[t]ar .*ocr-runtime|[d]ocker build|[b]uildctl|[b]uildkitd/ {found=1} END {exit found ? 0 : 1}'; then
     die "another transfer or build process is already running"
   fi
 

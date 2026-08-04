@@ -5,8 +5,8 @@ The public entry point is :func:`convert_pdf`.  It deliberately returns one
 separate knowledge-base documents.
 
 ``pypdf`` is the always-available text-layer probe/fallback.  ``pdfplumber``
-and PaddleOCR's PP-StructureV3 are imported lazily so batch jobs can route a
-source to review instead of crashing when an optional backend is unavailable.
+and OCR backends are imported lazily so batch jobs can route a source to
+review instead of crashing when an optional backend is unavailable.
 """
 
 from __future__ import annotations
@@ -100,6 +100,46 @@ class PDFPageResult:
     dpi: int | None = None
     ocr_attempts: int = 0
     key_fact_conflicts: list[str] = field(default_factory=list)
+    # ``image_count`` is populated by the lightweight pypdf probe.  It is
+    # intentionally diagnostic only and is not copied into Dify metadata.
+    image_count: int = 0
+
+
+@dataclass(slots=True)
+class _TableCandidate:
+    """A private table candidate used while constructing a page layout.
+
+    pdfplumber exposes several table strategies.  Keeping the candidates
+    private lets us compare them without expanding the public conversion
+    contract or leaking geometric audit data to callers.
+    """
+
+    bbox: tuple[float, float, float, float]
+    rows: list[list[str]]
+    markdown: str
+    reliable: bool
+    score: float
+    strategy: str
+    page_width: float
+    page_height: float
+
+    @property
+    def columns(self) -> int:
+        return max((len(row) for row in self.rows), default=0)
+
+    @property
+    def normalized_boundaries(self) -> tuple[float, ...]:
+        # Table extraction does not expose the exact column lines uniformly
+        # across pdfplumber versions.  Equal-width boundaries are a safe
+        # fallback and still allow conservative cross-page comparison.
+        count = max(self.columns, 1)
+        return tuple(round(index / count, 3) for index in range(count + 1))
+
+
+@dataclass(slots=True)
+class _PageLayout:
+    page: PDFPageResult
+    tables: list[_TableCandidate] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -295,6 +335,10 @@ def _extract_pypdf_pages(reader: PdfReader) -> list[PDFPageResult]:
             text = ""
             warnings.append(f"pypdf_page_error:{type(exc).__name__}")
         text = _normalize_markdown(text)
+        try:
+            image_count = len(list(getattr(page, "images", ()) or ()))
+        except Exception:
+            image_count = 0
         pages.append(
             PDFPageResult(
                 page_number=number,
@@ -302,6 +346,7 @@ def _extract_pypdf_pages(reader: PdfReader) -> list[PDFPageResult]:
                 backend="pypdf",
                 text_characters=_compact_length(text),
                 warnings=warnings,
+                image_count=image_count,
             )
         )
     return pages
@@ -342,48 +387,352 @@ def _words_to_line_events(words: Sequence[Mapping[str, Any]], tolerance: float =
     return events
 
 
+_TABLE_SETTINGS_CANDIDATES: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("default", {}),
+    ("snap5", {"snap_tolerance": 5, "join_tolerance": 5}),
+    ("snap8", {"snap_tolerance": 8, "join_tolerance": 8}),
+    (
+        "text_lines",
+        {"vertical_strategy": "text", "horizontal_strategy": "lines"},
+    ),
+    (
+        "text_text",
+        {"vertical_strategy": "text", "horizontal_strategy": "text"},
+    ),
+)
+
+
+def _table_rows_for_candidate(rows: Sequence[Sequence[Any] | None]) -> list[list[str]]:
+    """Normalize table rows once so scoring and Markdown share the same cells."""
+
+    return _trim_table(rows)
+
+
+def _score_table_candidate(
+    rows: Sequence[Sequence[str]],
+    bbox: Sequence[float],
+    *,
+    page_width: float,
+    page_height: float,
+    reliable: bool,
+) -> float:
+    if not rows:
+        return -100.0
+    width = max(len(row) for row in rows)
+    nonempty = sum(bool(cell) for row in rows for cell in row)
+    total = max(len(rows) * width, 1)
+    density = nonempty / total
+    stable = sum(len(row) == width for row in rows) / max(len(rows), 1)
+    area = max(0.0, float(bbox[2]) - float(bbox[0])) * max(0.0, float(bbox[3]) - float(bbox[1]))
+    page_area = max(page_width * page_height, 1.0)
+    # Padding/phantom columns lower stability and density.  Reliability is a
+    # useful signal but never enough to select a candidate by itself.
+    return (
+        (2.0 if reliable else 0.0)
+        + min(len(rows), 12) * 0.12
+        + min(width, 12) * 0.15
+        + density * 2.0
+        + stable * 2.0
+        + min(area / page_area, 0.8)
+    )
+
+
+def _table_bbox_equal(left: Sequence[float], right: Sequence[float]) -> bool:
+    return all(abs(float(a) - float(b)) <= 1.5 for a, b in zip(left, right))
+
+
+def _collect_table_candidates(
+    page: Any,
+    warnings: list[str],
+) -> list[_TableCandidate]:
+    page_width = float(getattr(page, "width", 1) or 1)
+    page_height = float(getattr(page, "height", 1) or 1)
+    candidates: list[_TableCandidate] = []
+    for strategy, settings in _TABLE_SETTINGS_CANDIDATES:
+        try:
+            if settings:
+                raw_tables = list(page.find_tables(table_settings=settings) or [])
+            else:
+                raw_tables = list(page.find_tables() or [])
+        except TypeError:
+            # Lightweight fakes and old pdfplumber versions may not accept
+            # table_settings.  The default strategy remains useful.
+            if settings:
+                continue
+            try:
+                raw_tables = list(page.find_tables() or [])
+            except Exception as exc:
+                warnings.append(f"table_detection_error:{type(exc).__name__}")
+                continue
+        except Exception as exc:
+            warnings.append(f"table_detection_error:{type(exc).__name__}")
+            continue
+        for table in raw_tables:
+            try:
+                bbox = tuple(float(value) for value in table.bbox)
+                rows = _table_rows_for_candidate(table.extract() or [])
+                markdown, reliable = table_to_markdown(rows)
+            except Exception as exc:
+                warnings.append(f"table_extraction_error:{type(exc).__name__}")
+                continue
+            if not markdown:
+                continue
+            # pdfplumber's text strategy can model an ordinary single-column
+            # page as a table (one cell per line).  Masking such a candidate
+            # would suppress heading recovery and disturb reading order.  A
+            # short, genuinely single-column table is still retained for
+            # linearization; long page-spanning candidates are discarded.
+            if len(rows) > 8 and max((len(row) for row in rows), default=0) <= 1:
+                continue
+            if any(_table_bbox_equal(bbox, existing.bbox) for existing in candidates):
+                # Keep the highest scoring variant for identical geometry.
+                existing = next(item for item in candidates if _table_bbox_equal(bbox, item.bbox))
+                score = _score_table_candidate(
+                    rows,
+                    bbox,
+                    page_width=page_width,
+                    page_height=page_height,
+                    reliable=reliable,
+                )
+                if score > existing.score:
+                    candidates.remove(existing)
+                else:
+                    continue
+            candidates.append(
+                _TableCandidate(
+                    bbox=bbox,
+                    rows=rows,
+                    markdown=markdown,
+                    reliable=reliable,
+                    score=_score_table_candidate(
+                        rows,
+                        bbox,
+                        page_width=page_width,
+                        page_height=page_height,
+                        reliable=reliable,
+                    ),
+                    strategy=strategy,
+                    page_width=page_width,
+                    page_height=page_height,
+                )
+            )
+    # Do not keep overlapping candidates from different detections: choose
+    # the higher-scoring geometry and retain independent adjacent tables.
+    selected: list[_TableCandidate] = []
+    for candidate in sorted(candidates, key=lambda item: item.score, reverse=True):
+        overlap = False
+        for existing in selected:
+            x_overlap = max(0.0, min(candidate.bbox[2], existing.bbox[2]) - max(candidate.bbox[0], existing.bbox[0]))
+            y_overlap = max(0.0, min(candidate.bbox[3], existing.bbox[3]) - max(candidate.bbox[1], existing.bbox[1]))
+            area = max((candidate.bbox[2] - candidate.bbox[0]) * (candidate.bbox[3] - candidate.bbox[1]), 1.0)
+            if x_overlap * y_overlap / area >= 0.55:
+                overlap = True
+                break
+        if not overlap:
+            selected.append(candidate)
+    return sorted(selected, key=lambda item: (item.bbox[1], item.bbox[0]))
+
+
+def _word_line_blocks(words: Sequence[Mapping[str, Any]], tolerance: float = 3.0) -> list[dict[str, Any]]:
+    """Group words into ordered lines while retaining heading evidence."""
+
+    rows: list[list[Mapping[str, Any]]] = []
+    tops: list[float] = []
+    for word in sorted(words, key=lambda item: (float(item.get("top", 0)), float(item.get("x0", 0)))):
+        top = float(word.get("top", 0))
+        if not rows or abs(top - tops[-1]) > tolerance:
+            rows.append([word])
+            tops.append(top)
+        else:
+            rows[-1].append(word)
+    blocks: list[dict[str, Any]] = []
+    for top, row in zip(tops, rows):
+        row = sorted(row, key=lambda item: float(item.get("x0", 0)))
+        text = _join_words(row).strip()
+        if not text:
+            continue
+        # pdfplumber's ``extract_words`` does not expose ``size`` on all
+        # versions.  Character height is a stable proxy for font size and is
+        # sufficient for document-level heading statistics.
+        sizes = [
+            float(item.get("size") or item.get("height") or 0)
+            for item in row
+            if item.get("size") or item.get("height")
+        ]
+        names = [str(item.get("fontname") or "").lower() for item in row]
+        x0 = min(float(item.get("x0", 0)) for item in row)
+        x1 = max(float(item.get("x1", item.get("x0", 0))) for item in row)
+        blocks.append(
+            {
+                "top": top,
+                "x0": x0,
+                "x1": x1,
+                "text": text,
+                "size": sum(sizes) / len(sizes) if sizes else 0.0,
+                "bold": any("bold" in name or "black" in name or "demi" in name for name in names),
+                "words": row,
+            }
+        )
+    return blocks
+
+
+def _heading_level(
+    block: Mapping[str, Any],
+    *,
+    body_size: float,
+    largest_size: float,
+    page_width: float,
+) -> int | None:
+    text = str(block.get("text") or "").strip()
+    if not text or len(text) > 80 or text.startswith(("|", "- ", "* ", "+ ")):
+        return None
+    if len(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", text)) < 2:
+        return None
+    size = float(block.get("size") or 0)
+    numbered = bool(re.match(r"^(?:第\s*[0-9一二三四五六七八九十百]+[章节部分篇]|[0-9]{1,2}[.、)]|[一二三四五六七八九十]+[、.])", text))
+    line_width = max(0.0, float(block.get("x1", 0)) - float(block.get("x0", 0)))
+    centered = (
+        line_width <= page_width * 0.62
+        and abs(((float(block.get("x0", 0)) + float(block.get("x1", 0))) / 2) - page_width / 2)
+        <= page_width * 0.05
+    )
+    emphatic = bool(block.get("bold")) and len(text) <= 55
+    larger = size > body_size * 1.12 if body_size else False
+    if not (numbered or centered or emphatic or larger):
+        return None
+    # A numbered body/list item is not a heading merely because it starts
+    # with ``1、``.  Require an independent layout signal (larger type,
+    # centering or bold) before promoting it.
+    if numbered and not (centered or emphatic or larger):
+        return None
+    if not (numbered or emphatic or larger):
+        return None
+    if size and largest_size and size >= largest_size * 0.96:
+        return 1
+    if size and body_size and size >= body_size * 1.28:
+        return 2
+    if numbered and len(text) <= 60:
+        return 2 if body_size and size >= body_size * 1.05 else 3
+    if emphatic:
+        return 2 if size >= body_size * 1.08 else 3
+    return None
+
+
+def _recover_headings(blocks: Sequence[Mapping[str, Any]], *, page_width: float) -> list[str]:
+    if not blocks:
+        return []
+    sizes: list[float] = []
+    for block in blocks:
+        size = float(block.get("size") or 0)
+        count = max(len(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", str(block.get("text") or ""))), 1)
+        if size:
+            sizes.extend([size] * min(count, 120))
+    if not sizes:
+        return [str(block.get("text") or "") for block in blocks]
+    counts = Counter(round(size, 1) for size in sizes)
+    body_size = float(max(counts, key=counts.get))
+    largest_size = max(counts)
+    headings: list[str] = []
+    h1_seen = False
+    output: list[str] = []
+    for block in blocks:
+        text = str(block.get("text") or "").strip()
+        level = _heading_level(
+            block,
+            body_size=body_size,
+            largest_size=largest_size,
+            page_width=page_width,
+        )
+        if level is not None:
+            if level == 1 and h1_seen:
+                level = 2
+            if level == 1:
+                h1_seen = True
+            headings.append(text)
+            output.append("#" * level + " " + text)
+        else:
+            output.append(text)
+    return output
+
+
+def _remove_repeated_heading_lines(lines: Sequence[str]) -> list[str]:
+    counts = Counter(line.strip() for line in lines if line.strip())
+    repeated = {line for line, count in counts.items() if count >= 3 and len(line) <= 100}
+    return [line for line in lines if line.strip() not in repeated]
+
+
+def _cross_page_table_compatible(previous: _TableCandidate, current: _TableCandidate) -> bool:
+    if previous.columns < 2 or current.columns < 2:
+        return False
+    if abs(previous.bbox[2] - current.bbox[2]) > previous.page_width * 0.08:
+        return False
+    if abs(previous.bbox[0] - current.bbox[0]) > previous.page_width * 0.08:
+        return False
+    if previous.columns != current.columns:
+        return False
+    # Both tables must touch the page boundaries; this rejects adjacent
+    # independent tables in the middle of two pages.
+    if previous.bbox[3] < previous.page_height * 0.62:
+        return False
+    if current.bbox[1] > current.page_height * 0.38:
+        return False
+    return True
+
+
+def _merge_cross_page_tables(layouts: Sequence[_PageLayout]) -> None:
+    """Merge only geometrically compatible, adjacent table fragments."""
+
+    for index in range(1, len(layouts)):
+        previous_layout, current_layout = layouts[index - 1], layouts[index]
+        if not previous_layout.tables or not current_layout.tables:
+            continue
+        previous = previous_layout.tables[-1]
+        current = current_layout.tables[0]
+        if not _cross_page_table_compatible(previous, current):
+            continue
+        previous_rows = [list(row) for row in previous.rows]
+        current_rows = [list(row) for row in current.rows]
+        if not current_rows:
+            continue
+        # A repeated header is removed only when all cells match; a partial
+        # match remains as ordinary data to avoid losing text.
+        if previous_rows and current_rows[0] == previous_rows[0]:
+            current_rows = current_rows[1:]
+        elif previous_rows and current_rows[0] and not current_rows[0][0]:
+            tail = previous_rows[-1]
+            head = current_rows.pop(0)
+            if len(tail) == len(head) and all(not head[idx] or tail[idx] for idx in range(len(head))):
+                previous_rows[-1] = [
+                    (f"{tail[idx]} {head[idx]}".strip() if head[idx] else tail[idx])
+                    for idx in range(len(tail))
+                ]
+        if current_rows:
+            previous_rows.extend(current_rows)
+        merged_markdown, reliable = table_to_markdown(previous_rows)
+        if not merged_markdown:
+            continue
+        previous_page = previous_layout.page
+        current_page = current_layout.page
+        previous_page.markdown = previous_page.markdown.replace(previous.markdown, merged_markdown, 1)
+        current_page.markdown = current_page.markdown.replace(current.markdown, "", 1)
+        previous_page.table_count = max(previous_page.table_count, int(reliable))
+        current_page.table_count = max(0, current_page.table_count - 1)
+        if not reliable:
+            current_page.warnings.append("table_review:跨页表格结构未能唯一确认，已保守线性化")
+
+
 def _extract_pdfplumber_pages(path: Path) -> list[PDFPageResult]:
     try:
         pdfplumber = importlib.import_module("pdfplumber")
     except ImportError as exc:
         raise OptionalBackendUnavailable("pdfplumber 未安装，无法验证和结构化提取数字PDF表格") from exc
 
-    results: list[PDFPageResult] = []
+    layouts: list[_PageLayout] = []
     with pdfplumber.open(str(path)) as pdf:
         for number, page in enumerate(pdf.pages, start=1):
             warnings: list[str] = []
-            try:
-                tables = list(page.find_tables())
-            except Exception as exc:
-                tables = []
-                warnings.append(f"table_detection_error:{type(exc).__name__}")
-
-            bboxes: list[tuple[float, float, float, float]] = []
-            table_events: list[tuple[float, float, str]] = []
-            reliable_count = 0
-            for table in tables:
-                bbox = tuple(float(value) for value in table.bbox)
-                if any(
-                    abs(bbox[0] - existing[0]) < 1
-                    and abs(bbox[1] - existing[1]) < 1
-                    and abs(bbox[2] - existing[2]) < 1
-                    and abs(bbox[3] - existing[3]) < 1
-                    for existing in bboxes
-                ):
-                    continue
-                bboxes.append(bbox)
-                try:
-                    markdown, reliable = table_to_markdown(table.extract() or [])
-                except Exception as exc:
-                    markdown, reliable = "", False
-                    warnings.append(f"table_extraction_error:{type(exc).__name__}")
-                if markdown:
-                    table_events.append((bbox[1], bbox[0], markdown))
-                if reliable:
-                    reliable_count += 1
-                else:
-                    warnings.append("table_review:表格结构无法可靠对齐，已保留线性单元格文本")
-
+            tables = _collect_table_candidates(page, warnings)
+            bboxes = [candidate.bbox for candidate in tables]
             try:
                 words = list(page.extract_words(use_text_flow=True, keep_blank_chars=False) or [])
             except Exception as exc:
@@ -401,20 +750,34 @@ def _extract_pdfplumber_pages(path: Path) -> list[PDFPageResult]:
                     for bbox in bboxes
                 )
             ]
-            events = _words_to_line_events(outside_words) + table_events
-            markdown = "\n".join(event[2] for event in sorted(events, key=lambda event: (event[0], event[1])))
-            markdown = _normalize_markdown(markdown)
-            results.append(
-                PDFPageResult(
-                    page_number=number,
-                    markdown=markdown,
-                    backend="pdfplumber",
-                    text_characters=_compact_length(markdown),
-                    table_count=reliable_count,
-                    warnings=warnings,
+            blocks = _word_line_blocks(outside_words)
+            lines = _recover_headings(blocks, page_width=float(getattr(page, "width", 1) or 1))
+            table_events = [(candidate.bbox[1], candidate.bbox[0], candidate.markdown) for candidate in tables]
+            line_events = [(block["top"], block["x0"], line) for block, line in zip(blocks, lines)]
+            events = sorted(line_events + table_events, key=lambda event: (event[0], event[1]))
+            markdown = _normalize_markdown("\n".join(event[2] for event in events))
+            reliable_count = sum(candidate.reliable for candidate in tables)
+            if tables and not reliable_count:
+                warnings.append("table_review:表格结构无法可靠对齐，已保留线性单元格文本")
+            layouts.append(
+                _PageLayout(
+                    page=PDFPageResult(
+                        page_number=number,
+                        markdown=markdown,
+                        backend="pdfplumber",
+                        text_characters=_compact_length(markdown),
+                        table_count=reliable_count,
+                        warnings=warnings,
+                    ),
+                    tables=tables,
                 )
             )
-    return results
+    _merge_cross_page_tables(layouts)
+    pages = [layout.page for layout in layouts]
+    for page in pages:
+        page.markdown = _normalize_markdown(page.markdown)
+        page.text_characters = _compact_length(page.markdown)
+    return pages
 
 
 def _looks_like_unparsed_table(text: str) -> bool:
@@ -616,26 +979,64 @@ def _extract_key_fact_conflicts(result: Any) -> list[str]:
 
 
 def _text_layer_missing(pages: Sequence[PDFPageResult]) -> bool:
-    if not pages:
+    """Return whether any non-blank page lacks a usable text layer.
+
+    This helper remains for source compatibility with callers that used the
+    old sampling heuristic.  Conversion routing now relies on the file-level
+    ``_classify_pdf_type`` result instead of sampling a handful of pages.
+    """
+
+    nonblank = [page for page in pages if page.markdown.strip() or page.image_count]
+    if not nonblank:
         return True
-    sample = list(pages)
-    if len(sample) > 12:
-        middle = len(sample) // 2
-        sample = sample[:4] + sample[middle - 2 : middle + 2] + sample[-4:]
-    readable = sum(page.text_characters >= 40 for page in sample)
-    return readable < max(1, len(sample) // 3)
+    return any(page.text_characters < 40 for page in nonblank)
 
 
 def _classify_pdf_type(pages: Sequence[PDFPageResult]) -> str:
-    """Classify from the first two pages without silently mixing OCR modes."""
+    """Classify the complete file, ignoring genuinely blank pages.
 
-    if not pages:
-        return "scan"
-    probe = list(pages[:2])
-    has_text = [page.text_characters >= 40 for page in probe]
-    if all(has_text):
+    ``text_characters`` is deliberately conservative (40 compact characters)
+    so a low-text page without a large image cannot be mistaken for a scan.
+    The lightweight pypdf probe records ``image_count`` for scan evidence.
+    Mixed and uncertain files are sent to review rather than concatenating
+    text-layer and OCR output in one knowledge document.
+    """
+
+    nonblank: list[str] = []
+    blank_pages = [
+        page
+        for page in pages
+        if not page.markdown.strip() and not page.image_count
+    ]
+    for page in pages:
+        if not page.markdown.strip() and not page.image_count:
+            continue
+        if page.text_characters >= 40:
+            nonblank.append("text")
+        elif page.text_characters >= 10 and page.image_count > 0:
+            # A small embedded illustration/icon on an otherwise readable
+            # page must not turn a text PDF into a mixed document.  Pure
+            # image pages have no meaningful text layer and remain ``scan``.
+            nonblank.append("text")
+        elif page.image_count > 0 and page.text_characters == 0:
+            nonblank.append("scan")
+        else:
+            nonblank.append("uncertain")
+    if not nonblank:
+        # Keep the historical OCR route for an entirely blank pypdf probe:
+        # a PDF with no text or image resources is indistinguishable from a
+        # raster scan at this stage, and the OCR quality gate will still
+        # prevent publishing an empty result.  Synthetic/fake backends used
+        # by integrations are treated as uncertain instead of silently OCR'd.
+        return "scan" if all(page.backend == "pypdf" for page in blank_pages) else "review"
+    # A non-pypdf page result without an image signal is not enough evidence
+    # to classify a mixed file as text.  This preserves source compatibility
+    # for callers that construct page diagnostics themselves.
+    if any(page.backend != "pypdf" for page in blank_pages):
+        return "review"
+    if all(kind == "text" for kind in nonblank):
         return "text"
-    if not any(has_text):
+    if all(kind == "scan" for kind in nonblank):
         return "scan"
     return "review"
 
@@ -913,11 +1314,33 @@ def _prefer_ocr_pages(
     return selected
 
 
+def _load_ocr_manifest(value: str | Path | Mapping[str, str] | None) -> Mapping[str, str]:
+    """Load a deployment-controlled OCR manifest without exposing its content."""
+
+    if value is None:
+        return {}
+    if isinstance(value, Mapping):
+        return dict(value)
+    manifest_path = Path(value)
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        # Let the backend's normal startup gate turn this into a review result
+        # instead of allowing a malformed deployment manifest to crash the
+        # cleaning task before its transaction can be marked safely.
+        return {}
+    files = payload.get("files") if isinstance(payload, Mapping) else None
+    if not isinstance(files, Mapping):
+        return {}
+    return {str(key): str(value) for key, value in files.items()}
+
+
 def convert_pdf(
     path: str | Path,
     *,
     consultation: bool = False,
     enable_ocr: bool = True,
+    ocr_backend_name: str = "rapidocr_onnxruntime",
     ocr_backend: OCRBackend | None = None,
     extra_entities: Mapping[str, str] | None = None,
     ocr_max_pages: int = 10,
@@ -926,15 +1349,21 @@ def convert_pdf(
     ocr_min_confidence: float = 0.75,
     ocr_auto_confidence: float = 0.90,
     ocr_max_low_conf_ratio: float = 0.10,
+    ocr_cpu_threads: int = 2,
+    ocr_model_root: str | Path | None = Path("var/ocr-models/rapidocr"),
+    ocr_model_manifest: str | Path | Mapping[str, str] | None = Path(
+        "var/ocr-models/rapidocr/manifest.json"
+    ),
 ) -> PDFConversionResult:
     """Convert one PDF into one Markdown document plus review diagnostics.
 
     For consultation sources, ``consultation=True`` anonymizes the output and
     blocks ``ready`` status whenever residual PII remains.  If a scan-only PDF
-    cannot run PP-StructureV3, the result contains no invented placeholder
-    body and is explicitly marked ``review``.  Scanned PDFs are limited by
-    ``ocr_max_pages``; text-layer PDFs are not, and mixed first-two-page types
-    are rejected for manual review rather than processed by two backends.
+    cannot run the configured OCR backend, the result contains no invented
+    placeholder body and is explicitly marked ``review``.  Scanned PDFs are
+    limited by ``ocr_max_pages``; text-layer PDFs are not, and mixed or
+    uncertain page types are rejected for manual review rather than processed
+    by two backends.
     """
 
     source = Path(path)
@@ -988,11 +1417,11 @@ def convert_pdf(
         pages = []
         backend_name = "pdf_type_review"
         review_reasons.append(
-            "PDF_TYPE_REVIEW_REQUIRED:前两页文字层与扫描类型冲突，禁止混合处理"
+            "PDF_TYPE_REVIEW_REQUIRED:文件包含混合、低文字或无法判定页面，禁止混合处理"
         )
         scanned = False
     else:
-        scanned = pdf_type == "scan" or _text_layer_missing(pypdf_pages)
+        scanned = pdf_type == "scan"
     pages: list[PDFPageResult]
     backend_name: str
     if pdf_type == "review":
@@ -1011,10 +1440,29 @@ def convert_pdf(
                 f"扫描型PDF页数超过配置上限:{len(reader.pages)}>{ocr_max_pages}"
             )
         else:
-            backend = ocr_backend or PaddleOCRPPStructureV3Backend(
-                render_dpi=ocr_render_dpi,
-                retry_dpi=ocr_retry_dpi,
-            )
+            backend = ocr_backend
+            if backend is None:
+                if ocr_backend_name in {"rapidocr", "rapidocr_onnxruntime"}:
+                    from .rapidocr_backend import RapidOCRBackend
+
+                    backend = RapidOCRBackend(
+                        render_dpi=ocr_render_dpi,
+                        retry_dpi=ocr_retry_dpi,
+                        model_root=ocr_model_root,
+                        model_manifest=_load_ocr_manifest(ocr_model_manifest),
+                        cpu_threads=ocr_cpu_threads,
+                    )
+                elif ocr_backend_name in {"paddle", "paddleocr_ppstructurev3"}:
+                    # Kept only as a controlled local rollback for old test
+                    # fixtures. New deployments never select this backend.
+                    backend = PaddleOCRPPStructureV3Backend(
+                        render_dpi=ocr_render_dpi,
+                        retry_dpi=ocr_retry_dpi,
+                    )
+                else:
+                    raise OptionalBackendUnavailable(
+                        f"不支持的OCR后端:{ocr_backend_name}"
+                    )
             backend_name = getattr(backend, "name", type(backend).__name__)
             try:
                 ocr_used = True
@@ -1115,6 +1563,7 @@ def convert_pdf(
         "review_status": status,
         "ocr_used": ocr_used,
         "ocr_retry_count": ocr_retry_count,
+        "ocr_backend": backend_name if ocr_used else None,
         "ocr_render_dpi": ocr_render_dpi if ocr_used else None,
         "ocr_retry_dpi": ocr_retry_dpi if ocr_retry_count else None,
         "ocr_min_confidence": ocr_min_confidence if ocr_used else None,
@@ -1148,6 +1597,7 @@ def convert_consultation_pdf(
     path: str | Path,
     *,
     enable_ocr: bool = True,
+    ocr_backend_name: str = "rapidocr_onnxruntime",
     ocr_backend: OCRBackend | None = None,
     extra_entities: Mapping[str, str] | None = None,
     ocr_max_pages: int = 10,
@@ -1156,6 +1606,11 @@ def convert_consultation_pdf(
     ocr_min_confidence: float = 0.75,
     ocr_auto_confidence: float = 0.90,
     ocr_max_low_conf_ratio: float = 0.10,
+    ocr_cpu_threads: int = 2,
+    ocr_model_root: str | Path | None = Path("var/ocr-models/rapidocr"),
+    ocr_model_manifest: str | Path | Mapping[str, str] | None = Path(
+        "var/ocr-models/rapidocr/manifest.json"
+    ),
 ) -> PDFConversionResult:
     """Privacy-safe convenience wrapper for consultation meeting summaries."""
 
@@ -1163,6 +1618,7 @@ def convert_consultation_pdf(
         path,
         consultation=True,
         enable_ocr=enable_ocr,
+        ocr_backend_name=ocr_backend_name,
         ocr_backend=ocr_backend,
         extra_entities=extra_entities,
         ocr_max_pages=ocr_max_pages,
@@ -1171,6 +1627,9 @@ def convert_consultation_pdf(
         ocr_min_confidence=ocr_min_confidence,
         ocr_auto_confidence=ocr_auto_confidence,
         ocr_max_low_conf_ratio=ocr_max_low_conf_ratio,
+        ocr_cpu_threads=ocr_cpu_threads,
+        ocr_model_root=ocr_model_root,
+        ocr_model_manifest=ocr_model_manifest,
     )
 
 

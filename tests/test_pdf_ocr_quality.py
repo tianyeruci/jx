@@ -150,6 +150,24 @@ def test_settings_validate_ocr_page_timeout_linkage(monkeypatch):
         Settings(pdf_ocr_max_pages=20, pdf_ocr_task_timeout_seconds=600)
     settings = Settings(pdf_ocr_max_pages=20, pdf_ocr_task_timeout_seconds=1200)
     assert settings.pdf_ocr_max_pages == 20
+    assert settings.pdf_ocr_backend == "rapidocr_onnxruntime"
+    assert settings.pdf_ocr_cpu_threads == 2
+
+
+def test_rapidocr_result_parser_is_lazy_and_preserves_reading_order():
+    from knowledge_cleaner.rapidocr_backend import RapidOCRBackend
+
+    class Result:
+        txts = ["第二行", "第一行"]
+        scores = [0.91, 0.97]
+        boxes = [
+            [[10, 40], [80, 40], [80, 60], [10, 60]],
+            [[10, 10], [80, 10], [80, 30], [10, 30]],
+        ]
+
+    markdown, confidence = RapidOCRBackend._to_markdown(Result())
+    assert markdown == "第一行\n第二行"
+    assert confidence == pytest.approx(0.94)
 
 
 def test_offline_ocr_model_manifest_is_hashed_and_rejects_tampering(tmp_path):

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run jx Docker storage maintenance weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 03:30:00
+RandomizedDelaySec=15m
+Persistent=false
+Unit=jx-docker-storage-maintenance.service
+
+[Install]
+WantedBy=timers.target

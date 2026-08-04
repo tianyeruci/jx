@@ -181,21 +181,33 @@ business_relevance 是分类标签，不是相关度分数，也不是布尔值�
 _CONSULTATION_SYSTEM_PROMPT = """你是商业咨询案例结构化助手。请输出严格 JSON。
 输入已经匿名化。文件名不可见。所有结论必须绑定来源块 ID，保持数字、日期、否定、
 人物归属和“陈述/判断/决定/计划/实际结果”的事实状态；不得补写结果或承诺。
-JSON 必须且只能包含 sections；每个 section 必须包含 heading、text、
-source_block_ids、fact_state。heading 仅可从背景与目标、关键问题、顾问判断、
-已确认决定、行动计划、实际结果中选择；没有来源证据的章节不要输出。
-fact_state 必须只使用以下机器值，不能使用中文：client_statement、advisor_judgment、
-decision、plan、actual_result。背景与目标、关键问题对应 client_statement；顾问判断对应
-advisor_judgment；已确认决定对应 decision；行动计划对应 plan 或 decision；实际结果对应
-actual_result。
 
-当前版本优先输出 schema_version 为 consulting_case_v2 的证据优先结构：使用
-shared_context、objectives、decision_units、source_coverage、overall_evidence_level 和
-background_sufficiency；每条 EvidenceItem 必须保留 status 与 source_block_ids，且
-source_coverage 必须完整覆盖输入 block ID。decision_units 最多 5 个，不能把推导条件
-伪装成客户事实，E2/E3 必须有 observed_outcomes。若背景不足、隐私风险或证据无法闭合，
-使用 disposition=review_required；明确不适合时使用 disposition=exclude。旧 sections
-结构仍被接受用于兼容历史任务，但不得混用两种结构。"""
+当前版本优先输出 schema_version=consulting_case_v2 的证据优先结构；不要只返回
+schema_version，必须返回下方模板中的全部顶层字段（case_group_id 可为 null，数组可为空）：
+{"schema_version":"consulting_case_v2","case_id":"case_xxxx","case_group_id":null,
+"disposition":"keep_as_case|review_required|exclude","title":"...","source_date":"",
+"shared_context":[],"objectives":[],"decision_units":[],"overall_evidence_level":"E0|E1|E2|E3",
+"background_sufficiency":"high|medium|low","time_sensitive":false,"time_sensitive_items":[],
+"source_coverage":{"kept":[],"dropped":[],"unresolved":[]},"warnings":[]}
+
+EvidenceItem 必须是 {"text":"来源事实或明确判断","status":"customer_fact|consultant_judgment|decision|planned_action|observed_result|derived_condition","source_block_ids":["输入中已有block ID"],"priority":null}；
+priority 仅 actions 可用，值只能是 primary 或 secondary，其余位置必须省略或为 null。
+DecisionUnit 必须包含 unit_id、topic、local_context、problem、mechanism_or_diagnosis、actions、
+observed_outcomes、result_status（unverified|partially_verified|verified|not_applicable）、
+stated_conditions、derived_conditions、risks_or_limits、evidence_level（E0|E1|E2|E3）、
+retrieval_summary；每个 EvidenceItem 的 status 必须符合所在数组语义。非 E0 必须有 actions，
+E2/E3 必须有 observed_outcomes，E3 必须 result_status=verified。keep_as_case 必须有
+shared_context 和 decision_units；background_sufficiency=low 不得 keep_as_case；time_sensitive=true
+必须有 time_sensitive_items，false 时必须为空。source_coverage 的 kept、dropped、unresolved
+必须把输入 blocks 的每个 key 恰好覆盖一次，reason 必须是非空字符串。
+DecisionUnit 中上述所有上下文字段必须是 EvidenceItem 对象数组，不能用一段字符串替代；例如
+local_context=[{"text":"来源中的一句话","status":"customer_fact","source_block_ids":["b001"]}]。
+
+若背景不足、隐私风险或证据无法闭合，使用 disposition=review_required；明确不适合时使用
+disposition=exclude。不得增加输入来源没有的事实。旧 sections 结构仍被接受用于兼容历史任务：
+若选择旧结构，JSON 必须且只能包含 sections；每个 section 必须包含 heading、text、source_block_ids、
+fact_state，heading 只能是背景与目标、关键问题、顾问判断、已确认决定、行动计划、实际结果，
+fact_state 只能是 client_statement、advisor_judgment、decision、plan、actual_result。不得混用两种结构。"""
 
 _COURSE_SYSTEM_PROMPT = """你是课程目录语义补全助手。请输出严格 JSON。
 只可提出方向候选、内容/问题、适用人群、课程重点、学习目标和路线目标。

@@ -26,7 +26,7 @@ def _add_batch_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--pilot", action="store_true", help="仅处理三类代表性样本")
     parser.add_argument("--include", action="append", default=[], help="仅处理文件名包含该文字的文件，可重复")
     parser.add_argument("--review-overrides", type=Path, help="人工复核CSV；按doc_id覆盖keep/no_index/review")
-    parser.add_argument("--no-ocr", action="store_true", help="扫描PDF不尝试本地PaddleOCR，直接进入复核")
+    parser.add_argument("--no-ocr", action="store_true", help="扫描PDF不尝试本地RapidOCR，直接进入复核")
     parser.add_argument("--no-classifier", action="store_true", help="模糊项不调用Dify分类Workflow")
     parser.add_argument("--legacy-pdf", action="store_true", help=argparse.SUPPRESS)
 

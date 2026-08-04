@@ -127,14 +127,18 @@ def test_ocr_runtime_is_separate_and_deployed_scale_to_zero():
     autoscaler = _source("scripts/jx_ocr_autoscale.sh")
     deploy = _source("scripts/jx_deploy_release.sh")
 
-    assert "${AI_OCR_IMAGE:-jx-now-ai-management-ocr:0.2.1}" in compose
+    assert "${AI_OCR_IMAGE:-jx-now-ai-management-ocr:rapidocr}" in compose
     assert "ocr_worker_entrypoint.sh" in compose
     assert 'restart: "no"' in compose
-    assert "mem_limit: 8g" in compose
-    assert "--max-tasks-per-child=1" in compose
+    assert "mem_limit: 4g" in compose
+    assert "memswap_limit: 4g" in compose
+    assert "pids_limit: 256" in compose
+    assert "--max-tasks-per-child=1" not in compose
     assert "COPY var/ocr-runtime/site-packages" in dockerfile
     assert "requirements-ocr.lock" in dockerfile
     assert "pip check" in dockerfile
+    assert "rapidocr" in dockerfile
+    assert "paddleocr" not in dockerfile.lower()
     assert "validate_offline_ocr_models" in entrypoint
     assert "ai_ocr" in autoscaler
     assert "IDLE_SECONDS=600" in autoscaler

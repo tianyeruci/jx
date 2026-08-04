@@ -37,9 +37,11 @@ test = [
   "streamlit>=1.41,<2",
 ]
 ocr = [
-  "paddleocr[doc-parser]==3.4.1",
-  "paddlex==3.4.2",
-  "paddlepaddle==3.2.2",
+  "rapidocr==3.9.2",
+  "onnxruntime==1.28.0",
+  "pypdfium2==5.12.1",
+  "rapid-layout==1.2.1",
+  "rapid-table==3.0.2",
 ]
 
 [project.scripts]

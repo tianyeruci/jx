@@ -1,4 +1,8 @@
 **
+var/ocr-runtime/wheelhouse/
+var/ocr-runtime/wheelhouse/**
+var/ocr-runtime-paddle-backup-20260804/
+var/ocr-runtime-paddle-backup-20260804/**
 !var/
 !var/ocr-runtime/
 !var/ocr-runtime/debs/

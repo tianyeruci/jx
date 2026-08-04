@@ -1,10 +1,21 @@
 # AI 管理服务当前状态与后续测试交接
 
-> 更新时间：2026-08-03
+> 更新时间：2026-08-04
 > 用途：保存最新线上事实、回滚点、数据状态和开放事项。新任务先读 `AGENTS.md` 与 `docs/README.md`，再按功能域读取本文顶部最新状态。  
 > 本文不是需求或设计基线；权威顺序以 `docs/V2决策记录.md` 和 `docs/README.md` 为准。第 1～8 节为历史过程记录，不再作为当前执行指令。
 
-## 0.22 2026-08-03 jx 测试环境 Dify 页面 pending 根因修复（当前最新）
+## 0.23 2026-08-04 RapidOCR 发布、缓存治理与测试页回归（当前最新）
+
+- jx 已完成受控 RapidOCR 发布，当前正式 release 为 `20260804-rapidocr-semantic-78f9a1`；发布报告为 `/opt/ai-management/var/reports/v2/20260804-rapidocr-semantic-78f9a1-deploy`，发布前备份为 `/opt/ai-management/backups/20260804-rapidocr-semantic-pre`。`health-ready.json` 的 database、Redis、Dify 配置和可达性均为 `true`，Core/UI/OCR 镜像均通过导入/运行烟测。
+- OCR 当前使用 `rapidocr_onnxruntime`、模型目录 `/opt/ai-management/var/ocr-runtime`、2 线程和 600 秒空闲停止；`jx-ocr-autoscaler.timer` 已启用。实测扫描 PDF 入队后 Worker 按需启动并完成处理，队列清空后按策略停止；空闲时不常驻 OCR Worker。
+- jx Docker 存储治理已完成最终精确清理：私有可回收 BuildKit cache 约 19.9 GiB，根分区可用约 233.8 GiB；当前/上一版本 Core/UI/OCR 镜像保留，旧 jx 镜像已按精确标签清理；`jx-docker-storage-maintenance.timer` 已启用，每周日 03:30（随机延迟不超过 15 分钟）运行。Dify 镜像、卷、数据库、Redis 和上传卷未清理。
+- 测试页 `http://112.74.37.111/ai-management-test/` 已使用指定的 3 个个人商业咨询样本完成一轮真实回归：最终批次状态 `completed`，3 个文件中 1 个 `succeeded`、2 个 `review_required`、0 个 `failed`；复核项由严格咨询 v2 证据状态门禁保留，未自动发布不可靠模型结果。模型任务预估费用约 `0.006863`，在本次 5 元上限内。
+- 本次受控测试数据已在最终验收后完成 force reset：本地清洗表、精确清洗 Redis 键、测试上传目录和外部删除任务均归零；仅按恢复备份中确认的测试文档映射执行了 Dify 精确删除，正式内容未触碰。不得按名称正则删除正式 Dify 内容。
+- 用户指定的六类样本已完成本地策略矩阵核验：12 个文件生成 142 个候选文档，0 个转换异常；`awaiting_model`、`pending` 和 `review_required` 均为预期工作流状态。脱敏统计见 `var/reports/20260804-pdf-rapidocr-docker/sample-matrix.json`。
+- 本地定向 PDF/清洗/发布/缓存契约回归通过；完整 `test_model_cleaning_workflow.py` 仍受测试夹具固定的 `127.0.0.1:6399` Redis 前置缺失影响，已记录为环境阻塞，未发现应用断言失败。远端 jx Redis/Celery 与测试页模型验收均已独立通过。
+- 脱敏问题与证据：`var/reports/20260804-pdf-rapidocr-docker/issues.jsonl`；当前开放项为两个咨询样本需人工复核，不是 OCR 或服务失败。
+
+## 0.22 2026-08-03 jx 测试环境 Dify 页面 pending 根因修复（历史记录）
 
 - 已确认根因：jx 与 Dify 共用 `docker_default` 网络，jx 的 `api` 服务别名与 Dify 的 `api` 服务别名冲突；Dify Nginx 及内部配置访问 `http://api:5001` 时，Docker DNS 会同时返回 jx API、Dify API 副本和其他同网服务，导致部分请求命中错误端口或异常副本，表现为 502、重试或长期 pending。
 - 已完成远端修复：Dify API 增加专用 `dify-api` 网络别名；Nginx、Dify 内部 API 地址统一切换到 `dify-api:5001`；API healthcheck 增加 `curl --max-time 3`；重建 Dify API、Worker、插件服务并 reload Nginx。jx `test-ui` 已恢复并改用 `ai-management-api:8000`，避免测试页再次命中 `api` 冲突别名。
@@ -99,6 +110,12 @@
 - 本地完成并部署清洗链路修复：默认单批 10 文件、5 个活动批次、单文件 200MB、批次 500MB、磁盘保留；同内容或同名必须先显式删除；新增源文件级删除入口并同步本地远端删除墓碑；Dify 文件名保留规范化原名，拆分时追加序号。
 - PDF/DOCX 转换保持正文、标题、列表、缩进、表格在原顺序；PDF 表格不可靠时线性化并记录 WARNING，只有无正文、OCR 禁用或敏感信息残留才进入 `review_required`。测试环境可用 `SAVE_CONVERSION_MARKDOWN=true` 临时保存转换后/策略前 Markdown，服务重启清空，生产强制禁止。
 - `course_route_catalog` 修复过期 XLSX dimension 读取：jx 同源样本重试后进入结构审核，生成 110 行审核表（105 课程 + 5 路线），其中 2 行同链接多名称；未结构确认前没有调用模型。模型只补全语义字段，不能选名称、改链接、ID、路线归属或顺序。
+
+### 2026-08-04：RapidOCR/缓存治理与咨询样本回归交接变更记录
+
+- 修改原因：用户确认实施 PDF 转 Markdown、RapidOCR 按需部署和 Docker 构建缓存治理计划，并要求在 jx 测试页使用指定样本验证、统一处理问题后更新文档。
+- 修改前：顶部状态仍记录 OCR 暂停、旧 Paddle/PaddleX 模型路径和 BuildKit cache 未治理；个人咨询模型契约问题保持开放，测试页样本状态未形成最终批次证据。
+- 修改后：顶部新增 0.23，记录 RapidOCR release/备份/ready、按需 Worker、缓存维护 timer、精确清理边界和测试页批次终态；相关部署手册、清洗接入说明、三份执行计划、deployment/data-cleaning 排障文档及脱敏问题报告已同步。未写入密钥、样本正文、真实用户标识或受保护 Dify 映射。
 - jx 已完成完整 wheel 发布（同时含 `ai_management` 与 `knowledge_cleaner`），当前版本 `20260802-cleaning-fix5-e924d99fd6c0`；健康 ready、Alembic `i5f6a7b8c9d0`、7 个服务运行一致镜像，发布后近期严重日志为 0。发布前备份：`/opt/ai-management/backups/20260802-cleaning-fix5-pre`；报告：`/opt/ai-management/var/reports/v2/20260802-cleaning-fix5-e924d99fd6c0-deploy`。
 - 模型分片发布成功后会把本地条目投影同步为实际 Dify 管理名；已对当前 3 个成功分片的 42 个本地条目完成精确回填，公众号分片回读为 `阿猫投资学_20260101-20260531__002.txt`。
 - 已按精确批次重试公众号发布分片，29 个有效分片全部成功入库，5 个排除、1 个待复核；旧文件级 `SOURCE_ATOMIC_ROLLBACK` 已在源码修复中清除。小报童一个文件确认没有可清洗正文，未继续自动重试；另一个“等待模型”批次已重新创建模型任务并完成，17 个候选中 12 个成功、2 个排除、3 个待复核。
@@ -1024,3 +1041,15 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改原因：基础 HTTP smoke 通过后，需要补齐用户实际使用页面的登录态最小对话和流式响应证据。
 - 修改前：交接记录仅有 Dify 控制台接口和 jx 测试页 HTTP 结果，完整浏览器对话/SSE 尚未记录。
 - 修改后：在现有登录态 Dify Chatflow 预览页发送合成测试问题；工作流 draft HTTP 200，`advanced-chat/workflows/draft/run` HTTP 200 且 MIME 为 `text/event-stream`，`Network.loadingFinished` 为 41765 bytes，输入框清空、发送按钮恢复、无 Console warning/error；随后远端最近 10 分钟 Nginx 未发现上游连接失败或 502/503/504。未保留对话正文或凭据。
+
+### 2026-08-04：补充六类指定样本本地策略矩阵
+
+- 修改原因：执行计划要求使用用户指定的六类样本完成数据清洗验证，需把最终脱敏统计纳入交接证据。
+- 修改前：顶部仅记录个人商业咨询三文件的测试页回归，未记录其余五类样本的本地策略转换结果。
+- 修改后：六类共 12 个样本文件均进入预期策略路径，生成 142 个候选文档且无转换异常；仅保留策略状态统计，不写入样本正文、文件名或受保护映射。详细脱敏结果见 `var/reports/20260804-pdf-rapidocr-docker/sample-matrix.json`。
+
+### 2026-08-04：补充本地工作流测试前置边界
+
+- 修改原因：最终验收需区分已通过的定向回归与未能启动的完整模型工作流测试，避免把环境缺失误报为产品通过。
+- 修改前：交接只记录样本策略矩阵和远端测试页终态，未在顶部明确完整工作流测试的本地 Redis 前置缺失。
+- 修改后：明确记录定向回归通过；完整工作流测试仅因固定测试夹具依赖 `127.0.0.1:6399` 且本机无 Redis 而阻塞，远端 jx Redis/Celery 和模型验收独立通过。问题证据仍在 `var/reports/20260804-pdf-rapidocr-docker/issues.jsonl`，未写入凭据或敏感内容。

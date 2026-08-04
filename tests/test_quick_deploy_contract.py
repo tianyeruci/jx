@@ -94,6 +94,7 @@ def test_deploy_is_paused_by_default_and_has_host_resource_guard():
     assert 'JX_OCR_DEPLOYMENT_ENABLED=true' in formal
     assert 'bash "$RESOURCE_GUARD" check --phase=release' in formal
     assert 'bash "$RESOURCE_GUARD" run --phase=release-core-build --' in formal
+    assert 'install -m 0755 "$STAGE_DIR/$file" "scripts/$file"' in formal
     assert "MemAvailable" in guard
     assert "SwapFree" in guard
     assert "I/O wait" in guard

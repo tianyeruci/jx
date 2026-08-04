@@ -221,12 +221,16 @@ def _read_pdf_markdown(path: Path, *, diagnostics: dict[str, Any] | None = None)
     result = convert_pdf(
         path,
         enable_ocr=settings.pdf_ocr_enabled,
+        ocr_backend_name=settings.pdf_ocr_backend,
         ocr_max_pages=settings.pdf_ocr_max_pages,
         ocr_render_dpi=settings.pdf_ocr_render_dpi,
         ocr_retry_dpi=settings.pdf_ocr_retry_dpi,
         ocr_auto_confidence=settings.pdf_ocr_auto_confidence,
         ocr_min_confidence=settings.pdf_ocr_min_confidence,
         ocr_max_low_conf_ratio=settings.pdf_ocr_max_low_conf_ratio,
+        ocr_cpu_threads=settings.pdf_ocr_cpu_threads,
+        ocr_model_root=settings.pdf_ocr_model_root,
+        ocr_model_manifest=settings.pdf_ocr_model_manifest,
     )
     if diagnostics is not None:
         diagnostics.update(_conversion_audit(result))
@@ -469,12 +473,16 @@ class PersonalBusinessConsultationStrategy:
             result = convert_consultation_pdf(
                 file_path,
                 enable_ocr=settings.pdf_ocr_enabled,
+                ocr_backend_name=settings.pdf_ocr_backend,
                 ocr_max_pages=settings.pdf_ocr_max_pages,
                 ocr_render_dpi=settings.pdf_ocr_render_dpi,
                 ocr_retry_dpi=settings.pdf_ocr_retry_dpi,
                 ocr_auto_confidence=settings.pdf_ocr_auto_confidence,
                 ocr_min_confidence=settings.pdf_ocr_min_confidence,
                 ocr_max_low_conf_ratio=settings.pdf_ocr_max_low_conf_ratio,
+                ocr_cpu_threads=settings.pdf_ocr_cpu_threads,
+                ocr_model_root=settings.pdf_ocr_model_root,
+                ocr_model_manifest=settings.pdf_ocr_model_manifest,
                 extra_entities=aliases,
             )
             _save_conversion_markdown(

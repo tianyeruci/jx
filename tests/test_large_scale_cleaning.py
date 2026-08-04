@@ -137,6 +137,35 @@ def test_consultation_prompt_and_validator_normalize_known_fact_state_variants()
     assert parsed.sections[0].fact_state == "plan"
 
 
+def test_consultation_prompt_describes_complete_v2_contract():
+    from ai_management.model_cleaning import PromptRequest, build_prompt_messages
+
+    prompt = build_prompt_messages(
+        PromptRequest(
+            strategy_code="personal_business_consultation",
+            item_id="item-1",
+            content_sha256="a" * 64,
+            title="咨询案例",
+            blocks={"b001": "客户计划验证产品定位。"},
+        )
+    )[0]["content"]
+
+    for field in (
+        "case_id",
+        "disposition",
+        "shared_context",
+        "objectives",
+        "decision_units",
+        "source_coverage",
+        "overall_evidence_level",
+        "background_sufficiency",
+        "retrieval_summary",
+    ):
+        assert field in prompt
+    assert "customer_fact|consultant_judgment|decision|planned_action|observed_result|derived_condition" in prompt
+    assert "每个 key 恰好覆盖一次" in prompt
+
+
 def test_consultation_validator_accepts_equivalent_negation_and_drops_empty_template():
     """Qwen's ``未``/``没有`` variation is not a change of factual polarity."""
 

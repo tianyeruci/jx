@@ -155,6 +155,27 @@ def _model_contract_retry_hint(exc: Exception) -> str:
             "输入 blocks 的每一个 key 必须且只能出现一次："
             "保留的列入 keep_block_ids，其余列入 drop_block_ids。"
         )
+    if "valid list" in message or "Input should be a valid list" in message:
+        return (
+            "DecisionUnit 的 local_context、problem、mechanism_or_diagnosis、actions、"
+            "observed_outcomes、stated_conditions、derived_conditions、risks_or_limits，"
+            "以及 shared_context/objectives/time_sensitive_items，必须都是 EvidenceItem 对象数组；"
+            "每项包含 text、status、source_block_ids，不能把整段字符串直接填入数组字段。"
+        )
+    if "E2/E3必须包含observed_outcomes" in message:
+        return (
+            "若输入来源没有明确已观察结果，decision_unit.evidence_level 只能使用 E0 或 E1；"
+            "不要为了满足字段虚构 observed_outcomes。只有来源明确写出实际结果时才使用 E2/E3，"
+            "并将该结果以 status=observed_result 的 EvidenceItem 放入 observed_outcomes。"
+        )
+    if "包含不匹配的事实状态" in message:
+        return (
+            "严格按数组语义设置 EvidenceItem.status：local_context 只能 customer_fact 或 observed_result；"
+            "problem 只能 customer_fact 或 consultant_judgment；mechanism_or_diagnosis 只能 consultant_judgment；"
+            "actions 只能 planned_action 或 decision；observed_outcomes 只能 observed_result；"
+            "stated_conditions 只能 customer_fact、consultant_judgment 或 derived_condition；"
+            "derived_conditions 只能 derived_condition；risks_or_limits 只能 consultant_judgment 或 derived_condition。"
+        )
     if "未知来源块" in message or "来源块不能重复归类" in message:
         return "只可使用输入 blocks 中已有的 key，每个 key 只能归类一次。"
     if "否定状态" in message:

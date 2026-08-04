@@ -9,19 +9,21 @@ USER root
 COPY var/ocr-runtime/debs /opt/ocr-runtime/debs
 COPY var/ocr-runtime/site-packages /usr/local/lib/python3.11/site-packages
 COPY var/ocr-runtime/requirements-ocr.lock /opt/ocr-runtime/requirements-ocr.lock
-COPY var/ocr-runtime/models /app/.paddlex/official_models
+COPY var/ocr-runtime/models /app/var/ocr-models/rapidocr
 COPY scripts/ocr_worker_entrypoint.sh /app/scripts/ocr_worker_entrypoint.sh
 
 RUN cp /opt/ocr-runtime/debs/*.deb /var/cache/apt/archives/ \
     && (dpkg -i /opt/ocr-runtime/debs/*.deb || apt-get -f install --no-download -y) \
     && python -m pip check \
-    && python -c "import paddle, paddleocr, paddlex; print('offline OCR dependency closure imported')" \
+    && python -c "import rapidocr, onnxruntime, pypdfium2; print('offline RapidOCR dependency closure imported')" \
     && chmod 0755 /app/scripts/ocr_worker_entrypoint.sh \
-    && chown -R appuser:appuser /app/.paddlex /app/scripts/ocr_worker_entrypoint.sh \
+    && chown -R appuser:appuser /app/var/ocr-models/rapidocr /app/scripts/ocr_worker_entrypoint.sh \
     && rm -rf /opt/ocr-runtime /var/lib/apt/lists/*
 
 ENV HOME=/app \
-    PADDLE_PDX_MODEL_SOURCE=bos \
+    RAPIDOCR_DISABLE_NETWORK=1 \
+    PDF_OCR_MODEL_ROOT=/app/var/ocr-models/rapidocr \
+    PDF_OCR_MODEL_MANIFEST=/app/var/ocr-models/rapidocr/manifest.json \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

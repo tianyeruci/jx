@@ -78,9 +78,23 @@
 - 适用：jx 测试服务器上的离线运行时传输、Docker 构建和发布前置操作。
 - 触发：无速率限制地递归传输 OCR 离线运行时，或让 Docker 构建上下文包含归档、分片和无关 `var/` 内容。
 - 根因：本次已验证为主机内存压力引发 Swap 换入换出，进一步造成磁盘 I/O 饥饿；SSH、Docker、Dify 和 ai-management 健康检查因此超时。新 OCR Worker 当时未运行；没有磁盘已满、文件系统硬件错误或 OOM-killer 证据。
-- 解决：OCR 暂停使用；在传输/构建前运行 `bash /opt/ai-management/scripts/jx_resource_guard.sh check`，使用单任务锁、断点续传和限速；构建使用对应的 `Dockerfile.*.dockerignore` 排除重复归档/分片；失败只暂停本次任务，不停止核心服务。
+- 解决：历史阶段先暂停 OCR；当前已按同一门禁恢复 RapidOCR。传输/构建前运行 `bash /opt/ai-management/scripts/jx_resource_guard.sh check`，使用单任务锁、断点续传和限速；构建使用对应的 `Dockerfile.*.dockerignore` 排除重复归档/分片；失败只暂停本次任务，不停止核心服务。
 - 非解决：直接重启作为常规方案、无保护的 `scp -r`、并行构建、`docker system prune`、删除 Docker 持久卷或清空 Redis。
 - 验证：上一启动周期的 journal/top/vmstat/iostat 记录了 Swap 压力、97% I/O wait 和健康检查超时；恢复后资源门禁通过：MemAvailable 约 26.52 GiB、Swap 0 MiB、I/O wait 0%、D 状态进程 0。
-- 预防：可用内存、Swap、I/O wait、负载、D 状态进程、磁盘和 inode 任一越过门槛即 fail-closed；OCR 部署必须显式设置 `JX_OCR_DEPLOYMENT_ENABLED=true`，当前默认暂停。
+- 预防：可用内存、Swap、I/O wait、负载、D 状态进程、磁盘和 inode 任一越过门槛即 fail-closed；OCR 部署必须显式设置 `JX_OCR_DEPLOYMENT_ENABLED=true`，运行时仍由按需队列和 600 秒空闲策略控制。
 - 证据：[OCR 部署故障脱敏记录](../../var/reports/ocr-deployment-20260803/issues.jsonl)、[资源防护脚本](../../scripts/jx_resource_guard.sh)。
+
+## DEPLOY-009：按需 OCR 扩容器被可执行权限门禁阻断
+
+- 触发：发布后 `ai_ocr` 队列有任务，但 `jx-ocr-autoscaler.service` 只记录资源守卫阻断。
+- 根因：远端上传的 `jx_resource_guard.sh` 为 `0644`，脚本的安全前置检查要求 `test -x`，因此任务被正确留在队列。
+- 解决：正式发布安装器对发布 helper 使用 `0755`，并核验远端脚本权限；不得用 `chmod` 以外的内容修改绕过门禁。
+- 验证：权限修正后 OCR Worker 自动启动、队列清空；最终 release 仍安装为 `0755`。
+
+## DEPLOY-010：cgroup v2 不接受 Compose 默认块设备限流
+
+- 触发：重建 OCR Worker 报 `io.max` 设备不存在。
+- 根因：Compose 中写死了另一台主机的块设备 major/minor 映射。
+- 解决：移除默认 `blkio_config`，保留 CPU/内存/PID/临时目录限制；块设备限流只能由运维按当前主机显式覆盖。
+- 验证：jx OCR Worker 重新创建并完成扫描 PDF 任务，未影响核心服务。
 - 最后验证：2026-08-03。

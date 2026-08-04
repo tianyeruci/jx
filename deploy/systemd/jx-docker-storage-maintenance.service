@@ -1,0 +1,17 @@
+[Unit]
+Description=jx controlled Docker BuildKit storage maintenance
+After=docker.service
+Requires=docker.service
+ConditionPathExists=/opt/ai-management
+ConditionPathExists=/opt/ai-management/scripts/jx_docker_storage_maintenance.sh
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/opt/ai-management/scripts/jx_docker_storage_maintenance.sh run --trigger=scheduled --confirm=MAINTAIN_JX_DOCKER_STORAGE
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/ai-management/var /run
+TimeoutStartSec=1800s

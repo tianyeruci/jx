@@ -217,6 +217,7 @@ unzip -tq "$INCOMING_ZIP" >/dev/null || die "ZIP CRC validation failed"
 compose config --services >/dev/null
 test -f Dockerfile.ocr-offline
 test -f scripts/ocr_worker_entrypoint.sh
+test -f scripts/jx_docker_storage_maintenance.sh
 test -d var/ocr-runtime/debs
 test -d var/ocr-runtime/site-packages
 test -d var/ocr-runtime/models
@@ -437,10 +438,10 @@ docker run --rm --env-file .env "$UI_IMAGE" python -c \
   "from ai_management.config import get_settings; import ai_management.test_ui; get_settings(); print('ui-import-ok')" \
   > "$REPORT_DIR/ui-import-smoke.txt"
 docker run --rm --env-file .env \
-  -e PDF_OCR_MODEL_ROOT=/app/.paddlex/official_models \
-  -e PDF_OCR_MODEL_MANIFEST=/app/.paddlex/official_models/manifest.json \
+  -e PDF_OCR_MODEL_ROOT=/app/var/ocr-models/rapidocr \
+  -e PDF_OCR_MODEL_MANIFEST=/app/var/ocr-models/rapidocr/manifest.json \
   "$OCR_REPOSITORY:$RELEASE_ID" python -c \
-  "import paddle, paddleocr; print('ocr-package-ok')" \
+  "import rapidocr, onnxruntime, pypdfium2; print('rapidocr-package-ok')" \
   > "$REPORT_DIR/ocr-smoke.txt"
 restore_old_wheel
 
@@ -560,6 +561,12 @@ for service in "${ALL_SERVICES[@]}"; do
   fi
 done
 test "$LOG_FAILURES" -eq 0 || die "critical errors were found in recent service logs"
+
+if test "${JX_RUN_DOCKER_STORAGE_MAINTENANCE:-false}" = true; then
+  bash "$APP_DIR/scripts/jx_docker_storage_maintenance.sh" run \
+    --trigger=post-release --confirm=MAINTAIN_JX_DOCKER_STORAGE \
+    > "$REPORT_DIR/docker-storage-maintenance.txt" 2>&1
+fi
 
 NEXT_SOURCE="$APP_DIR/.ai_management.next.$RELEASE_ID"
 OLD_SOURCE="$APP_DIR/.ai_management.old.$RELEASE_ID"

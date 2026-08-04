@@ -1,5 +1,10 @@
 -e .[test,ocr]
 
 # Optional local OCR/layout backend for scan-only Chinese consultation PDFs.
-# The OCR extra is pinned in pyproject.toml; production jx builds use the
+# RapidOCR is intentionally CPU/ONNX-only. Production jx builds use the
 # hash-locked offline bundle under var/ocr-runtime instead of this installer.
+rapidocr==3.9.2
+onnxruntime==1.28.0
+pypdfium2==5.12.1
+rapid-layout==1.2.1
+rapid-table==3.0.2

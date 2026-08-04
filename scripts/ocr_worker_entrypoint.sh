@@ -22,6 +22,11 @@ if not isinstance(expected, dict):
     raise SystemExit("OCR model manifest must contain a files mapping")
 verified = validate_offline_ocr_models(model_root, expected)
 print(f"offline_ocr_models_verified={len(verified)}")
+try:
+    import rapidocr  # noqa: F401
+    import pypdfium2  # noqa: F401
+except ImportError as exc:
+    raise SystemExit(f"RapidOCR offline runtime is incomplete: {exc}") from exc
 PY
 
 exec "$@"

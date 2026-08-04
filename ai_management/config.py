@@ -100,18 +100,22 @@ class Settings(BaseSettings):
     max_active_cleaning_batches: int = Field(default=5, ge=1, le=1000)
     cleaning_worker_concurrency: int = Field(default=4, ge=1, le=32)
     # OCR is deliberately opt-in.  The page limit only applies to scanned
-    # PDFs which need the PaddleOCR path; text-layer PDFs are not limited.
+    # PDFs which need the on-demand RapidOCR path; text-layer PDFs are not
+    # limited.  The backend name is explicit so a rollback can disable OCR
+    # without changing the HTTP contract or worker code.
     pdf_ocr_enabled: bool = False
+    pdf_ocr_backend: Literal["rapidocr_onnxruntime", "disabled"] = "rapidocr_onnxruntime"
     pdf_ocr_max_pages: int = Field(default=10, ge=1, le=50)
     pdf_ocr_task_timeout_seconds: int = Field(default=600, ge=600, le=3600)
+    pdf_ocr_idle_seconds: int = Field(default=600, ge=60, le=3600)
     pdf_ocr_render_dpi: int = Field(default=200, ge=72, le=600)
     pdf_ocr_retry_dpi: int = Field(default=300, ge=72, le=600)
     pdf_ocr_auto_confidence: float = Field(default=0.90, ge=0, le=1)
     pdf_ocr_min_confidence: float = Field(default=0.75, ge=0, le=1)
     pdf_ocr_max_low_conf_ratio: float = Field(default=0.10, ge=0, le=1)
-    pdf_ocr_cpu_threads: int = Field(default=4, ge=1, le=64)
-    pdf_ocr_model_root: Path = Path("var/ocr-models")
-    pdf_ocr_model_manifest: Path = Path("var/ocr-models/manifest.json")
+    pdf_ocr_cpu_threads: int = Field(default=2, ge=1, le=16)
+    pdf_ocr_model_root: Path = Path("var/ocr-models/rapidocr")
+    pdf_ocr_model_manifest: Path = Path("var/ocr-models/rapidocr/manifest.json")
     upload_disk_reserve_mb: int = Field(default=1024, ge=128)
     # Server-side diagnostic artifact. Deployments decide whether it is kept;
     # the path is never exposed through HTTP and must be a dedicated directory.
@@ -139,6 +143,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_ocr_limits(self) -> "Settings":
+        if self.pdf_ocr_enabled and self.pdf_ocr_backend == "disabled":
+            raise ValueError("PDF_OCR_ENABLED=true 时 PDF_OCR_BACKEND 不能为 disabled")
         minimum_timeout = max(600, self.pdf_ocr_max_pages * 60)
         if self.pdf_ocr_task_timeout_seconds < minimum_timeout:
             raise ValueError(

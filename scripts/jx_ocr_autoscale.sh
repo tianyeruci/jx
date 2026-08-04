@@ -3,6 +3,7 @@ set -Eeuo pipefail
 umask 077
 
 APP_DIR="/opt/ai-management"
+RESOURCE_GUARD="$APP_DIR/scripts/jx_resource_guard.sh"
 STATE_DIR="/run/jx-ocr-autoscaler"
 LOCK_FILE="$STATE_DIR/lock"
 IDLE_FILE="$STATE_DIR/idle-since"
@@ -129,6 +130,10 @@ if test "$queue" -gt 0; then
       last_failure="$(stat -c %Y "$FAILURE_FILE")"
       now="$(date +%s)"
       test $((now - last_failure)) -lt "$FAILURE_BACKOFF_SECONDS" && exit 0
+    fi
+    if test ! -x "$RESOURCE_GUARD" || ! bash "$RESOURCE_GUARD" check --phase=ocr-start >/dev/null 2>&1; then
+      log warning "resource guard blocked OCR Worker start; task remains queued"
+      exit 0
     fi
     if compose up -d --no-deps ai-ocr-worker >/dev/null 2>&1 \
       && test "$(worker_status)" = running \

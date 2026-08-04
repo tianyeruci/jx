@@ -241,11 +241,11 @@ RESET_JX_TEST_ENVIRONMENT
 - 修改 `pyproject.toml` 或增加新的 Python 依赖；
 - 修改 `knowledge_cleaner/`、`dify_client.py`、`migrations/`；
 - 修改 Dockerfile、Compose、Nginx；
-- 当前 OCR 已暂停。修改 OCR 离线依赖/模型、`Dockerfile.ocr-offline`、`ai-ocr-worker` 或 systemd 按需启停均不得执行；后续恢复必须先按完整发布流程安装和验收 OCR 运行时，并通过 `/opt/ai-management/scripts/jx_resource_guard.sh` 资源门禁；
+- OCR 相关修改（RapidOCR 离线依赖/模型、`Dockerfile.ocr-offline`、`ai-ocr-worker` 或 systemd 按需启停）仍不得走快速流程；当前 jx 已部署 `rapidocr_onnxruntime`，任何后续变更必须按完整发布流程、备份和 `/opt/ai-management/scripts/jx_resource_guard.sh` 资源门禁验收；
 - 修改 Dify DSL、Prompt、App、Workflow、Dataset 绑定或 API Key；
 - 需要数据库迁移或基础设施调整。
 
-快速 ZIP 只包含 `ai_management/`，不会自动发布 Dify DSL/Prompt。当前快速脚本默认拒绝 OCR 发布（需显式设置 `JX_OCR_DEPLOYMENT_ENABLED=true`，且必须经过重新确认）；不得继续上传 OCR 离线包、构建 OCR 镜像或启用 `ai-ocr-worker`/systemd timer。
+快速 ZIP 只包含 `ai_management/`，不会自动发布 Dify DSL/Prompt。快速脚本默认拒绝 OCR 发布（需显式设置 `JX_OCR_DEPLOYMENT_ENABLED=true`，且必须经过重新确认）；不得用快速脚本上传 OCR 离线包、构建 OCR 镜像或改动 `ai-ocr-worker`/systemd timer。
 
 ## 6. 常见报错怎么处理
 

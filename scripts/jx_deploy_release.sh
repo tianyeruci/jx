@@ -57,6 +57,7 @@ test -f "$APP_DIR/Dockerfile.ocr-offline"
 test -f "$APP_DIR/scripts/ocr_worker_entrypoint.sh"
 test -f "$APP_DIR/scripts/jx_ocr_autoscale.sh"
 test -f "$APP_DIR/scripts/jx_install_ocr_autoscaler.sh"
+test -f "$APP_DIR/scripts/jx_docker_storage_maintenance.sh"
 test -f "$APP_DIR/deploy/systemd/jx-ocr-autoscaler.service"
 test -f "$APP_DIR/deploy/systemd/jx-ocr-autoscaler.timer"
 test -d "$OCR_RUNTIME_DIR/debs"
@@ -195,7 +196,9 @@ for file in \
   evaluate_business_e2e.py
 do
   test -f "$STAGE_DIR/$file"
-  install -m 0644 "$STAGE_DIR/$file" "scripts/$file"
+  # The autoscaler invokes the resource guard through an executable check;
+  # preserve executable mode for all release helper entry points.
+  install -m 0755 "$STAGE_DIR/$file" "scripts/$file"
 done
 install -m 0644 "$STAGE_DIR/business_advisor.yml" \
   "dify/dsl/business_advisor.yml"
@@ -219,10 +222,10 @@ docker build --pull=false --build-arg AI_IMAGE="$CORE_IMAGE" \
 docker image inspect "$OCR_IMAGE" --format '{{.Id}}' \
   > "$REPORT_DIR/ocr-image-id.txt"
 docker run --rm --env-file .env \
-  -e PDF_OCR_MODEL_ROOT=/app/.paddlex/official_models \
-  -e PDF_OCR_MODEL_MANIFEST=/app/.paddlex/official_models/manifest.json \
+  -e PDF_OCR_MODEL_ROOT=/app/var/ocr-models/rapidocr \
+  -e PDF_OCR_MODEL_MANIFEST=/app/var/ocr-models/rapidocr/manifest.json \
   "$OCR_IMAGE" python -c \
-  "import paddle, paddleocr; print('ocr-package-ok')" \
+  "import rapidocr, onnxruntime, pypdfium2; print('rapidocr-package-ok')" \
   > "$REPORT_DIR/ocr-smoke.txt"
 
 bash "$RESOURCE_GUARD" run --phase=release-ui-build -- \
@@ -336,16 +339,18 @@ upsert_env MAX_UPLOAD_FILES "10"
 upsert_env MAX_ACTIVE_CLEANING_BATCHES "5"
 upsert_env CLEANING_WORKER_CONCURRENCY "4"
 upsert_env PDF_OCR_ENABLED "true"
+upsert_env PDF_OCR_BACKEND "rapidocr_onnxruntime"
 upsert_env PDF_OCR_MAX_PAGES "10"
 upsert_env PDF_OCR_TASK_TIMEOUT_SECONDS "600"
+upsert_env PDF_OCR_IDLE_SECONDS "600"
 upsert_env PDF_OCR_RENDER_DPI "200"
 upsert_env PDF_OCR_RETRY_DPI "300"
 upsert_env PDF_OCR_AUTO_CONFIDENCE "0.90"
 upsert_env PDF_OCR_MIN_CONFIDENCE "0.75"
 upsert_env PDF_OCR_MAX_LOW_CONF_RATIO "0.10"
-upsert_env PDF_OCR_CPU_THREADS "4"
-upsert_env PDF_OCR_MODEL_ROOT "/app/.paddlex/official_models"
-upsert_env PDF_OCR_MODEL_MANIFEST "/app/.paddlex/official_models/manifest.json"
+upsert_env PDF_OCR_CPU_THREADS "2"
+upsert_env PDF_OCR_MODEL_ROOT "/app/var/ocr-models/rapidocr"
+upsert_env PDF_OCR_MODEL_MANIFEST "/app/var/ocr-models/rapidocr/manifest.json"
 upsert_env AI_OCR_IMAGE "$OCR_IMAGE"
 upsert_env COURSE_CATALOG_AUTO_PUBLISH "true"
 upsert_env COURSE_CATALOG_AUTO_APPROVE_COST_MAX "1.0"
@@ -404,6 +409,11 @@ systemctl is-enabled jx-ocr-autoscaler.timer > "$REPORT_DIR/ocr-autoscaler-enabl
 systemctl is-active jx-ocr-autoscaler.timer > "$REPORT_DIR/ocr-autoscaler-active.txt"
 docker compose -f docker-compose.ai.yml ps -q ai-ocr-worker \
   > "$REPORT_DIR/ocr-worker-container-id.txt"
+if test "${JX_RUN_DOCKER_STORAGE_MAINTENANCE:-false}" = true; then
+  bash "$APP_DIR/scripts/jx_docker_storage_maintenance.sh" run \
+    --trigger=post-release --confirm=MAINTAIN_JX_DOCKER_STORAGE \
+    > "$REPORT_DIR/docker-storage-maintenance.txt" 2>&1
+fi
 sha256sum \
   "$REPORT_DIR/core-image-id.txt" \
   "$REPORT_DIR/ui-image-id.txt" \

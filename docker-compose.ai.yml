@@ -32,17 +32,17 @@ services:
     restart: unless-stopped
 
   ai-ocr-worker:
-    image: ${AI_OCR_IMAGE:-jx-now-ai-management-ocr:0.2.1}
+    image: ${AI_OCR_IMAGE:-jx-now-ai-management-ocr:rapidocr}
     env_file: .env
     entrypoint: ["/app/scripts/ocr_worker_entrypoint.sh"]
-    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_ocr --concurrency=1 --prefetch-multiplier=1 --max-tasks-per-child=1 --hostname=ai-ocr@%h
+    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_ocr --concurrency=1 --prefetch-multiplier=1 --hostname=ai-ocr@%h
     environment:
       HOME: /app
-      PADDLE_PDX_MODEL_SOURCE: bos
-      OMP_NUM_THREADS: ${PDF_OCR_CPU_THREADS:-4}
-      OPENBLAS_NUM_THREADS: ${PDF_OCR_CPU_THREADS:-4}
-      MKL_NUM_THREADS: ${PDF_OCR_CPU_THREADS:-4}
-      NUMEXPR_NUM_THREADS: ${PDF_OCR_CPU_THREADS:-4}
+      RAPIDOCR_DISABLE_NETWORK: "1"
+      OMP_NUM_THREADS: ${PDF_OCR_CPU_THREADS:-2}
+      OPENBLAS_NUM_THREADS: ${PDF_OCR_CPU_THREADS:-2}
+      MKL_NUM_THREADS: ${PDF_OCR_CPU_THREADS:-2}
+      NUMEXPR_NUM_THREADS: ${PDF_OCR_CPU_THREADS:-2}
     volumes:
       - ai_uploads:/app/var/uploads
       - ${CONVERSION_MARKDOWN_HOST_ROOT:-./var/conversion-markdown}:/app/var/conversion-markdown
@@ -50,8 +50,17 @@ services:
       - dify
     hostname: jx-ai-ocr-worker
     init: true
-    cpus: "4.0"
-    mem_limit: 8g
+    cpus: "2.0"
+    mem_limit: 4g
+    memswap_limit: 4g
+    pids_limit: 256
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    # Do not bind an assumed host partition here.  On cgroup v2 hosts Docker
+    # may reject a partition's major:minor in io.max and prevent the worker
+    # from starting.  CPU/memory/pids limits plus jx_resource_guard provide the
+    # portable protection; host-specific I/O throttling remains an explicit
+    # operator override outside the default Compose contract.
     stop_grace_period: 660s
     restart: "no"
 

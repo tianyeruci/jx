@@ -285,7 +285,7 @@ class BatchCleaningPipeline:
         doc.extra.update(
             {
                 "conversion_backend": converted.backend,
-                "ocr_used": converted.backend.startswith("paddleocr"),
+                "ocr_used": converted.backend.startswith(("rapidocr", "paddleocr")),
                 "page_count": converted.page_count,
                 "table_count": table_count,
                 "privacy_findings": privacy_findings,
