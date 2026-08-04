@@ -359,6 +359,7 @@ def collect_operational_scripts(root: Path = ROOT) -> list[str]:
         "dify_*.py",
         "configure_dify_*.py",
         "inspect_dify_*.py",
+        "pdf_markdown_*.py",
     )
     sources = {
         source.relative_to(root).as_posix()

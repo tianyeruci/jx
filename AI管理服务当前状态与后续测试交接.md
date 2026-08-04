@@ -4,7 +4,20 @@
 > 用途：保存最新线上事实、回滚点、数据状态和开放事项。新任务先读 `AGENTS.md` 与 `docs/README.md`，再按功能域读取本文顶部最新状态。  
 > 本文不是需求或设计基线；权威顺序以 `docs/V2决策记录.md` 和 `docs/README.md` 为准。第 1～8 节为历史过程记录，不再作为当前执行指令。
 
-## 0.23 2026-08-04 RapidOCR 发布、缓存治理与测试页回归（当前最新）
+## 0.25 2026-08-04 PDF→Markdown Dify Code 节点用户自测窗口（当前最新）
+
+- 按用户最新指令，远端 Dify Sandbox 当前保持自测配置：镜像 `jx-dify-sandbox-pdf-probe:20260804`，PyMuPDF/RapidOCR/ONNX Runtime 可导入，`WORKER_TIMEOUT=180`，API `CODE_EXECUTION_READ_TIMEOUT=180`，OCR 所需 syscall 白名单已临时放宽。
+- SSRF 代理仅临时放行 `112.74.37.111:80` 供 Dify 文件签名 URL 下载；没有开放通用外网。Dify API、Sandbox 均 healthy，四个 OCR 依赖的导入烟测通过。
+- 该配置是用户自测窗口，不是生产配置；结束后应恢复 `/opt/ai-management/backups/20260804-pdf-code-sandbox-pre` 中的 Sandbox/SSRF 基线，并把 API 读取超时恢复为 60 秒、Sandbox Worker 超时恢复为 15 秒。
+
+## 0.24 2026-08-04 PDF→Markdown Dify Code 节点临时验证（历史记录）
+
+- 新增本地测试 DSL `dify/dsl/pdf_to_markdown_code_test.yml`，仅用于 Dify 1.13.3 Workflow 的 Start→Code→End 验证；未修改 jx PDF 转换代码、API、Worker、数据库、Redis、正式 Dify 应用或知识库。
+- 远端曾临时使用自建 Sandbox 镜像和受限测试文件服务；文本样本 Code 执行结果为 `succeeded/pymupdf/1 页`，扫描样本为 `succeeded/rapidocr/3 页`、平均置信度 `0.9969`。默认 seccomp 首次阻断 ONNX Runtime，临时扩大 syscall 白名单并把 Sandbox/API 执行超时调为 180 秒后成功。
+- 首轮验证结束后曾恢复 `/opt/ai-management/backups/20260804-pdf-code-sandbox-pre` 对应的 Dify Sandbox 镜像、`WORKER_TIMEOUT=15`、API `CODE_EXECUTION_READ_TIMEOUT=60`、原始 SSRF 模板和原始网络/代理设置；恢复后最小 Code 回归输出 `pdf-probe-rollback-ok`，Sandbox 中 PyMuPDF/RapidOCR/ONNX Runtime 均不可见。随后按用户要求重新开启 0.25 自测窗口。
+- 当前开放项：Dify 控制台导入/运行尚未完成（管理员会话不可用）；生产采用前仍需评审 syscall 放宽、CPU/超时、下载域名白名单、镜像和许可证维护。不得把本次 Workflow 验证结果写成生产转换策略已替换。
+
+## 0.23 2026-08-04 RapidOCR 发布、缓存治理与测试页回归（历史记录）
 
 - jx 已完成受控 RapidOCR 发布，当前正式 release 为 `20260804-rapidocr-semantic-78f9a1`；发布报告为 `/opt/ai-management/var/reports/v2/20260804-rapidocr-semantic-78f9a1-deploy`，发布前备份为 `/opt/ai-management/backups/20260804-rapidocr-semantic-pre`。`health-ready.json` 的 database、Redis、Dify 配置和可达性均为 `true`，Core/UI/OCR 镜像均通过导入/运行烟测。
 - OCR 当前使用 `rapidocr_onnxruntime`、模型目录 `/opt/ai-management/var/ocr-runtime`、2 线程和 600 秒空闲停止；`jx-ocr-autoscaler.timer` 已启用。实测扫描 PDF 入队后 Worker 按需启动并完成处理，队列清空后按策略停止；空闲时不常驻 OCR Worker。
@@ -1053,3 +1066,62 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改原因：最终验收需区分已通过的定向回归与未能启动的完整模型工作流测试，避免把环境缺失误报为产品通过。
 - 修改前：交接只记录样本策略矩阵和远端测试页终态，未在顶部明确完整工作流测试的本地 Redis 前置缺失。
 - 修改后：明确记录定向回归通过；完整工作流测试仅因固定测试夹具依赖 `127.0.0.1:6399` 且本机无 Redis 而阻塞，远端 jx Redis/Celery 和模型验收独立通过。问题证据仍在 `var/reports/20260804-pdf-rapidocr-docker/issues.jsonl`，未写入凭据或敏感内容。
+
+### 2026-08-04：补充 Dify Code 节点 PDF→Markdown 自测闭环
+
+- 修改原因：用户要求明确本次 Workflow 验证的目标、已完成项、未完成项和文档影响，并在其自测期间保持 Sandbox 中的 PyMuPDF/RapidOCR。
+- 修改前：交接顶部已有远端自测配置和回滚点，但缺少与项目文档、排障记录和测试门禁对应的闭环摘要。
+- 修改后：补充独立 DSL、Sandbox 依赖、文本/扫描真实执行证据、当前自测窗口和生产边界；新增 Dify ONNX/seccomp 排障条目及脱敏 issue 记录；确认未修改 `knowledge_cleaner`、jx API/Worker、数据库、Redis、正式 Dify 应用或知识库。当前远端仍按用户要求保持自测配置，结束后必须按备份恢复。
+
+### 2026-08-04：修复 PDF Workflow 页数分支与 RapidOCR stderr 误判
+
+- 修改原因：用户导入测试 DSL 后反馈文本型 PDF 被错误套用 OCR 5 页限制，扫描型 PDF 的 RapidOCR 日志被 Dify Code 节点报为运行异常。
+- 修改前：Workflow 先按 `max_pages=5` 检查所有 PDF；RapidOCR/ONNX Runtime 的原生 stderr 未处理，Sandbox 将有效 stdout 结果和日志合并为 RuntimeError。
+- 修改后：文本层探测提前到页数限制之前，文本型 PDF 不受 OCR 页数限制；纯图片 PDF 默认 `max_pages=50`（允许 1-200）；OCR 初始化和识别期间 fd 2 临时重定向到 `os.devnull`，恢复后正常输出结构化 Markdown 结果。未改生产清洗代码、Dify 业务数据库或正式应用。
+- 验证：远端 Worker 日志已确认原请求 stdout 为 `status=succeeded/backend=rapidocr`、error 仅为 RapidOCR/ONNX Runtime 日志；修复后 DSL 代码编译、`git diff --check`、功能索引检查和 `test_ai_management.py -k dsl_and_gold_data_are_complete` 通过。用户需重新导入/发布该 DSL 后再用两个样本手测。
+
+### 2026-08-04：修复受限 Sandbox 日志 sink 并完成指定扫描样本验证
+
+- 修改原因：用户反馈 `/dev/null` 不存在；改用临时文件后又因 Sandbox 没有可用临时目录失败。
+- 修改前：stderr 静默依赖文件系统设备或临时目录，均不适用于当前受限 Code 子进程。
+- 修改后：改用 `os.pipe()` 与后台 drain 线程吸收 OCR 原生 stderr，同时关闭 RapidOCR Python logger、提高 ONNX 日志级别；OCR 完成后恢复 fd 2。临时放行的 18080 测试端口、HTTP 服务和样本文件已精确恢复/清理，当前 SSRF 仍只放行 `112.74.37.111:80`。
+- 验证：使用用户指定扫描 PDF 完整执行返回 `code=0`、`error` 为空、`status=succeeded`、`backend=rapidocr`、3 页、平均置信度 `0.9969`；Sandbox 镜像和 PyMuPDF/RapidOCR/ONNX Runtime 保持 healthy。用户导入的旧 Workflow 版本仍需重新导入修复后的 YAML 才会生效。
+
+### 2026-08-04：补充 PDF Workflow 排障知识与防踩坑清单
+
+- 修改原因：用户要求解释 DSL 第 227 行的变更，并把本轮页数判断、seccomp、stderr 误判、`/dev/null`/临时目录缺失和 Dify 版本同步问题沉淀为可复用记录。
+- 修改前：排障根因已分散在 DIFY-006～DIFY-008，导入操作文档未提供一张完整的 PDF Workflow 踩坑对照表。
+- 修改后：在 `docs/troubleshooting/dify.md` 保留稳定根因条目，在 Dify 导入文档新增 3.2 对照表，在 DSL 技巧备忘录补充受限文件系统和重新导入门禁；未修改业务代码、生产清洗链路或 Dify 数据。
+- 验证：文档内容与最终 DSL 的 `os.pipe()` 实现、指定扫描样本 `status=succeeded/backend=rapidocr` 证据一致；未写入密钥、样本正文或真实受保护标识。
+
+### 2026-08-04：新增服务器本地 PDF→Markdown 版式微调脚本并完成样本验证
+
+- 修改原因：用户希望在 jx 服务器直接调节 PDF 转 Markdown 的标题层级、段落、缩进、换行和表格样式，且不新增服务、不改生产清洗主链路。
+- 修改前：只有生产 `knowledge_cleaner` 转换路径和独立 Dify Workflow 验证器，没有一个可在服务器现有 OCR 镜像中反复调参的独立脚本。
+- 修改后：新增 `scripts/pdf_markdown_refine.py`；前两页文字探测达到 20 个非空白字符时走 `pdfplumber`，否则走现有离线 OCR 镜像中的 `RapidOCR + pypdfium2`。默认 OCR DPI 为 200，支持单文件/目录批量、独立输出目录、`--force` 覆盖和 JSON 诊断；输出文件权限为 `600`。图片表格只保证有效文字和阅读顺序，复杂列结构会线性化并告警，不宣称像素级还原。
+- 服务器测试：用户样本位于 `/opt/ai-management/tmp/pdf/`；脚本放在 `/opt/ai-management/tmp/pdf-markdown-refine/`，通过一次性 `jx-now-ai-management-ocr:20260804-rapidocr-semantic-78f9a1` 容器运行。3 份样本全部成功：文字型 1 份走 `pdfplumber`（8 页、2 个表格），图片型 2 份走 `RapidOCR`（3 页和 4 页，平均置信度约 0.996～0.998）。输出在 `/opt/ai-management/tmp/pdf-markdown-refine/output/`。
+- 期间修复：首次远端运行发现 RapidOCR NumPy 数组不能使用 `or []`，以及 Python `statistics.median()` 不支持 `default` 参数；同时将列表缩进改为按坐标计算，并避免普通数字列表被误判为标题。已修复并从头重跑，最终三份均为 `succeeded`。未修改 OCR Worker、Compose、Dify、数据库、Redis 或生产 PDF 转换代码。
+- 文档同步：版式微调脚本的用途、命令、参数、结果和图片表格边界已写入《文字型 PDF 转 Markdown 评审与落地建议》，并登记到 `docs/功能与接口索引.md`；本记录不保存样本正文、密钥或受保护映射。
+
+### 2026-08-04：覆盖重跑服务器 PDF→Markdown 样本并收集空文件错误
+
+- 修改原因：用户要求使用已放入 `/opt/ai-management/tmp/pdf/` 的全部样本覆盖原 Markdown 输出，并先收集错误，暂不统一处理。
+- 修改后：使用现有 OCR 镜像和 `scripts/pdf_markdown_refine.py --force` 批量重跑；5 个输入中 4 个成功、1 个失败，成功结果已覆盖写入 `/opt/ai-management/tmp/pdf-markdown-refine/output/`。本次没有删除或替换任何输入文件，也没有修改服务配置。
+- 已验证错误：失败项对应输入文件大小为 0 字节、类型为 `empty`，因此 `pdfplumber` 报 `No /Root object! - Is this really a PDF?`；根因是空输入文件，不是 OCR 或转换脚本异常。待用户确认重新上传后再处理。
+- 证据：远端日志目录 `/opt/ai-management/tmp/pdf-markdown-refine/runs/20260804-112801/`；本地脱敏记录 `var/reports/20260804-pdf-markdown-refine/issues.jsonl`。日志保留 stdout、stderr 和退出码，未保存正文到仓库。
+
+### 2026-08-04：重新覆盖重跑服务器 PDF→Markdown 样本并闭环空文件问题
+
+- 修改原因：用户重新上传/替换空输入后要求再次测试。
+- 修改后：复核服务器 PDF 目录共 5 个文件、空文件数为 0；再次使用现有 OCR 镜像和 `--force` 全量重跑，退出码为 `0`，5/5 成功、0 失败，覆盖输出 5 个 Markdown。3 个文件走 `pdfplumber`，2 个文件走 `RapidOCR`，合计 263 页、文字型表格 60 个；图片型表格仍按既定规则线性化并告警。
+- 错误闭环：上一次的 0 字节输入已由用户替换，原 `PDF-MD-001` 标记为 `resolved`；本次没有修改脚本、服务配置或删除输入文件。
+- 证据：本次日志目录 `/opt/ai-management/tmp/pdf-markdown-refine/runs/20260804-113347/` 和复测目录 `/opt/ai-management/tmp/pdf-markdown-refine/runs/20260804-113713/`；脱敏问题记录 `var/reports/20260804-pdf-markdown-refine/issues.jsonl` 已更新。
+
+### 2026-08-04：修复 PDF→Markdown 版式问题并在 jx 完成最终重跑
+
+- 修改原因：用户反馈服务器脚本存在跨页表格未合并、长文标题层级/目录失真、RapidOCR 页脚残留和未按原段落换行等问题，要求参考官方/GitHub 方案后修复并重新生成 Markdown。
+- 修改前：`pdfplumber` 表格只按页输出；目录点线内容可能被合成一段；标题仅按固定阈值判断；OCR 只按单页输出，未做底部页脚归一化和未结束句续行。临时启用 `text/text` 表格策略还会把普通双栏正文误识别成表格。
+- 修改后：`scripts/pdf_markdown_refine.py` 增加相邻页表格状态机（首列空续接、首列有值新行、重复表头去重）、文档相对字号/粗体标题映射、点线目录拆分、底部页脚过滤和 OCR 段落续行；默认仅使用线/矩形几何表格策略，保留无边框复杂表格为已知限制。JX 旧脚本先备份到 `/opt/ai-management/tmp/pdf-markdown-refine/backups/20260804-pre-layout-fix/` 和 `/opt/ai-management/tmp/pdf-markdown-refine/backups/20260804-pre-ocr-paragraph-fix/`，再同步新脚本。
+- 最终验证：使用现有 `jx-now-ai-management-ocr:20260804-rapidocr-semantic-78f9a1` 一次性容器、`--ocr-dpi 200 --force` 覆盖输出；输入 5 个且空文件数为 0，退出码 `0`，5/5 成功（3 个 `pdfplumber`、2 个 `RapidOCR`），合计 263 页。输出 5 个均非空、权限 `600`；目录样本 25 个普通目录项，跨页几何表格 1 个连续表格块；代码围栏、`None`、OCR 页脚模式均为 0。复测确认此前句内断行已合并。
+- 官方依据与限制：`pdfplumber` 官方按页返回表格且不提供跨页/正文阅读顺序自动合并；RapidOCR 官方只提供行框、文本和置信度，段落/标题/页脚均由本脚本启发式恢复。无边框复杂表格、多栏版式和 OCR 表格结构仍需人工复核。
+- 证据：最终日志 `/opt/ai-management/tmp/pdf-markdown-refine/runs/20260804-234210/`；脱敏问题记录 `var/reports/20260804-pdf-markdown-refine/issues.jsonl` 的 `PDF-MD-002`、`PDF-MD-003`。本次未修改输入 PDF、OCR Worker、Compose、Dify、数据库、Redis 或生产清洗链路。

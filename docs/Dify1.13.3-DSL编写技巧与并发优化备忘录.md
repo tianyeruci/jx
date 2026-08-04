@@ -437,6 +437,18 @@ Code 节点解析后才形成真实换行。主回答与格式修复 Prompt 必�
 - Code 节点 401 先查 `CODE_EXECUTION_API_KEY` 与 `SANDBOX_API_KEY`。
 - 发布后必须逐路径实测，不要只看 `/parameters` 成功。
 
+### 6.4 PDF→Markdown Code 节点临时 Workflow
+
+- 测试 DSL 使用 `workflow`，Start 的 PDF 输入必须是 Dify 1.13.3 的 `file-list`（单文件），不要写成普通字符串或猜测旧版 `File` 类型。
+- Code 节点只返回字符串字段；Markdown 放在 `markdown`，诊断字段单独输出，便于 End 节点和运行日志核对。
+- 代码只接受 HTTP(S) 签名 URL，限制单文件 20 MiB、纯图片 PDF 默认最多 50 页（可调 1–200），文本型 PDF 不受该 OCR 页数限制，Markdown 180 KiB；OCR DPI 只允许 150–300。生产接入时还要把下载域名收敛为明确白名单。
+- 路由是“先探测文字层，后决定 PyMuPDF 或 RapidOCR”，不要按文件扩展名直接判扫描 PDF，也不要把两种后端结果拼接。
+- `RapidOCR`/ONNX Runtime 可能触发 Dify Sandbox 的 seccomp 限制；测试时如需临时调整 `ALLOWED_SYSCALLS` 或超时，必须留备份、限定窗口并在验证后恢复，不能把放宽配置随 Workflow 一起发布。
+- `RapidOCR`/ONNX Runtime 可能将 INFO/WARNING 写入 stderr，Dify Code 节点会把非空 stderr 误判为 RuntimeError；测试 DSL 已在 OCR 调用期间临时重定向 fd 2，恢复后再返回结构化结果。
+- 受限 Sandbox 不保证存在 `/dev/null` 或可写临时目录；stderr sink 不要使用文件，使用 `os.pipe()` + drain 线程并在 `finally` 恢复 fd 2。
+- 本地 DSL 改动不会同步已导入的 Dify 应用；验收必须重新导入、保存、发布并运行，而不是只重跑旧版本。
+- 该实验 DSL 不绑定现有应用和知识库，也不代表已经改写项目 PDF 清洗主链路；导入后应使用合成/脱敏样本分别验证文字和纯图片两条路径。
+
 ## 7. 本仓库 3 个案例的可借鉴结论
 
 ### 7.1 学生成绩查询案例

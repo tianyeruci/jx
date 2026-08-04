@@ -1,0 +1,391 @@
+version: "0.6.0"
+kind: app
+app:
+  name: PDF 转 Markdown（Code 节点测试）
+  mode: workflow
+  icon: "📄"
+  icon_type: emoji
+  icon_background: "#DBEAFE"
+  description: 使用 Dify Code 节点中的 PyMuPDF 和 RapidOCR，将单个纯文本或纯图片 PDF 转为 Markdown 进行验证。
+  use_icon_as_answer_icon: false
+dependencies: []
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  graph:
+    nodes:
+      - id: start
+        type: custom
+        position: {x: 0, y: 0}
+        positionAbsolute: {x: 0, y: 0}
+        data:
+          type: start
+          title: 上传 PDF
+          desc: 只上传一个纯文本或纯图片 PDF；此 Workflow 仅用于 Code 节点解析验证。
+          variables:
+            - label: PDF 文件
+              variable: pdf_files
+              type: file-list
+              required: true
+              max_length: 1
+              allowed_file_types:
+                - document
+              allowed_file_extensions:
+                - .pdf
+              allowed_file_upload_methods:
+                - local_file
+              default: ""
+              hint: 仅支持 PDF，最多上传一个文件
+              options: []
+              placeholder: 选择或拖拽 PDF 文件
+            - label: OCR DPI
+              variable: ocr_dpi
+              type: number
+              required: true
+              default: 200
+              options: []
+            - label: 最大页数
+              variable: max_pages
+              type: number
+              required: true
+              default: 50
+              options: []
+      - id: convert
+        type: custom
+        position: {x: 360, y: 0}
+        positionAbsolute: {x: 360, y: 0}
+        data:
+          type: code
+          title: PDF 转 Markdown
+          desc: 先检查前两页文字层；有文字使用 PyMuPDF，否则使用 PyMuPDF 渲染并调用 RapidOCR。
+          code_language: python3
+          variables:
+            - variable: pdf_files
+              value_selector: [start, pdf_files]
+            - variable: ocr_dpi
+              value_selector: [start, ocr_dpi]
+            - variable: max_pages
+              value_selector: [start, max_pages]
+          outputs:
+            status: {type: string, children: null}
+            backend: {type: string, children: null}
+            page_count: {type: string, children: null}
+            average_confidence: {type: string, children: null}
+            warnings: {type: string, children: null}
+            markdown: {type: string, children: null}
+          code: |-
+            import urllib.error
+            import urllib.parse
+            import urllib.request
+            import os
+            import threading
+
+            MAX_BYTES = 20 * 1024 * 1024
+            MAX_MARKDOWN_BYTES = 180 * 1024
+
+
+            def _result(status="failed", backend="", page_count="0", confidence="", warnings=None, markdown=""):
+                return {
+                    "status": status,
+                    "backend": backend,
+                    "page_count": str(page_count),
+                    "average_confidence": str(confidence),
+                    "warnings": "; ".join(str(item) for item in (warnings or []) if str(item).strip()),
+                    "markdown": markdown,
+                }
+
+
+            def _error(message, backend="", page_count="0", warnings=None):
+                return _result(
+                    status="failed",
+                    backend=backend,
+                    page_count=page_count,
+                    warnings=list(warnings or []) + [str(message)],
+                )
+
+
+            def _file_url(file_item):
+                if not isinstance(file_item, dict):
+                    return ""
+                for value in (file_item.get("url"), file_item.get("remote_url")):
+                    url = str(value or "").strip()
+                    parsed = urllib.parse.urlparse(url)
+                    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                        continue
+                    if parsed.username or parsed.password:
+                        continue
+                    return url
+                return ""
+
+
+            def _download(url):
+                request = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": "dify-pdf-markdown-code-test/1"},
+                    method="GET",
+                )
+                chunks = []
+                total = 0
+                with urllib.request.urlopen(request, timeout=45) as response:
+                    declared = response.headers.get("Content-Length")
+                    if declared and int(declared) > MAX_BYTES:
+                        raise ValueError("pdf_too_large")
+                    while True:
+                        chunk = response.read(64 * 1024)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > MAX_BYTES:
+                            raise ValueError("pdf_too_large")
+                        chunks.append(chunk)
+                return b"".join(chunks)
+
+
+            def _text_markdown(document):
+                pages = []
+                for index in range(len(document)):
+                    page = document.load_page(index)
+                    try:
+                        blocks = page.get_text("blocks", sort=True)
+                    except TypeError:
+                        blocks = page.get_text("blocks")
+                        blocks = sorted(blocks, key=lambda block: (float(block[1]), float(block[0])))
+                    pieces = []
+                    for block in blocks:
+                        if len(block) < 5:
+                            continue
+                        text = str(block[4] or "").strip()
+                        if text:
+                            pieces.append(text)
+                    body = "\n\n".join(pieces).strip()
+                    pages.append("## 第 {} 页\n\n{}".format(index + 1, body or "（本页无文字）"))
+                return "\n\n".join(pages).strip() + "\n"
+
+
+            def _rapid_result_fields(result):
+                texts = getattr(result, "txts", None)
+                scores = getattr(result, "scores", None)
+                boxes = getattr(result, "boxes", None)
+                if texts is None and isinstance(result, (tuple, list)):
+                    if len(result) >= 3:
+                        boxes, texts, scores = result[:3]
+                    elif len(result) == 2:
+                        texts, scores = result
+                texts = [] if texts is None else list(texts)
+                scores = [] if scores is None else [float(value) for value in scores]
+                boxes = [] if boxes is None else list(boxes)
+                normalized = [str(value).strip() for value in texts]
+                normalized = [value for value in normalized if value]
+                if len(scores) < len(normalized):
+                    scores.extend([0.0] * (len(normalized) - len(scores)))
+                return normalized, scores[: len(normalized)], boxes[: len(normalized)]
+
+
+            def _rapid_markdown(result):
+                texts, scores, boxes = _rapid_result_fields(result)
+                rows = []
+                for index, text in enumerate(texts):
+                    top = float(index)
+                    left = float(index)
+                    if index < len(boxes):
+                        try:
+                            points = boxes[index]
+                            left = min(float(point[0]) for point in points)
+                            top = min(float(point[1]) for point in points)
+                        except (TypeError, ValueError, IndexError):
+                            pass
+                    rows.append((top, left, text, scores[index] if index < len(scores) else 0.0))
+                rows.sort(key=lambda item: (item[0], item[1]))
+                lines = []
+                line_tops = []
+                line_scores = []
+                for top, _left, text, score in rows:
+                    if not line_tops or abs(top - line_tops[-1]) > 8:
+                        line_tops.append(top)
+                        lines.append(text)
+                        line_scores.append([score])
+                    else:
+                        lines[-1] = (lines[-1] + " " + text).strip()
+                        line_scores[-1].append(score)
+                markdown = "\n\n".join(line for line in lines if line).strip()
+                flat_scores = [score for row in line_scores for score in row]
+                confidence = sum(flat_scores) / len(flat_scores) if flat_scores else None
+                return markdown, confidence
+
+
+            def _ocr_markdown(document, dpi):
+                try:
+                    import numpy as np
+                except Exception as exc:
+                    raise RuntimeError("rapidocr_unavailable:{}".format(type(exc).__name__))
+                # RapidOCR/ONNX Runtime writes INFO/WARNING lines to native fd 2.
+                # Dify Sandbox treats non-empty stderr as a Code-node RuntimeError,
+                # even when the process exits with a valid result. This Sandbox
+                # image has neither /dev/null nor a writable temp directory, so
+                # drain an in-memory pipe only for this isolated OCR call.
+                saved_stderr = os.dup(2)
+                read_fd, write_fd = os.pipe()
+
+                def _drain_stderr(fd):
+                    while True:
+                        try:
+                            chunk = os.read(fd, 4096)
+                        except OSError:
+                            return
+                        if not chunk:
+                            return
+
+                drain_thread = threading.Thread(
+                    target=_drain_stderr,
+                    args=(read_fd,),
+                    daemon=True,
+                )
+                drain_thread.start()
+                try:
+                    os.dup2(write_fd, 2)
+                    os.environ["ORT_LOG_SEVERITY_LEVEL"] = "4"
+                    os.environ["GLOG_minloglevel"] = "3"
+                    import logging
+                    logging.getLogger("RapidOCR").disabled = True
+                    from rapidocr import RapidOCR
+                    engine = RapidOCR()
+                    pages = []
+                    scores = []
+                    for index in range(len(document)):
+                        page = document.load_page(index)
+                        pixmap = page.get_pixmap(dpi=int(dpi), alpha=False)
+                        channels = int(pixmap.n)
+                        image = np.frombuffer(pixmap.samples, dtype=np.uint8)
+                        image = image.reshape(pixmap.height, pixmap.width, channels)
+                        if channels > 3:
+                            image = image[:, :, :3]
+                        markdown, confidence = _rapid_markdown(engine(image))
+                        if confidence is not None:
+                            scores.append(float(confidence))
+                        pages.append(
+                            "## 第 {} 页\n\n{}".format(index + 1, markdown or "（本页未识别到文字）")
+                        )
+                    average = sum(scores) / len(scores) if scores else None
+                    return "\n\n".join(pages).strip() + "\n", average
+                finally:
+                    os.dup2(saved_stderr, 2)
+                    os.close(saved_stderr)
+                    os.close(write_fd)
+                    drain_thread.join(timeout=2)
+                    os.close(read_fd)
+
+
+            def main(pdf_files, ocr_dpi=200, max_pages=50):
+                try:
+                    if isinstance(pdf_files, list):
+                        files = pdf_files
+                    elif isinstance(pdf_files, dict):
+                        files = [pdf_files]
+                    else:
+                        files = []
+                    if len(files) != 1:
+                        return _error("请上传且只上传一个 PDF 文件")
+                    try:
+                        dpi = int(ocr_dpi)
+                        page_limit = int(max_pages)
+                    except (TypeError, ValueError):
+                        return _error("ocr_dpi 和 max_pages 必须是数字")
+                    if not 150 <= dpi <= 300:
+                        return _error("ocr_dpi 必须在 150-300 之间")
+                    if not 1 <= page_limit <= 200:
+                        return _error("max_pages 必须在 1-200 之间")
+                    url = _file_url(files[0])
+                    if not url:
+                        return _error("PDF 文件缺少有效的 HTTP(S) 签名 URL")
+                    try:
+                        data = _download(url)
+                    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+                        return _error("PDF 下载失败:{}".format(type(exc).__name__))
+                    except Exception as exc:
+                        return _error("PDF 下载失败:{}".format(str(exc)[:120]))
+                    if not data.startswith(b"%PDF-"):
+                        return _error("上传内容不是 PDF")
+
+                    try:
+                        try:
+                            import pymupdf as fitz
+                        except ImportError:
+                            import fitz
+                        document = fitz.open(stream=data, filetype="pdf")
+                    except Exception as exc:
+                        return _error("PyMuPDF 打开 PDF 失败:{}".format(type(exc).__name__))
+                    try:
+                        if getattr(document, "needs_pass", False):
+                            return _error("不支持加密 PDF")
+                        page_count = len(document)
+                        if page_count < 1:
+                            return _error("PDF 没有页面")
+                        probe_count = min(2, page_count)
+                        has_text = False
+                        for index in range(probe_count):
+                            if (document.load_page(index).get_text("text") or "").strip():
+                                has_text = True
+                                break
+                        if has_text:
+                            markdown = _text_markdown(document)
+                            backend = "pymupdf"
+                            average_confidence = ""
+                            warnings = []
+                        else:
+                            if page_count > page_limit:
+                                return _error("纯图片 PDF 页数超过 max_pages", page_count=page_count)
+                            backend = "rapidocr"
+                            markdown, confidence = _ocr_markdown(document, dpi)
+                            average_confidence = "" if confidence is None else "{:.4f}".format(confidence)
+                            warnings = [] if markdown.strip() else ["ocr_empty"]
+                        if len(markdown.encode("utf-8")) > MAX_MARKDOWN_BYTES:
+                            return _error("Markdown 输出超过 180 KiB", backend=backend, page_count=page_count)
+                        return _result(
+                            status="succeeded" if markdown.strip() else "failed",
+                            backend=backend,
+                            page_count=page_count,
+                            confidence=average_confidence,
+                            warnings=warnings,
+                            markdown=markdown,
+                        )
+                    finally:
+                        close = getattr(document, "close", None)
+                        if callable(close):
+                            close()
+                except Exception as exc:
+                    return _error("转换失败:{}".format(str(exc)[:160]))
+      - id: end
+        type: custom
+        position: {x: 720, y: 0}
+        positionAbsolute: {x: 720, y: 0}
+        data:
+          type: end
+          title: 输出 Markdown
+          outputs:
+            - variable: status
+              value_selector: [convert, status]
+            - variable: backend
+              value_selector: [convert, backend]
+            - variable: page_count
+              value_selector: [convert, page_count]
+            - variable: average_confidence
+              value_selector: [convert, average_confidence]
+            - variable: warnings
+              value_selector: [convert, warnings]
+            - variable: markdown
+              value_selector: [convert, markdown]
+    edges:
+      - id: start-convert
+        source: start
+        target: convert
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: start, targetType: code}
+      - id: convert-end
+        source: convert
+        target: end
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: code, targetType: end}

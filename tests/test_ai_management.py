@@ -1629,7 +1629,15 @@ def test_book_scope_is_trusted_and_enqueued_without_model(
 
 def test_dsl_and_gold_data_are_complete():
     files = sorted(Path("dify/dsl").glob("*.yml"))
-    assert len(files) == 4
+    expected_dsl = {
+        "business_advisor.yml",
+        "moments_advisor.yml",
+        "writing_advisor.yml",
+        "summary_profile.yml",
+        # 独立 PDF→Markdown Code 节点验证 Workflow，不绑定业务应用。
+        "pdf_to_markdown_code_test.yml",
+    }
+    assert expected_dsl.issubset({file.name for file in files})
     for file in files:
         data = yaml.safe_load(file.read_text(encoding="utf-8"))
         assert data["version"] == "0.6.0"

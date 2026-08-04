@@ -59,3 +59,51 @@
 - 预防：共享网络变更后检查所有服务别名和 `proxy_pass`/内部 URL；禁止跨项目依赖通用服务名；健康检查必须同时设置服务端和客户端超时。
 - 证据：`var/reports/20260803-dify-pending/issues.jsonl`、远端备份 `/opt/ai-management/backups/20260803-193603-dify-pending-root-cause-fix`。
 - 最后验证：2026-08-03（jx 测试环境基础链路与登录态 Chatflow SSE 已验证）。
+
+## DIFY-006：RapidOCR/ONNX Runtime 在 Dify Sandbox 默认 seccomp 下被阻断
+
+- 适用：Dify 1.13.3 的 Code 节点在 Sandbox 0.2.14 中加载 RapidOCR/ONNX Runtime。
+- 触发：PyMuPDF 文字分支成功，但扫描 PDF 分支返回 `operation not permitted`；Sandbox 日志出现 `signal: bad system call`。
+- 根因：Sandbox 子进程 seccomp syscall allowlist 没有覆盖 ONNX Runtime 所需调用；仅在容器内成功 `import` 不能证明 Code 节点可执行。
+- 解决（仅测试窗口）：使用隔离的离线 Sandbox 镜像安装 PyMuPDF、RapidOCR、ONNX Runtime 和 headless OpenCV；临时扩大子进程 syscall 白名单、延长 Code/API 读取超时，并把 SSRF 规则限制到测试文件主机；完成后按原始备份恢复。
+- 非解决：只安装 Python wheel、只重启 Sandbox、只验证容器 import，或把临时 syscall 放宽直接带入生产。
+- 验证：Dify Sandbox `/v1/sandbox/run` 文字 PDF 为 `succeeded/pymupdf`；扫描 PDF 为 `succeeded/rapidocr`、3 页、平均置信度 `0.9969`；Dify API 与 Sandbox health 均正常。
+- 预防：将依赖镜像、syscall、超时和下载白名单作为同一份可回滚测试配置管理；生产启用前完成最小权限、资源、镜像和许可证评审。
+- 证据：`var/reports/20260804-pdf-rapidocr-docker/issues.jsonl`、远端备份 `/opt/ai-management/backups/20260804-pdf-code-sandbox-pre`。
+- 最后验证：2026-08-04（jx 测试环境；不代表生产批准）。
+
+## DIFY-007：RapidOCR 成功结果被 Sandbox 的 stderr 误判为 Code 节点失败
+
+- 适用：Dify 1.13.3 的 Code 节点调用 RapidOCR/ONNX Runtime。
+- 触发：追踪日志只有 RapidOCR/ONNX Runtime INFO/WARNING，Code 节点显示运行异常；Sandbox 响应同时包含有效 `stdout` 结果和非空 `error`。
+- 根因：RapidOCR 与 ONNX Runtime 将初始化日志写入原生 stderr；当前 Sandbox 将非空 stderr 包装为 `RuntimeError`，即使进程退出码为 0 且 stdout 已生成成功结果。
+- 解决：在 Code 节点仅包住 OCR 初始化和识别调用，使用内存管道和 drain 线程吸收原生 fd 2，恢复后继续返回结构化结果；同时关闭 RapidOCR Python logger 并提高 ONNX 日志级别，仍保留异常捕获和结果状态。
+- 非解决：把 INFO/WARNING 当作 OCR 识别失败、仅提高执行超时、依赖 `/dev/null`/临时目录作为日志 sink，或只检查容器内依赖 import。
+- 验证：原失败响应的 `stdout` 为 `status=succeeded/backend=rapidocr`，`error` 仅为 RapidOCR/ONNX Runtime 日志；修复后 Code 代码静态编译、DSL 契约和现有 Dify DSL 测试通过。
+- 预防：Dify Code 节点验收必须同时检查退出码、stdout 结构化结果和 stderr；带原生库的 Code 节点应显式控制日志输出。
+- 证据：`var/reports/20260804-pdf-rapidocr-docker/issues.jsonl`、远端 Sandbox 响应 `response-image.json`（仅脱敏运行证据）。
+- 最后验证：2026-08-04。
+
+## DIFY-008：受限 Sandbox 同时缺少 `/dev/null` 和可用临时目录
+
+- 适用：Dify 1.13.3 测试 Sandbox 的受限 Code 子进程。
+- 触发：使用 `/dev/null` 静默 stderr 报 `No such file or directory`；改用 `NamedTemporaryFile` 又报 `No usable temporary directory found`。
+- 根因：该受限运行时不提供标准 `/dev/null`，并将 `/tmp`、`/var/tmp` 等目录标记为不可用；基于文件的 stderr 重定向不成立。
+- 解决：使用 `os.pipe()` 创建内存管道，后台线程持续 drain 写端，OCR 调用期间将 fd 2 重定向到管道，完成后恢复并关闭管道。
+- 非解决：继续尝试 `/dev/null`、临时文件、扩大文件系统权限或修改 Sandbox 容器文件系统。
+- 验证：指定扫描 PDF 完整 3 页执行返回 `code=0`、`error` 为空、`status=succeeded`、`backend=rapidocr`、平均置信度 `0.9969`。
+- 预防：Dify 受限 Code 节点的原生 stderr 静默优先使用内存管道；不要假设 Linux 标准设备节点或临时目录存在。
+- 证据：`var/reports/20260804-pdf-rapidocr-docker/issues.jsonl`、本次脱敏 Sandbox 运行响应。
+- 最后验证：2026-08-04。
+
+## DIFY-009：PDF 页数门禁必须在文本/图片分类之后
+
+- 适用：Dify PDF→Markdown 测试 Workflow；文本层 PDF 与纯图片 PDF 分流。
+- 触发：多页文本型 PDF 报“超过 max_pages”，即使它不需要 OCR。
+- 根因：旧逻辑在读取文字层前统一执行页数门禁，把 OCR 资源限制错误应用到 PyMuPDF 文本分支。
+- 解决：先探测前两页文字层；有文字直接走 PyMuPDF 且不受 OCR 页数限制；无文字才检查 `max_pages` 并进入 RapidOCR。
+- 非解决：只把默认页数从 5 调大、删除所有页数限制，或按文件扩展名判断 PDF 类型。
+- 验证：DSL 静态回归确认文字层探测位于页数门禁之前；已有文字分支 Sandbox smoke 返回 `succeeded/pymupdf`。
+- 预防：页数、DPI、资源限制只作用于实际需要 OCR 的分支；分类顺序纳入 DSL 契约检查。
+- 证据：`var/reports/20260804-pdf-rapidocr-docker/issues.jsonl`、`dify/dsl/pdf_to_markdown_code_test.yml`。
+- 最后验证：2026-08-04。
