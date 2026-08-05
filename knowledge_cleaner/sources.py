@@ -415,7 +415,16 @@ def parse_markdown_posts(path: Path | str) -> list[ParsedSourceUnit]:
     """
 
     source = Path(path)
-    text = read_markdown_text(source)
+    return parse_markdown_posts_text(read_markdown_text(source), source)
+
+
+def parse_markdown_posts_text(
+    text: str,
+    source: Path | str,
+) -> list[ParsedSourceUnit]:
+    """Parse already-normalized Markdown without rereading the source file."""
+
+    source = Path(source)
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     collection = _collection_title(lines, source.stem)
     profile = _markdown_profile(lines)
@@ -441,6 +450,7 @@ __all__ = [
     "SourceType",
     "clean_structural_text",
     "parse_markdown_posts",
+    "parse_markdown_posts_text",
     "parse_source",
     "parse_wechat_public_account",
     "read_markdown_text",

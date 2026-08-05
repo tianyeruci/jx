@@ -88,6 +88,80 @@ def test_cli_helpers_are_loaded_from_shared_package_core():
     assert cli._merge_table_rows is cli._core._merge_table_rows
 
 
+def test_cli_can_clean_tables_after_pdf_conversion(monkeypatch, tmp_path):
+    import pdfplumber
+
+    class FakePDF:
+        pages = [object()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    source = tmp_path / "case.pdf"
+    source.write_bytes(b"fixture")
+    output = tmp_path / "case.md"
+    monkeypatch.setattr(pdfplumber, "open", lambda path: FakePDF())
+    monkeypatch.setattr(cli, "_classify_pdf", lambda pdf: "pdfplumber")
+    monkeypatch.setattr(
+        cli,
+        "_text_pdf_to_markdown",
+        lambda pdf: (
+            "| 项目 | 结果 |\n| --- | --- |\n| A | 通过 |\n",
+            {"text_characters": 10},
+        ),
+    )
+
+    result = cli.convert_file(source, output, 200, clean_tables=True)
+
+    assert result["status"] == "succeeded"
+    assert result["table_cleaning"]["tables_converted"] == 1
+    assert output.read_text(encoding="utf-8") == "项目：A；结果：通过。\n"
+
+
+def test_formal_text_pdf_adapter_uses_the_shared_layout_core(monkeypatch, tmp_path):
+    from knowledge_cleaner import pdf_convert
+
+    class FakePDF:
+        pages = [object(), object()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class FakePdfPlumber:
+        @staticmethod
+        def open(path):
+            return FakePDF()
+
+    source = tmp_path / "formal.pdf"
+    source.write_bytes(b"fixture")
+    monkeypatch.setattr(
+        pdf_convert.importlib,
+        "import_module",
+        lambda name: FakePdfPlumber() if name == "pdfplumber" else __import__(name),
+    )
+    monkeypatch.setattr(
+        pdf_convert._layout_core,
+        "_text_pdf_to_markdown",
+        lambda pdf: (
+            "# 统一核心\n\n| 项目 | 结果 |\n| --- | --- |\n| A | 通过 |\n",
+            {"table_count": 1, "warnings": []},
+        ),
+    )
+
+    pages = pdf_convert._extract_pdfplumber_pages(source)
+
+    assert len(pages) == 1
+    assert pages[0].backend == "pdfplumber_shared_core"
+    assert pages[0].table_count == 1
+    assert "| 项目 | 结果 |" in pages[0].markdown
+
+
 def test_toc_indent_can_drop_same_numbered_children():
     lines = [
         TextLine("1 主标题............................1", 40, 0, 10, 10, ""),

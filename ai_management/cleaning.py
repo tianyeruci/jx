@@ -26,8 +26,12 @@ from knowledge_cleaner.chunking import (
     prepare_chunks,
     render_hierarchical_dify_text,
 )
+from knowledge_cleaner.markdown_table_cleaner import clean_markdown_tables
 from knowledge_cleaner.semantics import SemanticDecision
-from knowledge_cleaner.sources import parse_markdown_posts, parse_wechat_public_account
+from knowledge_cleaner.sources import (
+    parse_markdown_posts_text,
+    parse_wechat_public_account,
+)
 
 from .cache import cache
 from .config import get_settings
@@ -186,13 +190,79 @@ def _docx_markdown(path: Path) -> str:
     return "\n\n".join(parts).strip()
 
 
-def _read_text_markdown(path: Path, suffix: str) -> str:
+def _apply_markdown_table_cleaning(
+    markdown: str,
+    *,
+    audit: dict[str, Any] | None = None,
+) -> str:
+    result = clean_markdown_tables(markdown)
+    if result.tables_seen:
+        if audit is not None:
+            audit["markdown_table_cleaning"] = result.as_dict()
+        source_id = hashlib.sha256(markdown.encode("utf-8")).hexdigest()[:16]
+        for issue in result.issues:
+            logger.warning(
+                "Markdown表格清洗异常 source_id=%s table=%s action=%s reason=%s rows_skipped=%s",
+                source_id,
+                issue.table_index,
+                issue.action,
+                issue.reason,
+                issue.rows_skipped,
+            )
+    return result.markdown
+
+
+def user_visible_warnings(values: Iterable[Any]) -> list[str]:
+    """Filter conversion/table audit details out of user-facing warnings."""
+
+    return [str(value) for value in values if not _is_pdf_table_warning(value)]
+
+
+def finalize_knowledge_markdown(
+    markdown: str,
+    *,
+    audit: dict[str, Any] | None = None,
+) -> str:
+    """Apply the final no-table invariant before local or remote publication."""
+
+    table_audit: dict[str, Any] = {}
+    cleaned = _apply_markdown_table_cleaning(markdown, audit=table_audit)
+    from .sanitization import sanitize_for_knowledge
+
+    cleaned = sanitize_for_knowledge(cleaned)
+    if audit is not None and table_audit:
+        audit["final_markdown_table_cleaning"] = table_audit.get(
+            "markdown_table_cleaning", table_audit
+        )
+    return cleaned
+
+
+def validate_chunking_boundaries(markdown: str, chunking: ChunkingConfig) -> None:
+    """Reject source text that could forge Dify parent/child boundaries."""
+
+    for label, separator in (
+        ("parent", chunking.parent_separator),
+        ("child", chunking.child_separator),
+    ):
+        if separator and separator in markdown:
+            raise ValueError(f"正文包含保留的 Dify {label} 分隔符")
+
+
+def _read_text_markdown(
+    path: Path,
+    suffix: str,
+    *,
+    table_audit: dict[str, Any] | None = None,
+) -> str:
     if suffix == ".docx":
         markdown = _docx_markdown(path)
     else:
         encoding = "gb18030" if suffix == ".txt" else "utf-8-sig"
         markdown = path.read_text(encoding=encoding)
-    return markdown.replace("\r\n", "\n").replace("\r", "\n").strip()
+    markdown = markdown.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if table_audit is not None:
+        markdown = _apply_markdown_table_cleaning(markdown, audit=table_audit)
+    return markdown
 
 
 def _conversion_audit(result: Any) -> dict[str, Any]:
@@ -212,6 +282,45 @@ def _conversion_audit(result: Any) -> dict[str, Any]:
         )
         if hasattr(result, key)
     }
+
+
+_PDF_HARD_BLOCK_PREFIXES = (
+    "PDF读取失败",
+    "PDF_TYPE_REVIEW_REQUIRED",
+    "OCR_PAGE_LIMIT_REVIEW",
+    "PDF缺少可用文字层",
+    "OCR执行失败",
+    "OCR_KEY_FACT_CONFLICT",
+    "未生成可入库正文",
+    "脱敏后仍检测到",
+    "OCR离线模型",
+    "不支持的OCR后端",
+)
+
+
+def _pdf_blocking_reasons(reasons: Iterable[Any], markdown: str) -> list[str]:
+    values = [str(reason) for reason in reasons]
+    blocking = [
+        reason
+        for reason in values
+        if reason.startswith(_PDF_HARD_BLOCK_PREFIXES)
+        and not any(
+            marker in reason.lower()
+            for marker in ("table", "表格", "版面", "格式", "低置信", "confidence")
+        )
+    ]
+    if not markdown.strip() and "未生成可入库正文" not in blocking:
+        blocking.append("未生成可入库正文")
+    return list(dict.fromkeys(blocking))
+
+
+def _is_pdf_table_warning(value: Any) -> bool:
+    text = str(value)
+    return (
+        text.startswith("table_review:")
+        or text.startswith("table_")
+        or "表格" in text
+    )
 
 
 def _read_pdf_markdown(path: Path, *, diagnostics: dict[str, Any] | None = None) -> str:
@@ -234,14 +343,19 @@ def _read_pdf_markdown(path: Path, *, diagnostics: dict[str, Any] | None = None)
     )
     if diagnostics is not None:
         diagnostics.update(_conversion_audit(result))
-    blocking_reasons = [
-        reason
-        for reason in result.review_reasons
-        if not str(reason).startswith("table_review:")
-    ]
+    blocking_reasons = _pdf_blocking_reasons(result.review_reasons, result.markdown)
+    if diagnostics is not None:
+        diagnostics["blocking_reasons"] = blocking_reasons
+    source_id = str(getattr(result, "source_checksum", "") or "")[:16]
+    if not source_id:
+        source_id = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
     for warning in result.review_reasons:
-        if str(warning).startswith("table_review:"):
-            logger.warning("PDF表格结构不可靠，已线性化并继续处理 source=%s warning=%s", path.name, warning)
+        if _is_pdf_table_warning(warning):
+            logger.warning(
+                "PDF表格结构不可靠，已线性化并继续处理 source_id=%s warning=%s",
+                source_id,
+                warning,
+            )
     if blocking_reasons or not result.markdown.strip():
         reason = "；".join(blocking_reasons[:3]) or "没有可提取正文"
         raise ValueError(f"PDF不支持清洗入库：{reason}")
@@ -365,12 +479,18 @@ def _load_markdown_like(
     original_filename: str,
     *,
     diagnostics: dict[str, Any] | None = None,
+    clean_tables: bool = True,
 ) -> tuple[str, str]:
     suffix = path.suffix.lower()
     if suffix == ".pdf":
         markdown = _read_pdf_markdown(path, diagnostics=diagnostics)
     else:
         markdown = _read_text_markdown(path, suffix)
+    if clean_tables:
+        table_audit: dict[str, Any] = {}
+        markdown = _apply_markdown_table_cleaning(markdown, audit=table_audit)
+        if diagnostics is not None and table_audit:
+            diagnostics.update(table_audit)
     _save_conversion_markdown(path, original_filename, markdown)
     # The original filename is administrative provenance only. It must not
     # change the semantic title, model prompt or content identity.
@@ -450,10 +570,16 @@ class PersonalBusinessConsultationStrategy:
         conversion_audit: dict[str, Any] = {}
         if suffix == ".docx":
             raw_markdown = _docx_markdown(file_path)
-            _save_conversion_markdown(file_path, original_filename, raw_markdown)
+            table_audit: dict[str, Any] = {}
+            cleaned_markdown = _apply_markdown_table_cleaning(
+                raw_markdown,
+                audit=table_audit,
+            )
+            _save_conversion_markdown(file_path, original_filename, cleaned_markdown)
+            conversion_audit.update(table_audit)
             aliases = consultation_aliases(raw_markdown, original_filename)
             markdown, redactions = anonymize_consultation(
-                raw_markdown,
+                cleaned_markdown,
                 extra_entities=aliases,
             )
             residual_pii = scan_residual_pii(markdown)
@@ -485,13 +611,15 @@ class PersonalBusinessConsultationStrategy:
                 ocr_model_manifest=settings.pdf_ocr_model_manifest,
                 extra_entities=aliases,
             )
-            _save_conversion_markdown(
-                file_path, original_filename, str(result.markdown or "")
-            )
             conversion_audit = _conversion_audit(result)
             markdown = str(result.markdown or "")
+            table_audit = {}
+            markdown = _apply_markdown_table_cleaning(markdown, audit=table_audit)
+            conversion_audit.update(table_audit)
+            _save_conversion_markdown(file_path, original_filename, markdown)
             redactions = list(getattr(result, "redactions", []) or [])
             residual_pii = list(getattr(result, "residual_pii", []) or [])
+            residual_pii.extend(scan_residual_pii(markdown))
             source_checksum = str(
                 getattr(result, "source_checksum", "")
                 or hashlib.sha256(file_path.read_bytes()).hexdigest()
@@ -502,17 +630,14 @@ class PersonalBusinessConsultationStrategy:
             )
             review_reasons = list(getattr(result, "review_reasons", []) or [])
             for warning in review_reasons:
-                if str(warning).startswith("table_review:"):
+                if _is_pdf_table_warning(warning):
                     logger.warning(
-                        "PDF表格结构不可靠，已线性化并继续处理 source=%s warning=%s",
-                        file_path.name,
+                        "PDF表格结构不可靠，已线性化并继续处理 source_id=%s warning=%s",
+                        source_checksum[:16],
                         warning,
                     )
-            blocking_reasons = [
-                reason
-                for reason in review_reasons
-                if not str(reason).startswith("table_review:")
-            ]
+            blocking_reasons = _pdf_blocking_reasons(review_reasons, markdown)
+            conversion_audit["blocking_reasons"] = blocking_reasons
             needs_review = bool(
                 blocking_reasons or residual_pii or not markdown.strip()
             )
@@ -559,7 +684,7 @@ class PersonalBusinessConsultationStrategy:
                     if needs_review
                     else None
                 ),
-                warnings=review_reasons,
+                warnings=user_visible_warnings(review_reasons),
                 audit={
                     "privacy_level": "private_anonymized",
                     **({"pdf_conversion": conversion_audit} if conversion_audit else {}),
@@ -795,8 +920,13 @@ class ZsxqPostStrategy:
     dify_metadata_fields = _ARTICLE_METADATA_FIELDS
 
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
-        units = parse_markdown_posts(file_path)
-        source_text = _read_text_markdown(file_path, file_path.suffix.lower())
+        table_audit: dict[str, Any] = {}
+        source_text = _read_text_markdown(
+            file_path,
+            file_path.suffix.lower(),
+            table_audit=table_audit,
+        )
+        units = parse_markdown_posts_text(source_text, file_path)
         source_aliases = discover_author_aliases("", source_text)
         documents = [
             _build_article_document(
@@ -808,6 +938,9 @@ class ZsxqPostStrategy:
             for unit in units
             if unit.body.strip()
         ]
+        for document in documents:
+            if table_audit:
+                document.audit.update(table_audit)
         if not documents:
             raise ValueError(f"{original_filename} 没有可清洗的知识星球正文")
         return documents
@@ -822,8 +955,13 @@ class XiaobotPostStrategy:
     dify_metadata_fields = _ARTICLE_METADATA_FIELDS
 
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
-        units = parse_markdown_posts(file_path)
-        source_text = _read_text_markdown(file_path, file_path.suffix.lower())
+        table_audit: dict[str, Any] = {}
+        source_text = _read_text_markdown(
+            file_path,
+            file_path.suffix.lower(),
+            table_audit=table_audit,
+        )
+        units = parse_markdown_posts_text(source_text, file_path)
         source_aliases = discover_author_aliases("", source_text)
         documents = [
             _build_article_document(
@@ -834,6 +972,9 @@ class XiaobotPostStrategy:
             for unit in units
             if unit.body.strip()
         ]
+        for document in documents:
+            if table_audit:
+                document.audit.update(table_audit)
         if not documents:
             raise ValueError(f"{original_filename} 没有可清洗的小报童正文")
         return documents
@@ -1009,7 +1150,12 @@ class CourseInformationStrategy:
         from .course_import import _course_text, load_course_records_text
         from .models import Course
 
-        text = _read_text_markdown(file_path, file_path.suffix.lower())
+        table_audit: dict[str, Any] = {}
+        text = _read_text_markdown(
+            file_path,
+            file_path.suffix.lower(),
+            table_audit=table_audit,
+        )
         # An initial course upload has no dependency on a live catalogue.  Only
         # touch the DB when the supplied template explicitly names prerequisite
         # IDs that need resolving against already published courses.
@@ -1035,7 +1181,10 @@ class CourseInformationStrategy:
                     "series_name": item.series_name or "",
                     "status": "active" if item.enabled and item.review_status == "approved" else "inactive",
                 },
-                audit={"catalog_record": item.model_dump(mode="json")},
+                audit={
+                    "catalog_record": item.model_dump(mode="json"),
+                    **table_audit,
+                },
             )
             for item in courses
         ]
@@ -1055,7 +1204,12 @@ class LearningRouteStrategy:
         from .course_import import _route_text, load_route_records_text
         from .models import Course
 
-        text = _read_text_markdown(file_path, file_path.suffix.lower())
+        table_audit: dict[str, Any] = {}
+        text = _read_text_markdown(
+            file_path,
+            file_path.suffix.lower(),
+            table_audit=table_audit,
+        )
         with SessionLocal() as session:
             known_courses = {
                 item.course_id: item.name
@@ -1076,7 +1230,10 @@ class LearningRouteStrategy:
                     "direction": item.direction,
                     "status": "active" if item.enabled and item.review_status == "approved" else "inactive",
                 },
-                audit={"catalog_record": item.model_dump(mode="json")},
+                audit={
+                    "catalog_record": item.model_dump(mode="json"),
+                    **table_audit,
+                },
             )
             for item in routes
         ]
@@ -1509,11 +1666,10 @@ def dify_document_name(
     path = PurePath(original)
     suffix = path.suffix
     stem = path.name[: -len(suffix)] if suffix else path.name
-    # Keep the user's filename as the stable visible identity.  A sequence is
-    # only added at the publication boundary so split documents remain easy to
-    # locate while retaining their original extension.
+    # Keep the user's filename stem as the stable visible identity while
+    # making the normalized knowledge document type explicit.
     stem = re.sub(r"[\\/:*?\"<>|]", "_", stem).strip(" .") or "未命名文件"
-    suffix = suffix[:40]
+    suffix = ".md"
     if not split:
         max_stem = max(1, 300 - len(suffix))
         return f"{stem[:max_stem]}{suffix}"
@@ -1534,7 +1690,7 @@ def _serialize_item(item: CleaningDocument) -> dict[str, Any]:
         "error_message": item.error_message,
         "retryable": item.retryable,
         "review_revision": item.review_revision,
-        "warnings": item.warnings_json or [],
+        "warnings": user_visible_warnings(item.warnings_json or []),
         "metadata": item.metadata_json or {},
         "chunking": item.chunking_json or {},
         "dify_document_id": item.dify_document_id,
@@ -2272,6 +2428,99 @@ def retry_cleaning_item(batch_id: str, file_id: str, item_id: str, session: Sess
     return {"item_id": item_id, "status": "pending"}
 
 
+def retry_model_contract_item(
+    batch_id: str,
+    task_id: str,
+    item_id: str,
+    session: Session,
+) -> dict[str, Any]:
+    """Requeue one terminal realtime model-contract failure.
+
+    A model-contract failure is not a cleaning-file failure: rerunning the
+    publication task would skip the model and could publish the pre-model
+    Markdown.  Keep this recovery path deliberately narrow so it cannot
+    reset arbitrary human-review results or turn the production Batch switch
+    on.  The original consultation batch has one candidate, which is the
+    only scope accepted here.
+    """
+
+    task = session.scalar(
+        select(ModelCleaningTask).where(
+            ModelCleaningTask.id == task_id,
+            ModelCleaningTask.batch_id == batch_id,
+        )
+    )
+    document = session.scalar(
+        select(CleaningDocument)
+        .join(CleaningFile, CleaningDocument.file_id == CleaningFile.id)
+        .where(
+            CleaningDocument.id == item_id,
+            CleaningFile.batch_id == batch_id,
+        )
+    )
+    batch = session.get(CleaningBatch, batch_id)
+    if task is None or document is None or batch is None:
+        raise ValueError("模型重试目标不存在")
+    if task.mode != "realtime":
+        raise ValueError("仅允许重试 realtime 模型任务，避免意外产生 Batch 调用")
+    if task.status != "completed":
+        raise ValueError("模型任务尚未进入可重试的终态")
+    if task.candidate_count != 1:
+        raise ValueError("仅允许对单候选模型任务执行精确重试")
+    if (
+        document.status != "review_required"
+        or document.error_code != "MODEL_CONTRACT_INVALID"
+    ):
+        raise ValueError("只有模型契约失败的待复核条目可以精确重试")
+
+    previous_document_state = (
+        document.status,
+        document.stage,
+        document.error_code,
+        document.error_message,
+        document.retryable,
+    )
+    previous_task_status = task.status
+    previous_task_counts = dict(task.result_counts or {})
+    previous_task_usage = dict(task.actual_usage or {})
+    previous_batch_status = batch.status
+
+    document.status = "awaiting_model"
+    document.stage = "model_retry"
+    document.error_code = None
+    document.error_message = None
+    document.retryable = False
+    task.status = "queued"
+    task.result_counts = {}
+    task.actual_usage = {}
+    task.last_error = ""
+    batch.status = "model_validating"
+    session.commit()
+    cache.delete(cleaning_batch_cache_key(batch_id))
+
+    from .workers.tasks.model_cleaning import process_realtime_model_task
+
+    try:
+        process_realtime_model_task.apply_async(
+            args=[task.id], queue="ai_model_realtime"
+        )
+    except Exception as exc:
+        document.status, document.stage, document.error_code, document.error_message, document.retryable = previous_document_state
+        task.status = previous_task_status
+        task.result_counts = previous_task_counts
+        task.actual_usage = previous_task_usage
+        batch.status = previous_batch_status
+        session.commit()
+        cache.delete(cleaning_batch_cache_key(batch_id))
+        raise ServiceError(
+            "TASK_QUEUE_UNAVAILABLE",
+            "模型精确重试提交失败，状态已恢复",
+            503,
+            True,
+        ) from exc
+    return {"task_id": task.id, "item_id": document.id, "status": task.status}
+
+
 def review_cleaning_item(
     batch_id: str,
     file_id: str,
@@ -2315,12 +2564,32 @@ def review_cleaning_item(
         if action == "replace_and_approve":
             if not markdown_text or not markdown_text.strip():
                 raise ServiceError("VALIDATION_ERROR", "替换批准必须提交非空 Markdown", 422, False)
-            row.cleaned_markdown = markdown_text.strip()
+            row.cleaned_markdown = finalize_knowledge_markdown(
+                markdown_text.strip(),
+                audit=audit,
+            )
             row.metadata_json = {**(row.metadata_json or {}), **metadata_patch}
         elif metadata_patch:
             row.metadata_json = {**(row.metadata_json or {}), **metadata_patch}
-        row.status = "pending"
-        row.stage = "pending"
+        if row.cleaned_markdown.strip():
+            row.cleaned_markdown = finalize_knowledge_markdown(
+                row.cleaned_markdown,
+                audit=audit,
+            )
+            from .workers.tasks.cleaning import _content_sha
+
+            row.content_sha256 = _content_sha(
+                row.cleaned_markdown,
+                row.metadata_json or {},
+                row.chunking_json or {},
+            )
+        is_post_strategy = row.file.batch.strategy_code in {
+            "wechat_public_account_cognition",
+            "zsxq_post",
+            "xiaobot_post",
+        }
+        row.status = "shard_pending" if is_post_strategy else "pending"
+        row.stage = "shard_pending" if is_post_strategy else "pending"
         row.retryable = True
         row.error_code = None
         row.error_message = None
@@ -2330,5 +2599,25 @@ def review_cleaning_item(
     _finish_batch(session, row.file.batch_id)
     session.commit()
     if action != "exclude":
-        _enqueue_cleaning_document(item_id, row.file.original_filename)
+        if row.file.batch.strategy_code in {
+            "wechat_public_account_cognition",
+            "zsxq_post",
+            "xiaobot_post",
+        }:
+            # Article strategies publish one merged Dify shard per source
+            # file.  Manual approval must re-enter that same planner instead
+            # of sending the reviewed item through regular one-document
+            # publication.
+            from .workers.tasks.model_cleaning import (
+                _plan_post_publication,
+                publish_dify_shard,
+            )
+
+            shard_ids = _plan_post_publication(session, row.file.batch_id)
+            for shard_id in shard_ids:
+                publish_dify_shard.apply_async(
+                    args=[shard_id], queue="ai_publication"
+                )
+        else:
+            _enqueue_cleaning_document(item_id, row.file.original_filename)
     return {"item_id": item_id, "status": row.status, "review_revision": row.review_revision}

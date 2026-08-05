@@ -95,6 +95,7 @@ class PDFPageResult:
     text_characters: int
     table_count: int = 0
     warnings: list[str] = field(default_factory=list)
+    table_issues: list[dict[str, Any]] = field(default_factory=list)
     # OCR diagnostics are optional for text-layer/PDFPlumber pages.  They are
     # kept on the page rather than emitted as a second document so callers can
     # make an auditable quality decision without exposing source text.
@@ -263,16 +264,27 @@ def _trim_table(rows: Sequence[Sequence[Any] | None]) -> list[list[str]]:
     return [[row[index] for index in keep_columns] for row in normalized]
 
 
+def _table_reliability_reasons(rows: Sequence[Sequence[Any] | None]) -> list[str]:
+    table = _trim_table(rows)
+    reasons: list[str] = []
+    if len(table) < 2:
+        reasons.append("fewer_than_2_rows")
+    width = max((len(row) for row in table), default=0)
+    if width < 2:
+        reasons.append("fewer_than_2_columns")
+    sparse_rows = sum(
+        1 for row in table if sum(bool(cell) for cell in row) < 2
+    )
+    if sparse_rows:
+        reasons.append(f"sparse_rows={sparse_rows}")
+    return reasons
+
+
 def table_to_markdown(rows: Sequence[Sequence[Any] | None]) -> tuple[str, bool]:
     """Convert extracted cells to Markdown and report structural reliability."""
 
     table = _trim_table(rows)
-    reliable = (
-        len(table) >= 2
-        and len(table[0]) >= 2
-        and all(len(row) == len(table[0]) for row in table)
-        and all(sum(bool(cell) for cell in row) >= 2 for row in table)
-    )
+    reliable = not _table_reliability_reasons(rows)
     if not table:
         return "", False
     if not reliable:
@@ -715,7 +727,19 @@ def _merge_cross_page_tables(layouts: Sequence[_PageLayout]) -> None:
         previous_page.table_count = max(previous_page.table_count, int(reliable))
         current_page.table_count = max(0, current_page.table_count - 1)
         if not reliable:
-            current_page.warnings.append("table_review:跨页表格结构未能唯一确认，已保守线性化")
+            table_index = current_layout.tables.index(current) + 1
+            issue = {
+                "table_index": table_index,
+                "action": "demoted_plain_text",
+                "rows": len(previous_rows),
+                "columns": max((len(row) for row in previous_rows), default=0),
+                "reason": "cross_page_structure_not_reliably_aligned",
+            }
+            current_page.table_issues.append(issue)
+            current_page.warnings.append(
+                "table_review:跨页表格结构未能唯一确认，已保守线性化:"
+                f"table={table_index}"
+            )
 
 
 def _extract_pdfplumber_pages(path: Path) -> list[PDFPageResult]:
@@ -724,57 +748,24 @@ def _extract_pdfplumber_pages(path: Path) -> list[PDFPageResult]:
     except ImportError as exc:
         raise OptionalBackendUnavailable("pdfplumber 未安装，无法验证和结构化提取数字PDF表格") from exc
 
-    layouts: list[_PageLayout] = []
+    # The diagnostic CLI and the formal text-PDF path must use the same
+    # deterministic layout core.  Keep the page-result adapter here so the
+    # production converter still exposes its existing audit contract.
     with pdfplumber.open(str(path)) as pdf:
-        for number, page in enumerate(pdf.pages, start=1):
-            warnings: list[str] = []
-            tables = _collect_table_candidates(page, warnings)
-            bboxes = [candidate.bbox for candidate in tables]
-            try:
-                words = list(page.extract_words(use_text_flow=True, keep_blank_chars=False) or [])
-            except Exception as exc:
-                words = []
-                warnings.append(f"word_extraction_error:{type(exc).__name__}")
-            outside_words = [
-                word
-                for word in words
-                if not any(
-                    _point_inside_bbox(
-                        (float(word.get("x0", 0)) + float(word.get("x1", 0))) / 2,
-                        (float(word.get("top", 0)) + float(word.get("bottom", 0))) / 2,
-                        bbox,
-                    )
-                    for bbox in bboxes
-                )
-            ]
-            blocks = _word_line_blocks(outside_words)
-            lines = _recover_headings(blocks, page_width=float(getattr(page, "width", 1) or 1))
-            table_events = [(candidate.bbox[1], candidate.bbox[0], candidate.markdown) for candidate in tables]
-            line_events = [(block["top"], block["x0"], line) for block, line in zip(blocks, lines)]
-            events = sorted(line_events + table_events, key=lambda event: (event[0], event[1]))
-            markdown = _normalize_markdown("\n".join(event[2] for event in events))
-            reliable_count = sum(candidate.reliable for candidate in tables)
-            if tables and not reliable_count:
-                warnings.append("table_review:表格结构无法可靠对齐，已保留线性单元格文本")
-            layouts.append(
-                _PageLayout(
-                    page=PDFPageResult(
-                        page_number=number,
-                        markdown=markdown,
-                        backend="pdfplumber",
-                        text_characters=_compact_length(markdown),
-                        table_count=reliable_count,
-                        warnings=warnings,
-                    ),
-                    tables=tables,
-                )
+        markdown, details = _layout_core._text_pdf_to_markdown(pdf)
+        if not markdown.strip():
+            return []
+        warnings = [str(value) for value in details.get("warnings", [])]
+        return [
+            PDFPageResult(
+                page_number=1,
+                markdown=_normalize_markdown(markdown),
+                backend="pdfplumber_shared_core",
+                text_characters=_compact_length(markdown),
+                table_count=int(details.get("table_count") or 0),
+                warnings=warnings,
             )
-    _merge_cross_page_tables(layouts)
-    pages = [layout.page for layout in layouts]
-    for page in pages:
-        page.markdown = _normalize_markdown(page.markdown)
-        page.text_characters = _compact_length(page.markdown)
-    return pages
+        ]
 
 
 def _looks_like_unparsed_table(text: str) -> bool:
