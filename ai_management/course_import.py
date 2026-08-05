@@ -14,7 +14,7 @@ from sqlalchemy import select
 from knowledge_cleaner.dify import DifyKnowledgeClient
 
 from .config import get_settings
-from .courses import rebuild_snapshot
+from .courses import CANONICAL_STAGE_ORDER, canonical_stage_name, rebuild_snapshot
 from .db import SessionLocal
 from .models import (
     Course,
@@ -433,7 +433,11 @@ def _course_text(course: CourseRecord) -> str:
     return "\n".join(lines)
 
 
-def _route_text(route: RouteRecord) -> str:
+def _route_text(
+    route: RouteRecord,
+    *,
+    course_names: dict[str, str] | None = None,
+) -> str:
     lines = [
         f"# {route.name}",
         "",
@@ -441,13 +445,29 @@ def _route_text(route: RouteRecord) -> str:
         f"- 所属方向：{route.direction}",
         f"- 适用目标：{route.target}",
     ]
-    for stage in sorted(route.stages, key=lambda item: item.order):
+    ordered_stages = sorted(
+        route.stages,
+        key=lambda item: (
+            0,
+            CANONICAL_STAGE_ORDER[canonical_stage_name(item.name)],
+            item.order,
+        )
+        if canonical_stage_name(item.name) in CANONICAL_STAGE_ORDER
+        else (1, item.order, item.name),
+    )
+    for position, stage in enumerate(ordered_stages, start=1):
+        courses = "、".join(
+            f"{course_names.get(course_id, '该课程当前暂不可用')}（课程ID：{course_id}）"
+            if course_names
+            else course_id
+            for course_id in stage.course_ids
+        )
         lines.extend(
             [
                 "",
-                f"## {stage.order}. {stage.name}",
+                f"## {position}. {canonical_stage_name(stage.name)}",
                 f"- 阶段ID：{stage.stage_id}",
-                f"- 课程ID：{'、'.join(stage.course_ids)}",
+                f"- 课程：{courses}",
             ]
         )
     return "\n".join(lines)
@@ -561,6 +581,7 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
             )
             replacements[("course", course.course_id)] = document_id
 
+        course_names = {course.course_id: course.name for course in catalog.courses}
         for route in catalog.routes:
             previous = existing_routes.get(route.route_id)
             if previous and previous.dify_document_id:
@@ -570,7 +591,7 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
                 continue
             document_id, batch = client.create_document(
                 _catalog_document_name(route.name, route.route_id),
-                _route_text(route),
+                _route_text(route, course_names=course_names),
             )
             created_ids.append(document_id)
             client.wait_for_indexing(

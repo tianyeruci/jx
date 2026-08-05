@@ -272,7 +272,8 @@ def render_course_recommendation(result: Any, *, label: str = "课程推荐") ->
     route = result.get("learning_route")
     if isinstance(route, dict) and route:
         state = route.get("state") or route.get("progress_status") or ""
-        st.caption(f"学习路线：{route.get('name') or route.get('route_id') or '未命名'} · {state}")
+        route_name = str(route.get("name") or "未命名路线")
+        st.caption(f"学习路线：{route_name} · {state}")
     note_payload = result.get("course_recommendation_note")
     note = note_payload.get("content") if isinstance(note_payload, dict) else note_payload
     if str(note or "").strip() and isinstance(cards, list) and cards:
@@ -342,14 +343,21 @@ def api_bytes(
         return response.content
 
 
-def consume_sse(response: httpx.Response, placeholder: Any) -> dict[str, Any]:
+def consume_sse(
+    response: httpx.Response,
+    placeholder: Any,
+    *,
+    progress_placeholder: Any | None = None,
+) -> dict[str, Any]:
     answer = ""
+    progress_answer = ""
+    answer_segment = "final"
     diagnostics: dict[str, Any] = {}
     event_name = "message"
     data_lines: list[str] = []
 
     def handle_event() -> None:
-        nonlocal answer
+        nonlocal answer, progress_answer, answer_segment
         if not data_lines:
             return
         raw = "\n".join(data_lines)
@@ -358,11 +366,21 @@ def consume_sse(response: httpx.Response, placeholder: Any) -> dict[str, Any]:
         except json.JSONDecodeError:
             payload = {"raw": raw}
         if event_name == "answer_delta":
-            answer += str(payload.get("delta", payload.get("text", "")))
-            placeholder.markdown(answer)
+            delta = str(payload.get("delta", payload.get("text", "")))
+            if answer_segment == "progress":
+                progress_answer += delta
+                (progress_placeholder or placeholder).markdown(progress_answer)
+            else:
+                answer += delta
+                placeholder.markdown(answer)
         elif event_name == "status":
             diagnostics.setdefault("status_events", []).append(payload)
             diagnostics["status"] = payload
+            if isinstance(payload, dict):
+                if payload.get("code") == "progress_answer_started":
+                    answer_segment = "progress"
+                elif payload.get("code") == "final_answer_started":
+                    answer_segment = "final"
             if (
                 isinstance(payload, dict)
                 and payload.get("task_id")
@@ -397,7 +415,7 @@ def consume_sse(response: httpx.Response, placeholder: Any) -> dict[str, Any]:
             event_name = "message"
             data_lines = []
     handle_event()
-    return {"answer": answer, **diagnostics}
+    return {"answer": answer, "progress_answer": progress_answer, **diagnostics}
 
 
 def stream_post(
@@ -405,6 +423,8 @@ def stream_post(
     payload: dict[str, Any],
     user_id: str,
     placeholder: Any,
+    *,
+    progress_placeholder: Any | None = None,
 ) -> dict[str, Any]:
     with httpx.Client(timeout=None) as client:
         with client.stream(
@@ -414,7 +434,11 @@ def stream_post(
             json=payload,
         ) as response:
             response.raise_for_status()
-            return consume_sse(response, placeholder)
+            return consume_sse(
+                response,
+                placeholder,
+                progress_placeholder=progress_placeholder,
+            )
 
 
 def business_tab(user_id: str) -> None:
@@ -487,6 +511,9 @@ def business_tab(user_id: str) -> None:
     with col2:
         question = st.text_area("问题", "我想系统学习AI工具，应该从哪门课程开始？")
         if st.button("发送", type="primary"):
+            st.caption("即时提示")
+            progress_output = st.empty()
+            st.caption("最终回答")
             output = st.empty()
             started = time.perf_counter()
             try:
@@ -495,6 +522,7 @@ def business_tab(user_id: str) -> None:
                     {"query": question, "conversation_id": conversation_id},
                     user_id,
                     output,
+                    progress_placeholder=progress_output,
                 )
                 result["client_elapsed_ms"] = round((time.perf_counter() - started) * 1000, 1)
                 st.session_state["last_business_result"] = result
@@ -651,6 +679,9 @@ def course_tab(user_id: str) -> None:
         st.session_state.pop("course_test_history", None)
         st.rerun()
     if st.button("执行课程推荐测试"):
+        st.caption("即时提示")
+        progress_output = st.empty()
+        st.caption("最终回答")
         output = st.empty()
         try:
             result = stream_post(
@@ -665,6 +696,7 @@ def course_tab(user_id: str) -> None:
                 },
                 user_id,
                 output,
+                progress_placeholder=progress_output,
             )
             message_end = result.get("message_end") or {}
             if isinstance(message_end, dict) and message_end.get("conversation_id"):
@@ -1443,6 +1475,47 @@ def logs_tab() -> None:
                     "GET",
                     f"/internal/v1/admin/logs/{selected}",
                     admin=True,
+                )
+            )
+    st.divider()
+    st.subheader("PDF 转换问题中心")
+    st.caption("问题中心只展示脱敏事件；open 问题不会被普通系统日志保留策略清理。")
+    issue_status = st.selectbox("问题状态", ["", "open", "resolved"], key="pdf_issue_status")
+    issue_severity = st.selectbox("严重性", ["", "warning", "blocked"], key="pdf_issue_severity")
+    if st.button("查询 PDF 转换问题"):
+        params = {"page": 1, "limit": 100}
+        if issue_status:
+            params["status"] = issue_status
+        if issue_severity:
+            params["severity"] = issue_severity
+        payload = api_json(
+            "GET",
+            "/internal/v1/admin/pdf-conversion-issues",
+            admin=True,
+            params=params,
+        )
+        st.session_state["pdf_conversion_issues"] = payload.get("items") or []
+        st.caption(f"共 {payload.get('total', 0)} 条")
+    issues = st.session_state.get("pdf_conversion_issues", [])
+    if issues:
+        st.dataframe(issues, use_container_width=True, hide_index=True)
+        selected_issue = st.selectbox(
+            "选择问题",
+            [item["log_id"] for item in issues],
+            format_func=lambda issue_id: next(
+                f"{item['occurred_at']} · {item['event_code']} · {item['resource_id']}"
+                for item in issues
+                if item["log_id"] == issue_id
+            ),
+        )
+        selected_row = next(item for item in issues if item["log_id"] == selected_issue)
+        if selected_row.get("status") == "open" and st.button("标记已解决"):
+            st.json(
+                api_json(
+                    "POST",
+                    f"/internal/v1/admin/pdf-conversion-issues/{selected_issue}/resolve",
+                    admin=True,
+                    json={"note": "测试页管理员已确认"},
                 )
             )
 

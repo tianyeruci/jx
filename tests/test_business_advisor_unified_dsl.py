@@ -39,6 +39,16 @@ def test_unified_dsl_is_generated_from_current_source_and_preserves_bindings() -
         assert generated_nodes[node_id]["dataset_ids"] == source_nodes[node_id]["dataset_ids"]
 
 
+def test_current_source_exposes_three_ai_course_suggested_questions() -> None:
+    source = _load(SOURCE)
+    questions = source["workflow"]["features"]["suggested_questions"]
+    assert questions == [
+        "我想系统学习AI工具，应该从哪里开始？",
+        "有没有适合公众号运营入门的课程？",
+        "我已经有一些基础，如何选择AI写作进阶课程？",
+    ]
+
+
 def test_course_decision_parser_preserves_expert_course_ids_as_internal_json() -> None:
     nodes = _nodes(_load(OUTPUT))
     value = _run(

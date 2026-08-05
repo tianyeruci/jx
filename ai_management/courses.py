@@ -28,6 +28,7 @@ from .services.admin_settings import get_catalog_revision
 from .timeutil import business_today
 
 COURSE_SNAPSHOT_KEY = "ai:course:snapshot"
+COURSE_SNAPSHOT_VERSION = 2
 _SNAPSHOT_PARSE_SAMPLES_MS: list[float] = []
 _ROUTE_HINTS = (
     "学习路线",
@@ -54,6 +55,13 @@ _FRAGMENT_STOPWORDS = {
     "相关",
 }
 
+CANONICAL_STAGE_ORDER = {
+    "新手必看": 1,
+    "入门阶段": 2,
+    "高手进阶": 3,
+}
+_STAGE_ALIASES = {"高手阶段": "高手进阶"}
+
 
 def _explicit_route_confirmation(query: str) -> bool:
     """Accept only an affirmative route-selection statement, never a question."""
@@ -66,6 +74,8 @@ def _explicit_route_confirmation(query: str) -> bool:
         for marker in (
             "我确认选择",
             "确认选择",
+            "确认学习路线",
+            "选择学习路线",
             "我选择",
             "我选",
             "决定选择",
@@ -96,7 +106,11 @@ def _explicit_stage_confirmation(query: str, stage: dict[str, Any]) -> bool:
         return False
     stage_id = _normalize_text(str(stage.get("stage_id") or ""))
     stage_name = _normalize_text(str(stage.get("name") or ""))
-    return bool((stage_id and stage_id in normalized) or (stage_name and stage_name in normalized))
+    aliases = {
+        stage_name,
+        _normalize_text(_STAGE_ALIASES.get(str(stage.get("name") or ""), "")),
+    }
+    return bool((stage_id and stage_id in normalized) or any(item and item in normalized for item in aliases))
 
 
 def _progress_confirmation_decision(
@@ -169,13 +183,37 @@ def _course_dict(course: Course) -> dict[str, Any]:
     }
 
 
+def canonical_stage_name(value: Any) -> str:
+    name = str(value or "").strip()
+    return _STAGE_ALIASES.get(name, name)
+
+
+def _ordered_stage_dicts(stages: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    values = [dict(item) for item in (stages or []) if isinstance(item, dict)]
+    values.sort(
+        key=lambda item: (
+            0,
+            CANONICAL_STAGE_ORDER[canonical_stage_name(item.get("name"))],
+            int(item.get("order") or 0),
+        )
+        if canonical_stage_name(item.get("name")) in CANONICAL_STAGE_ORDER
+        else (1, int(item.get("order") or 0), str(item.get("name") or "")),
+    )
+    ordered: list[dict[str, Any]] = []
+    for position, item in enumerate(values, start=1):
+        item["name"] = canonical_stage_name(item.get("name"))
+        item["order"] = position
+        ordered.append(item)
+    return ordered
+
+
 def _route_dict(route: LearningRoute) -> dict[str, Any]:
     return {
         "route_id": route.route_id,
         "name": route.name,
         "direction": route.direction,
         "target": route.target,
-        "stages": route.stages or [],
+        "stages": _ordered_stage_dicts(route.stages),
         "enabled": route.enabled,
         "review_status": route.review_status,
     }
@@ -282,6 +320,7 @@ def rebuild_snapshot(session: Session) -> dict[str, Any]:
             current["course_ids"].append(course.course_id)
         collections = fallback
     snapshot = {
+        "snapshot_version": COURSE_SNAPSHOT_VERSION,
         "catalog_revision": get_catalog_revision(session),
         "courses": {item.course_id: _course_dict(item) for item in courses},
         "routes": {item.route_id: _route_dict(item) for item in routes},
@@ -304,6 +343,7 @@ def get_snapshot(session: Session) -> dict[str, Any]:
     revision = get_catalog_revision(session)
     if (
         isinstance(snapshot, dict)
+        and snapshot.get("snapshot_version") == COURSE_SNAPSHOT_VERSION
         and "courses" in snapshot
         and "routes" in snapshot
         and "collections" in snapshot
@@ -313,6 +353,61 @@ def get_snapshot(session: Session) -> dict[str, Any]:
         del _SNAPSHOT_PARSE_SAMPLES_MS[:-100]
         return snapshot
     return rebuild_snapshot(session)
+
+
+def public_catalog_names(snapshot: dict[str, Any]) -> dict[str, str]:
+    """Return approved course/route/stage IDs mapped to display names."""
+
+    names: dict[str, str] = {}
+    for course_id, course in (snapshot.get("courses") or {}).items():
+        if isinstance(course, dict) and course.get("name"):
+            names[str(course_id)] = str(course["name"])
+    for route_id, route in (snapshot.get("routes") or {}).items():
+        if isinstance(route, dict) and route.get("name"):
+            names[str(route_id)] = str(route["name"])
+        for stage in _ordered_stage_dicts(route.get("stages") if isinstance(route, dict) else []):
+            if stage.get("stage_id") and stage.get("name"):
+                names[str(stage["stage_id"])] = str(stage["name"])
+    return names
+
+
+def public_name_fallbacks(
+    snapshot: dict[str, Any],
+    *,
+    decision: RecommendationDecision | None = None,
+    recommendation: dict[str, Any] | None = None,
+) -> dict[str, list[str]]:
+    """Build names used to recover legacy placeholder prose."""
+
+    fallback: dict[str, list[str]] = {"course": [], "route": [], "stage": []}
+    course_ids: list[str] = []
+    route_id = ""
+    if decision is not None:
+        course_ids.extend(str(item) for item in decision.candidate_course_ids if str(item))
+        route_id = str(decision.candidate_route_id or "")
+    if recommendation:
+        course_ids.extend(
+            str(item.get("course_id") or "")
+            for item in recommendation.get("course_cards") or []
+            if isinstance(item, dict) and item.get("course_id")
+        )
+        learning_route = recommendation.get("learning_route")
+        if isinstance(learning_route, dict):
+            route_id = route_id or str(learning_route.get("route_id") or "")
+    routes = snapshot.get("routes") or {}
+    route = routes.get(route_id) if route_id else None
+    if isinstance(route, dict):
+        fallback["route"].append(str(route.get("name") or ""))
+        for stage in _ordered_stage_dicts(route.get("stages")):
+            if stage.get("name"):
+                fallback["stage"].append(str(stage["name"]))
+            course_ids.extend(str(item) for item in stage.get("course_ids", []) if str(item))
+    courses = snapshot.get("courses") or {}
+    for course_id in dict.fromkeys(course_ids):
+        course = courses.get(course_id)
+        if isinstance(course, dict) and course.get("name"):
+            fallback["course"].append(str(course["name"]))
+    return fallback
 
 
 def _normalize_text(value: str) -> str:
@@ -361,7 +456,7 @@ def _score_query_match(query: str, *texts: str) -> int:
 
 
 def _sorted_route_stages(route: dict[str, Any]) -> list[dict[str, Any]]:
-    return sorted(route.get("stages", []), key=lambda item: item.get("order", 0))
+    return _ordered_stage_dicts(route.get("stages"))
 
 
 def _first_stage_course_ids(route: dict[str, Any]) -> list[str]:

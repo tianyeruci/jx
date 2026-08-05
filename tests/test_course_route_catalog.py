@@ -10,6 +10,7 @@ from sqlalchemy import select
 from ai_management.cache import Cache
 from ai_management.cleaning import STRATEGY_REGISTRY
 from ai_management.course_import import (
+    _route_text,
     load_course_records_text,
     load_route_records_text,
     sync_cleaning_catalog_record,
@@ -273,6 +274,72 @@ def test_route_cards_require_stage_confirmation_and_keep_route_order(service_db)
         assert active["learning_route"]["next_stage_id"] == "s2"
 
 
+def test_route_snapshot_uses_authoritative_stage_order_and_public_names(service_db):
+    with service_db() as session:
+        session.add_all([
+            _course("beginner", name="入门课程", stage="入门阶段"),
+            _course("advanced", name="进阶课程", stage="高手进阶"),
+        ])
+        session.add(
+            LearningRoute(
+                route_id="route_ai_order",
+                name="AI高手提效课",
+                direction="AI写作",
+                target="测试",
+                stages=[
+                    {"stage_id": "stage_advanced", "name": "高手进阶", "order": 1, "course_ids": ["advanced"]},
+                    {"stage_id": "stage_beginner", "name": "入门阶段", "order": 2, "course_ids": ["beginner"]},
+                ],
+            )
+        )
+        session.commit()
+        snapshot = rebuild_snapshot(session)
+        stages = snapshot["routes"]["route_ai_order"]["stages"]
+        assert [(item["order"], item["name"]) for item in stages] == [
+            (1, "入门阶段"),
+            (2, "高手进阶"),
+        ]
+        assert [item["stage_id"] for item in stages] == [
+            "stage_beginner",
+            "stage_advanced",
+        ]
+
+
+def test_route_document_contains_course_names_and_canonical_stage_order():
+    routes = load_route_records_text(
+        """```yaml
+record_type: route
+route_id: route_ai_order
+name: AI高手提效课
+direction: AI写作
+target: 测试
+stages:
+  - stage_id: stage_advanced
+    name: 高手进阶
+    order: 1
+    course_ids: [course_advanced]
+  - stage_id: stage_beginner
+    name: 入门阶段
+    order: 2
+    course_ids: [course_beginner]
+```""",
+        known_courses={
+            "course_advanced": "进阶课程",
+            "course_beginner": "入门课程",
+        },
+    )
+    text = _route_text(
+        routes[0],
+        course_names={
+            "course_advanced": "进阶课程",
+            "course_beginner": "入门课程",
+        },
+    )
+    assert text.index("## 1. 入门阶段") < text.index("## 2. 高手进阶")
+    assert "进阶课程（课程ID：course_advanced）" in text
+    assert "入门课程（课程ID：course_beginner）" in text
+
+
 def test_explicit_stage_confirmation_recovers_selected_route_when_dify_has_no_route(service_db):
     """A short follow-up must use durable route state, not a fresh retrieval hit."""
 
@@ -300,11 +367,11 @@ def test_explicit_stage_confirmation_recovers_selected_route_when_dify_has_no_ro
                 progress_action={
                     "type": "confirm_route",
                     "route_id": "route_pending_stage",
-                    "evidence_quote": "我确认选择这条路线",
+                    "evidence_quote": "我确认学习路线：待确认路线",
                 },
             ),
             user_hash="u",
-            query="我确认选择这条路线",
+            query="我确认学习路线：待确认路线",
         )
 
         # Simulate the exact failure observed on the test page: the workflow
