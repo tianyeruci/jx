@@ -47,7 +47,9 @@ def test_scan_pdf_page_limit_is_only_applied_before_ocr(tmp_path):
     _blank_pdf(source, 11)
     backend = _DPIBackend([[_page(1, "never called")]])
 
-    result = pdf_convert.convert_pdf(source, enable_ocr=True, ocr_backend=backend)
+    result = pdf_convert.convert_pdf(
+        source, enable_ocr=True, ocr_backend=backend, ocr_max_pages=10
+    )
 
     assert result.status == "review"
     assert "ocr_page_limit" in result.quality_flags

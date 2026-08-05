@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 from typing import Any, Mapping
 
+from . import pdf_markdown_refine as _layout_core
 from .pdf_convert import (
     OptionalBackendUnavailable,
     PDFPageResult,
@@ -106,7 +107,7 @@ class RapidOCRBackend:
         texts = [] if texts is None else list(texts)
         scores = [] if scores is None else [float(value) for value in scores]
         boxes = [] if boxes is None else list(boxes)
-        normalized = [str(value).strip() for value in texts]
+        normalized = [_layout_core._clean_text(value) for value in texts]
         normalized = [value for value in normalized if value]
         if len(scores) < len(normalized):
             scores.extend([0.0] * (len(normalized) - len(scores)))

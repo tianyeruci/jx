@@ -24,6 +24,8 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from pypdf import PdfReader
 
+from . import pdf_markdown_refine as _layout_core
+
 _COMPACT_WHITESPACE = re.compile(r"[ \t\f\v]+")
 _MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\([^\n)]*\)")
 _REFERENCE_IMAGE = re.compile(r"(?m)^\s*!\[[^\]]*\]\s*\[[^\]]+\]\s*$")
@@ -361,12 +363,7 @@ def _join_words(words: Sequence[Mapping[str, Any]]) -> str:
     values = [value for value in values if value]
     result = ""
     for value in values:
-        if not result:
-            result = value
-        elif re.search(r"[\u3400-\u9fff]$", result) and re.match(r"[\u3400-\u9fff]", value):
-            result += value
-        else:
-            result += " " + value
+        result = _layout_core._join_tokens(result, value)
     return result
 
 
@@ -1343,7 +1340,7 @@ def convert_pdf(
     ocr_backend_name: str = "rapidocr_onnxruntime",
     ocr_backend: OCRBackend | None = None,
     extra_entities: Mapping[str, str] | None = None,
-    ocr_max_pages: int = 10,
+    ocr_max_pages: int = 50,
     ocr_render_dpi: int = 200,
     ocr_retry_dpi: int = 300,
     ocr_min_confidence: float = 0.75,
@@ -1600,7 +1597,7 @@ def convert_consultation_pdf(
     ocr_backend_name: str = "rapidocr_onnxruntime",
     ocr_backend: OCRBackend | None = None,
     extra_entities: Mapping[str, str] | None = None,
-    ocr_max_pages: int = 10,
+    ocr_max_pages: int = 50,
     ocr_render_dpi: int = 200,
     ocr_retry_dpi: int = 300,
     ocr_min_confidence: float = 0.75,
