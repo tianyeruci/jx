@@ -20,6 +20,7 @@ from ...db import SessionLocal
 from ...model_cleaning import (
     BailianClient,
     CourseEnrichmentResponse,
+    ModelNoResponseError,
     PromptRequest,
     batch_request_line,
     build_custom_id,
@@ -41,7 +42,7 @@ from ...models import (
 from ...publication_shards import ShardItem, plan_post_shards
 from ...sanitization import sanitize_for_knowledge
 from ...schemas import CourseRecord, RouteRecord
-from ...services.observability import record_event
+from ...services.observability import exception_details, record_event, safe_exception_message
 from ..celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -51,11 +52,112 @@ POST_STRATEGIES = {
     "zsxq_post",
     "xiaobot_post",
 }
+CONTENT_MODEL_STRATEGIES = frozenset(
+    {
+        "personal_business_consultation",
+        "wechat_public_account_cognition",
+        "zsxq_post",
+        "xiaobot_post",
+    }
+)
 PROVIDER_TERMINAL = {"completed", "failed", "expired", "cancelled", "cancelling"}
 # Dify requires a 50-unit minimum for custom segments.  Keep a conservative
 # buffer after sanitization and title/context assembly.
 _DIFY_MIN_CUSTOM_SEGMENT_CHARS = 120
 _DIFY_MIN_SOURCE_SEGMENT_CHARS = 8
+
+
+def _source_fallback_enabled(document: CleaningDocument, strategy_code: str) -> bool:
+    from ...cleaning import source_markdown_fallback_enabled
+
+    return source_markdown_fallback_enabled(
+        strategy_code,
+        document.metadata_json or {},
+    )
+
+
+def _model_requires_source_fallback(
+    document: CleaningDocument,
+    strategy_code: str,
+) -> bool:
+    if not _source_fallback_enabled(document, strategy_code):
+        return False
+    if document.status == "excluded":
+        return False
+    if document.status in {"failed", "review_required"}:
+        return True
+    audit = document.audit_json or {}
+    model_result = audit.get("model_result") or {}
+    disposition = str(model_result.get("disposition") or "").lower()
+    return disposition in {"review", "review_required"} or bool(
+        audit.get("review_original_error")
+    )
+
+
+def _apply_source_markdown_fallback(
+    document: CleaningDocument,
+    strategy_code: str,
+    *,
+    source_markdown: str,
+    source_metadata: dict[str, Any],
+    source_chunking: dict[str, Any],
+) -> bool:
+    """Restore the pre-model source without persisting model output."""
+
+    if not source_markdown.strip() or not _model_requires_source_fallback(
+        document,
+        strategy_code,
+    ):
+        return False
+    from ...cleaning import preserve_review_reason
+    from .cleaning import _content_sha
+
+    original_code = document.error_code
+    original_message = document.error_message
+    audit = preserve_review_reason(
+        document.audit_json,
+        original_code,
+        original_message,
+    )
+    audit["source_markdown_fallback"] = {
+        "applied": True,
+        "reason_code": original_code or "MODEL_REVIEW_OR_FAILURE",
+        "model_output_ignored": True,
+    }
+    document.audit_json = audit
+    document.cleaned_markdown = source_markdown
+    document.metadata_json = dict(source_metadata)
+    document.chunking_json = dict(source_chunking)
+    document.content_sha256 = _content_sha(
+        document.cleaned_markdown,
+        document.metadata_json,
+        document.chunking_json,
+    )
+    if strategy_code in POST_STRATEGIES:
+        document.status = "shard_pending"
+        document.stage = "shard_pending"
+    else:
+        document.status = "pending"
+        document.stage = "pending"
+    document.error_code = None
+    document.error_message = None
+    document.retryable = True
+    record_event(
+        level="WARNING",
+        category="task",
+        component="model_cleaning_worker",
+        event_code="CLEANING_SOURCE_MARKDOWN_FALLBACK",
+        status="pending",
+        message="模型结果未采用，已恢复清洗源 Markdown 继续入库",
+        resource_type="cleaning_document",
+        resource_id=str(document.id or ""),
+        details={
+            "strategy_code": strategy_code,
+            "reason_code": audit["source_markdown_fallback"]["reason_code"],
+            "model_output_ignored": True,
+        },
+    )
+    return True
 
 
 def _client() -> BailianClient:
@@ -93,6 +195,36 @@ def _iter_documents_for_batch(
     return session.scalars(
         _document_statement(batch_id).execution_options(yield_per=500)
     )
+
+
+def _iter_realtime_document_pages(
+    session,
+    batch_id: str,
+    *,
+    page_size: int = 100,
+) -> Iterable[list[CleaningDocument]]:
+    """Yield bounded realtime work pages so a large batch is resumable."""
+
+    last_id = ""
+    while True:
+        statement = (
+            select(CleaningDocument)
+            .join(CleaningFile, CleaningDocument.file_id == CleaningFile.id)
+            .where(
+                CleaningFile.batch_id == batch_id,
+                CleaningDocument.status.in_(
+                    ("awaiting_model", "model_processing")
+                ),
+                CleaningDocument.id > last_id,
+            )
+            .order_by(CleaningDocument.id)
+            .limit(page_size)
+        )
+        page = list(session.scalars(statement))
+        if not page:
+            return
+        yield page
+        last_id = page[-1].id
 
 
 def _request(document: CleaningDocument, strategy_code: str) -> PromptRequest:
@@ -141,6 +273,75 @@ def _realtime_chat(
     )
 
 
+def _validation_error_entries(exc: Exception) -> list[dict[str, str]]:
+    errors_method = getattr(exc, "errors", None)
+    if not callable(errors_method):
+        return []
+    try:
+        errors = errors_method()
+    except Exception:
+        return []
+    entries: list[dict[str, str]] = []
+    for error in errors if isinstance(errors, list) else []:
+        if not isinstance(error, dict):
+            continue
+        location = ".".join(str(item) for item in error.get("loc") or ())
+        error_type = str(error.get("type") or "validation_error")
+        message = str(error.get("msg") or "")
+        if "包含不匹配的事实状态" in message:
+            code = "fact_state_mismatch"
+        elif "Field required" in message or "字段必填" in message:
+            code = "missing_field"
+        elif "valid list" in message or "有效列表" in message:
+            code = "invalid_list"
+        else:
+            code = error_type
+        entries.append({"path": location or "root", "code": code})
+    return entries[:8]
+
+
+def _safe_model_value_error_code(message: str) -> str:
+    """Map semantic contract failures to stable, non-content error codes."""
+
+    mappings = (
+        ("咨询结构章节不能重复", "duplicate_sections"),
+        ("咨询结果引用未知来源块", "unknown_source_block"),
+        ("咨询结果包含来源块未支持的数字或日期", "unsupported_source_number"),
+        ("咨询结果改变了来源块的否定状态", "negation_state_mismatch"),
+        ("咨询结果改变了来源块的人物归属", "person_attribution_mismatch"),
+        ("咨询章节与事实状态不一致", "section_fact_state_mismatch"),
+        ("source_block_ids必须唯一且非空", "invalid_source_block_ids"),
+        ("决策单元至少需要problem或mechanism_or_diagnosis", "missing_case_problem"),
+        ("非E0决策单元必须包含actions", "missing_case_actions"),
+        ("E2/E3必须包含observed_outcomes", "missing_observed_outcomes"),
+        ("整体E2/E3必须至少包含一个已观察结果", "missing_overall_observed_result"),
+        ("source_coverage必须完整覆盖输入来源块", "source_coverage"),
+    )
+    for marker, code in mappings:
+        if marker in message:
+            return code
+    return "semantic_contract_error"
+
+
+def _model_contract_error_message(exc: Exception) -> str:
+    if isinstance(exc, ModelNoResponseError):
+        return "模型未返回可用结果（已按文档重试一次）"
+    entries = _validation_error_entries(exc)
+    if entries:
+        details = "; ".join(
+            f"path={entry['path']},code={entry['code']}" for entry in entries
+        )
+        return f"模型契约校验失败（脱敏）: {details}"
+    message = str(exc)
+    if "包含不匹配的事实状态" in message:
+        return "模型契约校验失败（脱敏）: code=fact_state_mismatch"
+    if "完整覆盖" in message:
+        return "模型契约校验失败（脱敏）: code=source_coverage"
+    if isinstance(exc, ValueError):
+        return f"模型契约校验失败（脱敏）: code={_safe_model_value_error_code(message)}"
+    return f"模型契约校验失败（脱敏）: code={type(exc).__name__}"
+
+
 def _model_contract_retry_hint(exc: Exception) -> str:
     """Return a safe, structural-only correction request for one retry.
 
@@ -150,6 +351,33 @@ def _model_contract_retry_hint(exc: Exception) -> str:
     """
 
     message = str(exc)
+    entries = _validation_error_entries(exc)
+    if "risks_or_limits" in message and any(
+        entry["code"] == "fact_state_mismatch" for entry in entries
+    ):
+        return (
+            "修复 risks_or_limits 的 EvidenceItem.status：该数组只能使用 "
+            "consultant_judgment 或 derived_condition；不得使用 customer_fact、"
+            "observed_result、decision 或 planned_action。保持原文证据，不要改写 text。"
+        )
+    for entry in entries:
+        path = entry["path"]
+        if entry["code"] == "fact_state_mismatch" and "risks_or_limits" in path:
+            return (
+                "修复 risks_or_limits 的 EvidenceItem.status：该数组只能使用 "
+                "consultant_judgment 或 derived_condition；不得使用 customer_fact、"
+                "observed_result、decision 或 planned_action。保持原文证据，不要改写 text。"
+            )
+        if entry["code"] == "fact_state_mismatch":
+            return (
+                "严格按字段语义修复 EvidenceItem.status，不要改变 text 或来源块："
+                "local_context 只能 customer_fact/observed_result；problem 只能 "
+                "customer_fact/consultant_judgment；mechanism_or_diagnosis 只能 "
+                "consultant_judgment；actions 只能 planned_action/decision；"
+                "observed_outcomes 只能 observed_result；stated_conditions 只能 "
+                "customer_fact/consultant_judgment/derived_condition；derived_conditions "
+                "只能 derived_condition；risks_or_limits 只能 consultant_judgment/derived_condition。"
+            )
     if "完整覆盖" in message:
         return (
             "输入 blocks 的每一个 key 必须且只能出现一次："
@@ -167,6 +395,22 @@ def _model_contract_retry_hint(exc: Exception) -> str:
             "若输入来源没有明确已观察结果，decision_unit.evidence_level 只能使用 E0 或 E1；"
             "不要为了满足字段虚构 observed_outcomes。只有来源明确写出实际结果时才使用 E2/E3，"
             "并将该结果以 status=observed_result 的 EvidenceItem 放入 observed_outcomes。"
+        )
+    value_error_code = _safe_model_value_error_code(message)
+    if value_error_code == "duplicate_sections":
+        return "每个咨询章节 heading 必须唯一；不要重复输出同名章节，保留有来源依据的章节。"
+    if value_error_code == "unknown_source_block":
+        return "每个 source_block_ids 只能引用输入 blocks 中已有的 key，不要创建或改写来源块 key。"
+    if value_error_code == "unsupported_source_number":
+        return "不要新增来源 blocks 未出现的数字、日期、比例或金额；无法保留时删除该表述。"
+    if value_error_code == "negation_state_mismatch":
+        return "保持来源 blocks 的肯定/否定事实状态，不要把肯定改成否定或把否定改成肯定。"
+    if value_error_code == "person_attribution_mismatch":
+        return "保持来源 blocks 中的人物归属，不要新增人物、替换人物或改变人物与事实的关系。"
+    if value_error_code == "section_fact_state_mismatch":
+        return (
+            "章节 fact_state 必须匹配 heading：顾问判断只能 advisor_judgment；"
+            "已确认决定只能 decision；行动计划只能 plan 或 decision；实际结果只能 actual_result。"
         )
     if "包含不匹配的事实状态" in message:
         return (
@@ -334,10 +578,45 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
                 if auto_catalog:
                     oversized_reason = "单候选超过模型输入上限"
                 else:
-                    document.status = "review_required"
-                    document.stage = "review"
+                    is_content_strategy = batch.strategy_code in CONTENT_MODEL_STRATEGIES
+                    fallback_enabled = _source_fallback_enabled(
+                        document, batch.strategy_code
+                    )
+                    can_publish_source = bool(document.cleaned_markdown.strip())
+                    if fallback_enabled and can_publish_source:
+                        document.status = (
+                            "shard_pending"
+                            if batch.strategy_code in POST_STRATEGIES
+                            else "pending"
+                        )
+                        document.stage = document.status
+                    else:
+                        document.status = "failed" if is_content_strategy else "review_required"
+                        document.stage = "failed" if is_content_strategy else "review"
                     document.error_code = "MODEL_INPUT_TOO_LARGE"
-                    document.error_message = "单候选超过自动模型清洗上限，需要人工复核"
+                    document.error_message = (
+                        "单候选超过自动模型清洗上限，已使用清洗源 Markdown"
+                        if fallback_enabled and can_publish_source
+                        else (
+                            "单候选超过自动模型清洗上限，已跳过"
+                            if is_content_strategy
+                            else "单候选超过自动模型清洗上限，需要人工复核"
+                        )
+                    )
+                    if fallback_enabled and can_publish_source:
+                        document.audit_json = {
+                            **(document.audit_json or {}),
+                            "source_markdown_fallback": {
+                                "applied": True,
+                                "reason_code": "MODEL_INPUT_TOO_LARGE",
+                                "model_output_ignored": True,
+                            },
+                        }
+                        document.error_code = None
+                        document.error_message = None
+                        document.retryable = True
+                    else:
+                        document.retryable = is_content_strategy
                 continue
             candidate_count += 1
             estimated_input += tokens
@@ -347,6 +626,12 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
         if not candidate_count:
             if oversized_reason:
                 _fail_catalog_auto_run(session, batch, oversized_reason)
+            else:
+                from .cleaning import _finish_batch, _refresh_file_state
+
+                for file_row in batch.files:
+                    _refresh_file_state(session, file_row.id, commit=False)
+                _finish_batch(session, batch.id)
             session.commit()
             return None
         fingerprint_digest.update(
@@ -485,6 +770,89 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
     return task_id
 
 
+def _mark_privacy_review(document: CleaningDocument, message: str) -> None:
+    from ...cleaning import content_review_bypass_enabled, preserve_review_reason
+
+    strategy_code = str(
+        (document.metadata_json or {}).get("cleaning_strategy") or ""
+    )
+    if content_review_bypass_enabled(
+        strategy_code,
+        document.metadata_json or {},
+    ) and document.cleaned_markdown.strip():
+        document.audit_json = preserve_review_reason(
+            document.audit_json,
+            "PRIVACY_REVIEW_REQUIRED",
+            message,
+        )
+        document.status = "pending"
+        document.stage = "pending"
+        document.error_code = None
+        document.error_message = None
+        document.retryable = True
+        return
+    document.status = "review_required"
+    document.stage = "review"
+    document.error_code = "PRIVACY_REVIEW_REQUIRED"
+    document.error_message = message
+    document.retryable = False
+
+
+def _review_bypass_enabled(document: CleaningDocument, strategy_code: str) -> bool:
+    from ...cleaning import content_review_bypass_enabled
+
+    return content_review_bypass_enabled(
+        strategy_code,
+        document.metadata_json or {},
+    )
+
+
+def _source_block_review_fallback(
+    request: PromptRequest,
+    title: str,
+    kept_entries: Iterable[Any],
+) -> str:
+    """Render only source blocks explicitly retained by a review response."""
+
+    wanted: set[str] = set()
+    ordinals: set[int] = set()
+    for entry in kept_entries:
+        raw = str(getattr(entry, "block_id", entry) or "").strip()
+        if not raw:
+            continue
+        if raw in request.blocks:
+            wanted.add(raw)
+            continue
+        if raw[:1].lower() == "b" and raw[1:].isdigit():
+            ordinals.add(int(raw[1:]))
+    values = [
+        str(text).strip()
+        for block_id, text in request.blocks.items()
+        if block_id in wanted
+        or (
+            block_id[:1].lower() == "b"
+            and block_id[1:].isdigit()
+            and int(block_id[1:]) in ordinals
+        )
+    ]
+    values = [value for value in values if value]
+    if not values:
+        return ""
+    return sanitize_for_knowledge(f"# {title}\n\n" + "\n\n".join(values))
+
+
+def _count_model_result(counts: dict[str, int], document: CleaningDocument) -> None:
+    if document.status == "excluded":
+        key = "excluded"
+    elif document.status == "review_required":
+        key = "review"
+    elif document.status == "failed":
+        key = "failed"
+    else:
+        key = "succeeded"
+    counts[key] = counts.get(key, 0) + 1
+
+
 def _apply_model_payload(
     document: CleaningDocument,
     strategy_code: str,
@@ -503,17 +871,52 @@ def _apply_model_payload(
             document.stage = "completed"
             document.error_code = result.reason_code
             document.error_message = "模型判定不适合商业顾问知识库"
-        elif result.disposition == "review":
-            document.status = "review_required"
-            document.stage = "review"
-            document.error_code = result.reason_code
-            document.error_message = "模型判定需要人工复核"
+        elif result.disposition == "review" and not _review_bypass_enabled(
+            document,
+            strategy_code,
+        ):
+            document.status = "failed"
+            document.stage = "failed"
+            document.error_code = "MODEL_REVIEW_SKIPPED"
+            document.error_message = (
+                f"模型判定需要复核，已跳过（reason={result.reason_code}）"
+            )
+            document.retryable = True
         else:
+            if result.disposition == "review":
+                from ...cleaning import preserve_review_reason
+
+                audit = preserve_review_reason(
+                    audit,
+                    "MODEL_REVIEW_SKIPPED",
+                    f"模型判定需要复核，按保留来源继续（reason={result.reason_code}）",
+                )
             kept = [
                 request.blocks[block_id]
                 for block_id in result.keep_block_ids
             ]
             body = "\n\n".join(kept)
+            if not body.strip():
+                document.status = "review_required"
+                document.stage = "review"
+                document.error_code = "CONTENT_EMPTY_AFTER_MODEL"
+                document.error_message = "模型复核结果没有可继续的来源正文"
+                document.audit_json = audit
+                document.retryable = False
+                return
+            from ...cleaning import content_review_reason
+
+            short_reason = content_review_reason(
+                body,
+                strategy_code,
+                document.metadata_json or {},
+            )
+            if short_reason:
+                document.status = "review_required"
+                document.stage = "review"
+                document.error_code, document.error_message = short_reason
+                document.audit_json = audit
+                return
             chunks = prepare_chunks(
                 body,
                 title=document.title,
@@ -532,12 +935,13 @@ def _apply_model_payload(
                 for child in raw_children
             ]
             if any(child is None for child in children):
-                document.status = "review_required"
-                document.stage = "review"
+                document.status = "failed"
+                document.stage = "failed"
                 document.error_code = "DIFY_CHILD_TOO_SHORT"
                 document.error_message = (
-                    "帖子有效内容不足以满足知识库最小分段长度，需要人工合并或复核"
+                    "帖子有效内容不足以满足知识库最小分段长度，已跳过"
                 )
+                document.retryable = True
                 document.audit_json = audit
                 return
             children = [child for child in children if child is not None]
@@ -582,14 +986,40 @@ def _apply_model_payload(
                 document.error_message = "模型判定案例不适合进入商业顾问知识库"
                 document.audit_json = audit
                 return
-            if case.disposition == CaseDisposition.REVIEW:
-                document.status = "review_required"
-                document.stage = "review"
-                document.error_code = "CONSULTATION_REVIEW_REQUIRED"
-                document.error_message = "咨询案例证据或背景需要人工复核"
+            if case.disposition == CaseDisposition.REVIEW and not _review_bypass_enabled(
+                document,
+                strategy_code,
+            ):
+                document.status = "failed"
+                document.stage = "failed"
+                document.error_code = "MODEL_REVIEW_SKIPPED"
+                document.error_message = "咨询模型判定证据或背景不足，已跳过"
+                document.retryable = True
                 document.audit_json = audit
                 return
-            rendered = render_case_markdown(case)
+            if case.disposition == CaseDisposition.REVIEW:
+                from ...cleaning import preserve_review_reason
+
+                audit = preserve_review_reason(
+                    audit,
+                    "MODEL_REVIEW_SKIPPED",
+                    "咨询模型判定证据或背景不足，按保留来源块继续",
+                )
+                rendered = _source_block_review_fallback(
+                    request,
+                    document.title,
+                    case.source_coverage.kept,
+                )
+                if not rendered.strip():
+                    document.status = "review_required"
+                    document.stage = "review"
+                    document.error_code = "CONTENT_EMPTY_AFTER_MODEL"
+                    document.error_message = "咨询复核结果没有可继续的来源正文"
+                    document.audit_json = audit
+                    document.retryable = False
+                    return
+            else:
+                rendered = render_case_markdown(case)
             from knowledge_cleaner.pdf_convert import scan_residual_pii
 
             residual = scan_residual_pii(rendered)
@@ -598,9 +1028,10 @@ def _apply_model_payload(
                 for value in audit.get("forbidden_public_names") or []
                 if str(value)
             ]
-            if residual or any(value in rendered for value in forbidden_names):
-                raise ValueError("咨询模型输出仍含潜在PII或受保护身份")
             document.cleaned_markdown = sanitize_for_knowledge(rendered)
+            if residual or any(value in rendered for value in forbidden_names):
+                _mark_privacy_review(document, "咨询模型输出仍含潜在PII或受保护身份")
+                return
             document.metadata_json = {
                 **(document.metadata_json or {}),
                 "record_type": "consulting_case_v2",
@@ -641,7 +1072,8 @@ def _apply_model_payload(
         if residual or any(
             value in document.cleaned_markdown for value in forbidden_names
         ):
-            raise ValueError("咨询模型输出仍含潜在PII或受保护身份")
+            _mark_privacy_review(document, "咨询模型输出仍含潜在PII或受保护身份")
+            return
         document.status = "pending"
         document.stage = "pending"
         audit["model_result"] = result.model_dump(mode="json")
@@ -753,6 +1185,56 @@ def _apply_model_payload(
     document.audit_json = audit
 
 
+def _finalize_model_document(
+    document: CleaningDocument,
+    *,
+    strategy_code: str = "",
+) -> None:
+    """Reapply the knowledge-body invariant to every model output."""
+
+    if not document.cleaned_markdown.strip():
+        if strategy_code in CONTENT_MODEL_STRATEGIES:
+            document.status = "review_required"
+            document.stage = "review"
+            document.error_code = "CONTENT_EMPTY_AFTER_MODEL"
+            document.error_message = "模型清洗后没有可复核正文"
+            document.retryable = False
+        return
+    from ...cleaning import content_review_reason, finalize_knowledge_markdown
+    from .cleaning import _content_sha
+
+    audit = dict(document.audit_json or {})
+    document.cleaned_markdown = finalize_knowledge_markdown(
+        document.cleaned_markdown,
+        audit=audit,
+    )
+    if strategy_code not in POST_STRATEGIES:
+        from ...cleaning import validate_chunking_boundaries
+        from .cleaning import _chunking_from_json
+
+        validate_chunking_boundaries(
+            document.cleaned_markdown,
+            _chunking_from_json(document.chunking_json),
+        )
+    document.audit_json = audit
+    document.content_sha256 = _content_sha(
+        document.cleaned_markdown,
+        document.metadata_json or {},
+        document.chunking_json or {},
+    )
+    if document.status not in {"failed", "excluded", "review_required"}:
+        review_reason = content_review_reason(
+            document.cleaned_markdown,
+            strategy_code,
+            document.metadata_json or {},
+        )
+        if review_reason:
+            document.status = "review_required"
+            document.stage = "review"
+            document.error_code, document.error_message = review_reason
+            document.retryable = False
+
+
 def _post_child_for_dify(text: str, *, title: str) -> str | None:
     """Meet Dify's custom-segment minimum without fabricating business facts."""
 
@@ -778,21 +1260,41 @@ def _mark_contract_failure(
     *,
     final: bool,
     auto_fail: bool = False,
+    review_on_final: bool = False,
 ) -> None:
+    error_code = (
+        "MODEL_NO_RESPONSE"
+        if isinstance(exc, ModelNoResponseError)
+        else "MODEL_CONTRACT_INVALID"
+    )
     if final and auto_fail:
         document.status = "failed"
         document.stage = "failed"
         document.error_code = "CATALOG_AUTO_PUBLISH_BLOCKED"
         document.retryable = False
+    elif final and review_on_final:
+        document.status = "review_required"
+        document.stage = "review"
+        document.error_code = error_code
+        document.retryable = False
+    elif final:
+        document.status = "failed"
+        document.stage = "failed"
+        document.error_code = error_code
+        document.retryable = True
     else:
-        document.status = "review_required" if final else "awaiting_model"
-        document.stage = "review" if final else "model_retry"
-        document.error_code = "MODEL_CONTRACT_INVALID"
-    document.error_message = str(exc)[:1000]
+        document.status = "awaiting_model"
+        document.stage = "model_retry"
+        document.error_code = error_code
+        document.retryable = False
+    document.error_message = _model_contract_error_message(exc)
 
 
 def _plan_post_publication(session, batch_id: str) -> list[str]:
     shard_ids: list[str] = []
+    batch = session.get(CleaningBatch, batch_id)
+    if batch is None:
+        raise ValueError("模型分片规划缺少清洗批次")
     files = list(
         session.scalars(
             select(CleaningFile).where(CleaningFile.batch_id == batch_id)
@@ -819,6 +1321,16 @@ def _plan_post_publication(session, batch_id: str) -> list[str]:
                 .order_by(CleaningDocument.sequence)
             )
         )
+        if documents:
+            from ...cleaning import finalize_knowledge_markdown
+
+            for document in documents:
+                audit = dict(document.audit_json or {})
+                document.cleaned_markdown = finalize_knowledge_markdown(
+                    document.cleaned_markdown,
+                    audit=audit,
+                )
+                document.audit_json = audit
         plans = plan_post_shards(
             [
                 ShardItem(
@@ -833,16 +1345,35 @@ def _plan_post_publication(session, batch_id: str) -> list[str]:
         )
         by_id = {document.id: document for document in documents}
         for plan in plans:
-            digest = hashlib.sha256(plan.markdown.encode("utf-8")).hexdigest()
+            from ...cleaning import finalize_knowledge_markdown
+
+            shard_markdown = finalize_knowledge_markdown(plan.markdown)
+            digest = hashlib.sha256(shard_markdown.encode("utf-8")).hexdigest()
             shard = DifyPublicationShard(
                 file_id=file_row.id,
                 shard_index=plan.index,
                 status="shard_pending",
                 item_count=len(plan.items),
-                content_bytes=len(plan.markdown.encode("utf-8")),
+                content_bytes=len(shard_markdown.encode("utf-8")),
                 content_sha256=digest,
-                markdown=plan.markdown,
-                metadata_json={"record_type": "article_shard"},
+                markdown=shard_markdown,
+                metadata_json={
+                    "record_type": "article_shard",
+                    "content_format": "markdown",
+                    "cleaning_strategy": batch.strategy_code,
+                    "cleaning_spec_revision": batch.spec_revision,
+                    "chunking": {
+                        "doc_form": "hierarchical_model",
+                        "process_mode": "hierarchical",
+                        "parent_mode": "paragraph",
+                        "parent_separator": "<<<DIFY_PARENT>>>",
+                        "parent_max_tokens": settings.dify_parent_max_tokens,
+                        "child_separator": "<<<DIFY_CHILD>>>",
+                        "child_max_tokens": 800,
+                        "parent_chunk_overlap": 0,
+                        "child_chunk_overlap": 0,
+                    },
+                },
             )
             session.add(shard)
             session.flush()
@@ -853,6 +1384,87 @@ def _plan_post_publication(session, batch_id: str) -> list[str]:
             shard_ids.append(shard.id)
     session.commit()
     return shard_ids
+
+
+def _fallback_failed_model_documents(
+    session,
+    batch_id: str,
+    *,
+    reason_code: str,
+    reason_message: str,
+) -> tuple[bool, list[str], list[str]]:
+    """Restore a new-policy batch after a task-level model failure."""
+    from ...cleaning import source_markdown_fallback_enabled
+    from .cleaning import _finish_batch, _refresh_file_state
+
+    batch = session.get(CleaningBatch, batch_id)
+    if batch is None or batch.strategy_code == "course_route_catalog":
+        return False, [], []
+    documents = list(
+        _iter_documents_for_batch(session, batch_id)
+    )
+    eligible = [
+        document
+        for document in documents
+        if document.status in {"awaiting_model", "model_processing"}
+        and source_markdown_fallback_enabled(
+            batch.strategy_code, document.metadata_json or {}
+        )
+    ]
+    if not eligible:
+        return False, [], []
+    touched_files: set[str] = set()
+    for document in eligible:
+        source_markdown = document.cleaned_markdown
+        source_metadata = dict(document.metadata_json or {})
+        source_chunking = dict(document.chunking_json or {})
+        document.status = "failed"
+        document.stage = "failed"
+        document.error_code = reason_code
+        document.error_message = reason_message
+        document.retryable = True
+        if source_markdown.strip():
+            _apply_source_markdown_fallback(
+                document,
+                batch.strategy_code,
+                source_markdown=source_markdown,
+                source_metadata=source_metadata,
+                source_chunking=source_chunking,
+            )
+        else:
+            document.retryable = False
+            document.error_code = "MODEL_FALLBACK_SOURCE_EMPTY"
+            document.error_message = "模型处理失败且没有可入库的清洗源 Markdown"
+        touched_files.add(str(document.file_id))
+    for file_id in touched_files:
+        _refresh_file_state(session, file_id, commit=False)
+    pending_ids: list[str] = []
+    shard_ids: list[str] = []
+    if batch.strategy_code in POST_STRATEGIES:
+        shard_ids = _plan_post_publication(session, batch_id)
+    else:
+        first_document_by_file: dict[str, str] = {}
+        for document in documents:
+            if document.status == "pending":
+                first_document_by_file.setdefault(
+                    str(document.file_id), str(document.id)
+                )
+        pending_ids = list(first_document_by_file.values())
+    _finish_batch(session, batch_id)
+    return True, pending_ids, shard_ids
+
+
+def _queue_publication_outputs(
+    pending_document_ids: Iterable[str], shard_ids: Iterable[str]
+) -> None:
+    for document_id in pending_document_ids:
+        from .cleaning import process_cleaning_document
+
+        process_cleaning_document.apply_async(
+            args=[document_id], queue="ai_publication"
+        )
+    for shard_id in shard_ids:
+        publish_dify_shard.apply_async(args=[shard_id], queue="ai_publication")
 
 
 def _validate_shard_structure(structure: dict[str, Any], *, item_count: int) -> None:
@@ -990,6 +1602,8 @@ def _finish_model_task(task_id: str) -> None:
 )
 def process_realtime_model_task(self, task_id: str) -> bool:
     client: BailianClient | None = None
+    fallback_pending_ids: list[str] = []
+    fallback_shard_ids: list[str] = []
     try:
         client = _client()
         with SessionLocal() as session:
@@ -1001,60 +1615,108 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                 return False
             task.status = "running"
             task.attempts += 1
-            documents = _documents_for_batch(session, batch.id)
             session.commit()
-            counts = {"succeeded": 0, "excluded": 0, "review": 0}
+            counts = {"succeeded": 0, "excluded": 0, "review": 0, "failed": 0}
             usage = {"input_tokens": 0, "output_tokens": 0}
-            for document in documents:
-                request = _request(document, batch.strategy_code)
-                document.status = "model_processing"
-                document.stage = "model_running"
-                session.commit()
-                try:
-                    payload, item_usage = _realtime_chat(
-                        client, request, model=task.model
-                    )
-                    _apply_model_payload(
-                        document, batch.strategy_code, request, payload
-                    )
-                    counts[
-                        "excluded"
-                        if document.status == "excluded"
-                        else (
-                            "review"
-                            if document.status == "review_required"
-                            else "succeeded"
-                        )
-                    ] += 1
-                    usage["input_tokens"] += item_usage["input_tokens"]
-                    usage["output_tokens"] += item_usage["output_tokens"]
-                except Exception as exc:
-                    # Retry each item once immediately; the second invalid
-                    # result becomes review instead of poisoning the batch.
+            for page in _iter_realtime_document_pages(session, batch.id):
+                for document in page:
+                    document.status = "model_processing"
+                    document.stage = "model_running"
+                    source_markdown = document.cleaned_markdown
+                    source_metadata = dict(document.metadata_json or {})
+                    source_chunking = dict(document.chunking_json or {})
+                    audit = dict(document.audit_json or {})
+                    audit["model_attempts"] = 1
+                    document.audit_json = audit
+                    session.commit()
                     try:
+                        request = _request(document, batch.strategy_code)
                         payload, item_usage = _realtime_chat(
-                            client,
-                            request,
-                            model=task.model,
-                            repair_hint=_model_contract_retry_hint(exc),
+                            client, request, model=task.model
                         )
                         _apply_model_payload(
                             document, batch.strategy_code, request, payload
                         )
+                        _finalize_model_document(
+                            document, strategy_code=batch.strategy_code
+                        )
+                        _apply_source_markdown_fallback(
+                            document,
+                            batch.strategy_code,
+                            source_markdown=source_markdown,
+                            source_metadata=source_metadata,
+                            source_chunking=source_chunking,
+                        )
                         usage["input_tokens"] += item_usage["input_tokens"]
                         usage["output_tokens"] += item_usage["output_tokens"]
-                    except Exception as retry_exc:
+                    except ModelNoResponseError as exc:
+                        audit = dict(document.audit_json or {})
+                        audit["model_attempts"] = 2
+                        document.audit_json = audit
+                        try:
+                            request = _request(document, batch.strategy_code)
+                            payload, item_usage = _realtime_chat(
+                                client, request, model=task.model
+                            )
+                            _apply_model_payload(
+                                document, batch.strategy_code, request, payload
+                            )
+                            _finalize_model_document(
+                                document, strategy_code=batch.strategy_code
+                            )
+                            _apply_source_markdown_fallback(
+                                document,
+                                batch.strategy_code,
+                                source_markdown=source_markdown,
+                                source_metadata=source_metadata,
+                                source_chunking=source_chunking,
+                            )
+                            usage["input_tokens"] += item_usage["input_tokens"]
+                            usage["output_tokens"] += item_usage["output_tokens"]
+                        except Exception as retry_exc:
+                            _mark_contract_failure(
+                                document,
+                                retry_exc,
+                                final=True,
+                                auto_fail=(
+                                    batch.strategy_code == "course_route_catalog"
+                                    and settings.course_catalog_auto_publish
+                                ),
+                                review_on_final=(
+                                    batch.strategy_code == "course_route_catalog"
+                                    and not settings.course_catalog_auto_publish
+                                ),
+                            )
+                            _apply_source_markdown_fallback(
+                                document,
+                                batch.strategy_code,
+                                source_markdown=source_markdown,
+                                source_metadata=source_metadata,
+                                source_chunking=source_chunking,
+                            )
+                    except Exception as exc:
                         _mark_contract_failure(
                             document,
-                            retry_exc,
+                            exc,
                             final=True,
                             auto_fail=(
                                 batch.strategy_code == "course_route_catalog"
                                 and settings.course_catalog_auto_publish
                             ),
+                            review_on_final=(
+                                batch.strategy_code == "course_route_catalog"
+                                and not settings.course_catalog_auto_publish
+                            ),
                         )
-                        counts["review"] += 1
-                session.commit()
+                        _apply_source_markdown_fallback(
+                            document,
+                            batch.strategy_code,
+                            source_markdown=source_markdown,
+                            source_metadata=source_metadata,
+                            source_chunking=source_chunking,
+                        )
+                    _count_model_result(counts, document)
+                    session.commit()
             task.result_counts = counts
             task.actual_usage = usage
             session.commit()
@@ -1066,7 +1728,7 @@ def process_realtime_model_task(self, task_id: str) -> bool:
             task = session.get(ModelCleaningTask, task_id)
             if task is not None:
                 task.status = "failed"
-                task.last_error = str(exc)[:2000]
+                task.last_error = safe_exception_message(exc, limit=2000)
                 batch = session.get(CleaningBatch, task.batch_id)
                 if (
                     batch is not None
@@ -1074,7 +1736,19 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                     and settings.course_catalog_auto_publish
                 ):
                     _fail_catalog_auto_run(session, batch, "模型任务执行异常")
+                elif batch is not None:
+                    _, fallback_pending_ids, fallback_shard_ids = (
+                        _fallback_failed_model_documents(
+                            session,
+                            batch.id,
+                            reason_code="MODEL_TASK_FAILED",
+                            reason_message="模型任务执行失败，已使用清洗源 Markdown 继续入库",
+                        )
+                    )
+                    if fallback_pending_ids or fallback_shard_ids:
+                        batch.status = "processing"
                 session.commit()
+        _queue_publication_outputs(fallback_pending_ids, fallback_shard_ids)
         return False
     finally:
         if client:
@@ -1132,6 +1806,8 @@ def _write_batch_files(
 )
 def submit_batch_model_task(self, task_id: str) -> bool:
     client: BailianClient | None = None
+    fallback_pending_ids: list[str] = []
+    fallback_shard_ids: list[str] = []
     try:
         with SessionLocal() as session:
             task = session.get(ModelCleaningTask, task_id)
@@ -1217,7 +1893,7 @@ def submit_batch_model_task(self, task_id: str) -> bool:
         with SessionLocal() as session:
             task = session.get(ModelCleaningTask, task_id)
             if task:
-                task.last_error = str(exc)[:2000]
+                task.last_error = safe_exception_message(exc, limit=2000)
                 batch = session.get(CleaningBatch, task.batch_id)
                 if client:
                     for provider_batch_id in task.provider_batch_ids or []:
@@ -1268,10 +1944,25 @@ def submit_batch_model_task(self, task_id: str) -> bool:
                     for document in _iter_documents_for_batch(session, task.batch_id):
                         document.status = "awaiting_model"
                         document.stage = "model_retry"
-                    document.error_code = "MODEL_BATCH_SUBMIT_FAILED"
-                    document.error_message = "Batch提交未完成，未发布到知识库"
+                        document.error_code = "MODEL_BATCH_SUBMIT_FAILED"
+                        document.error_message = "Batch提交未完成，已进入模型重试"
+                    if batch is not None:
+                        fallback_applied, fallback_pending_ids, fallback_shard_ids = (
+                            _fallback_failed_model_documents(
+                                session,
+                                batch.id,
+                                reason_code="MODEL_BATCH_SUBMIT_FAILED",
+                                reason_message="Batch 提交失败，已使用清洗源 Markdown 继续入库",
+                            )
+                        )
+                        if fallback_applied:
+                            task.status = "failed"
+                            task.approval_fingerprint = ""
+                            task.approved_at = None
+                            batch.status = "processing"
                 session.commit()
-        if replan_batch_id:
+        _queue_publication_outputs(fallback_pending_ids, fallback_shard_ids)
+        if replan_batch_id and not (fallback_pending_ids or fallback_shard_ids):
             maybe_plan_model_task(replan_batch_id)
         return False
     finally:
@@ -1319,7 +2010,7 @@ def _delete_provider_files(
                         external_id=file_id,
                         payload={"model_task_id": task.id},
                         attempts=0,
-                        last_error=str(exc)[:1000],
+                    last_error=safe_exception_message(exc, limit=1000),
                     )
                 )
                 cleanup_session.commit()
@@ -1334,6 +2025,8 @@ def _delete_provider_files(
 )
 def poll_batch_model_task(self, task_id: str) -> bool:
     client: BailianClient | None = None
+    fallback_pending_ids: list[str] = []
+    fallback_shard_ids: list[str] = []
     try:
         client = _client()
         with SessionLocal() as session:
@@ -1432,7 +2125,22 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                         document.error_message = "Batch未完成，需重新确认费用后重试"
                     if batch:
                         batch.status = "awaiting_model_approval"
+                    if batch is not None:
+                        fallback_applied, fallback_pending_ids, fallback_shard_ids = (
+                            _fallback_failed_model_documents(
+                                session,
+                                batch.id,
+                                reason_code="MODEL_PROVIDER_FAILED",
+                                reason_message="百炼 Batch 未成功完成，已使用清洗源 Markdown 继续入库",
+                            )
+                        )
+                        if fallback_applied:
+                            task.status = "failed"
+                            task.approval_fingerprint = ""
+                            task.approved_at = None
+                            batch.status = "processing"
                 session.commit()
+                _queue_publication_outputs(fallback_pending_ids, fallback_shard_ids)
                 return True
             task.status = "validating"
             if batch:
@@ -1455,8 +2163,14 @@ def poll_batch_model_task(self, task_id: str) -> bool:
             small_retry_documents: list[CleaningDocument] = []
             retry_hints: dict[str, str] = {}
             for document in _iter_documents_for_batch(session, task.batch_id):
+                source_markdown = document.cleaned_markdown
+                source_metadata = dict(document.metadata_json or {})
+                source_chunking = dict(document.chunking_json or {})
                 request = _request(document, batch.strategy_code)
                 custom_id = build_custom_id(request, task.prompt_version)
+                if document.status not in {"model_processing", "awaiting_model"}:
+                    results.pop(custom_id, None)
+                    continue
                 item = results.pop(custom_id, None)
                 if item is None:
                     document.error_code = "MODEL_BATCH_RESULT_MISSING"
@@ -1484,6 +2198,16 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                         request,
                         item["payload"],
                     )
+                    _finalize_model_document(
+                        document, strategy_code=batch.strategy_code
+                    )
+                    _apply_source_markdown_fallback(
+                        document,
+                        batch.strategy_code,
+                        source_markdown=source_markdown,
+                        source_metadata=source_metadata,
+                        source_chunking=source_chunking,
+                    )
                     counts[
                         "excluded"
                         if document.status == "excluded"
@@ -1495,9 +2219,16 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                     ] += 1
                 except Exception as exc:
                     document.error_code = "MODEL_CONTRACT_INVALID"
-                    document.error_message = str(exc)[:1000]
+                    document.error_message = _model_contract_error_message(exc)
                     retry_hints[document.id] = _model_contract_retry_hint(exc)
                     retry_count += 1
+                    _apply_source_markdown_fallback(
+                        document,
+                        batch.strategy_code,
+                        source_markdown=source_markdown,
+                        source_metadata=source_metadata,
+                        source_chunking=source_chunking,
+                    )
                     if retry_count < 100:
                         small_retry_documents.append(document)
                     elif retry_count == 100:
@@ -1514,6 +2245,11 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                 ]
                 if retry_count < 100:
                     for document in small_retry_documents:
+                        if document.status not in {"model_processing", "awaiting_model"}:
+                            continue
+                        source_markdown = document.cleaned_markdown
+                        source_metadata = dict(document.metadata_json or {})
+                        source_chunking = dict(document.chunking_json or {})
                         request = _request(document, batch.strategy_code)
                         try:
                             payload, item_usage = _realtime_chat(
@@ -1528,6 +2264,16 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                                 request,
                                 payload,
                             )
+                            _finalize_model_document(
+                                document, strategy_code=batch.strategy_code
+                            )
+                            _apply_source_markdown_fallback(
+                                document,
+                                batch.strategy_code,
+                                source_markdown=source_markdown,
+                                source_metadata=source_metadata,
+                                source_chunking=source_chunking,
+                            )
                             usage["input_tokens"] += item_usage["input_tokens"]
                             usage["output_tokens"] += item_usage[
                                 "output_tokens"
@@ -1541,6 +2287,17 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                                     batch.strategy_code == "course_route_catalog"
                                     and settings.course_catalog_auto_publish
                                 ),
+                                review_on_final=(
+                                    batch.strategy_code == "course_route_catalog"
+                                    and not settings.course_catalog_auto_publish
+                                ),
+                            )
+                            _apply_source_markdown_fallback(
+                                document,
+                                batch.strategy_code,
+                                source_markdown=source_markdown,
+                                source_metadata=source_metadata,
+                                source_chunking=source_chunking,
                             )
                         counts[
                             "excluded"
@@ -1596,6 +2353,8 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                     return True
             elif retry_count:
                 for document in _iter_documents_for_batch(session, task.batch_id):
+                    if document.status not in {"model_processing", "awaiting_model"}:
+                        continue
                     _mark_contract_failure(
                         document,
                         ValueError(
@@ -1607,6 +2366,17 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                             batch.strategy_code == "course_route_catalog"
                             and settings.course_catalog_auto_publish
                         ),
+                        review_on_final=(
+                            batch.strategy_code == "course_route_catalog"
+                            and not settings.course_catalog_auto_publish
+                        ),
+                    )
+                    _apply_source_markdown_fallback(
+                        document,
+                        batch.strategy_code,
+                        source_markdown=document.cleaned_markdown,
+                        source_metadata=dict(document.metadata_json or {}),
+                        source_chunking=dict(document.chunking_json or {}),
                     )
                     counts["review"] += 1
             previous = task.result_counts or {}
@@ -1643,7 +2413,10 @@ def poll_batch_model_task(self, task_id: str) -> bool:
             with SessionLocal() as session:
                 task = session.get(ModelCleaningTask, task_id)
                 if task is not None and task.status == "batch_running":
-                    task.last_error = f"Batch轮询暂时失败：{exc}"[:2000]
+                    task.last_error = (
+                        "Batch轮询暂时失败："
+                        + safe_exception_message(exc, limit=1900)
+                    )[:2000]
                     session.commit()
         except Exception:
             logger.exception("failed to persist transient batch polling error")
@@ -1720,18 +2493,32 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 shard.shard_index + 1,
                 split=True,
             )
+            from ...cleaning import finalize_knowledge_markdown
+
+            shard.markdown = finalize_knowledge_markdown(shard.markdown)
+            shard.content_bytes = len(shard.markdown.encode("utf-8"))
+            shard.content_sha256 = hashlib.sha256(
+                shard.markdown.encode("utf-8")
+            ).hexdigest()
+            chunking = dict((shard.metadata_json or {}).get("chunking") or {})
             document_id, dify_batch_id = client.create_document(
                 remote_name,
                 shard.markdown,
-                doc_form="hierarchical_model",
-                process_mode="hierarchical",
-                parent_mode="paragraph",
-                parent_separator="<<<DIFY_PARENT>>>",
-                parent_max_tokens=settings.dify_parent_max_tokens,
-                child_separator="<<<DIFY_CHILD>>>",
-                child_max_tokens=800,
-                parent_chunk_overlap=0,
-                child_chunk_overlap=0,
+                doc_form=str(chunking.get("doc_form") or "hierarchical_model"),
+                process_mode=str(chunking.get("process_mode") or "hierarchical"),
+                parent_mode=str(chunking.get("parent_mode") or "paragraph"),
+                parent_separator=chunking.get(
+                    "parent_separator", "<<<DIFY_PARENT>>>"
+                ),
+                parent_max_tokens=int(
+                    chunking.get("parent_max_tokens") or settings.dify_parent_max_tokens
+                ),
+                child_separator=chunking.get(
+                    "child_separator", "<<<DIFY_CHILD>>>"
+                ),
+                child_max_tokens=int(chunking.get("child_max_tokens") or 800),
+                parent_chunk_overlap=int(chunking.get("parent_chunk_overlap") or 0),
+                child_chunk_overlap=int(chunking.get("child_chunk_overlap") or 0),
             )
             created_id = document_id
             client.wait_for_indexing(
@@ -1745,12 +2532,26 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 parent_mode="paragraph",
             )
             _validate_shard_structure(structure, item_count=shard.item_count)
-            fields = client.ensure_metadata_names(["record_type"])
+            shard_metadata = dict(shard.metadata_json or {})
+            remote_metadata = {
+                key: shard_metadata[key]
+                for key in (
+                    "record_type",
+                    "content_format",
+                    "cleaning_strategy",
+                    "cleaning_spec_revision",
+                )
+                if shard_metadata.get(key) not in (None, "", [], {})
+            }
+            fields = client.ensure_metadata_names(sorted(remote_metadata))
             client.set_document_metadata(
-                document_id, {"record_type": "article_shard"}, fields
+                document_id,
+                remote_metadata,
+                fields,
             )
             client.verify_document_metadata(
-                document_id, {"record_type": "article_shard"}
+                document_id,
+                remote_metadata,
             )
             shard.dify_document_id = document_id
             shard.dify_batch_id = dify_batch_id
@@ -1786,7 +2587,7 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                                 external_id=replaced_document_id,
                                 payload={"dataset_id": dataset_id},
                                 attempts=0,
-                                last_error=str(exc)[:1000],
+                                last_error=safe_exception_message(exc, limit=1000),
                             )
                         )
                         session.commit()
@@ -1807,7 +2608,7 @@ def publish_dify_shard(self, shard_id: str) -> bool:
             shard = session.get(DifyPublicationShard, shard_id)
             if shard:
                 shard.status = "shard_pending" if shard.attempts < 2 else "failed"
-                shard.last_error = str(exc)[:2000]
+                shard.last_error = safe_exception_message(exc, limit=2000)
                 for document in shard.documents:
                     document.status = (
                         "shard_pending" if shard.attempts < 2 else "failed"
@@ -1815,7 +2616,35 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                     document.stage = (
                         "shard_pending" if shard.attempts < 2 else "failed"
                     )
+                from .cleaning import _finish_batch, _refresh_file_state
+
+                batch_id = session.scalar(
+                    select(CleaningFile.batch_id).where(
+                        CleaningFile.id == shard.file_id
+                    )
+                )
+                _refresh_file_state(session, shard.file_id, commit=False)
+                if batch_id:
+                    _finish_batch(session, batch_id)
                 session.commit()
+                record_event(
+                    level="ERROR",
+                    category="task",
+                    component="dify_publication_worker",
+                    event_code="DIFY_PUBLICATION_SHARD_FAILED",
+                    status="failed",
+                    message="Dify 分片发布失败",
+                    resource_type="dify_publication_shard",
+                    resource_id=shard_id,
+                    details=exception_details(
+                        exc,
+                        phase="dify_publication_shard",
+                        shard_id=shard_id,
+                        file_id=shard.file_id,
+                        batch_id=batch_id,
+                        attempts=shard.attempts,
+                    ),
+                )
                 if shard.attempts < 2:
                     raise self.retry(exc=exc, countdown=60, max_retries=1)
         return False

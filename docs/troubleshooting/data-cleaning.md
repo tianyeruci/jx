@@ -88,12 +88,12 @@
 
 - 适用：普通 PDF、咨询 PDF 的清洗转换。
 - 触发：表格抽取无法可靠对齐，或者 Dify 分片发布失败后批次停在处理中。
-- 根因：表格只影响表格结构可信度；有效正文仍可继续。旧 Worker/发布分片失败还可能留下待补偿分片，不能用批次聚合状态代替分片事实。
-- 解决：表格单元格线性化并记录 `table_review:*` WARNING；只有无文字层、残留敏感身份或正文为空才进入 `review_required`。发布失败按精确 shard ID 重试，成功后刷新文件聚合状态并清除陈旧文件级错误。
+- 根因：表格只影响表格结构可信度；有效正文仍可继续。PDF 转换入口与清洗策略入口此前还不是同一条路径，手工脚本能生成 Markdown 不代表正式策略会复用其结果。
+- 解决：PDF 先生成 Markdown，再由共享 `knowledge_cleaner.markdown_table_cleaner` 清洗；可靠 GFM/简单 HTML 表格转为语义句，坏行按表聚合审计，无法可靠对齐的整表保留线性单元格文本。`table_review:*` 仅为内部审计，不进入用户告警；最终发布正文再次执行无 Markdown/HTML 表格门禁。只有无文字层、残留敏感身份或正文为空才进入 `review_required`。发布失败仍按精确 shard ID 重试，成功后刷新文件聚合状态并清除陈旧文件级错误。
 - 非解决：因为一个表格解析不稳定就丢弃整份 PDF，或只重试父批次而不核对分片。
 - 证据：jx 发布报告 `20260802-cleaning-fix-10d83fd1a999e-deploy` 与分片重试结果。
-- 验证：表格 WARNING 不阻止有效正文；精确重试后分片状态为 `succeeded`，文件聚合状态刷新且不再保留陈旧错误。
-- 预防：所有服务使用同一完整 wheel（含 `ai_management` 与 `knowledge_cleaner`），发布后核对 Alembic head、包导入和分片状态。
+- 验证：`tests/test_markdown_table_cleaner.py`、`tests/test_cleaning_table_integration.py`、`tests/test_pdf_cleaning_policy.py` 和 `tests/test_pdf_markdown_refine.py` 覆盖表格转换、坏行单表告警、坏表保留、PDF 入口复用和非阻断行为；精确重试后分片状态为 `succeeded`，文件聚合状态刷新且不再保留陈旧错误。
+- 预防：所有服务使用同一完整 wheel（含 `ai_management` 与 `knowledge_cleaner`），PDF CLI 仅作为共享核心的诊断入口；发布后核对 Alembic head、包导入、表格清洗审计和分片状态。
 - 最后验证：2026-08-02，jx 新版本 `20260802-cleaning-fix-10d83fd1a999e` ready，迁移头 `i5f6a7b8c9d0`，近期严重日志为 0。
 
 ## DATA-009：转换 Markdown 开关必须同时覆盖写入、持久化和清理
@@ -152,14 +152,133 @@
 - 解决：新增独立 `force` 模式；先停止本地清洗/模型/发布写入服务，保存前后目标清单和可恢复备份；发现活动模型供应商任务、待处理 Dify 删除任务或无法证明归属的上传目录时停止；否则只删除本地清洗表、精确 Redis 清洗键和批次 UUID 上传目录。
 - 非解决：修改批次状态伪造终态、取消未知供应商任务、整库清 Redis、调用 Dify 删除接口或按名称删除知识库文档。
 - 验证：jx 强制归零前后清洗表、Redis 清洗键和上传目录均为 `0`，无关外部删除任务守恒，Dify 删除操作为 `0`，备份恢复、API ready 和测试页 HTTP `200` 通过。
+- 预防：强制归零前必须验证写入者已静默、供应商任务无活动、备份可恢复且目标目录为批次 UUID；任何一项无法证明都停止。
+- 证据：`scripts/jx_reset_cleaning_local_state.sh`、2026-08-03 强制归零备份与脱敏报告。
+- 最后验证：2026-08-03。
 
 ## DATA-009：严格咨询 v2 契约失败必须保留复核终态
 
+- 适用：个人商业咨询 DOCX/PDF 清洗、模型契约和发布门禁。
 - 触发：模型返回 `consulting_case_v2` 但省略必填字段、把 EvidenceItem 数组写成字符串，或违反证据状态/结果等级约束。
 - 根因：早期提示词没有完整展开 v2 字段和数组对象结构；模型修复轮次也缺少针对列表、E2/E3 和事实状态的结构性提示。
 - 解决：提示词明确完整顶层字段、EvidenceItem/DecisionUnit 结构和来源覆盖规则；重试提示只修正结构，不放宽来源证据门禁。
 - 验证：jx 测试页咨询批次最终 `completed`，1 个样本进入成功、2 个样本安全进入 `review_required`、0 个失败；未把不可靠模型结果自动发布到 Dify。
+- 非解决：删除必填字段、把模型字符串强转为对象、放宽证据等级或为了全绿跳过人工复核。
 - 边界：`review_required` 是可追踪的安全终态，不得为追求全成功而猜测来源、降级 Pydantic 校验或直接写入知识库。
 - 预防：普通 `execute` 保持终态门禁；强制模式使用独立确认词并仅用于已确认的测试数据。
 - 证据：`AI管理服务当前状态与后续测试交接.md` 的 0.19 节及 2026-08-03 jx 备份目录。
 - 最后验证：2026-08-03。
+
+## DATA-014：PDF 质量告警与硬阻断必须分级记录
+
+- 适用：PDF 共享转换核心、上传清洗和 OCR 队列。
+- 触发：PDF 转换遇到表格/版式/OCR 低置信度、无文字层、页数超限、OCR 失败或隐私/事实冲突。
+- 根因：PDF 类型、结构质量和安全门禁是不同维度；把可继续处理的告警统一当失败会丢弃正文，把硬阻断当告警会造成不安全发布。
+- 解决：表格/版式/OCR 低置信度属于可继续处理的 `warning`，统一写入 `PDF_CONVERSION_WARNING`；混合无法分类、页数超限、OCR 失败、关键事实冲突、无正文、隐私残留属于 `blocked`，写入 `PDF_CONVERSION_BLOCKED` 并保持文件 `review_required`/`failed`。
+- 非解决：为了全绿把 warning 改成成功、把硬阻断降级为 warning，或把正文/原始文件名写入问题日志。
+- 统一入口：问题中心复用 `SystemEventLog`，通过 `/internal/v1/admin/pdf-conversion-issues` 查询、按精确 `issue_id` resolve；普通日志清理不得删除 `status=open` 的 PDF 事件。
+- 安全边界：事件只保存脱敏代码、页数、后端、知识库代码和内部文件 ID，不保存正文、原始文件名或密钥。
+- 验证：`tests/test_pdf_conversion_issues.py` 覆盖状态/知识库/严重性过滤和精确解决；`tests/test_pdf_markdown_refine.py` 覆盖共享核心与历史 CLI 入口一致。
+- 预防：上传链路固定先分类、再执行 OCR/清洗和隐私门禁；问题中心查询和精确 resolve 纳入契约测试。
+- 证据：`var/reports/20260805-plan-merge/issues.jsonl`、`tests/test_pdf_conversion_issues.py`、jx 远端代表性 PDF 回归。
+- 费用门禁：验收付费清洗累计上限由机器环境变量 `JX_ACCEPTANCE_CLEANING_BUDGET_MAX_YUAN` 配置，默认 5.00 元；超限在新任务前 fail-closed，不改变长期产品配额。
+- 最后验证：2026-08-05，本地定向测试通过；jx 远端 PDF Workflow 临时配置已恢复基线并退役。
+
+## DATA-015：精确清理必须覆盖批次和文件作用域事件
+
+- 适用：验收批次、PDF 转换问题中心和审计日志清理。
+- 触发：测试批次与 Dify 文档已按 manifest 删除，但问题中心仍显示该批次的 `open` PDF 告警。
+- 根因：批次级事件使用 `CleaningBatch.id`，PDF 转换事件使用 `CleaningFile.id`；只按批次 ID 删除日志会留下文件作用域孤儿。
+- 解决：从 manifest 指定的批次读取其 `CleaningFile.id`，将批次 ID 与文件 ID 合并为精确资源集合后删除对应 `SystemEventLog`；不得按时间、文件名或模糊匹配扩大范围。
+- 验证：新增 `tests/test_release_data_cleanup.py` 契约断言；jx 两轮代表性 PDF 清理后批次/Dify/Redis/事件均无本轮残留，问题中心 `status=open` 总数为 0。
+- 非解决：只删除 `CleaningBatch.id` 对应日志、按时间窗口清理或按文件名猜测资源归属。
+- 预防：新增事件资源类型时同步登记其精确归属 ID，并在清理 manifest/回归中验证父子作用域的审计行均被处理。
+- 证据：`scripts/jx_release_data.py`、`tests/test_release_data_cleanup.py`、`var/reports/20260805-plan-merge/issues.jsonl`。
+- 最后验证：2026-08-05。
+
+## DATA-016：手工 PDF 转换成功不代表正式清洗入口复用该脚本
+
+- 适用：`scripts/pdf_markdown_refine.py` 与 `personal_business_consultation` 的 PDF 入库链路。
+- 触发：手工脚本可以生成 Markdown，但正式批次仍在 PDF 表格审计或后续模型阶段失败。
+- 根因：手工脚本是 CLI 包装器，正式策略此前直接调用 `knowledge_cleaner.pdf_convert.convert_consultation_pdf`，两者没有共享 Markdown 表格清洗阶段；“脚本能转”不能证明“正式策略已使用脚本输出”。
+- 解决：正式策略和普通 Markdown 入口统一调用共享 PDF/Markdown 规范化与表格清洗核心；CLI 提供 `--clean-tables` 以复现转换后清洗，`raw` 也执行统一规范化和表格清洗，只跳过具体策略语义处理。
+- 非解决：只验证手工 CLI、把表格告警当作整份 PDF 失败，或为修复表格而改变 `raw_upload` 原文语义。
+- 验证：`tests/test_cleaning_table_integration.py`、`tests/test_pdf_markdown_refine.py` 覆盖正式策略和 CLI 的相同清洗结果；远端原批次通过精确模型任务重试完成入库，未重新上传源文件。
+- 预防：排障时同时核对 CLI 入口、正式策略调用点、共享核心包导入和转换审计，不以单独手工脚本结果代替服务链路证据。
+- 证据：`var/reports/20260805-markdown-table-cleaning/issues.jsonl`。
+- 最后验证：2026-08-05，本地定向回归通过。
+
+## DATA-018：不完整 Markdown 表格必须跳过并继续正文处理
+
+- 适用：PDF 转 Markdown 后的 `personal_business_consultation` 清洗、Markdown CLI 复现和表格问题中心。
+- 触发：表头/分隔线列数不一致、重复表头、行列数不匹配或 HTML 表格结构无法可靠对齐。
+- 根因：无法证明列语义对齐时，继续拼接单元格会制造错误事实；只记录 `table_review` 也会让下游误以为表格已被安全清洗。
+- 解决：可靠表格转为带表头语义的句子；坏行按表聚合内部审计；结构不可靠的完整表格块保留线性单元格文本，保留其前后正文继续处理。日志只包含表序号、行号、动作和稳定原因，不包含正文；最终正文不得保留 Markdown/HTML 表格。
+- 非解决：猜测列对齐、把整份 PDF 置为失败、保留坏 Markdown 表格，或为每个坏单元格重复打日志。
+- 验证：`tests/test_markdown_table_cleaner.py`、`tests/test_cleaning_table_integration.py`、`tests/test_pdf_markdown_refine.py` 通过；jx 原批次转换审计显示 Markdown 非空、`blocking_reasons=[]`、唯一表格告警非阻断；精确重试后批次/文档成功，Dify 索引完成。
+- 预防：每个文档按表格聚合告警；`BAILIAN_BATCH_ENABLED=false` 时模型仍走 realtime，不因表格告警切换 Batch。
+- 证据：`knowledge_cleaner/markdown_table_cleaner.py`、`ai_management/cleaning.py`、本轮脱敏 `var/reports/20260805-full-test-jx-fix/issues.jsonl`。
+- 最后验证：2026-08-05。
+
+## DATA-017：内容模型契约失败必须区分字段语义并脱敏跳过
+
+- 适用：`personal_business_consultation` 模型输出、重试和知识库发布门禁。
+- 触发：结构化结果在 `risks_or_limits` 等字段使用了不允许的 `EvidenceItem.status`，内容模型文档记录 `MODEL_CONTRACT_INVALID`、进入 `failed` 且没有知识库分片；课程目录仍按严格源级策略处理。
+- 根因：模型返回值违反 `ConsultationCaseV2` 的字段状态契约；这不是 PDF 表格告警导致的阻断。旧重试提示没有把 `risks_or_limits` 的允许状态单独展开，错误消息还可能直接带出 Pydantic 输入摘要。
+- 解决：提示词保留严格字段契约；只有无可用模型响应才在文档级重试一次，非空契约错误不再发送修复提示，直接记录脱敏路径/错误代码并跳过，不回显模型正文或原始输入。
+- 验证：`tests/test_model_contract_safety.py` 和 `tests/test_model_cleaning_workflow.py` 覆盖字段契约、无响应单次重试、契约失败不重试和错误脱敏；失败条目无 Dify 发布分片。
+- 非解决：把 `customer_fact` 自动改写为 `consultant_judgment`，或把表格 warning 当成模型契约失败的替代解释。
+- 预防：保持模型契约严格校验；错误日志只保存脱敏代码，不把模型正文写入事件或数据库；批量处理通过失败记录接口按页/CSV 导出，不要求逐条审批。
+- 证据：`var/reports/20260805-markdown-table-cleaning/issues.jsonl`。
+- 最后验证：2026-08-05，本地定向回归通过。
+
+## DATA-019：知识库正文必须来自最终 Markdown，而不是源文件或中间策略正文
+
+- 适用：用户上传 PDF、DOCX、Markdown、TXT 后进入任意清洗策略、模型/复核和 Dify 发布的完整链路。
+- 触发：本地清洗结果已变更，但知识库仍出现原始扩展名、原始正文或 Markdown 表格；或者 `raw` 上传绕过了表格清洗。
+- 根因：正式 PDF 入口与 CLI 共享转换核心分叉；`raw` 分支关闭表格清洗；转换产物保存时机早于清洗；策略/模型/复核后的正文缺少统一最终无表格门禁；Dify 名称和正文发布未绑定最终清洗产物。
+- 解决：所有支持的输入先统一转换为 Markdown，再执行表格清洗；`cleaned` 进入策略语义处理，`raw` 只跳过语义处理；策略、模型、人工复核和文章 shard 发布前统一执行最终 Markdown/无表格门禁，并用同一正文调用 Dify `create-by-text`。Dify 名称固定为 `.md`，同名追加序号，`content_format=markdown`。
+- 非解决：只运行 `scripts/pdf_markdown_refine.py`、只改某一个策略、只在 API 层替换文件名、把 `table_review` 当作用户 warning，或直接上传源 PDF/DOCX 二进制到 Dify。
+- 验证：本地全量 pytest、发布契约和文档契约通过；jx 新数据 `standard_document` 与 `raw` 的 PDF、DOCX、Markdown 均 `succeeded`，最终存储无表格，Dify 名称和 Metadata 边界通过；测试数据按精确 manifest 清理。
+- 预防：新增策略必须复用统一输入/最终发布函数；回归至少覆盖 PDF、DOCX、Markdown、`cleaned`、`raw`、表格和同名序号；禁止以历史数据状态替代新数据回读证据。
+- 证据：`ai_management/cleaning.py`、`ai_management/workers/tasks/cleaning.py`、`ai_management/workers/tasks/model_cleaning.py`、`knowledge_cleaner/markdown_table_cleaner.py`、jx release `20260805-cleaning-unify-0d1125af5d56` 及报告目录。
+- 最后验证：2026-08-05。
+
+## DATA-020：review_required 开关只放宽非空内容复核门禁
+
+- 适用：四个内容模型策略的新建上传批次和 `CLEANING_REVIEW_REQUIRED_ENABLED` 配置。
+- 触发：jx 测试环境需要验证非空短文本、隐私/来源复核或模型 `review` 是否会阻塞后续模型/知识库链路。
+- 根因：`review_required` 同时承载安全复核和产品流程阻断；测试环境若直接改代码或删除错误状态，会失去原始审计和批次一致性。
+- 解决：默认值保持 `true`；仅在明确的测试环境设置为 `false`，并把策略/配置快照写入批次。非空复核原因只保留内部审计，文章策略使用保留来源块、咨询 v2 使用模型保留来源块；没有可保留正文仍为 `review_required`。
+- 非解决：关闭开关后绕过空正文、模型空结果、模型契约、Dify 硬约束、发布补偿或 `course_route_catalog` 源级原子门禁；也不能用客户端公共 Metadata 放宽服务端规则。
+- 验证：本地清洗与模型工作流测试通过；jx release `20260806-111200-full-8f59f14169c9` 中空文档批次 `019fd511-11ea-718b-bfed-0ba266f08d4d` 仍为 `review_required`，唯一非空批次 `019fd515-596b-78b2-8733-05cb5ab460c4` 成功到达 Dify 条目详情。
+- 预防：新批次只读取配置快照；发布前核对默认值、测试环境值和策略范围；报告只记录错误码、批次/文件内部 ID 和状态，不记录正文或密钥。
+- 证据：`var/reports/20260806-review-switch/issues.jsonl`、jx 发布报告 `/opt/ai-management/var/reports/v2/20260806-111200-full-8f59f14169c9-deploy`、[当前状态交接](../../AI管理服务当前状态与后续测试交接.md:10)。
+- 最后验证：2026-08-06。
+
+## DATA-021（历史规则）：策略空正文异常曾归入 review_required 而不是普通失败重试
+
+- 适用：Markdown/TXT 清洗策略返回空文档或抛出明确“没有可清洗正文”异常的 Worker 路径。
+- 触发：空上传在策略解析阶段抛出带修饰词的空正文异常，最终文件却变成 `CLEANING_FAILED`。
+- 根因：Worker 只匹配固定的“没有可清洗正文”文本，未覆盖“没有可清洗的知识星球正文”等同义空内容错误，导致空内容被当作可重试的普通异常。
+- 解决：扩展空内容识别标记；明确空内容直接写入 `CONTENT_EMPTY_AFTER_CLEANING` 并进入 `review_required`，不发送模型任务、不发布 Dify；非空解析、契约和基础设施异常继续按各自重试/失败规则处理。
+- 非解决：捕获所有 `ValueError` 都标记为 review、把空文件填充占位正文、或用关闭 `review_required` 开关绕过空内容。
+- 验证：本地新增空策略 Worker 回归通过；jx 修复后空文档批次 `019fd511-11ea-718b-bfed-0ba266f08d4d` 为 `review_required`，模型任务和发布分片均为空。
+- 预防：新增策略的空源/空结果测试必须覆盖异常文本与空返回两条路径；聚合状态以文件/条目状态为准，不以异常退出码推断产品语义。
+- 证据：`ai_management/workers/tasks/cleaning.py`、`tests/test_ai_management.py`、`var/reports/20260806-review-switch/issues.jsonl`。
+- 最后验证：2026-08-06。
+
+> 该条目保留历史验收事实；当前新批次空正文统一按 DATA-022 的边界进入 `failed`，不再依赖人工复核绕过。
+
+## DATA-022：新批次模型失败必须降级为源 Markdown 发布
+
+- 适用：PDF/DOCX 转换后 Markdown、上传 Markdown、表格清洗、模型清洗和 Dify 发布的连续链路。
+- 触发：大量文件在模型 `review_required`、模型契约失败、无响应或任务异常后无法进入知识库；文件/批次聚合长期停留在 `processing`。
+- 根因：旧逻辑把模型复核和技术失败都当成需要人工处理的终点，且任务或 Dify 分片异常时没有总是刷新文件/批次聚合。
+- 解决：新 `cleaned` 批次保存服务端 `_cleaning_review_policy`。除 `course_route_catalog` 外，只要表格清洗后的 `cleaned_markdown` 非空，模型复核/失败就保留内部原因、明确忽略模型返回值，恢复源 Markdown 为 `pending` 或 `shard_pending`；空源、转换失败和 Dify 硬约束失败仍为 `failed`。所有 Dify 写入统一进入单并发 `ai_publication` 队列；5 分钟看门狗重新调度长期未更新的文档/模型/分片任务。
+- 日志：`CLEANING_FILE_FAILED`、`DIFY_PUBLICATION_SHARD_FAILED` 和源 Markdown 降级事件记录 `file_id/batch_id/strategy_code/extension/attempts/phase/exception_type/脱敏 exception_message`；不记录正文、密钥、原始敏感文件名或完整路径。
+- 非解决：把空正文填充占位符、把 `course_route_catalog` 降级为文本发布、直接修改 Dify 数据库、增加未确认的多文档 API，或仅把批次标成 `completed`。
+- 验证：本地模型/清洗/分片回归覆盖源 Markdown 恢复、模型输出不落入最终正文、Dify 分片失败后聚合刷新和发布队列；发布后需用批次/文件/分片精确 ID 检查 Dify 索引、父子块、Metadata 回读和文件状态。
+- 预防：旧批次没有新 policy 快照时 fail-closed；新批次创建时固定策略/Metadata/chunking 快照；多个文件不拼接为一个 Dify 正文，文章分片遵守 `DIFY_SHARD_MAX_ITEMS`（默认 200）和字节上限。
+- 证据：`ai_management/cleaning.py`、`ai_management/workers/tasks/cleaning.py`、`ai_management/workers/tasks/model_cleaning.py`、`ai_management/workers/tasks/maintenance.py`、`tests/test_model_cleaning_workflow.py`、`tests/test_ai_management.py`。
+- 最后验证：2026-08-06，本地全量回归通过；jx release `20260806-144000-full-9afc8b78bc35` 的合成 Markdown 批次成功到达 Dify 并按精确 file ID 清理。

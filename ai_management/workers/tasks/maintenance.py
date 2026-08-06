@@ -26,6 +26,7 @@ from ...models import (
     CleaningFile,
     Course,
     CourseClickDaily,
+    DifyPublicationShard,
     ExternalDeletionTask,
     ModelCleaningTask,
     SystemEventLog,
@@ -44,6 +45,192 @@ from .summary import _summarize_sync
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+def _reconcile_cleaning_pipeline() -> dict[str, int]:
+    """Release orphaned cleaning/publication work before it becomes a review queue.
+
+    This is deliberately bounded and idempotent.  It only requeues rows that
+    have been unchanged for a short window, while terminalizing an exhausted
+    Dify shard and refreshing its file/batch aggregate in the same transaction.
+    """
+    now = datetime.now(timezone.utc)
+    pending_cutoff = now - timedelta(minutes=10)
+    processing_cutoff = now - timedelta(minutes=45)
+    queued_documents: dict[str, str] = {}
+    model_batches: set[str] = set()
+    shard_ids: set[str] = set()
+    touched_files: set[str] = set()
+    touched_batches: set[str] = set()
+    fallback_count = 0
+    failed_shards = 0
+    with SessionLocal() as session:
+        pending_documents = list(
+            session.scalars(
+                select(CleaningDocument)
+                .where(
+                    CleaningDocument.status == "pending",
+                    CleaningDocument.updated_at <= pending_cutoff,
+                )
+                .order_by(CleaningDocument.updated_at, CleaningDocument.sequence)
+                .limit(500)
+            )
+        )
+        for document in pending_documents:
+            queued_documents.setdefault(str(document.file_id), str(document.id))
+
+        awaiting_documents = list(
+            session.scalars(
+                select(CleaningDocument)
+                .join(CleaningFile)
+                .where(
+                    CleaningDocument.status == "awaiting_model",
+                    CleaningDocument.updated_at <= pending_cutoff,
+                )
+                .limit(500)
+            )
+        )
+        for document in awaiting_documents:
+            batch_id = session.scalar(
+                select(CleaningFile.batch_id).where(CleaningFile.id == document.file_id)
+            )
+            if batch_id:
+                model_batches.add(str(batch_id))
+
+        stale_model_documents = list(
+            session.scalars(
+                select(CleaningDocument)
+                .join(CleaningFile)
+                .where(
+                    CleaningDocument.status == "model_processing",
+                    CleaningDocument.updated_at <= processing_cutoff,
+                )
+                .limit(500)
+            )
+        )
+        from ...cleaning import source_markdown_fallback_enabled
+        from .model_cleaning import _apply_source_markdown_fallback
+
+        for document in stale_model_documents:
+            batch = session.scalar(
+                select(CleaningBatch)
+                .join(CleaningFile)
+                .where(CleaningFile.id == document.file_id)
+            )
+            if batch is None:
+                continue
+            source_markdown = document.cleaned_markdown
+            source_metadata = dict(document.metadata_json or {})
+            source_chunking = dict(document.chunking_json or {})
+            if source_markdown.strip() and source_markdown_fallback_enabled(
+                batch.strategy_code, source_metadata
+            ):
+                document.status = "failed"
+                document.error_code = "MODEL_TASK_WATCHDOG_TIMEOUT"
+                document.error_message = "模型任务超时，已使用清洗源 Markdown 继续入库"
+                _apply_source_markdown_fallback(
+                    document,
+                    batch.strategy_code,
+                    source_markdown,
+                    source_metadata,
+                    source_chunking,
+                )
+                fallback_count += 1
+            else:
+                document.status = "awaiting_model"
+                document.stage = "model_retry"
+                document.error_code = "MODEL_TASK_WATCHDOG_TIMEOUT"
+                document.error_message = "模型任务超时，已重新排队"
+                document.retryable = False
+                batch_id = str(batch.id)
+                model_batches.add(batch_id)
+            touched_files.add(str(document.file_id))
+            touched_batches.add(str(batch.id))
+
+        stale_shards = list(
+            session.scalars(
+                select(DifyPublicationShard)
+                .where(
+                    DifyPublicationShard.status == "shard_indexing",
+                    DifyPublicationShard.updated_at <= processing_cutoff,
+                )
+                .limit(500)
+            )
+        )
+        for shard in stale_shards:
+            retryable = shard.attempts < 2
+            shard.status = "shard_pending" if retryable else "failed"
+            shard.last_error = (
+                "Dify 分片索引超过45分钟未完成，已重新排队"
+                if retryable
+                else "Dify 分片索引超过45分钟未完成，重试次数已耗尽"
+            )
+            for document in shard.documents:
+                document.status = "shard_pending" if retryable else "failed"
+                document.stage = "shard_pending" if retryable else "failed"
+                document.error_code = "DIFY_INDEXING_WATCHDOG_TIMEOUT"
+                document.error_message = shard.last_error
+                document.retryable = retryable
+            touched_files.add(str(shard.file_id))
+            if shard.file:
+                touched_batches.add(str(shard.file.batch_id))
+            if retryable:
+                shard_ids.add(str(shard.id))
+            else:
+                failed_shards += 1
+
+        stale_shard_documents = list(
+            session.scalars(
+                select(CleaningDocument)
+                .where(
+                    CleaningDocument.status == "shard_pending",
+                    CleaningDocument.updated_at <= pending_cutoff,
+                )
+                .limit(500)
+            )
+        )
+        post_batch_ids: set[str] = set()
+        for document in stale_shard_documents:
+            file_row = session.get(CleaningFile, document.file_id)
+            if file_row:
+                post_batch_ids.add(str(file_row.batch_id))
+                touched_files.add(str(file_row.id))
+                touched_batches.add(str(file_row.batch_id))
+        if post_batch_ids:
+            from .model_cleaning import _plan_post_publication
+
+            for batch_id in post_batch_ids:
+                planned = _plan_post_publication(session, batch_id)
+                shard_ids.update(str(item) for item in planned)
+
+        for file_id in touched_files:
+            _refresh_file_state(session, file_id, commit=False)
+        for batch_id in touched_batches:
+            _finish_batch(session, batch_id)
+        session.commit()
+
+    for document_id in queued_documents.values():
+        from .cleaning import process_cleaning_document
+
+        process_cleaning_document.apply_async(args=[document_id], queue="ai_publication")
+    for batch_id in model_batches:
+        try:
+            from .model_cleaning import maybe_plan_model_task
+
+            maybe_plan_model_task(batch_id)
+        except Exception:
+            logger.exception("cleaning model reconciliation failed", extra={"batch_id": batch_id})
+    for shard_id in shard_ids:
+        from .model_cleaning import publish_dify_shard
+
+        publish_dify_shard.apply_async(args=[shard_id], queue="ai_publication")
+    return {
+        "queued_documents": len(queued_documents),
+        "model_batches": len(model_batches),
+        "shards": len(shard_ids),
+        "fallback_documents": fallback_count,
+        "failed_shards": failed_shards,
+    }
 
 
 def _utc(value: datetime) -> datetime:
@@ -302,7 +489,9 @@ def _cleanup_files_and_stale_tasks() -> None:
         expired_batches = list(
             session.scalars(
                 select(CleaningBatch).where(
-                    CleaningBatch.status == "completed",
+                    CleaningBatch.status.in_(
+                        {"completed", "failed", "review_required", "mixed"}
+                    ),
                     CleaningBatch.updated_at <= status_cutoff,
                 )
             )
@@ -317,11 +506,12 @@ def _cleanup_files_and_stale_tasks() -> None:
 
 
 def _terminalize_stale_model_tasks() -> None:
-    """Stop orphaned async model tasks from keeping a batch indefinitely open."""
+    """Requeue orphaned model work instead of turning it into human review."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
     active_states = {
         "running", "validating", "batch_uploading", "batch_running",
     }
+    requeue_batch_ids: set[str] = set()
     with SessionLocal() as session:
         tasks = list(
             session.scalars(
@@ -345,21 +535,42 @@ def _terminalize_stale_model_tasks() -> None:
                 )
             )
             for document in documents:
-                document.status = "review_required"
-                document.stage = "review"
+                document.status = "awaiting_model"
+                document.stage = "model_retry"
                 document.error_code = "MODEL_TASK_WATCHDOG_TIMEOUT"
-                document.error_message = "模型异步任务超时，需要人工重试或复核"
-                document.retryable = True
+                document.error_message = "模型异步任务超时，已重新排队"
+                document.retryable = False
+            if documents:
+                requeue_batch_ids.add(task.batch_id)
             batch = session.get(CleaningBatch, task.batch_id)
             if batch is not None:
                 _finish_batch(session, batch.id)
         session.commit()
+    if requeue_batch_ids:
+        from .model_cleaning import maybe_plan_model_task
+
+        for batch_id in requeue_batch_ids:
+            try:
+                maybe_plan_model_task(batch_id)
+            except Exception:
+                logger.exception(
+                    "stale model task requeue failed",
+                    extra={"batch_id": batch_id},
+                )
 
 
 def _cleanup_system_event_logs() -> None:
     cutoff = datetime.now(timezone.utc) - timedelta(days=settings.system_log_retention_days)
     with SessionLocal() as session:
-        session.execute(delete(SystemEventLog).where(SystemEventLog.occurred_at < cutoff))
+        session.execute(
+            delete(SystemEventLog).where(
+                SystemEventLog.occurred_at < cutoff,
+                ~(
+                    (SystemEventLog.category == "pdf_conversion")
+                    & (SystemEventLog.status == "open")
+                ),
+            )
+        )
         session.commit()
 
 
@@ -373,6 +584,11 @@ def _refresh_course_snapshot() -> None:
     """Rebuild the effective recommendation catalogue from its DB authority."""
     with SessionLocal() as session:
         rebuild_snapshot(session)
+
+
+@celery_app.task(name="ai_management.reconcile_cleaning_pipeline")
+def reconcile_cleaning_pipeline() -> dict[str, int]:
+    return _reconcile_cleaning_pipeline()
 
 
 @celery_app.task(name="ai_management.nightly_maintenance")
@@ -427,5 +643,7 @@ __all__ = [
     "_flush_clicks",
     "_queue_deletion",
     "_retry_external_deletions",
+    "_reconcile_cleaning_pipeline",
+    "reconcile_cleaning_pipeline",
     "nightly_maintenance",
 ]

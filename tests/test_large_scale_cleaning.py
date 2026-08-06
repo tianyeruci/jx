@@ -228,8 +228,8 @@ def test_contract_retry_prompt_is_structural_and_has_no_filename():
     [
         ("personal_business_consultation", 500, 1_000_000, False, "realtime"),
         ("zsxq_post", 99, 199_999, False, "realtime"),
-        ("zsxq_post", 100, 1, True, "batch"),
-        ("wechat_public_account_cognition", 1, 200_001, True, "batch"),
+        ("zsxq_post", 100, 1, True, "realtime"),
+        ("wechat_public_account_cognition", 1, 200_001, True, "realtime"),
     ],
 )
 def test_model_channel_planner(
@@ -249,6 +249,44 @@ def test_model_channel_planner_defaults_to_realtime():
     from ai_management.model_cleaning import choose_call_mode
 
     assert choose_call_mode("zsxq_post", 100, 1) == "realtime"
+
+
+def test_content_review_gate_only_marks_empty_or_short_content():
+    from ai_management.cleaning import content_char_count, content_review_reason
+
+    policy = {"enabled": True, "min_chars": 200, "force_review": False}
+    assert content_char_count("# 标题\n\n" + ("正文 " * 110)) >= 200
+    assert content_review_reason("# 标题\n\n短正文", "zsxq_post", {
+        "_cleaning_review_policy": policy,
+    }) == ("CONTENT_TOO_SHORT", "最终正文少于 200 字")
+    assert content_review_reason("正文 " * 110, "zsxq_post", {
+        "_cleaning_review_policy": policy,
+    }) is None
+    assert content_review_reason("正常正文", "standard_document", {
+        "_cleaning_review_policy": policy,
+    }) is None
+
+
+def test_content_review_gate_can_be_disabled_by_batch_policy_snapshot():
+    from ai_management.cleaning import content_review_reason
+
+    policy = {
+        "enabled": True,
+        "review_required_enabled": False,
+        "min_chars": 200,
+        "force_review": True,
+    }
+    assert content_review_reason("短正文", "zsxq_post", {
+        "_cleaning_review_policy": policy,
+    }) is None
+    # Missing the new field is fail-closed for historical batches.
+    assert content_review_reason("短正文", "zsxq_post", {
+        "_cleaning_review_policy": {
+            "enabled": True,
+            "min_chars": 200,
+            "force_review": False,
+        },
+    }) == ("CONTENT_TOO_SHORT", "最终正文少于 200 字")
 
 
 def test_semantic_response_rejects_unknown_or_uncovered_blocks():
@@ -615,7 +653,8 @@ def test_consultation_pdf_table_warning_still_enters_model_cleaning(
     assert len(result) == 1
     assert result[0].disposition == "awaiting_model"
     assert result[0].audit["model_blocks"]
-    assert result[0].warnings == [
+    assert result[0].warnings == []
+    assert result[0].audit["pdf_conversion"]["review_reasons"] == [
         "table_review:表格结构无法可靠对齐，已保留线性单元格文本"
     ]
 

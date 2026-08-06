@@ -50,6 +50,19 @@ class PromptRequest:
     blocks: dict[str, str]
 
 
+class ModelNoResponseError(RuntimeError):
+    """The provider did not return a usable model message.
+
+    The worker is allowed one document-level retry for this class only.  A
+    non-empty response that cannot satisfy the JSON contract uses a different
+    exception so it is recorded and skipped without another model call.
+    """
+
+
+class ModelPayloadError(ValueError):
+    """The provider returned non-empty content that is not usable JSON."""
+
+
 class PostSemanticResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -195,8 +208,11 @@ priority 仅 actions 可用，值只能是 primary 或 secondary，其余位置�
 DecisionUnit 必须包含 unit_id、topic、local_context、problem、mechanism_or_diagnosis、actions、
 observed_outcomes、result_status（unverified|partially_verified|verified|not_applicable）、
 stated_conditions、derived_conditions、risks_or_limits、evidence_level（E0|E1|E2|E3）、
-retrieval_summary；每个 EvidenceItem 的 status 必须符合所在数组语义。非 E0 必须有 actions，
-E2/E3 必须有 observed_outcomes，E3 必须 result_status=verified。keep_as_case 必须有
+ retrieval_summary；每个 EvidenceItem 的 status 必须符合所在数组语义。非 E0 必须有 actions。
+ risks_or_limits 只能使用 status=consultant_judgment 或 derived_condition；
+ mechanism_or_diagnosis 只能使用 consultant_judgment，observed_outcomes 只能使用
+ observed_result，derived_conditions 只能使用 derived_condition。E2/E3 必须有
+ observed_outcomes，E3 必须 result_status=verified。keep_as_case 必须有
 shared_context 和 decision_units；background_sufficiency=low 不得 keep_as_case；time_sensitive=true
 必须有 time_sensitive_items，false 时必须为空。source_coverage 的 kept、dropped、unresolved
 必须把输入 blocks 的每个 key 恰好覆盖一次，reason 必须是非空字符串。
@@ -274,7 +290,10 @@ def choose_call_mode(
     batch_token_threshold: int = 200_000,
     batch_enabled: bool = False,
 ) -> Literal["realtime", "batch"]:
-    if strategy_code == "personal_business_consultation":
+    # Content strategies must isolate failures per document and continue the
+    # queue. Provider Batch has whole-job result/retry semantics, so keep it
+    # for the strict catalogue workflow only.
+    if strategy_code != "course_route_catalog":
         return "realtime"
     if strategy_code not in MODEL_STRATEGIES:
         raise ValueError("策略不使用大模型")
@@ -556,22 +575,33 @@ class BailianClient:
         *,
         model: str = "qwen-plus",
     ) -> tuple[dict[str, Any], dict[str, int]]:
-        response = self._request(
-            "POST",
-            "chat/completions",
-            json={
-                "model": model,
-                "messages": messages,
-                "temperature": 0,
-                "enable_thinking": False,
-                "response_format": {"type": "json_object"},
-            },
-        )
-        payload = response.json()
-        content = payload["choices"][0]["message"]["content"]
-        parsed = json.loads(content)
+        try:
+            response = self._request(
+                "POST",
+                "chat/completions",
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "temperature": 0,
+                    "enable_thinking": False,
+                    "response_format": {"type": "json_object"},
+                },
+            )
+        except Exception as exc:
+            raise ModelNoResponseError("模型服务未返回可用响应") from exc
+        try:
+            payload = response.json()
+            content = payload["choices"][0]["message"]["content"]
+        except Exception as exc:
+            raise ModelNoResponseError("模型响应缺少可用消息内容") from exc
+        if not isinstance(content, str) or not content.strip():
+            raise ModelNoResponseError("模型返回内容为空")
+        try:
+            parsed = json.loads(content)
+        except (TypeError, ValueError) as exc:
+            raise ModelPayloadError("模型返回了非 JSON 内容") from exc
         if not isinstance(parsed, dict):
-            raise ValueError("百炼结构化输出必须是JSON对象")
+            raise ModelPayloadError("百炼结构化输出必须是JSON对象")
         usage = payload.get("usage") or {}
         return parsed, {
             "input_tokens": int(usage.get("prompt_tokens") or 0),

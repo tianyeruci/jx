@@ -14,6 +14,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        populate_by_name=True,
     )
 
     app_env: Literal["development", "test", "production"] = "development"
@@ -70,6 +71,18 @@ class Settings(BaseSettings):
     cleaning_realtime_price_valid_until: str = ""
     cleaning_realtime_input_price_per_million: float = Field(default=0, ge=0)
     cleaning_realtime_output_price_per_million: float = Field(default=0, ge=0)
+    # Content-model cleaning only: short source entries are a human-review
+    # condition.  This is server-side policy; it is snapshotted per batch by
+    # the cleaning admission path and never accepted from upload metadata.
+    cleaning_review_required_enabled: bool = True
+    cleaning_review_min_chars: int = Field(default=200, ge=0)
+    cleaning_review_force_strategies: str = ""
+    # Acceptance-only cumulative cap for paid cleaning calls.  It is a
+    # machine-side safety rail, not a long-term product quota.  Deploy scripts
+    # must set a default without overwriting an operator's local override.
+    acceptance_cleaning_budget_max_yuan: float = Field(
+        default=5.0, alias="JX_ACCEPTANCE_CLEANING_BUDGET_MAX_YUAN", ge=0
+    )
     # The course catalogue is an upload-only workflow.  It may auto-approve
     # its own model task, but only while the configured price snapshot is
     # valid and the estimated upper bound stays below this internal cap.
@@ -105,8 +118,8 @@ class Settings(BaseSettings):
     # without changing the HTTP contract or worker code.
     pdf_ocr_enabled: bool = False
     pdf_ocr_backend: Literal["rapidocr_onnxruntime", "disabled"] = "rapidocr_onnxruntime"
-    pdf_ocr_max_pages: int = Field(default=10, ge=1, le=50)
-    pdf_ocr_task_timeout_seconds: int = Field(default=600, ge=600, le=3600)
+    pdf_ocr_max_pages: int = Field(default=50, ge=1, le=50)
+    pdf_ocr_task_timeout_seconds: int = Field(default=3600, ge=600, le=3600)
     pdf_ocr_idle_seconds: int = Field(default=600, ge=60, le=3600)
     pdf_ocr_render_dpi: int = Field(default=200, ge=72, le=600)
     pdf_ocr_retry_dpi: int = Field(default=300, ge=72, le=600)

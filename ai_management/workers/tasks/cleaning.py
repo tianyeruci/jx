@@ -18,15 +18,32 @@ from ...cleaning import (
     ChunkingConfig,
     cleaning_batch_cache_key,
     dify_document_name,
+    content_review_reason,
+    finalize_knowledge_markdown,
     get_settings,
+    preserve_review_reason,
+    review_policy_snapshot,
+    source_markdown_fallback_enabled,
+    user_visible_warnings,
+    validate_chunking_boundaries,
 )
 from ...course_import import sync_cleaning_catalog_record
 from ...courses import rebuild_snapshot
 from ...db import SessionLocal
-from ...models import CleaningBatch, CleaningDocument, CleaningFile, ExternalDeletionTask, utcnow
-from ...sanitization import sanitize_for_knowledge
+from ...models import (
+    CleaningBatch,
+    CleaningDocument,
+    CleaningFile,
+    DifyPublicationShard,
+    ExternalDeletionTask,
+    utcnow,
+)
 from ...services.admin_settings import bump_catalog_revision
-from ...services.observability.events import record_event
+from ...services.observability.events import (
+    exception_details,
+    record_event,
+    safe_exception_message,
+)
 from ..celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -41,6 +58,7 @@ REMOTE_PROVENANCE_FIELDS = frozenset(
     {
         "cleaning_strategy",
         "cleaning_spec_revision",
+        "content_format",
     }
 )
 REMOTE_FORBIDDEN_METADATA_FIELDS = frozenset(
@@ -56,6 +74,50 @@ REMOTE_FORBIDDEN_METADATA_FIELDS = frozenset(
     }
 )
 RAW_UPLOAD_DIFY_METADATA_FIELDS = frozenset({"document_type", "review_status"})
+
+
+def _record_pdf_conversion_events(
+    session,
+    *,
+    file_row: CleaningFile,
+    batch: CleaningBatch,
+    documents: list[Any],
+) -> None:
+    """Persist redacted warning/blocker summaries in the common event log."""
+
+    for document in documents:
+        audit = (getattr(document, "audit", None) or {}).get("pdf_conversion") or {}
+        if not audit:
+            continue
+        reasons = [str(item)[:120] for item in (audit.get("review_reasons") or [])]
+        status = str(audit.get("status") or "")
+        disposition = str(getattr(document, "disposition", "") or "")
+        blocked = status in {"failed", "blocked"} or disposition == "failed"
+        # Core converters may expose an explicit blocking list; otherwise a
+        # missing body/failed OCR status is the only safe blocker inference.
+        blocked = blocked or bool(audit.get("blocking_reasons"))
+        if not reasons and not blocked and not audit.get("needs_review"):
+            continue
+        severity = "blocked" if blocked else "warning"
+        record_event(
+            level="ERROR" if blocked else "WARNING",
+            category="pdf_conversion",
+            component="cleaning_worker",
+            event_code=f"PDF_CONVERSION_{severity.upper()}",
+            status="open",
+            message="PDF 转换需要处理" if blocked else "PDF 转换存在可复核问题",
+            resource_type="cleaning_file",
+            resource_id=file_row.id,
+            details={
+                "knowledge_base_code": batch.knowledge_base_code,
+                "severity": severity,
+                "codes": reasons[:20],
+                "pages": audit.get("page_count") or audit.get("pages"),
+                "backend": audit.get("backend"),
+                "conversion_status": status,
+            },
+            session=session,
+        )
 
 
 def _knowledge_client(batch: CleaningBatch) -> DifyKnowledgeClient:
@@ -417,6 +479,30 @@ def _publish_document(
             row.dify_batch_id = None
             session.commit()
 
+        audit = dict(row.audit_json or {})
+        row.cleaned_markdown = finalize_knowledge_markdown(
+            row.cleaned_markdown,
+            audit=audit,
+        )
+        row.audit_json = audit
+        if not row.cleaned_markdown.strip():
+            raise ValueError("知识库正文为空，禁止发布")
+        row.warnings_json = user_visible_warnings(row.warnings_json or [])
+        row.content_sha256 = _content_sha(
+            row.cleaned_markdown,
+            row.metadata_json or {},
+            row.chunking_json or {},
+        )
+        audit["publication_input"] = {
+            "content_format": "markdown",
+            "content_bytes": len(row.cleaned_markdown.encode("utf-8")),
+            "markdown_sha256": hashlib.sha256(
+                row.cleaned_markdown.encode("utf-8")
+            ).hexdigest(),
+        }
+        row.audit_json = audit
+        session.commit()
+
         chunking = _chunking_from_json(row.chunking_json)
         document_id, dify_batch_id = client.create_document(
             row.dify_document_name,
@@ -509,7 +595,7 @@ def _publish_document(
         row.status = "pending" if retry else "failed"
         row.stage = "retrying" if retry else "failed"
         row.error_code = "CLEANING_FAILED"
-        row.error_message = str(exc)[:2000]
+        row.error_message = safe_exception_message(exc, limit=2000)
         row.retryable = not retry
         session.commit()
         if retry:
@@ -766,6 +852,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     target,
                     row.original_filename,
                     diagnostics=conversion,
+                    clean_tables=True,
                 )
                 cleaned_documents = [
                     CleanedDocument(
@@ -779,7 +866,34 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 assert strategy is not None
                 cleaned_documents = strategy.clean(target, row.original_filename)
             if not cleaned_documents:
-                raise ValueError("策略没有生成任何可入库文档")
+                row.status = "failed"
+                row.outcome = "failed"
+                row.stage = "failed"
+                row.error_code = "CONTENT_EMPTY_AFTER_CLEANING"
+                row.error_message = "清洗策略没有生成可入库正文"
+                _refresh_file_state(session, row.id, commit=False)
+                _finish_batch(session, row.batch_id)
+                session.commit()
+                record_event(
+                    level="ERROR",
+                    category="task",
+                    component="cleaning_worker",
+                    event_code="CONTENT_EMPTY_AFTER_CLEANING",
+                    status="failed",
+                    message="清洗策略没有生成可入库正文",
+                    resource_type="cleaning_file",
+                    resource_id=file_id,
+                    session=session,
+                )
+                session.commit()
+                return True
+            if Path(row.original_filename).suffix.lower() == ".pdf":
+                _record_pdf_conversion_events(
+                    session,
+                    file_row=row,
+                    batch=batch,
+                    documents=cleaned_documents,
+                )
             if batch.strategy_code == "course_route_catalog":
                 resolved_name_conflicts = sum(
                     warning.get("code") == "duplicate_link_name_auto_resolved"
@@ -803,11 +917,48 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     )
 
             for sequence, document in enumerate(cleaned_documents, start=1):
-                document.markdown = sanitize_for_knowledge(document.markdown)
+                document.audit = dict(document.audit or {})
+                document.markdown = finalize_knowledge_markdown(
+                    document.markdown,
+                    audit=document.audit,
+                )
+                document.warnings = user_visible_warnings(document.warnings or [])
+                review_policy = (
+                    (batch.common_metadata or {}).get("_cleaning_review_policy")
+                    or review_policy_snapshot(batch.strategy_code)
+                )
+                review_metadata = {
+                    "_cleaning_review_policy": review_policy,
+                }
                 if not document.markdown.strip():
-                    document.disposition = "excluded"
+                    document.disposition = "failed"
                     document.error_code = "CONTENT_EMPTY_AFTER_SANITIZE"
                     document.error_message = "公共清理后没有可入库正文"
+                elif (
+                    document.disposition == "review_required"
+                    and source_markdown_fallback_enabled(
+                        batch.strategy_code,
+                        review_metadata,
+                    )
+                    and document.markdown.strip()
+                ):
+                    document.audit = preserve_review_reason(
+                        document.audit,
+                        document.error_code,
+                        document.error_message,
+                    )
+                    document.disposition = (
+                        "shard_pending"
+                        if batch.strategy_code
+                        in {
+                            "wechat_public_account_cognition",
+                            "zsxq_post",
+                            "xiaobot_post",
+                        }
+                        else "pending"
+                    )
+                    document.error_code = None
+                    document.error_message = None
                 metadata = {
                     **(batch.common_metadata or {}),
                     **(document.metadata or {}),
@@ -820,13 +971,28 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     "cleaning_spec_revision": batch.spec_revision,
                     "source_document_index": sequence,
                     "build_version": batch.build_version,
+                    "content_format": "markdown",
+                    "_cleaning_review_policy": review_policy,
                 }
                 metadata = {
                     key: value
                     for key, value in metadata.items()
                     if value not in (None, "", [], {})
                 }
+                if (
+                    document.disposition not in {"excluded", "review_required"}
+                    and document.markdown.strip()
+                ):
+                    short_reason = content_review_reason(
+                        document.markdown,
+                        batch.strategy_code,
+                        metadata,
+                    )
+                    if short_reason:
+                        document.disposition = "review_required"
+                        document.error_code, document.error_message = short_reason
                 chunking = document.chunking or ChunkingConfig()
+                validate_chunking_boundaries(document.markdown, chunking)
                 status = document.disposition or "pending"
                 structure_review = (
                     status == "review_required"
@@ -856,7 +1022,19 @@ def process_cleaning_file(self, file_id: str) -> bool:
                         else (
                             "review"
                             if status == "review_required"
-                            else ("excluded" if status == "excluded" else "pending")
+                            else (
+                                "failed"
+                                if status == "failed"
+                                else (
+                                    "excluded"
+                                    if status == "excluded"
+                                    else (
+                                        "shard_pending"
+                                        if status == "shard_pending"
+                                        else "pending"
+                                    )
+                                )
+                            )
                         )
                     ),
                     error_code=document.error_code,
@@ -911,11 +1089,55 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     )
                 )
             )
+            if blocking_reviews and source_markdown_fallback_enabled(
+                batch.strategy_code,
+                batch.common_metadata or review_policy_snapshot(batch.strategy_code),
+            ):
+                for item in blocking_reviews:
+                    if not item.cleaned_markdown.strip():
+                        continue
+                    item.audit_json = preserve_review_reason(
+                        item.audit_json,
+                        item.error_code,
+                        item.error_message,
+                    )
+                    item.audit_json["source_markdown_fallback"] = True
+                    item.status = (
+                        "shard_pending"
+                        if batch.strategy_code
+                        in {
+                            "wechat_public_account_cognition",
+                            "zsxq_post",
+                            "xiaobot_post",
+                        }
+                        else "pending"
+                    )
+                    item.stage = item.status
+                    item.error_code = None
+                    item.error_message = None
+                    item.retryable = True
+                session.commit()
+                blocking_reviews = [
+                    item
+                    for item in blocking_reviews
+                    if item.status == "review_required"
+                ]
+                pending_documents = list(
+                    session.scalars(
+                        select(CleaningDocument)
+                        .where(
+                            CleaningDocument.file_id == row.id,
+                            CleaningDocument.status == "pending",
+                        )
+                        .order_by(CleaningDocument.sequence)
+                    )
+                )
             if (
                 blocking_reviews
                 and pending_documents
                 and batch.strategy_code
                 not in {
+                    "personal_business_consultation",
                     "wechat_public_account_cognition",
                     "zsxq_post",
                     "xiaobot_post",
@@ -942,12 +1164,35 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 )
                 process_cleaning_document.apply_async(
                     args=[ordered_ids[0]],
-                    queue=(
-                        "ai_ocr"
-                        if Path(row.original_filename).suffix.lower() == ".pdf"
-                        else "ai_cleaning"
-                    ),
+                    # All Dify writes share the dedicated single-concurrency
+                    # publication worker. OCR is complete before this point.
+                    queue="ai_publication",
                 )
+            shard_pending_documents = list(
+                session.scalars(
+                    select(CleaningDocument).where(
+                        CleaningDocument.file_id == row.id,
+                        CleaningDocument.status == "shard_pending",
+                    )
+                )
+            )
+            if shard_pending_documents:
+                from .model_cleaning import _plan_post_publication, publish_dify_shard
+
+                shard_ids = _plan_post_publication(session, row.batch_id)
+                session.commit()
+                pending_shard_ids = list(
+                    session.scalars(
+                        select(DifyPublicationShard.id).where(
+                            DifyPublicationShard.id.in_(shard_ids),
+                            DifyPublicationShard.status == "shard_pending",
+                        )
+                    )
+                )
+                for shard_id in pending_shard_ids:
+                    publish_dify_shard.apply_async(
+                        args=[shard_id], queue="ai_publication"
+                    )
             awaiting_model_documents = list(
                 session.scalars(
                     select(CleaningDocument).where(
@@ -976,19 +1221,107 @@ def process_cleaning_file(self, file_id: str) -> bool:
         return True
     except Exception as exc:
         logger.exception("cleaning file failed", extra={"file_id": file_id})
+        terminal_failure = False
+        content_missing = isinstance(exc, ValueError) and any(
+            marker in str(exc)
+            for marker in (
+                "没有可清洗正文",
+                "没有可清洗的",
+                "没有可入库文档",
+                "正文为空",
+                "未生成可入库正文",
+            )
+        )
+        failure_context: dict[str, Any] = {}
+        sensitive_values: tuple[str, ...] = ()
         with SessionLocal() as session:
             row = session.get(CleaningFile, file_id)
             if row:
-                retry = row.attempts < 2
-                row.status = "pending" if retry else "failed"
-                row.outcome = "pending" if retry else "failed"
-                row.stage = "retrying" if retry else "failed"
-                row.error_code = "CLEANING_FAILED"
-                row.error_message = str(exc)[:2000]
+                failure_context = {
+                    "file_id": row.id,
+                    "batch_id": row.batch_id,
+                    "strategy_code": row.batch.strategy_code,
+                    "knowledge_base_code": row.batch.knowledge_base_code,
+                    "attempts": row.attempts,
+                    "source_extension": row.extension,
+                    "source_sha256_prefix": row.source_sha256[:12],
+                }
+                sensitive_values = (row.original_filename,)
+                retry = not content_missing and row.attempts < 2
+                terminal_failure = not retry
+                if content_missing:
+                    row.status = "failed"
+                    row.outcome = "failed"
+                    row.stage = "failed"
+                    row.error_code = "CONTENT_EMPTY_AFTER_CLEANING"
+                    row.error_message = "清洗流程未生成可入库正文"
+                else:
+                    row.status = "pending" if retry else "failed"
+                    row.outcome = "pending" if retry else "failed"
+                    row.stage = "retrying" if retry else "failed"
+                    row.error_code = "CLEANING_FAILED"
+                    failure_context.update(
+                        {
+                            "stage": row.stage,
+                            "attempts": row.attempts,
+                            "error_code": row.error_code,
+                        }
+                    )
+                    row.error_message = exception_details(
+                        exc,
+                        phase="cleaning_file",
+                        sensitive_values=sensitive_values,
+                        **failure_context,
+                    )["exception_message"]
                 _finish_batch(session, row.batch_id)
                 session.commit()
                 if retry:
                     raise self.retry(exc=exc, countdown=10, max_retries=1)
+        if content_missing:
+            record_event(
+                level="ERROR",
+                category="task",
+                component="cleaning_worker",
+                event_code="CONTENT_EMPTY_AFTER_CLEANING",
+                status="failed",
+                message="清洗流程未生成可入库正文",
+                resource_type="cleaning_file",
+                resource_id=file_id,
+                details=exception_details(
+                    exc,
+                    phase="cleaning_file_content_empty",
+                    sensitive_values=sensitive_values,
+                    **failure_context,
+                    error_code="CONTENT_EMPTY_AFTER_CLEANING",
+                ),
+            )
+            return True
+        if terminal_failure:
+            with SessionLocal() as session:
+                row = session.get(CleaningFile, file_id)
+                if row and Path(row.original_filename).suffix.lower() == ".pdf":
+                    record_event(
+                        level="ERROR",
+                        category="pdf_conversion",
+                        component="cleaning_worker",
+                        event_code="PDF_CONVERSION_BLOCKED",
+                        status="open",
+                        message="PDF 转换失败，未生成可入库正文",
+                        resource_type="cleaning_file",
+                        resource_id=file_id,
+                        details={
+                            "severity": "blocked",
+                            "codes": [type(exc).__name__],
+                            "knowledge_base_code": row.batch.knowledge_base_code,
+                            "exception": exception_details(
+                                exc,
+                                phase="pdf_conversion",
+                                sensitive_values=(row.original_filename,),
+                            ),
+                        },
+                        session=session,
+                    )
+                    session.commit()
         record_event(
             level="ERROR",
             category="task",
@@ -998,7 +1331,12 @@ def process_cleaning_file(self, file_id: str) -> bool:
             message="清洗文件任务失败",
             resource_type="cleaning_file",
             resource_id=file_id,
-            details={"error_type": type(exc).__name__},
+            details=exception_details(
+                exc,
+                phase="cleaning_file",
+                sensitive_values=sensitive_values,
+                **failure_context,
+            ),
         )
         return False
 
@@ -1037,6 +1375,8 @@ def process_cleaning_document(self, document_id: str) -> bool:
             session.commit()
             return result
     except Exception as exc:
+        failure_context: dict[str, Any] = {"document_id": document_id}
+        sensitive_values: tuple[str, ...] = ()
         with SessionLocal() as session:
             row = session.get(CleaningDocument, document_id)
             if row is not None and row.attempts < 2:
@@ -1044,6 +1384,21 @@ def process_cleaning_document(self, document_id: str) -> bool:
                 _finish_batch(session, row.file.batch_id)
                 session.commit()
                 raise self.retry(exc=exc, countdown=10, max_retries=1)
+            if row is not None:
+                _refresh_file_state(session, row.file_id, commit=False)
+                _finish_batch(session, row.file.batch_id)
+                session.commit()
+                failure_context = {
+                    "document_id": row.id,
+                    "file_id": row.file_id,
+                    "batch_id": row.file.batch_id,
+                    "strategy_code": row.file.batch.strategy_code,
+                    "knowledge_base_code": row.file.batch.knowledge_base_code,
+                    "stage": row.stage,
+                    "attempts": row.attempts,
+                    "error_code": row.error_code,
+                }
+                sensitive_values = (row.file.original_filename,)
         record_event(
             level="ERROR",
             category="task",
@@ -1053,7 +1408,12 @@ def process_cleaning_document(self, document_id: str) -> bool:
             message="清洗条目入库失败",
             resource_type="cleaning_document",
             resource_id=document_id,
-            details={"error_type": type(exc).__name__},
+            details=exception_details(
+                exc,
+                phase="dify_publication",
+                sensitive_values=sensitive_values,
+                **failure_context,
+            ),
         )
         return False
 

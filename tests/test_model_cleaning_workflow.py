@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
 import httpx
@@ -84,11 +85,19 @@ def test_dify_metadata_projection_excludes_local_provenance_and_keeps_business_f
     }
 
 
-def test_model_plan_requires_approval_only_for_large_batch(service_db, monkeypatch):
+def test_content_model_plan_forces_realtime_for_large_batch(service_db, monkeypatch):
     from ai_management.workers.tasks import model_cleaning as worker
 
     monkeypatch.setattr(worker.settings, "cleaning_batch_candidate_threshold", 1)
     monkeypatch.setattr(worker.settings, "cleaning_batch_token_threshold", 999999)
+    # Content strategies use per-document realtime isolation even when the
+    # provider Batch switch is enabled.
+    monkeypatch.setattr(worker.settings, "bailian_batch_enabled", True)
+    monkeypatch.setattr(
+        worker.process_realtime_model_task,
+        "apply_async",
+        lambda *args, **kwargs: None,
+    )
     with service_db() as session:
         batch = CleaningBatch(
             strategy_code="zsxq_post",
@@ -124,10 +133,10 @@ def test_model_plan_requires_approval_only_for_large_batch(service_db, monkeypat
 
     with service_db() as session:
         task = session.get(ModelCleaningTask, task_id)
-        assert task.mode == "batch"
-        assert task.status == "awaiting_approval"
+        assert task.mode == "realtime"
+        assert task.status == "queued"
         assert task.candidate_count == 1
-        assert task.batch.status == "awaiting_model_approval"
+        assert task.batch.status == "model_validating"
 
 
 def test_catalog_batch_switch_forces_realtime_with_its_own_price_snapshot(
@@ -297,6 +306,7 @@ def test_catalog_auto_model_task_is_approved_and_queued(service_db, monkeypatch)
     monkeypatch.setattr(worker.settings, "course_catalog_auto_publish", True)
     monkeypatch.setattr(worker.settings, "cleaning_batch_candidate_threshold", 1)
     monkeypatch.setattr(worker.settings, "cleaning_batch_token_threshold", 999999)
+    monkeypatch.setattr(worker.settings, "bailian_batch_enabled", True)
     monkeypatch.setattr(worker.settings, "cleaning_price_version", "qwen-plus-2026-01")
     monkeypatch.setattr(worker.settings, "cleaning_price_effective_date", "2026-01-01")
     monkeypatch.setattr(worker.settings, "cleaning_price_valid_until", "2099-01-01")
@@ -1194,7 +1204,7 @@ def test_post_model_result_keeps_only_evidenced_blocks():
         content_sha256="b" * 64,
         title="定位复盘",
         blocks={
-            "b0001": "我先访谈客户，再调整产品定位。",
+                "b0001": "我先访谈客户，再调整产品定位。 " * 20,
             "b0002": "加微信领取优惠。",
         },
     )
@@ -1220,11 +1230,196 @@ def test_post_model_result_keeps_only_evidenced_blocks():
     assert document.metadata_json["topic"] == "产品与客户"
 
 
-def test_realtime_post_contract_retry_receives_coverage_repair_hint(
+def test_post_model_review_uses_keep_blocks_when_review_gate_is_disabled():
+    from ai_management.workers.tasks.model_cleaning import _apply_model_payload
+
+    document = CleaningDocument(
+        file_id="file-1",
+        sequence=1,
+        title="定位复盘",
+        status="model_processing",
+        stage="model_running",
+        metadata_json={
+            "record_type": "article",
+            "cleaning_strategy": "zsxq_post",
+            "_cleaning_review_policy": {
+                "enabled": True,
+                "review_required_enabled": False,
+                "min_chars": 200,
+                "force_review": False,
+            },
+        },
+        audit_json={},
+        cleaned_markdown="",
+    )
+    request = PromptRequest(
+        strategy_code="zsxq_post",
+        item_id="item-1",
+        content_sha256="b" * 64,
+        title="定位复盘",
+        blocks={
+            "b0001": "我先访谈客户，再调整产品定位。 " * 20,
+            "b0002": "加微信领取优惠。",
+        },
+    )
+    _apply_model_payload(
+        document,
+        "zsxq_post",
+        request,
+        {
+            "disposition": "review",
+            "business_relevance": "ambiguous",
+            "reason_code": "ambiguous_evidence",
+            "keep_block_ids": ["b0001"],
+            "drop_block_ids": ["b0002"],
+            "topic": "产品与客户",
+            "time_sensitive": False,
+            "confidence": 0.4,
+        },
+    )
+
+    assert document.status == "shard_pending"
+    assert "访谈客户" in document.cleaned_markdown
+    assert "加微信" not in document.cleaned_markdown
+    assert document.audit_json["review_original_error"]["code"] == "MODEL_REVIEW_SKIPPED"
+
+
+def test_model_review_restores_source_markdown_for_publishable_new_policy():
+    from ai_management.workers.tasks.model_cleaning import _apply_source_markdown_fallback
+
+    source_markdown = "# 原始标题\n\n表格清洗后的原始 Markdown 内容。"
+    source_metadata = {
+        "record_type": "article",
+        "_cleaning_review_policy": {
+            "enabled": True,
+            "review_required_enabled": True,
+            "source_markdown_fallback_enabled": True,
+        },
+    }
+    document = CleaningDocument(
+        file_id="file-1",
+        sequence=1,
+        title="原始标题",
+        status="failed",
+        stage="failed",
+        error_code="MODEL_NO_RESPONSE",
+        error_message="模型服务无响应",
+        metadata_json=source_metadata,
+        chunking_json={"parent_separator": "<<<P>>>"},
+        audit_json={},
+        cleaned_markdown="模型错误输出",
+    )
+
+    assert _apply_source_markdown_fallback(
+        document,
+        "personal_business_consultation",
+        source_markdown=source_markdown,
+        source_metadata=source_metadata,
+        source_chunking={"parent_separator": "<<<P>>>"},
+    ) is True
+
+    assert document.status == "pending"
+    assert document.cleaned_markdown == source_markdown
+    assert document.metadata_json == source_metadata
+    assert document.audit_json["source_markdown_fallback"]["model_output_ignored"] is True
+    assert document.error_code is None
+
+
+def test_consultation_review_uses_kept_source_blocks_when_review_gate_is_disabled():
+    from ai_management.workers.tasks.model_cleaning import _apply_model_payload
+
+    document = CleaningDocument(
+        file_id="file-1",
+        sequence=1,
+        title="咨询案例",
+        status="model_processing",
+        stage="model_running",
+        metadata_json={
+            "record_type": "consulting_case",
+            "cleaning_strategy": "personal_business_consultation",
+            "_cleaning_review_policy": {
+                "enabled": True,
+                "review_required_enabled": False,
+                "min_chars": 200,
+                "force_review": False,
+            },
+        },
+        audit_json={},
+        cleaned_markdown="",
+    )
+    request = PromptRequest(
+        strategy_code="personal_business_consultation",
+        item_id="item-1",
+        content_sha256="b" * 64,
+        title="咨询案例",
+        blocks={
+            "b0001": "团队通过客户访谈识别产品定位问题。",
+            "b0002": "这段内容被模型判定为不确定。",
+        },
+    )
+    _apply_model_payload(
+        document,
+        "personal_business_consultation",
+        request,
+        {
+            "schema_version": "consulting_case_v2",
+            "case_id": "case_demo1234",
+            "case_group_id": None,
+            "disposition": "review_required",
+            "title": "咨询案例",
+            "source_date": "",
+            "shared_context": [],
+            "objectives": [],
+            "decision_units": [],
+            "overall_evidence_level": "E0",
+            "background_sufficiency": "medium",
+            "time_sensitive": False,
+            "time_sensitive_items": [],
+            "source_coverage": {
+                "kept": [{"block_id": "b001", "reason": "保留来源"}],
+                "dropped": [{"block_id": "b002", "reason": "证据不足"}],
+                "unresolved": [],
+            },
+            "warnings": [],
+        },
+    )
+
+    assert document.status == "pending"
+    assert "客户访谈" in document.cleaned_markdown
+    assert "不确定" not in document.cleaned_markdown
+    assert document.audit_json["review_original_error"]["code"] == "MODEL_REVIEW_SKIPPED"
+
+
+def test_privacy_review_can_continue_with_audit_when_review_gate_is_disabled():
+    from ai_management.workers.tasks.model_cleaning import _mark_privacy_review
+
+    document = CleaningDocument(
+        title="咨询案例",
+        status="model_processing",
+        stage="model_running",
+        metadata_json={
+            "cleaning_strategy": "personal_business_consultation",
+            "_cleaning_review_policy": {
+                "enabled": True,
+                "review_required_enabled": False,
+            },
+        },
+        audit_json={},
+        cleaned_markdown="已完成脱敏后的案例正文。",
+    )
+
+    _mark_privacy_review(document, "测试隐私风险")
+
+    assert document.status == "pending"
+    assert document.error_code is None
+    assert document.audit_json["review_original_error"]["code"] == "PRIVACY_REVIEW_REQUIRED"
+
+
+def test_realtime_post_contract_failure_skips_without_retry(
     service_db,
     monkeypatch,
 ):
-    """A structurally incomplete first reply must retry with actionable JSON guidance."""
+    """A non-empty contract failure is recorded and skipped without retry."""
 
     from ai_management.workers.tasks import model_cleaning as worker
 
@@ -1321,11 +1516,109 @@ def test_realtime_post_contract_retry_receives_coverage_repair_hint(
 
     assert worker.process_realtime_model_task.run(task_id) is True
     assert calls[0] == ""
-    assert "每一个 key 必须且只能出现一次" in calls[1]
+    assert len(calls) == 1
     with service_db() as session:
         document = session.get(CleaningDocument, document_id)
+        task = session.get(ModelCleaningTask, task_id)
+        assert document.status == "failed"
+        assert document.error_code == "MODEL_CONTRACT_INVALID"
+        assert task.result_counts == {
+            "succeeded": 0,
+            "excluded": 0,
+            "review": 0,
+            "failed": 1,
+        }
+
+
+def test_realtime_post_no_response_retries_once(service_db, monkeypatch):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="model_validating",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        body = "先访谈客户，再调整产品定位。 " * 20
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="商业复盘",
+            dify_document_name="cleaned-aaaaaaaaaaaaaaaa__001.md",
+            document_key="item-1",
+            status="awaiting_model",
+            stage="model_queued",
+            content_sha256="b" * 64,
+            metadata_json={"record_type": "article"},
+            chunking_json={},
+            audit_json={"model_blocks": {"b0001": body}},
+            warnings_json=[],
+            cleaned_markdown=body,
+        )
+        session.add(document)
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="realtime",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="queued",
+            candidate_fingerprint="f" * 64,
+            candidate_count=1,
+            estimated_input_tokens=100,
+            estimated_output_tokens=100,
+        )
+        session.add(task)
+        session.commit()
+        task_id, document_id = task.id, document.id
+
+    calls = 0
+
+    class FakeClient:
+        def close(self):
+            return None
+
+    def fake_realtime_chat(_client, _request, *, model, repair_hint=""):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise worker.ModelNoResponseError("模型响应为空")
+        return (
+            {
+                "disposition": "keep",
+                "business_relevance": "direct",
+                "reason_code": "business_method",
+                "keep_block_ids": ["b0001"],
+                "drop_block_ids": [],
+                "topic": "产品与客户",
+                "time_sensitive": False,
+                "confidence": 0.9,
+            },
+            {"input_tokens": 1, "output_tokens": 1},
+        )
+
+    monkeypatch.setattr(worker, "_client", FakeClient)
+    monkeypatch.setattr(worker, "_realtime_chat", fake_realtime_chat)
+    monkeypatch.setattr(worker, "_finish_model_task", lambda _task_id: None)
+
+    assert worker.process_realtime_model_task.run(task_id) is True
+    assert calls == 2
+    with service_db() as session:
+        document = session.get(CleaningDocument, document_id)
+        task = session.get(ModelCleaningTask, task_id)
         assert document.status == "shard_pending"
-        assert "加微信" not in document.cleaned_markdown
+        assert document.audit_json["model_attempts"] == 2
+        assert task.result_counts == {
+            "succeeded": 1,
+            "excluded": 0,
+            "review": 0,
+            "failed": 0,
+        }
 
 
 def test_finished_model_task_publishes_every_source_file(service_db, monkeypatch):
@@ -1456,6 +1749,81 @@ def test_finished_normal_model_task_refreshes_review_only_file(service_db):
         assert file_row.status == "review_required"
         assert file_row.outcome == "review_required"
         assert task.batch.status == "completed"
+
+
+def test_model_contract_retry_requeues_one_realtime_item(service_db, monkeypatch):
+    from ai_management.cleaning import retry_model_contract_item
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    queued = {}
+    monkeypatch.setattr(
+        worker.process_realtime_model_task,
+        "apply_async",
+        lambda **kwargs: queued.update(kwargs),
+    )
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="personal_business_consultation",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="completed",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        file_row.status = "failed"
+        file_row.outcome = "failed"
+        file_row.stage = "failed"
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="个人商业咨询案例",
+            dify_document_name="cleaned-aaaaaaaaaaaaaaaa__001.md",
+            document_key="item-1",
+            status="failed",
+            stage="failed",
+            error_code="MODEL_CONTRACT_INVALID",
+            error_message="模型契约校验失败（脱敏）: path=decision_units.0.risks_or_limits.0.status,code=fact_state_mismatch",
+            content_sha256="b" * 64,
+            metadata_json={},
+            chunking_json={},
+            audit_json={"model_blocks": {"b0001": "咨询案例来源"}},
+            warnings_json=["table_review:warning"],
+            cleaned_markdown="# 个人商业咨询案例\n\n来源正文",
+        )
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="realtime",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="completed",
+            candidate_fingerprint="f" * 64,
+            candidate_count=1,
+            result_counts={"succeeded": 0, "review": 1},
+        )
+        session.add_all([document, task])
+        session.commit()
+        batch_id, task_id, item_id = batch.id, task.id, document.id
+
+    with service_db() as session:
+        result = retry_model_contract_item(batch_id, task_id, item_id, session)
+
+    assert result == {"task_id": task_id, "item_id": item_id, "status": "queued"}
+    assert queued == {"args": [task_id], "queue": "ai_model_realtime"}
+    with service_db() as session:
+        document = session.get(CleaningDocument, item_id)
+        task = session.get(ModelCleaningTask, task_id)
+        batch = session.get(CleaningBatch, batch_id)
+        assert document is not None
+        assert task is not None
+        assert batch is not None
+        assert document.status == "awaiting_model"
+        assert document.stage == "model_retry"
+        assert document.error_code is None
+        assert task.status == "queued"
+        assert batch.status == "model_validating"
 
 
 def test_finished_catalog_model_task_refreshes_atomic_failure_file_state(service_db):
@@ -1805,3 +2173,61 @@ def test_catalog_review_round_trip_creates_approved_catalog_records(service_db):
         assert file_row.outcome == "processing"
         assert file_row.stage == "publishing"
         assert batch.status == "processing"
+
+
+def test_stale_model_task_requeues_unfinished_documents(service_db, monkeypatch):
+    from ai_management.workers.tasks import maintenance
+
+    requeued: list[str] = []
+    monkeypatch.setattr(
+        "ai_management.workers.tasks.model_cleaning.maybe_plan_model_task",
+        lambda batch_id: requeued.append(batch_id),
+    )
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="model_validating",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        file_row.status = "processing"
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="未完成帖子",
+            dify_document_name="unfinished.md",
+            document_key="unfinished",
+            status="model_processing",
+            stage="model_running",
+            audit_json={"model_attempts": 1},
+            cleaned_markdown="正文",
+        )
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="realtime",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="running",
+            candidate_fingerprint="f" * 64,
+            candidate_count=1,
+            updated_at=datetime.now(timezone.utc) - timedelta(hours=7),
+        )
+        session.add_all([document, task])
+        session.commit()
+        batch_id, task_id, document_id = batch.id, task.id, document.id
+
+    maintenance._terminalize_stale_model_tasks()
+
+    assert requeued == [batch_id]
+    with service_db() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        document = session.get(CleaningDocument, document_id)
+        assert task.status == "failed"
+        assert document.status == "awaiting_model"
+        assert document.stage == "model_retry"
+        assert document.error_code == "MODEL_TASK_WATCHDOG_TIMEOUT"

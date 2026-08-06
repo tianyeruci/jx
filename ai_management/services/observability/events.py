@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -11,6 +12,9 @@ from ...db import SessionLocal
 from ...models import SystemEventLog
 
 logger = logging.getLogger(__name__)
+
+_PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/]|/)[^\s,;)]{2,}")
+_LONG_ERROR_RE = re.compile(r"\s{2,}")
 
 _REDACTED_KEY_PARTS = (
     "token",
@@ -45,6 +49,47 @@ def sanitize_details(value: Any, *, depth: int = 0) -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     return str(value)[:1000]
+
+
+def safe_exception_message(
+    exc: BaseException,
+    *,
+    sensitive_values: tuple[str, ...] = (),
+    limit: int = 600,
+) -> str:
+    """Return a useful, bounded error summary without source payloads."""
+
+    message = str(exc).replace("\x00", " ").strip()
+    for value in sensitive_values:
+        if value:
+            message = message.replace(value, "[redacted]")
+    message = _PATH_RE.sub("[path]", message)
+    message = _LONG_ERROR_RE.sub(" ", message)
+    if "\n" in message:
+        message = message.splitlines()[0].strip()
+    if len(message) > limit:
+        return message[:limit] + "…"
+    return message
+
+
+def exception_details(
+    exc: BaseException,
+    *,
+    phase: str,
+    sensitive_values: tuple[str, ...] = (),
+    **context: Any,
+) -> dict[str, Any]:
+    """Build redacted diagnostic details for error events."""
+
+    return {
+        **context,
+        "phase": phase,
+        "exception_type": type(exc).__name__,
+        "exception_message": safe_exception_message(
+            exc,
+            sensitive_values=sensitive_values,
+        ),
+    }
 
 
 def record_event(

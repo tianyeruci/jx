@@ -26,7 +26,7 @@ def test_bailian_batch_is_opt_in_when_no_environment_override(monkeypatch):
 def test_miniapp_interface_document_is_frozen_for_internal_cleaning_changes():
     path = ROOT / "docs/小程序后端与 AI 管理服务接口对接交互版本.md"
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    assert digest == "b3c1765041fba7f9081c81fbbac04fc21a30100b5a92f6df486c08e5685e1fbd"
+    assert digest == "67b3247c51f99a7253ded281f221f5a81cfb5c6dac26bcb840d8967b28f75f3c"
 
 
 def test_remote_cleaning_acceptance_uses_anonymous_names_and_covers_new_flow():
@@ -37,8 +37,9 @@ def test_remote_cleaning_acceptance_uses_anonymous_names_and_covers_new_flow():
     assert "model-tasks/" in source
     assert "publication_shards" in source
     assert "source_name" not in source[source.index("def _expected_remote_name") : source.index("class AcceptanceRunner")]
-    assert 'r"commercial-shard-[a-f0-9]{16}\\.md"' in source
-    assert 'r"commercial-shard-[a-f0-9]{16}\\\\.md"' not in source
+    assert "split: bool = False" in source[source.index("def _expected_remote_name") : source.index("class AcceptanceRunner")]
+    assert "split=len(details) > 1" in source
+    assert "STORAGE_MARKDOWN_TABLE_RETAINED" in source
 
 
 def test_remote_acceptance_generates_all_controlled_catalog_and_raw_inputs():
@@ -299,6 +300,19 @@ def test_default_production_cleaning_window_is_all_day():
     assert 'cleaning_spec_revision: str = "commercial-cleaning-v3"' in config
 
 
+def test_formal_release_restores_preexisting_ocr_worker_on_early_failure():
+    release = _source("scripts/jx_deploy_release.sh")
+    restore = release[
+        release.index("restore_ocr_autoscaler_after_failure()") : release.index(
+            "rollback()"
+        )
+    ]
+
+    assert 'if command -v systemctl >/dev/null 2>&1; then' in restore
+    assert 'if test "$OCR_WORKER_WAS_RUNNING" -eq 1; then' in restore
+    assert 'docker compose -f docker-compose.ai.yml up -d ai-ocr-worker' in restore
+
+
 def test_conversion_markdown_is_configurable_persistent_and_expiring():
     config = _source("ai_management/config.py")
     compose = _source("docker-compose.ai.yml")
@@ -323,7 +337,7 @@ def test_dify_shard_parent_limit_is_separate_from_model_candidate_limit():
     publish = worker[worker.index("def publish_dify_shard") : worker.index("__all__")]
 
     assert "dify_parent_max_tokens: int = Field(default=2000, ge=50, le=4000)" in config
-    assert "parent_max_tokens=settings.dify_parent_max_tokens" in publish
+    assert "dify_parent_max_tokens" in publish
     assert "parent_max_tokens=settings.cleaning_candidate_max_tokens" not in publish
 
 

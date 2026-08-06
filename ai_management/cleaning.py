@@ -59,6 +59,125 @@ router = APIRouter(
 )
 logger = logging.getLogger(__name__)
 
+CONTENT_MODEL_STRATEGIES = frozenset(
+    {
+        "personal_business_consultation",
+        "wechat_public_account_cognition",
+        "zsxq_post",
+        "xiaobot_post",
+    }
+)
+
+
+def _review_force_strategy_codes(value: str | None) -> frozenset[str]:
+    return frozenset(
+        item.strip()
+        for item in str(value or "").split(",")
+        if item.strip()
+    )
+
+
+def review_policy_snapshot(strategy_code: str) -> dict[str, Any]:
+    """Return the server-side review policy captured by a new batch."""
+
+    settings = get_settings()
+    enabled = strategy_code in CONTENT_MODEL_STRATEGIES
+    return {
+        "enabled": enabled,
+        "review_required_enabled": settings.cleaning_review_required_enabled,
+        # New batches may publish any non-empty cleaned Markdown directly.
+        # The catalogue remains explicitly excluded because its model output
+        # changes authoritative course/route records rather than just text.
+        "source_markdown_fallback_enabled": strategy_code != "course_route_catalog",
+        "min_chars": settings.cleaning_review_min_chars if enabled else 0,
+        "force_review": enabled
+        and strategy_code in _review_force_strategy_codes(
+            settings.cleaning_review_force_strategies
+        ),
+    }
+
+
+def content_review_bypass_enabled(
+    strategy_code: str,
+    metadata: dict[str, Any] | None = None,
+) -> bool:
+    """Whether a content-model batch may continue past a review gate."""
+
+    if strategy_code not in CONTENT_MODEL_STRATEGIES:
+        return False
+    policy = (metadata or {}).get("_cleaning_review_policy") or review_policy_snapshot(
+        strategy_code
+    )
+    # Missing policy fields are fail-closed for batches created before this
+    # switch existed.
+    return policy.get("review_required_enabled", True) is False
+
+
+def source_markdown_fallback_enabled(
+    strategy_code: str,
+    metadata: dict[str, Any] | None = None,
+) -> bool:
+    """Whether a new batch may publish its non-empty cleaned Markdown source."""
+
+    if strategy_code == "course_route_catalog":
+        return False
+    policy = (metadata or {}).get("_cleaning_review_policy")
+    if not isinstance(policy, dict):
+        # Historical rows predate this policy and must not be silently
+        # reinterpreted by a newer worker.
+        return False
+    return policy.get("source_markdown_fallback_enabled") is True
+
+
+def preserve_review_reason(
+    audit: dict[str, Any] | None,
+    error_code: str | None,
+    error_message: str | None,
+) -> dict[str, Any]:
+    """Keep the original gate reason in internal audit only."""
+
+    result = dict(audit or {})
+    if error_code or error_message:
+        result["review_original_error"] = {
+            "code": error_code or "REVIEW_REQUIRED",
+            "message": str(error_message or "需要人工复核")[:500],
+        }
+    return result
+
+
+def content_char_count(markdown: str) -> int:
+    """Count source characters without whitespace or Markdown decoration."""
+
+    value = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", markdown or "")
+    value = re.sub(r"[*_~`]", "", value)
+    return len(re.sub(r"\s+", "", value))
+
+
+def content_review_reason(
+    markdown: str,
+    strategy_code: str,
+    metadata: dict[str, Any] | None = None,
+) -> tuple[str, str] | None:
+    """Return a configured human-review reason for a content-model item."""
+
+    if strategy_code not in CONTENT_MODEL_STRATEGIES:
+        return None
+    policy = (metadata or {}).get("_cleaning_review_policy") or review_policy_snapshot(
+        strategy_code
+    )
+    if not isinstance(policy, dict) or not policy.get("enabled", True):
+        return None
+    if policy.get("review_required_enabled", True) is False or policy.get(
+        "source_markdown_fallback_enabled"
+    ) is True:
+        return None
+    if bool(policy.get("force_review")):
+        return "CONFIG_REVIEW_REQUIRED", "服务端清洗策略配置要求人工复核"
+    minimum = max(0, int(policy.get("min_chars") or 0))
+    if minimum and content_char_count(markdown) < minimum:
+        return "CONTENT_TOO_SHORT", f"最终正文少于 {minimum} 字"
+    return None
+
 
 def _cleaning_queue_for_filename(filename: str) -> str:
     """Keep PDF conversion isolated from the general cleaning worker."""
@@ -687,6 +806,7 @@ class PersonalBusinessConsultationStrategy:
                 warnings=user_visible_warnings(review_reasons),
                 audit={
                     "privacy_level": "private_anonymized",
+                    "source_markdown_empty": not bool(markdown.strip()),
                     **({"pdf_conversion": conversion_audit} if conversion_audit else {}),
                     "identity_aliases": aliases,
                     "forbidden_public_names": sorted(aliases),
@@ -2110,7 +2230,16 @@ async def create_cleaning_batch(
         strategy_code=strategy_code if upload_mode == "cleaned" else "raw_upload",
         knowledge_base_code=knowledge_base_code,
         upload_mode=upload_mode,
-        common_metadata=parsed_metadata,
+        common_metadata={
+            **parsed_metadata,
+            # This is server-owned admission state. It is added after the
+            # client allow-list check and is never projected to Dify metadata.
+            "_cleaning_review_policy": (
+                review_policy_snapshot(strategy_code)
+                if upload_mode == "cleaned"
+                else {"enabled": False, "min_chars": 0, "force_review": False}
+            ),
+        },
         build_version=settings.build_version,
         spec_revision=settings.cleaning_spec_revision,
     )
@@ -2467,11 +2596,11 @@ def retry_model_contract_item(
         raise ValueError("模型任务尚未进入可重试的终态")
     if task.candidate_count != 1:
         raise ValueError("仅允许对单候选模型任务执行精确重试")
-    if (
-        document.status != "review_required"
-        or document.error_code != "MODEL_CONTRACT_INVALID"
-    ):
-        raise ValueError("只有模型契约失败的待复核条目可以精确重试")
+    if document.status not in {"failed", "review_required"} or document.error_code not in {
+        "MODEL_CONTRACT_INVALID",
+        "MODEL_NO_RESPONSE",
+    }:
+        raise ValueError("只有模型契约或模型无响应失败条目可以精确重试")
 
     previous_document_state = (
         document.status,
