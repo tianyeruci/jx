@@ -404,6 +404,7 @@ def _conversion_audit(result: Any) -> dict[str, Any]:
 _PDF_HARD_BLOCK_PREFIXES = (
     "PDF读取失败",
     "PDF_TYPE_REVIEW_REQUIRED",
+    "PDF_CONSULTATION_IMAGE_PRIVACY_REVIEW",
     "OCR_PAGE_LIMIT_REVIEW",
     "PDF缺少可用文字层",
     "OCR执行失败",

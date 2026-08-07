@@ -228,6 +228,7 @@ learning_route 出参：
 | stages[].course_ids | array<string> | 是 | 否 | 课程 ID |
 | stages[].course_names | array<string> | 是 | 否 | 与 `course_ids` 一一对应、同序的课程名称 |
 | stages[].course_collection_names | array<string> | 是 | 否 | 按阶段内原始目录顺序去重的课程集名称 |
+| stages[].course_collections | array<object> | 是 | 否 | 当前阶段的课程合集层级展示；每项含 `name` 与按合集顺序排列的 `course_names` |
 | current_stage_id | string | 是 | 是 | 当前阶段 ID |
 | next_stage_id | string | 是 | 是 | 下一阶段 ID |
 | state | string | 是 | 否 | 路线确认状态 |

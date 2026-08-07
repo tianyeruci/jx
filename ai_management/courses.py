@@ -502,18 +502,6 @@ def _attach_course_collection_names(
     does not require a new Redis key or a catalog schema change.
     """
 
-    names_by_course: dict[str, list[str]] = {}
-    for collection in (collections or {}).values():
-        if not isinstance(collection, dict):
-            continue
-        name = str(collection.get("name") or "").strip()
-        if not name:
-            continue
-        for course_id in collection.get("course_ids") or []:
-            course_key = str(course_id or "").strip()
-            if course_key:
-                names_by_course.setdefault(course_key, []).append(name)
-
     stages: list[dict[str, Any]] = []
     for source_stage in route.get("stages") or []:
         stage = dict(source_stage)
@@ -527,14 +515,44 @@ def _attach_course_collection_names(
                 str((courses.get(course_id) or {}).get("name") or "")
                 for course_id in course_ids
             ]
-        names: list[str] = []
-        seen: set[str] = set()
-        for course_id in course_ids:
-            for name in names_by_course.get(course_id, []):
-                if name not in seen:
-                    seen.add(name)
-                    names.append(name)
-        stage["course_collection_names"] = names
+        # Resolve collections from the stage's own course IDs.  A collection
+        # may contain courses from another route in legacy/partially imported
+        # data; intersecting with this stage prevents those courses from
+        # leaking into the route display while preserving the existing
+        # parallel name array for old clients.
+        stage_course_set = set(course_ids)
+        collection_details: list[tuple[int, str, dict[str, Any]]] = []
+        stage_position = {course_id: index for index, course_id in enumerate(course_ids)}
+        for collection in (collections or {}).values():
+            if not isinstance(collection, dict):
+                continue
+            name = str(collection.get("name") or "").strip()
+            if not name:
+                continue
+            member_ids = [
+                str(course_id or "").strip()
+                for course_id in collection.get("course_ids") or []
+            ]
+            scoped_ids = [course_id for course_id in member_ids if course_id in stage_course_set]
+            if not scoped_ids:
+                continue
+            course_names = [
+                str((courses.get(course_id) or {}).get("name") or course_id)
+                if courses is not None
+                else course_id
+                for course_id in scoped_ids
+            ]
+            first_position = min(stage_position[course_id] for course_id in scoped_ids)
+            collection_details.append(
+                (
+                    first_position,
+                    str(collection.get("collection_id") or name),
+                    {"name": name, "course_names": course_names},
+                )
+            )
+        collection_details.sort(key=lambda item: (item[0], item[1]))
+        stage["course_collections"] = [item[2] for item in collection_details]
+        stage["course_collection_names"] = [item[2]["name"] for item in collection_details]
         stages.append(stage)
     return {**route, "stages": stages}
 
@@ -887,7 +905,13 @@ def validate_recommendation(
                 progress.confirmed_at = datetime.now(timezone.utc)
                 progress_applied = True
 
-    if route and decision.intent == "route_recommendation":
+    # A short follow-up can be classified by Dify as ``general_qa`` while it
+    # still carries the already-selected authoritative route ID.  Once that
+    # route has passed the server-side checks above, apply the same complete
+    # route decoration and progress/card gating regardless of the model's
+    # conversational intent.  Otherwise the response leaks raw stage/course
+    # IDs and active learners receive no cards.
+    if route:
         stages = sorted(route.get("stages", []), key=lambda item: item.get("order", 0))
         progress_status = progress.status if progress else "pending_route"
         current_stage_id = progress.current_stage_id if progress and progress_status == "active" else None
@@ -937,7 +961,7 @@ def validate_recommendation(
         # back to model-supplied course IDs.  Ask for clarification instead.
         valid_course_records = {}
 
-    if route and decision.intent == "route_recommendation":
+    if route:
         route = _attach_course_collection_names(
             route,
             snapshot.get("collections"),

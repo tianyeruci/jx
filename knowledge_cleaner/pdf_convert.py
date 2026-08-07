@@ -33,6 +33,12 @@ _IMAGE_REFERENCE_DEF = re.compile(r"(?mi)^\s*\[[^\]]+\]:\s*\S+\s*$")
 _HTML_IMAGE = re.compile(r"<\s*(?:img|figure)\b[^>]*>(?:.*?</\s*figure\s*>)?", re.I | re.S)
 _HTML_TABLE = re.compile(r"<table\b[^>]*>.*?</table\s*>", re.I | re.S)
 
+_NON_BLOCKING_WARNING_PREFIXES = (
+    "table_review:",
+    "PDF_BOUNDARY_LOW_TEXT_WARNING:",
+    "PDF_TEXT_LAYER_IMAGE_PAGE_WARNING:",
+)
+
 _PHONE = re.compile(r"(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)")
 _LANDLINE = re.compile(
     r"(?i)(?P<label>电话|座机|联系电话|tel)\s*[:：]?\s*"
@@ -996,12 +1002,13 @@ def _boundary_low_text_pages(pages: Sequence[PDFPageResult]) -> list[int]:
 
 
 def _classify_pdf_type(pages: Sequence[PDFPageResult]) -> str:
-    """Classify a PDF conservatively, with a bounded cover/trailer exception.
+    """Classify a PDF with a text-layer-first policy.
 
-    A multi-page text PDF may have an image-free first or last page with fewer
-    than 40 compact characters.  It is accepted only when every other page
-    has a usable text layer.  Low-text pages in the middle, low-text pages
-    containing images, and any text/image mixture remain review-only.
+    Native text is the primary source even when a page also contains an
+    illustration or a rendered diagram.  An image-only page remains a hard
+    mixed-file review gate so that the text backend cannot silently drop a
+    page which would require OCR.  Short image-free cover/trailer pages keep
+    the historical boundary exception; other low-text pages stay review-only.
     """
 
     if not pages:
@@ -1035,11 +1042,13 @@ def _classify_pdf_type(pages: Sequence[PDFPageResult]) -> str:
     if all(kind == "text" for kind in kinds):
         return "text"
 
-    low_pages = [page for page, kind in zip(pages, kinds) if kind == "low"]
+    low_pages = [
+        page
+        for page, kind in zip(pages, kinds)
+        if kind in {"low", "uncertain"}
+    ]
     blank_pages = [page for page, kind in zip(pages, kinds) if kind == "blank"]
     text_pages = [page for page, kind in zip(pages, kinds) if kind == "text"]
-    if "uncertain" in kinds:
-        return "review"
     if not text_pages:
         # Preserve the historical OCR route for an entirely blank pypdf probe:
         # a PDF with no text or image resources is indistinguishable from a
@@ -1059,6 +1068,21 @@ def _classify_pdf_type(pages: Sequence[PDFPageResult]) -> str:
         for page in low_pages
     ):
         return "text"
+
+    # A page with an embedded image and a short native text layer is common in
+    # slide decks and illustrated manuals.  Do not send such a document to OCR
+    # or block it merely because the image resource is present: when every
+    # page has some native text and the file has enough text overall, the
+    # native layer is the complete source of record.  Image-only pages were
+    # handled above and still require review.
+    image_low_pages = [
+        page for page, kind in zip(pages, kinds)
+        if kind == "uncertain" and page.image_count > 0 and page.text_characters > 0
+    ]
+    if image_low_pages and all(page.text_characters > 0 for page in pages):
+        native_chars = sum(page.text_characters for page in pages)
+        if native_chars >= 200 and any(page.text_characters >= 40 for page in pages):
+            return "text"
     return "review"
 
 
@@ -1434,6 +1458,16 @@ def convert_pdf(
         )
 
     pdf_type = _classify_pdf_type(pypdf_pages)
+    if consultation and any(page.image_count > 0 for page in pypdf_pages):
+        # Native text is safe to prefer for ordinary knowledge sources, but a
+        # consultation image may contain a name, phone number, or other PII
+        # that the text layer cannot reveal.  Keep the anonymized Markdown
+        # extraction for review, while requiring a privacy check before it can
+        # be published.
+        quality_flags.append("pdf_consultation_image_privacy_review")
+        review_reasons.append(
+            "PDF_CONSULTATION_IMAGE_PRIVACY_REVIEW:咨询PDF含图片，需人工确认图片中无隐私信息"
+        )
     boundary_low_text_pages = (
         _boundary_low_text_pages(pypdf_pages) if pdf_type == "text" else []
     )
@@ -1442,6 +1476,24 @@ def convert_pdf(
         review_reasons.append(
             "PDF_BOUNDARY_LOW_TEXT_WARNING:已保留无图片的首页/末页低文字页:"
             + ",".join(map(str, boundary_low_text_pages))
+        )
+    image_low_text_pages = (
+        [
+            page.page_number
+            for page in pypdf_pages
+            if page.image_count > 0 and 0 < page.text_characters < 40
+        ]
+        if pdf_type == "text"
+        else []
+    )
+    if image_low_text_pages:
+        quality_flags.append("pdf_text_layer_image_page_warning")
+        page_preview = ",".join(map(str, image_low_text_pages[:20]))
+        if len(image_low_text_pages) > 20:
+            page_preview += f"…共{len(image_low_text_pages)}页"
+        review_reasons.append(
+            "PDF_TEXT_LAYER_IMAGE_PAGE_WARNING:文字层优先，含图低文字页仅作质量提示:"
+            + page_preview
         )
     if pdf_type == "review":
         pages = []
@@ -1581,7 +1633,13 @@ def convert_pdf(
     if not markdown:
         review_reasons.append("未生成可入库正文")
     review_reasons = list(dict.fromkeys(review_reasons))
-    needs_review = bool(review_reasons)
+    needs_review = bool(
+        [
+            reason
+            for reason in review_reasons
+            if not reason.startswith(_NON_BLOCKING_WARNING_PREFIXES)
+        ]
+    )
     status = "review" if needs_review else "ready"
     metadata = {
         "doc_id": document_id,

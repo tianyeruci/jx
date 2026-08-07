@@ -253,7 +253,19 @@ def extract_pdf(path: str | Path, *, enable_ocr: bool = True) -> SourceExtractio
     blocks = _blocks_from_text(converted.markdown)
     findings = tuple(sorted({item.category for item in converted.residual_pii}))
     warnings = tuple(str(item) for item in converted.review_reasons)
-    blocking = tuple(item for item in warnings if not item.startswith("table_review:"))
+    # Conversion diagnostics distinguish non-blocking text-layer quality
+    # warnings from hard safety gates.  Keep table warnings and the shared
+    # text-first PDF warnings visible without turning an otherwise readable
+    # consultation into a false privacy review; residual PII is still checked
+    # below and remains blocking.
+    non_blocking_prefixes = (
+        "table_review:",
+        "PDF_BOUNDARY_LOW_TEXT_WARNING:",
+        "PDF_TEXT_LAYER_IMAGE_PAGE_WARNING:",
+    )
+    blocking = tuple(
+        item for item in warnings if not item.startswith(non_blocking_prefixes)
+    )
     disposition = "review_required" if blocking or findings or not converted.markdown.strip() else "ready"
     reason = "；".join(blocking) if blocking else ("正文为空" if not blocks else "")
     return SourceExtraction(source, _sha256(source), blocks, disposition, reason, privacy_findings=findings, warnings=warnings)

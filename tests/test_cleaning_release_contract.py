@@ -26,9 +26,9 @@ def test_bailian_batch_is_opt_in_when_no_environment_override(monkeypatch):
 def test_miniapp_interface_document_is_frozen_for_internal_cleaning_changes():
     path = ROOT / "docs/小程序后端与 AI 管理服务接口对接交互版本.md"
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    # The contract text now documents the unchanged event/payload with the
-    # current next-step semantics and route display fields.
-    assert digest == "984989a6a943af7efd8e9cb0289f8a53bbc80efb0c95f2f879d7fcb62c897ba9"
+    # The contract text documents the unchanged event/payload, next-step
+    # semantics, and the explicitly approved additive route collection view.
+    assert digest == "bc4c48bfc0eec16115a4255e639da6543a4727b8fd62dbc1c43c0d092e6142e8"
 
 
 def test_remote_cleaning_acceptance_uses_anonymous_names_and_covers_new_flow():
@@ -123,6 +123,8 @@ def test_jx_release_scripts_manage_all_cleaning_workers_and_exact_upload_targets
     assert "jx_reset_cleaning_local_state.sh" in deploy
     assert "jx_reset_course_route_catalog.sh" in deploy
     assert "jx_reset_course_route_catalog.py" in deploy
+    assert "jx_reset_all_document_data.sh" in deploy
+    assert "jx_reset_all_document_data.py" in deploy
     assert "find /data -mindepth 1 -delete" not in clean
 
 
@@ -244,6 +246,38 @@ def test_course_route_catalog_reset_is_exact_recoverable_and_isolated():
     assert "source_files_sha256" in safe_report
     assert '"source_files": snapshot' not in safe_report
     assert "general knowledge-base data" in wrapper
+
+
+def test_all_document_data_reset_is_explicit_defaulted_and_preserves_business_data():
+    wrapper = _source("scripts/jx_reset_all_document_data.sh")
+    helper = _source("scripts/jx_reset_all_document_data.py")
+
+    assert "RESET_ALL_DOCUMENT_DATA" in wrapper
+    assert 'APP_DIR="/opt/ai-management"' in wrapper
+    assert 'BACKUP_SCRIPT="$APP_DIR/scripts/jx_prebaseline_backup.sh"' in wrapper
+    assert 'PY_SCRIPT="$APP_DIR/scripts/jx_reset_all_document_data.py"' in wrapper
+    assert "JX_DOCUMENT_DOMAIN_QUIESCED=1" in wrapper
+    assert "scope changed after backup; refusing deletion" in wrapper
+    assert "dify.dump" in wrapper
+    assert "dify-redis-dump.rdb" in wrapper
+    assert "/health/ready" in wrapper
+
+    assert 'KNOWLEDGE_BASE_CODES = ("general", "course")' in helper
+    assert "_dify_documents" in helper
+    assert "client.delete_document(document_id)" in helper
+    assert "delete(CleaningBatch)" in helper
+    assert "delete(Course)" in helper
+    assert "delete(LearningRoute)" in helper
+    assert "delete(CourseDirection)" in helper
+    assert "delete(SystemEventLog)" in helper
+    assert "delete(AdminSetting)" in helper
+    assert "_restore_default_style_settings" in helper
+    assert 'match="ai:cleaning:*"' in helper
+    assert "ai:course:snapshot" in helper
+    assert "shutil.rmtree(target)" in helper
+    assert "BusinessConversation" in helper
+    assert "delete(BusinessConversation)" not in helper
+    assert "deployment .env values" in wrapper
 
 
 def test_force_reset_has_a_separate_confirmation_and_preserves_dify_boundary():

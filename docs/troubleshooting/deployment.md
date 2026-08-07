@@ -192,3 +192,15 @@
 - 预防：完整发布报告或发布前门禁必须确认本次 `env.backup` 已存在；发布脚本的每个 rollback 输入都应由同一脚本显式创建。
 - 证据：本地脱敏记录 `var/reports/20260806-business-next-step-release/issues.jsonl`，jx 发布 `20260806-190738-business-next-step` 的备份目录。
 - 最后验证：2026-08-06。
+
+## DEPLOY-018：复用 release ID 必须清理旧失败标记，资源门禁瞬时失败可安全重试
+
+- 适用：完整 wheel 发布脚本重复使用同一 release ID，或 OCR 构建阶段遇到瞬时主机 I/O 门禁失败。
+- 触发：第一次 `20260807-1345-route-activefix` 尝试在 OCR 构建前被资源守卫判定存在不可中断 I/O 等待；脚本未切换服务，但旧报告目录的 `rollback-status.txt` 会让后续成功尝试看起来像失败。
+- 根因：失败标记按 release 目录保留，重试前没有删除上一轮标记；资源守卫正确 fail-closed，但报告状态没有区分旧尝试和当前尝试。
+- 解决：脚本在创建报告目录后删除本 release 的旧 `rollback-status.txt`；资源守卫恢复为通过后重试同一备份和 wheel。成功报告不再生成失败标记，服务未做并发部署。
+- 非解决：跳过资源守卫、删除锁文件、并发启动第二个发布、使用 `--remove-orphans` 或清理 Docker 持久卷。
+- 验证：首次尝试未切换旧服务且 OCR 自动恢复；第二次发布成功，报告 `/opt/ai-management/var/reports/v2/20260807-1345-route-activefix-deploy` 无失败标记，Core/UI/OCR 构建、ready、迁移和同源容器检查通过。
+- 预防：每个 release ID 尽量只使用一次；必须重试时保留同一备份、重新运行资源门禁并检查报告目录时间与内容，不能只看退出码。
+- 证据：`scripts/jx_deploy_release.sh`、`tests/test_cleaning_release_contract.py`、jx 备份 `/opt/ai-management/backups/20260807-1345-route-activefix-predeploy`。
+- 最后验证：2026-08-07。

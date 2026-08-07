@@ -352,6 +352,43 @@ def api_json(
         return response.json()
 
 
+def load_all_cleaning_items(
+    path: str,
+    *,
+    admin: bool = True,
+    page_limit: int = 200,
+) -> dict[str, Any]:
+    """Read every item page while keeping the existing endpoint contract."""
+
+    limit = max(1, min(int(page_limit), 200))
+    items: list[dict[str, Any]] = []
+    cursor: str | None = None
+    first_payload: dict[str, Any] = {}
+    while True:
+        params: dict[str, Any] = {"limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        payload = api_json("GET", path, admin=admin, params=params)
+        if not isinstance(payload, dict):
+            raise ValueError("条目接口返回格式无效")
+        if not first_payload:
+            first_payload = dict(payload)
+        page_items = payload.get("items") or []
+        if not isinstance(page_items, list):
+            raise ValueError("条目接口 items 格式无效")
+        items.extend(item for item in page_items if isinstance(item, dict))
+        next_cursor = str(payload.get("next_cursor") or "").strip()
+        if not next_cursor or not page_items:
+            break
+        if next_cursor == cursor:
+            raise ValueError("条目接口分页游标未前进")
+        cursor = next_cursor
+    first_payload["items"] = items
+    first_payload["next_cursor"] = None
+    first_payload["total_count"] = len(items)
+    return first_payload
+
+
 def api_bytes(
     method: str,
     path: str,
@@ -1013,8 +1050,7 @@ def cleaning_tab() -> None:
                 render_cleaning_payload(selected_file["publication_shards"])
             if st.button("读取条目", key=f"cleaning_items_{selected_file_id}"):
                 try:
-                    view_state["items_by_file"][selected_file_id] = api_json(
-                        "GET",
+                    view_state["items_by_file"][selected_file_id] = load_all_cleaning_items(
                         f"/internal/v1/admin/knowledge-bases/{knowledge_base}/upload-batches/{batch_id}/files/{selected_file_id}/items",
                         admin=True,
                     )

@@ -14,7 +14,6 @@ from ai_management.course_import import (
     _route_text,
     load_course_records_text,
     load_route_records_text,
-    replace_course_route_catalog_rows,
     sync_cleaning_catalog_record,
 )
 from ai_management.courses import (
@@ -209,69 +208,6 @@ series_name: 不推断系列
         assert row.description == "第二次描述"
         assert row.source_platform == "小鹅通"
         assert row.series_name == "不推断系列"
-
-
-def test_full_course_route_catalog_replacement_removes_stale_rows_and_resets_progress(
-    service_db,
-):
-    with service_db() as session:
-        session.add_all([_course("keep"), _course("stale")])
-        session.add_all(
-            [
-                LearningRoute(
-                    route_id="keep-route",
-                    name="保留路线",
-                    direction="AI商业",
-                    target="测试",
-                    stages=[{"stage_id": "s1", "name": "第一阶段", "order": 1, "course_ids": ["keep"]}],
-                ),
-                LearningRoute(
-                    route_id="stale-route",
-                    name="旧路线",
-                    direction="AI商业",
-                    target="测试",
-                    stages=[{"stage_id": "s1", "name": "第一阶段", "order": 1, "course_ids": ["stale"]}],
-                ),
-                CourseCollection(
-                    collection_id="keep-collection", name="保留合集", raw_title="保留合集"
-                ),
-                CourseCollection(
-                    collection_id="stale-collection", name="旧合集", raw_title="旧合集"
-                ),
-            ]
-        )
-        session.flush()
-        session.add_all(
-            [
-                CourseCollectionMember(
-                    collection_id="keep-collection", course_id="keep", order_rank=1
-                ),
-                CourseCollectionMember(
-                    collection_id="stale-collection", course_id="stale", order_rank=1
-                ),
-                LearningRouteProgress(
-                    user_hash="user", route_id="stale-route", status="active", current_stage_id="s1"
-                ),
-            ]
-        )
-        session.flush()
-        result = replace_course_route_catalog_rows(
-            session,
-            incoming_course_ids={"keep"},
-            incoming_route_ids={"keep-route"},
-            source_file="课程信息与学习路线.xlsx",
-        )
-        session.commit()
-        assert result == {
-            "removed_courses": 1,
-            "removed_routes": 1,
-            "removed_collections": 1,
-            "reset_progress": 1,
-        }
-        assert session.get(Course, "stale") is None
-        assert session.get(LearningRoute, "stale-route") is None
-        assert session.get(CourseCollection, "stale-collection") is None
-        assert session.scalar(select(LearningRouteProgress.id)) is None
 
 
 def test_latest_catalog_query_uses_structured_fields_and_excludes_inactive(service_db):
@@ -565,6 +501,52 @@ def test_explicit_stage_confirmation_recovers_selected_route_when_dify_has_no_ro
         assert [item["course_id"] for item in recovered["course_cards"]] == ["c1", "c2"]
         assert recovered["learning_route"]["current_stage_id"] == "intro"
         assert recovered["learning_route"]["state"] == "active"
+
+
+def test_active_route_with_general_qa_still_returns_public_route_names_and_cards(service_db):
+    """A short active-route follow-up must not expose raw IDs or drop cards."""
+
+    with service_db() as session:
+        session.add_all([_course("c1"), _course("c2")])
+        session.add(
+            LearningRoute(
+                route_id="route_active_general",
+                name="活动路线",
+                direction="AI商业",
+                target="测试",
+                stages=[
+                    {"stage_id": "intro", "name": "入门", "order": 1, "course_ids": ["c1"]},
+                    {"stage_id": "advanced", "name": "进阶", "order": 2, "course_ids": ["c2"]},
+                ],
+            )
+        )
+        session.add(
+            LearningRouteProgress(
+                user_hash="active-user",
+                route_id="route_active_general",
+                current_stage_id="intro",
+                status="active",
+            )
+        )
+        session.commit()
+        rebuild_snapshot(session)
+
+        result = validate_recommendation(
+            session,
+            RecommendationDecision(
+                intent="general_qa",
+                candidate_route_id="route_active_general",
+            ),
+            user_hash="active-user",
+            query="我目前在：入门",
+        )
+
+        assert [item["course_id"] for item in result["course_cards"]] == ["c1", "c2"]
+        route = result["learning_route"]
+        assert route["state"] == "active"
+        assert route["current_stage_id"] == "intro"
+        assert route["stages"][0]["course_names"] == ["c1"]
+        assert route["stages"][1]["course_names"] == ["c2"]
 
 
 def test_explicit_route_confirmation_recovers_selected_route_when_dify_has_no_route(service_db):

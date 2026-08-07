@@ -1,6 +1,6 @@
 # API 与 SSE 说明
 
-2026-08-06/07 商业顾问“下一步建议”与学习路线展示调整：公开路由、请求字段和 SSE 事件名保持不变；`learning_route` 在既有结构上增加可选展示数组 `course_names`、`course_collection_names`，旧客户端可忽略；`course_recommendation_note` 仍是可选的 `{"content":"..."}`，但新会话仅在课程卡通过服务端校验后用它发送下一步建议。
+2026-08-06/07 商业顾问“下一步建议”与学习路线展示调整：公开路由、请求字段和 SSE 事件名保持不变；`learning_route` 在既有结构上增加可选展示数组 `course_names`、`course_collection_names` 及层级数组 `course_collections`，旧客户端可忽略；`course_recommendation_note` 仍是可选的 `{"content":"..."}`，但新会话仅在课程卡通过服务端校验后用它发送下一步建议。
 
 除课程签名跳转和健康检查外，内部接口均要求：
 
@@ -117,7 +117,7 @@ GET /internal/v1/entry-config
 
 `learning_route` 表示服务端已校验过的官方路线。它可能处于 `awaiting_route_confirmation`、`awaiting_stage_confirmation`、`active` 或 `completed`；只有用户明确确认路线和当前阶段后，才允许出现该路线的 `course_cards`。
 
-`learning_route` 每次返回完整路线的全部阶段，阶段按目录顺序排列。每个 `stages[]` 同时保留机器字段 `course_ids`，并提供与其一一对应、同序的用户展示字段 `course_names`；另外提供 `course_collection_names`，按该阶段课程在原始目录中的顺序返回且同一课程集只出现一次。没有可用课程集时返回空数组。这些字段由现有课程目录快照派生，不新增 Redis 键。
+`learning_route` 每次返回完整路线的全部阶段，阶段按目录顺序排列。每个 `stages[]` 同时保留机器字段 `course_ids`，并提供与其一一对应、同序的用户展示字段 `course_names`；另外提供 `course_collection_names`，以及按原始合集顺序组织的 `course_collections: [{"name": string, "course_names": string[]}]`。这两个合集字段只取当前阶段的课程 ID，跨路线/跨阶段的其它课程不会带入；没有可用课程集时返回空数组。合集按源表连续块、路线/阶段作用域隔离。上述字段由现有课程目录快照派生，不新增 Redis 键或数据库字段。
 
 `course_cards.items` 只包含启用且审核通过的课程。卡片中的 `redirect_url` 是唯一允许客户端打开的课程地址；不要从回答正文、Dify 文档或 `official_url` 推导链接。每轮最多 5 门，路线卡片严格按当前阶段、下一阶段顺序返回。
 

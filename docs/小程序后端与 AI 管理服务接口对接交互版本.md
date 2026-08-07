@@ -252,7 +252,7 @@ data: {"schema_version":"2.0","request_id":"req-001","sequence":6,"route_id":"ro
 课程/路线规则：
 
 - `learning_route.state=awaiting_route_confirmation` 或 `awaiting_stage_confirmation` 时，`course_cards` 必须为空；调用方应引导用户明确确认路线和当前阶段。
-- `learning_route.stages[].course_collection_names` 是按阶段内原始目录顺序去重后的课程集名称数组，不是课程名称；没有课程集时为空数组。
+- `learning_route.stages[].course_collection_names` 是按阶段内原始目录顺序去重后的课程集名称数组，不是课程名称；`course_collections` 进一步给出每个合集及其当前阶段课程名称，格式为 `[{"name":"课程合集","course_names":["课程名称"]}]`。合集按源表连续块、路线/阶段作用域隔离；没有课程集时两个字段均为空数组。
 - `learning_route.stages[].course_names` 与 `course_ids` 一一对应、保持相同顺序，用于用户展示；`course_ids` 仍是供客户端和服务端校验的机器字段。
 
 - 只有 `active` 路线才返回当前阶段及下一阶段的课程卡片，最多 5 门且保持路线顺序。

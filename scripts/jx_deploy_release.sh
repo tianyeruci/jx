@@ -65,6 +65,10 @@ test -d "$OCR_RUNTIME_DIR/site-packages"
 test -d "$OCR_RUNTIME_DIR/models"
 test -f "$OCR_RUNTIME_DIR/requirements-ocr.lock"
 mkdir -p "$REPORT_DIR"
+# A reused release id may still contain the failure marker from an earlier
+# attempt.  Remove it before starting a new attempt so the report reflects
+# this run rather than stale rollback state.
+rm -f -- "$REPORT_DIR/rollback-status.txt"
 
 pause_ocr_autoscaler() {
   command -v systemctl >/dev/null 2>&1 || return 0
@@ -198,6 +202,8 @@ for file in \
   jx_reset_cleaning_local_state.sh \
   jx_reset_course_route_catalog.sh \
   jx_reset_course_route_catalog.py \
+  jx_reset_all_document_data.sh \
+  jx_reset_all_document_data.py \
   jx_resource_guard.sh \
   jx_release_data.py \
   jx_acceptance_budget.py \

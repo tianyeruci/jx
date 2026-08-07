@@ -284,6 +284,67 @@ def test_course_route_catalog_reuses_course_id_across_routes_and_flags_name_conf
     assert catalog.routes[0].stages[0]["course_ids"] == catalog.routes[1].stages[0]["course_ids"]
 
 
+def test_course_collections_are_scoped_to_contiguous_route_blocks(tmp_path):
+    """A route must not inherit courses from a later block with the same label."""
+
+    from ai_management.course_route_catalog import parse_course_route_catalog
+
+    path = tmp_path / "route-scoped-collections.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["课程名称", "课程链接", "阶段", "学习路线"])
+    sheet.append(["重复合集", None, "阶段一", "路线A"])
+    sheet.append(["1/A课程一", "https://example.com/a1", "阶段一", "路线A"])
+    sheet.append(["2/A课程二", "https://example.com/a2", "阶段一", "路线A"])
+    sheet.append(["重复合集", None, "阶段一", "路线B"])
+    sheet.append(["1/B课程一", "https://example.com/b1", "阶段一", "路线B"])
+    sheet.append(["2/B课程二", "https://example.com/b2", "阶段一", "路线B"])
+    workbook.save(path)
+
+    catalog = parse_course_route_catalog(path, existing_course_ids_by_url={})
+
+    assert len(catalog.collections) == 2
+    assert [item.name for item in catalog.collections] == ["重复合集", "重复合集"]
+    assert len({item.collection_id for item in catalog.collections}) == 2
+    assert [len(item.member_course_ids) for item in catalog.collections] == [2, 2]
+    assert catalog.collections[0].member_course_ids != catalog.collections[1].member_course_ids
+    assert [item.name for item in catalog.courses if item.course_id in catalog.routes[0].stages[0]["course_ids"]] == [
+        "A课程一",
+        "A课程二",
+    ]
+    assert [item.name for item in catalog.courses if item.course_id in catalog.routes[1].stages[0]["course_ids"]] == [
+        "B课程一",
+        "B课程二",
+    ]
+
+
+def test_course_collection_block_isolates_conflicting_route_rows(tmp_path):
+    from ai_management.course_route_catalog import parse_course_route_catalog
+
+    path = tmp_path / "route-conflicting-block.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["课程名称", "课程链接", "阶段", "学习路线"])
+    sheet.append(["路线A合集", None, "阶段一", "路线A"])
+    sheet.append(["A课程", "https://example.com/a", "阶段一", "路线A"])
+    # This row is in the same contiguous block but explicitly belongs to B.
+    sheet.append(["B误放课程", "https://example.com/b", "阶段一", "路线B"])
+    sheet.append(["路线B合集", None, "阶段一", "路线B"])
+    sheet.append(["B课程", "https://example.com/b2", "阶段一", "路线B"])
+    workbook.save(path)
+
+    catalog = parse_course_route_catalog(path, existing_course_ids_by_url={})
+
+    first, second = catalog.collections
+    assert first.member_course_ids == [
+        next(item.course_id for item in catalog.courses if item.name == "A课程")
+    ]
+    assert second.member_course_ids == [
+        next(item.course_id for item in catalog.courses if item.name == "B课程")
+    ]
+    assert any(item["code"] == "collection_route_conflict" for item in catalog.audit.warnings)
+
+
 def test_course_route_catalog_prefers_specific_title_over_collection_label(tmp_path):
     from ai_management.course_route_catalog import parse_course_route_catalog
 

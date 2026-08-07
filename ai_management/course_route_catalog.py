@@ -593,6 +593,8 @@ def parse_course_route_catalog(
     group_clean_names: dict[int, str] = {}
     group_declared_lessons: dict[int, int | None] = {}
     group_total_minutes: dict[int, int | None] = {}
+    group_routes: dict[int, str] = {}
+    group_stages: dict[int, str] = {}
     group_header_rows: dict[int, int] = {}
     current_group = 0
     next_group = 0
@@ -631,6 +633,8 @@ def parse_course_route_catalog(
             group_total_minutes[current_group] = (
                 parsed_header[2] if parsed_header else None
             )
+            group_routes[current_group] = _value(record, "学习路线")
+            group_stages[current_group] = _value(record, "阶段")
             group_header_rows[current_group] = row_number
             members_by_group.setdefault(current_group, [])
             continue
@@ -645,6 +649,8 @@ def parse_course_route_catalog(
             group_clean_names[current_group] = parsed_header[0]
             group_declared_lessons[current_group] = parsed_header[1]
             group_total_minutes[current_group] = parsed_header[2]
+            group_routes[current_group] = _value(record, "学习路线")
+            group_stages[current_group] = _value(record, "阶段")
             group_header_rows[current_group] = row_number
             members_by_group.setdefault(current_group, [])
         try:
@@ -874,6 +880,7 @@ def parse_course_route_catalog(
     courses.sort(key=lambda item: item.first_order_rank or min(item.source_rows))
     collections: list[CollectionDraft] = []
     collection_by_course: dict[str, str] = {}
+    collection_scope_occurrences: dict[str, int] = {}
     for group_id in sorted(members_by_group, key=lambda item: group_header_rows.get(item, 1)):
         raw_group_members = [
             member for member in members_by_group[group_id] if "order_rank" in member
@@ -885,7 +892,64 @@ def parse_course_route_catalog(
         numbered_members = [item for item in raw_group_members if not item.get("collection_entry")]
         member_source = numbered_members or entry_members[:1]
         collection_name = group_clean_names.get(group_id) or group_names.get(group_id, "")
-        collection_id = _stable_id("collection", collection_name.casefold())
+        # A collection is the contiguous source block opened by a named row
+        # with an empty course link.  Collection names are not globally unique:
+        # two routes/stages may legitimately reuse the same display name.  Use
+        # the block's route/stage as the stable scope so one route can never
+        # inherit another route's collection members; repeated same-scope
+        # blocks receive a collision suffix below.
+        scope_route = group_routes.get(group_id, "") or next(
+            (_value(item["row"], "学习路线") for item in member_source if _value(item["row"], "学习路线")),
+            "",
+        )
+        scope_stage = group_stages.get(group_id, "") or next(
+            (_value(item["row"], "阶段") for item in member_source if _value(item["row"], "阶段")),
+            "",
+        )
+        scoped_members: list[dict[str, Any]] = []
+        for item in member_source:
+            row_route = _value(item["row"], "学习路线")
+            row_stage = _value(item["row"], "阶段")
+            if scope_route and row_route and row_route != scope_route:
+                warnings.append(
+                    {
+                        "code": "collection_route_conflict",
+                        "row": item["row_number"],
+                        "message": "同一课程合集连续块包含其它学习路线课程，已隔离该课程",
+                    }
+                )
+                continue
+            if scope_stage and row_stage and row_stage != scope_stage:
+                warnings.append(
+                    {
+                        "code": "collection_stage_conflict",
+                        "row": item["row_number"],
+                        "message": "同一课程合集连续块跨阶段，按原始连续块保留；展示时按阶段裁剪",
+                    }
+                )
+            scoped_members.append(item)
+        member_source = scoped_members
+        scope_key = "|".join(
+            (scope_route.casefold(), scope_stage.casefold(), collection_name.casefold())
+        )
+        occurrence = collection_scope_occurrences.get(scope_key, 0)
+        collection_scope_occurrences[scope_key] = occurrence + 1
+        # Keep the common ID stable when a collection's membership changes.
+        # Only a repeated same-name block within the same route/stage receives
+        # a link-based suffix to keep the two mutually exclusive blocks apart.
+        collision_suffix = ""
+        if occurrence:
+            collision_suffix = "|" + (member_source[0]["normalized_url"] if member_source else "")
+        collection_id = _stable_id(
+            "collection",
+            "|".join(
+                (
+                    scope_key,
+                    str(occurrence),
+                    collision_suffix,
+                )
+            ),
+        )
         draft = CollectionDraft(
             collection_id=collection_id,
             name=collection_name,

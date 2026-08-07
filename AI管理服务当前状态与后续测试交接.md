@@ -4,7 +4,61 @@
 > 用途：保存最新线上事实、回滚点、数据状态和开放事项。新任务先读 `AGENTS.md` 与 `docs/README.md`，再按功能域读取本文顶部最新状态。  
 > 本文不是需求或设计基线；权威顺序以 `docs/V2决策记录.md` 和 `docs/README.md` 为准。第 1～8 节为历史过程记录，不再作为当前执行指令。
 
-## 0.37 2026-08-06 学习路线阶段课程集名称与 jx 完整发布（当前最新）
+## 0.44 2026-08-07 jx 发布、目录批次与页面全链路复测结果（当前最新）
+
+- 本轮实际处理的问题：恢复 `course_route_catalog` 原有逐文档增量清洗/同步，修复同名课程合集按全局关系串线、阶段展示缺少“课程合集 → 课程名称”、路线确认后不推进、路线展示不完整，以及课程卡后专家点评缺失时没有安全兜底的问题；同时保留原有 PDF 清洗边界，不把无正文 PDF 强行降级为可入库内容。
+- 本地完成：真实 Excel 解析 `105 课程 / 5 路线 / 33 合集 / 103 成员`；同名合集跨路线、连续块混入其它路线、阶段展示裁剪均有回归；全量 `pytest` 为 `379 passed`，Python 编译、DSL YAML 解析、功能索引写入/检查、`git diff --check` 均通过。
+- jx 发布：release `20260807-1455-route-collections` 已成功切换，健康检查 `ready`；API、Worker、实时/Batch 模型 Worker、发布 Worker、Scheduler、UI 均使用同一新镜像。Dify DSL 本轮未导入、未保存、未发布；未增加 HTTP 路径、请求字段或 SSE 事件。
+- 清洗批次：页面上传 `课程信息与学习路线.xlsx`，批次 `019fdb04-2cd5-7c2a-81b4-a4e645424d6f`，`110/110` 条目成功、`0` 失败、`0` 待复核；服务端统计源样本为 `105/5/33/103`。
+- 页面真实验收：使用隔离用户完成“首问 → `我确认学习路线：AI高手提效课` → `我目前在：入门阶段`”。首问展示完整两阶段、阶段内课程合集及课程名称；路线确认进入 `awaiting_stage_confirmation` 且不重复路线；阶段确认返回课程卡。诊断中确认 `course_recommendation_note` 事件紧随课程卡事件，仅一条，正文为“建议按课程卡顺序完成当前阶段内容，并做一次对应练习；完成后告诉我进度，我再安排下一步。”，无“匹配理由/专家建议”前缀，随后仍有既有完成阶段引导。
+- 专家点评边界：本次页面证据确认的是服务端门禁后的单条下一步建议事件；由于按确认范围没有发布 Dify DSL，无法把远端模型是否生成 `expert_insight` 作为本轮证据。模型字段缺失/不合规时由服务端生成上述安全默认建议，保证不增加模型调用、不阻断课程卡。
+- 目录基线未完成项：远端在本批次前已有来源 `course-catalog-20260807-150001.xlsx`，保留 `21` 门旧课程；因此当前数据库总数为 `Course=126、LearningRoute=5、CourseCollection=33、CourseCollectionMember=103`。本轮没有删除该来源，也没有执行历史迁移；若验收要求“仅保留本次 105 门样本”，需另行确认后做精确来源清理并重新验收。
+- 其它样本未在本次最新 release 页面重跑：个人咨询、知识星球、资料钩子、书籍的既有批次/历史页面结果保留在历史记录中；本条记录不把它们冒充为本 release 的新证据。若要求完整样本矩阵，仍需在当前 release 逐项上传并记录批次。
+- PDF 计划状态：共享 PDF→Markdown 的文字层优先和边界告警代码/回归已完成；但本次最新 release 尚未用用户列出的 3 个资料钩子 PDF、1 个书籍 PDF 在页面重新跑完矩阵。`PDF_TYPE_REVIEW_REQUIRED` 对 image-only、纯扫描 OCR 失败、正文为空或咨询图片隐私未确认仍是预期硬门禁，不应为追求“成功”强行放行。
+- 踩坑与解决：第一次发布传入的 wheel SHA 少 1 位，校验阶段安全中止且服务未切换；修正 64 位 SHA 后成功。OCR 默认暂停，本次仅用进程级 `JX_OCR_DEPLOYMENT_ENABLED=true` 完成既有离线构建，未改 `.env`，定时器发布前后均 `enabled/active`。回退课程目录全量替换后，两个旧运维脚本会导入已删除函数，已从新 release 安装清单移除。
+- 交接页面：测试页保留在 jx 页面，当前会话可复核上述路线、课程卡和点评诊断；未执行 Git commit/push、未迁移历史数据、未修改真实小程序标题。
+
+## 0.43 2026-08-07 jx 发布与完整目录页面复测进行中（历史过程）
+
+- 本轮处理问题：学习路线可能带入其它路线的课程合集/课程信息；课程路线展示缺少“课程合集 → 课程名称”的层级；此前 jx 还运行残缺目录，导致路线、课程卡和专家点评链路无法作为验收证据。
+- 已完成：本地修复、文档与索引更新、全量 `pytest` 379 项通过；发布 release `20260807-1455-route-collections`，健康检查为 ready，API/Worker/模型 Worker/发布 Worker/Scheduler/UI 均已切换同一新镜像；Dify DSL 未导入/保存/发布。
+- 页面复测：完整 Excel 已上传，批次 `019fdb04-2cd5-7c2a-81b4-a4e645424d6f`，确定性解析为 110 个候选（105 课程+5 路线）；实时模型 110/110 成功、0 失败、0 待复核，当前仍在逐条发布。此时数据库仍为旧 `21/1/0/0`，不能提前宣称目录或商业顾问页面验收通过。
+- 踩坑与解决：第一次发布传入的 wheel SHA 少 1 位，发布在校验阶段安全中止且服务未切换；修正 SHA 后成功发布。OCR 部署开关默认暂停，按本次已授权发布仅使用进程级 `JX_OCR_DEPLOYMENT_ENABLED=true` 完成既有离线构建，未改 `.env`，定时器发布前后均为 enabled/active。此前回退课程目录全量替换后，部署清单中的两个旧运维脚本会导入已删除函数，已从发布清单移除并未随新 release 安装。
+- 已完成：批次已终态并完成页面路线、阶段、课程卡、单条综合点评验收；最终证据和目录基线差异见 0.44。
+
+## 0.42 2026-08-07 学习路线合集跨路线串线修复（历史记录）
+
+- 新增问题根因：课程合集展示原先按全局合集成员关系派生，且同名连续块使用全局名称 ID；在部分重复/残缺目录中，一个路线阶段可能看到其它路线的合集成员。
+- 修复范围：恢复 `course_route_catalog` 原有逐文档增量同步，不做源级全量替换；解析层只对同名连续合集增加路线/阶段作用域，连续块中明确属于其它路线的行不进入当前合集；成员变化时常规合集 ID 保持稳定，重复同名块才使用冲突后缀。
+- 商业顾问 `learning_route` 新增可选展示字段 `course_collections: [{"name": "课程合集", "course_names": ["课程名称"]}]`；它只从当前阶段 `course_ids` 与既有快照交集派生，避免把合集中的其它路线课程带入。原 `course_ids`、`course_names`、`course_collection_names` 保持兼容；未新增 HTTP/SSE 事件、数据库字段或 Redis Key。
+- 回归证据：同名合集跨路线、单个连续块混入其它路线、阶段合集展示裁剪均新增测试；`tests/test_course_route_xlsx.py`、`tests/test_course_collections.py`、`tests/test_course_route_catalog.py` 定向通过。真实样本仍为 105/5/33/103。
+- 部署状态：上述修复尚未重新发布到 jx，也未重新上传课程 Excel；待全量测试、索引检查通过后部署，并在页面复验“路线首问 → 路线确认 → 阶段确认 → 课程卡 → 一条综合点评”。
+
+## 0.41 2026-08-07 样本页面复测发现目录残缺（历史记录）
+
+- 用户清空数据后重新用样本在 jx 测试页验收。个人商业咨询 3/3、资料钩子 3/3、书籍 1/1 成功；知识星球普通帖成功、红包帖按策略排除。指定 DOCX 文件名在本地不存在，本轮使用同目录实际存在的备份文件代测，输入不一致已记录。
+- 课程路线样本尚未能在页面上传：远端测试 UI 仍为旧版本，目标知识库只暴露 `general`，无法选择课程知识库/`course_route_catalog`。页面课程测试读到的远端目录为 `Course=21`、`LearningRoute=1`、`CourseCollection=0`，路线只有一个“入门”阶段；这不是用户提供的完整 Excel。
+- 根因已定位：本轮新增的课程目录源登记/路线结构冲突门禁拒绝了完整源上传（日志为“课程目录存在未登记完整源的路线结构冲突”），随后残缺 21/1 文件被写入；没有有效路线时商业顾问自然不会发送 `learning_route`、课程卡或 `course_recommendation_note`，不是 SSE 事件被删除。已在本地移除该额外门禁和全量替换调用，恢复原 `course_route_catalog` 逐文档增量同步路径；路线方向/目标的原中性兜底也已恢复。商业顾问仅保留活动路线短追问修复和 `learning_route` 的课程合集名称装饰。
+- 本地原始 Excel 解析结果为 105 门课程、5 条路线、33 个合集、103 条成员关系；SHA-256 为 `88d2fa9f63297c059bb7e714ae84245745f2ec19763d354334712e7fcb0b90e4`。该完整源必须通过新版测试页上传并在同一批次全部成功后再验收，不能用远端 9KB 的 21/1 文件替代。
+- 当前状态：代码已统一收敛，课程/路线目录与合集定向测试 `23 passed`，模型清洗工作流 `38 passed`；尚未重新部署本轮修复，也尚未取得完整目录上传后的页面 SSE 证据。下一步是按发布手册先跑全量本地回归，再部署并重新上传完整样本，最后验证 `learning_route → course_cards → course_recommendation_note` 顺序。
+
+## 0.40 2026-08-07 课程目录恢复、路线兼容修复与 jx 最终验收（当前最新）
+
+- 已发布 release `20260807-1345-route-activefix`；wheel SHA-256 `4bce62dd6add14503c870f4dfc855e7d942493fed5de979d6350d1e58c563e5c`。发布前备份为 `/opt/ai-management/backups/20260807-1345-route-activefix-predeploy`，报告为 `/opt/ai-management/var/reports/v2/20260807-1345-route-activefix-deploy`。Core/UI/Worker/模型 Worker/发布 Worker/Scheduler 同源运行，`health/live`、`health/ready`、Alembic `j6a7b8c9d0e1 (head)`、容器导入烟测通过；OCR 按 autoscaler 按需运行。
+- 通过测试页上传原始完整 `course_route_catalog` 样本，批次 `019fda86-9df8-71fa-99c1-c7f0b620205c` 的 110 个候选文档全部成功；显式恢复 dry-run/apply 通过，线上目录现为 `Course=105`、`LearningRoute=5`、`CourseCollection=33`、`CourseCollectionMember=103`。恢复只删除已验证旧目录行和其精确 Dify 文档清理任务，不删除/重置历史 `LearningRouteProgress`；发现旧阶段 ID 与新模型阶段 ID 不一致后，按已确认的入门阶段语义修复当前测试进度指针。
+- 根因修复：短阶段追问可能被 Dify 标为 `general_qa` 但仍携带已选路线 ID，原服务端只在 `route_recommendation` 分支补充 `course_names`/`course_collection_names`，造成该分支暴露原始 ID且活动阶段不发课程卡。现只要路线通过权威校验就统一应用完整路线装饰、进度门禁和课程卡；路线刷新按阶段名称/顺序尽量保留稳定 `stage_id`，避免后续进度指针失效。
+- 页面隔离验收：新用户完成“路线首问 → `我确认学习路线：AI高手提效课` → `我目前在：入门阶段`”，页面展示完整两阶段、阶段内课程合集名称、课程卡；课程卡后只出现一条无“匹配理由/专家建议”前缀的综合下一步建议，并带既有完成阶段引导。未新增 HTTP/SSE 事件或字段；`course_ids` 仍是机器字段，用户展示使用同序 `course_names`，不改真实小程序标题。
+- 本地最终验证：文档契约 `11 passed`，课程/路线定向 `21 passed`，全量 `pytest tests -q` 共收集并通过 `379` 项；仅有现有 Starlette/httpx 弃用警告。功能索引生成/检查和 `git diff --check` 通过。
+- 发布过程中第一次尝试因资源看门狗检测到瞬时不可中断 I/O 等待而在 OCR 构建前失败，未切换服务；第二次重试成功。发布脚本已清理复用 release ID 的旧失败标记，避免报告误报。未导入/发布 Dify DSL，未迁移历史批次，未执行 Git commit/push。
+
+## 0.39 2026-08-07 回退至 20260806-172003-full-23162b2（历史）
+
+- 已按用户要求将 jx AI 管理服务切回 `20260806-172003-full-23162b2`；API、普通/实时/Batch 模型 Worker、发布 Worker、Scheduler、OCR Worker、测试 UI 均使用目标镜像并处于 running。
+- 目标 wheel SHA-256 为 `03c2b6073ffab328fb9d08ef67ae680ec6c9d6cccb7d8c8282660d3299590f92`；已保存本次切换前 `.env`、wheel 和 Compose 配置备份：`/opt/ai-management/backups/rollback-20260807-122550-to-20260806-172003-full-23162b2`。
+- 验证：`health/ready=ready`，数据库/Redis/Dify 均可达，Alembic 为 `j6a7b8c9d0e1 (head)`，核心模块导入通过，测试页 HTTP 200，OCR autoscaler timer 为 `active`。
+- 边界：本次只切换应用镜像与 wheel；未执行数据库迁移，未修改数据库、Redis、上传卷或 Dify 应用，未执行 Git commit/push。核验记录：`/opt/ai-management/var/reports/v2/rollback-20260807-122550-to-20260806-172003-full-23162b2`。
+
+## 0.37 2026-08-06 学习路线阶段课程集名称与 jx 完整发布（历史）
 
 - 已按用户确认补充 `learning_route` SSE 事件的阶段字段 `course_collection_names: string[]`。字段只返回课程集名称，不返回课程名称或 ID；名称按该阶段现有 `course_ids` 的原始目录顺序首次出现去重，没有课程集时返回空数组。实现从既有 `ai:course:snapshot` 的 `collections` 运行时派生，不新增 Redis Key、数据库字段或迁移。
 - 本地验证：课程/路线定向回归 `22 passed`，商业顾问/路由/应用回归 `13 passed`，全量 pytest 收集 `339 passed`；目标代码 Ruff、Python 编译、功能索引检查和 `git diff --check` 通过。
@@ -12,7 +66,7 @@
 - 发布后 API、Worker、实时/Batch 模型 Worker、发布 Worker、Scheduler、UI 使用同源新镜像；`health/ready=ready`，数据库/Redis/Dify 均可达，迁移为 `j6a7b8c9d0e1 (head)`，测试页 HTTP 200，OCR autoscaler timer 为 `active`。队列空闲时 OCR Worker 按 autoscaler 退出，不作为发布失败。
 - 远端直接 SSE 验收通过：`learning_route` 事件存在，路线 `AI高手提效课` 返回 2 个阶段；每个阶段均有数组字段，示例阶段课程集名称为 `公众号AI爆款`、`AI写作课`/`AI智能体写作`/`AI阅读博主`/`AI知识库`。合成会话已删除；未清理正式课程、路线、Dify 数据、Redis 整库或持久卷，未执行 Git commit/push。
 
-## 0.38 2026-08-07 商业顾问学习路线、综合点评与课程目录全链路验收（当前最新）
+## 0.38 2026-08-07 商业顾问学习路线、综合点评与课程目录全链路验收（历史）
 
 - 已按本轮确认完成商业顾问服务端改造：路线确认优先读取当前轮/摘要信息，明确回复“我确认学习路线：…”时直接恢复权威路线并进入阶段确认；`learning_route` 返回完整阶段、按原始顺序的 `course_names` 与去重后的 `course_collection_names`；阶段确认后返回课程卡，并在卡片之后只发送一条 `course_recommendation_note` 综合专家点评，缺少合规模型点评时由服务端生成安全默认建议。未增加 HTTP 路径、请求字段或 SSE 事件；既有 `learning_route` 仅增加向后兼容的展示数组字段，既有客户端可忽略未知字段。
 - 全量课程目录已通过 `course_route_catalog` 完整替换导入并重置旧进度：数据库当前 `Course=105`、`LearningRoute=5`、`CourseCollection=33`、`CourseCollectionMember=103`；目录导入批次 `019fd8cc-232a-79ac-bd34-9ee6fab49dff` 完成，Dify 课程知识库分页总量为 115 条。验收结束后已删除本轮合成会话并清除其唯一进度记录，正式课程/路线/Dify 数据未清理。
@@ -1411,3 +1465,19 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改前：jx 运行 `20260806-172003-full-23162b2`；服务器最新完整三镜像为 `20260806-195815-course-collections`。
 - 修改后：先完成 `forward-20260807-013426-to-20260806-195815-course-collections` 的数据库、Redis、上传卷和配置快照，再恢复 `195815-course-collections` 的核心/UI/OCR 镜像与 wheel；未修改数据库、Redis、上传卷或 Dify 应用。
 - 验证：API、Worker、Scheduler、测试页均为目标镜像且 running；ready、数据库/Redis/Dify 连通、Alembic `j6a7b8c9d0e1 (head)`、容器内共享模块导入、测试页 HTTP 200、OCR autoscaler timer active 均通过。用户可直接开始问题验证。
+
+### 文档修改记录（2026-08-07 课程目录恢复与路线活动分支修复）
+
+- 修改原因：真实页面复核发现课程目录只有部分数据，且活动路线的短阶段追问在 Dify 返回 `general_qa` 时出现原始课程 ID、课程卡缺失；用户同时要求确认 PDF/目录修复不影响无关功能并完成 jx 页面验收。
+- 修改前：jx 使用回退 release；目录为不完整快照，路线阶段 ID 与旧进度指针不一致；服务端仅对 `route_recommendation` 做路线展示字段补充；发布报告可能复用旧 release ID 的失败标记。
+- 修改后：完成完整目录批次 `019fda86-9df8-71fa-99c1-c7f0b620205c` 的 110/110 成功验证和显式恢复，目录计数恢复为 105/5/33/103；服务端统一装饰已校验路线并按阶段名/顺序稳定阶段 ID；发布脚本清理旧失败标记；发布 `20260807-1345-route-activefix` 并完成隔离用户页面路线、阶段、课程卡和综合点评验收。
+- 验证：本地课程路线定向测试 `21 passed`；远端 ready/live、同源镜像、迁移和导入烟测通过；页面确认路线后进入阶段确认，阶段确认后课程卡后只有一条无前缀综合建议。首次发布因资源看门狗瞬时 I/O 阻断自动保持旧服务，重试发布成功。
+- 边界：未发布 Dify DSL、未新增 HTTP/SSE 事件、未改变 `course_ids` 机器字段或真实小程序、未迁移历史 PDF/批次、未执行 Git commit/push。
+
+### 文档修改记录（2026-08-07 全量测试与线上最终核验补充）
+
+- 修改原因：目录恢复、路线活动分支修复和部署完成后，补录最终全量测试与线上运行态证据。
+- 修改前：执行计划只记录“文档/索引更新后重新执行全量测试”，未写入最终测试数量；顶部状态缺少本轮文档契约与全量测试数字。
+- 修改后：补录文档契约 `11 passed`、全量 `pytest tests -q` `379` 项通过、现有弃用警告，以及 `health/live`、`health/ready`、同源容器和目录计数复核结果。
+- 验证：文档契约、索引检查和 `git diff --check` 通过；jx 当前 release `20260807-1345-route-activefix` 无回滚标记，页面验收页保持交接状态。
+- 边界：仅更新验收记录，不修改代码、数据库、Dify、对外接口或历史业务数据。

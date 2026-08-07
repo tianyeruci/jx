@@ -517,6 +517,12 @@ def _fail_catalog_auto_run(session, batch: CleaningBatch, reason: str) -> None:
     for document in documents:
         if document.status == "excluded":
             continue
+        # Keep the document-level model/validation failure that caused the
+        # atomic catalogue run to stop.  The batch-level block is only a
+        # publication summary and must not erase the actionable root cause.
+        if document.status in {"failed", "review_required"} and document.error_code:
+            document.retryable = False
+            continue
         document.status = "failed"
         document.stage = "failed"
         document.error_code = error_code

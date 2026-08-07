@@ -103,6 +103,14 @@ def test_learning_route_stage_collection_names_follow_course_order_and_dedupe(se
                     official_url="https://example.com/route-course-2",
                     stage="入门",
                 ),
+                Course(
+                    course_id="other-route-course",
+                    name="其它路线课程",
+                    direction="AI",
+                    description="不应串入当前路线",
+                    official_url="https://example.com/other-route-course",
+                    stage="入门",
+                ),
             ]
         )
         session.add(
@@ -118,6 +126,9 @@ def test_learning_route_stage_collection_names_follow_course_order_and_dedupe(se
                 ),
                 CourseCollectionMember(
                     collection_id="route-collection-a", course_id="route-course-2", order_rank=2
+                ),
+                CourseCollectionMember(
+                    collection_id="route-collection-a", course_id="other-route-course", order_rank=3
                 ),
             ]
         )
@@ -163,7 +174,11 @@ def test_learning_route_stage_collection_names_follow_course_order_and_dedupe(se
         stages = result["learning_route"]["stages"]
         assert stages[0]["course_names"] == ["路线课程二", "路线课程一", "路线课程二"]
         assert stages[0]["course_collection_names"] == ["课程集A"]
+        assert stages[0]["course_collections"] == [
+            {"name": "课程集A", "course_names": ["路线课程一", "路线课程二"]}
+        ]
         assert stages[1]["course_collection_names"] == []
+        assert stages[1]["course_collections"] == []
 
 
 def test_expert_insight_is_emitted_only_when_ids_match_cards(service_db):

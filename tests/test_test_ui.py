@@ -80,6 +80,28 @@ def test_conversation_id_from_sse_result_prefers_terminal_then_started_event():
     assert test_ui.conversation_id_from_sse_result({}) is None
 
 
+def test_load_all_cleaning_items_follows_cursor_pages(monkeypatch):
+    calls: list[dict] = []
+    pages = {
+        "": {"items": [{"item_id": "one"}], "next_cursor": "cursor-1"},
+        "cursor-1": {"items": [{"item_id": "two"}], "next_cursor": None},
+    }
+
+    def fake_api_json(method, path, **kwargs):
+        assert method == "GET"
+        assert path == "/items"
+        calls.append(kwargs)
+        return pages[str(kwargs.get("params", {}).get("cursor") or "")]
+
+    monkeypatch.setattr(test_ui, "api_json", fake_api_json)
+    result = test_ui.load_all_cleaning_items("/items", page_limit=200)
+
+    assert [item["item_id"] for item in result["items"]] == ["one", "two"]
+    assert result["total_count"] == 2
+    assert result["next_cursor"] is None
+    assert calls[1]["params"]["cursor"] == "cursor-1"
+
+
 def test_consume_sse_renders_progress_and_final_answers_separately():
     class Response:
         def iter_lines(self):
