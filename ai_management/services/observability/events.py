@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import traceback
 from collections.abc import Mapping
 from typing import Any
 
@@ -72,6 +73,25 @@ def safe_exception_message(
     return message
 
 
+def safe_exception_traceback(
+    exc: BaseException,
+    *,
+    sensitive_values: tuple[str, ...] = (),
+    limit: int = 12000,
+) -> str:
+    """Return a bounded traceback with paths and sensitive values removed."""
+
+    rendered = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    for value in sensitive_values:
+        if value:
+            rendered = rendered.replace(value, "[redacted]")
+    rendered = _PATH_RE.sub("[path]", rendered)
+    rendered = rendered.replace("\x00", " ")
+    if len(rendered) > limit:
+        return rendered[:limit] + "…"
+    return rendered
+
+
 def exception_details(
     exc: BaseException,
     *,
@@ -85,7 +105,12 @@ def exception_details(
         **context,
         "phase": phase,
         "exception_type": type(exc).__name__,
+        "error_type": type(exc).__name__,
         "exception_message": safe_exception_message(
+            exc,
+            sensitive_values=sensitive_values,
+        ),
+        "traceback": safe_exception_traceback(
             exc,
             sensitive_values=sensitive_values,
         ),

@@ -23,8 +23,6 @@ from sqlalchemy.orm import Session, selectinload
 from knowledge_cleaner.chunking import (
     DIFY_CHILD_SEPARATOR,
     DIFY_PARENT_SEPARATOR,
-    prepare_chunks,
-    render_hierarchical_dify_text,
 )
 from knowledge_cleaner.markdown_table_cleaner import clean_markdown_tables
 from knowledge_cleaner.semantics import SemanticDecision
@@ -997,14 +995,11 @@ def _build_article_document(
         # Book and lead-magnet scope is selected by the uploader. They do not
         # spend model tokens and do not require a keyword-derived topic.
         topic = ""
-        chunks = prepare_chunks(
-            body,
-            title=title,
-            content_type=record_type,
-            topics=(),
-            overlap=0,
-        )
-        markdown = render_hierarchical_dify_text(chunks) if chunks else body.strip()
+        # Keep the local source Markdown free of Dify control separators.
+        # The publication worker passes the configured separators to Dify,
+        # which owns the hierarchical split. Rendering them here made the
+        # subsequent boundary validator reject every lead-magnet document.
+        markdown = body.strip()
         disposition = "pending"
     metadata = {
         "record_type": record_type,
@@ -2332,7 +2327,18 @@ async def create_cleaning_batch(
             continue
         target = batch_dir / row.storage_filename
         target.unlink(missing_ok=True)
-        row.source_deleted_at = utcnow()
+        deleted_at = utcnow()
+        row.source_deleted_at = deleted_at
+        # A preflight duplicate never created a remote document.  Its source
+        # is removed immediately during batch creation, so it must not remain
+        # as a permanent duplicate-protection tombstone and block the same
+        # workbook from being uploaded again after the original is deleted.
+        if row.status == "excluded" and not any(
+            document.dify_document_id for document in row.documents
+        ) and not any(
+            shard.dify_document_id for shard in row.publication_shards
+        ):
+            row.dedupe_released_at = deleted_at
     if not pending_ids:
         batch.status = "completed"
     session.commit()

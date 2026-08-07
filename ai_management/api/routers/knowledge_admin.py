@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
 from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
-from fastapi.responses import Response
-from sqlalchemy import select
+from fastapi.responses import Response, StreamingResponse
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from knowledge_cleaner.dify import DifyKnowledgeClient
@@ -21,11 +23,12 @@ from ...cleaning import (
     get_cleaning_items,
     retry_cleaning_file,
     retry_cleaning_item,
+    retry_model_contract_item,
     review_cleaning_item,
 )
 from ...config import get_settings
 from ...courses import rebuild_snapshot
-from ...db import get_session
+from ...db import SessionLocal, get_session
 from ...errors import ServiceError
 from ...models import (
     CleaningBatch,
@@ -294,6 +297,189 @@ def upload_batch_status(
     return payload
 
 
+def _failed_items_statement(
+    *,
+    batch_id: str,
+    status: str,
+    error_code: str | None = None,
+    cursor: str | None = None,
+):
+    statement = (
+        select(CleaningDocument, CleaningFile)
+        .join(CleaningFile, CleaningDocument.file_id == CleaningFile.id)
+        .where(
+            CleaningFile.batch_id == batch_id,
+            CleaningDocument.status == status,
+        )
+    )
+    if error_code:
+        statement = statement.where(CleaningDocument.error_code == error_code)
+    if cursor:
+        statement = statement.where(CleaningDocument.id > cursor)
+    return statement.order_by(CleaningDocument.id).limit(501)
+
+
+def _serialize_failed_item(
+    document: CleaningDocument,
+    file_row: CleaningFile,
+    strategy_code: str,
+) -> dict[str, Any]:
+    audit = document.audit_json or {}
+    return {
+        "item_id": document.id,
+        "file_id": file_row.id,
+        "filename": file_row.original_filename,
+        "strategy_code": strategy_code,
+        "title": document.title,
+        "status": document.status,
+        "error_code": document.error_code or "",
+        "error_reason": document.error_message or "",
+        "attempts": document.attempts,
+        "model_attempts": int(audit.get("model_attempts") or 0),
+        "retryable": bool(document.retryable),
+        "created_at": document.created_at.isoformat() if document.created_at else None,
+        "updated_at": document.updated_at.isoformat() if document.updated_at else None,
+    }
+
+
+@router.get(
+    "/{kb_code}/upload-batches/{batch_id}/failed-items", response_model=None
+)
+def list_failed_upload_items(
+    kb_code: str,
+    batch_id: str,
+    status: str = "failed",
+    error_code: str | None = None,
+    cursor: str | None = None,
+    limit: int = 100,
+    format: str = "json",
+    session: Session = Depends(get_session),
+) -> dict[str, Any] | StreamingResponse:
+    """List bounded failure records without loading the whole batch."""
+
+    _dataset_id(kb_code)
+    batch = session.scalar(
+        select(CleaningBatch).where(
+            CleaningBatch.id == batch_id,
+            CleaningBatch.knowledge_base_code == kb_code,
+        )
+    )
+    if batch is None:
+        raise ServiceError("VALIDATION_ERROR", "上传批次不存在", 404, False)
+    status = status.strip().lower()
+    if status not in {"failed", "review_required"}:
+        raise ServiceError(
+            "VALIDATION_ERROR",
+            "失败记录状态只能是 failed 或 review_required",
+            422,
+            False,
+        )
+    format = format.strip().lower()
+    if format not in {"json", "csv"}:
+        raise ServiceError("VALIDATION_ERROR", "format 只能是 json 或 csv", 422, False)
+    limit = max(1, min(limit, 500))
+
+    if format == "csv":
+        def stream_csv():
+            fields = [
+                "item_id",
+                "file_id",
+                "filename",
+                "strategy_code",
+                "title",
+                "status",
+                "error_code",
+                "error_reason",
+                "attempts",
+                "model_attempts",
+                "retryable",
+                "created_at",
+                "updated_at",
+            ]
+            with SessionLocal() as stream_session:
+                output = io.StringIO()
+                writer = csv.DictWriter(output, fieldnames=fields)
+                writer.writeheader()
+                yield output.getvalue()
+                output.seek(0)
+                output.truncate(0)
+                next_cursor = cursor
+                while True:
+                    rows = list(
+                        stream_session.execute(
+                            _failed_items_statement(
+                                batch_id=batch_id,
+                                status=status,
+                                error_code=error_code,
+                                cursor=next_cursor,
+                            )
+                        )
+                    )
+                    if not rows:
+                        break
+                    has_more = len(rows) > 500
+                    page_rows = rows[:500]
+                    for document, file_row in page_rows:
+                        writer.writerow(
+                            _serialize_failed_item(
+                                document, file_row, batch.strategy_code
+                            )
+                        )
+                    yield output.getvalue()
+                    output.seek(0)
+                    output.truncate(0)
+                    if not has_more:
+                        break
+                    next_cursor = page_rows[-1][0].id
+
+        return StreamingResponse(
+            stream_csv(),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="failed-items-{batch_id}.csv"'
+                )
+            },
+        )
+
+    rows = list(
+        session.execute(
+            _failed_items_statement(
+                batch_id=batch_id,
+                status=status,
+                error_code=error_code,
+                cursor=cursor,
+            )
+        )
+    )
+    has_more = len(rows) > limit
+    items = [
+        _serialize_failed_item(document, file_row, batch.strategy_code)
+        for document, file_row in rows[:limit]
+    ]
+    total = session.scalar(
+        select(func.count(CleaningDocument.id))
+        .join(CleaningFile, CleaningDocument.file_id == CleaningFile.id)
+        .where(
+            CleaningFile.batch_id == batch_id,
+            CleaningDocument.status == status,
+            *(
+                [CleaningDocument.error_code == error_code]
+                if error_code
+                else []
+            ),
+        )
+    )
+    return {
+        "batch_id": batch_id,
+        "strategy_code": batch.strategy_code,
+        "status": status,
+        "items": items,
+        "total": int(total or 0),
+        "next_cursor": items[-1]["item_id"] if has_more and items else None,
+    }
+
+
 @router.post(
     "/{kb_code}/upload-batches/{batch_id}/model-tasks/{task_id}/approve"
 )
@@ -375,6 +561,31 @@ def approve_model_task(
         "status": task.status,
         "candidate_fingerprint": task.candidate_fingerprint,
     }
+
+
+@router.post(
+    "/{kb_code}/upload-batches/{batch_id}/model-tasks/{task_id}/items/{item_id}/retry"
+)
+def retry_model_contract_item_route(
+    kb_code: str,
+    batch_id: str,
+    task_id: str,
+    item_id: str,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _dataset_id(kb_code)
+    batch = session.get(CleaningBatch, batch_id)
+    if batch is None or batch.knowledge_base_code != kb_code:
+        raise ServiceError("VALIDATION_ERROR", "上传批次不属于该知识库", 404, False)
+    try:
+        return retry_model_contract_item(
+            batch_id=batch_id,
+            task_id=task_id,
+            item_id=item_id,
+            session=session,
+        )
+    except ValueError as exc:
+        raise ServiceError("VALIDATION_ERROR", str(exc), 409, False) from exc
 
 
 @router.post(

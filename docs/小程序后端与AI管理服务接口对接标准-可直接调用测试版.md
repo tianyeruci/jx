@@ -165,13 +165,13 @@ data: {"schema_version":"2.0","request_id":"req-001","sequence":4,"conversation_
 
 ~~~text
 event: learning_route
-data: {"schema_version":"2.0","request_id":"req-001","sequence":5,"route_id":"route_ai_basic","name":"AI入门路线","direction":"AI基础","target":"完成AI基础使用","stages":[{"stage_id":"stage_1","name":"入门","order":1,"course_ids":["course_ai_001"]}],"current_stage_id":null,"next_stage_id":null,"state":"awaiting_route_confirmation","progress_status":"pending_route","confirmation_required":true}
+data: {"schema_version":"2.0","request_id":"req-001","sequence":5,"route_id":"route_ai_basic","name":"AI入门路线","direction":"AI基础","target":"完成AI基础使用","stages":[{"stage_id":"stage_1","name":"入门","order":1,"course_ids":["course_ai_001"],"course_names":["AI工具入门"],"course_collection_names":["AI写作课"]}],"current_stage_id":null,"next_stage_id":null,"state":"awaiting_route_confirmation","progress_status":"pending_route","confirmation_required":true}
 
 event: course_cards
 data: {"schema_version":"2.0","request_id":"req-001","sequence":6,"items":[{"course_id":"course_ai_001","name":"AI工具入门","direction":"AI基础","description":"适合零基础用户","enabled":true,"review_status":"approved","redirect_url":"https://example.com/r/xxxxx"}]}
 
 event: course_recommendation_note
-data: {"schema_version":"2.0","request_id":"req-001","sequence":7,"text":"该课程与已确认的入门目标匹配。"}
+data: {"schema_version":"2.0","request_id":"req-001","sequence":7,"content":"建议先完成这门课程的核心练习，完成后告诉我进度，我再安排下一步。"}
 ~~~
 
 注意：
@@ -180,7 +180,7 @@ data: {"schema_version":"2.0","request_id":"req-001","sequence":7,"text":"该课
 - 只有启用且审核通过的课程和路线可以返回卡片。
 - 当前阶段优先，其次下一阶段，最多 5 门且保持路线顺序。
 - 没有官方路线时可推荐独立课程，但不得临时拼接路线。
-- 当前不生成或渲染课程级 expert_insight。
+- `course_recommendation_note` 仅在课程卡通过服务端校验后发送一条“下一步建议”；多门课程合并为一条 1–2 句、最多 80 字的建议，不含匹配理由或专家建议前缀。当前不生成或渲染课程级 `expert_insight` 事件。
 - 同一会话生成中再次请求返回 409 CONVERSATION_BUSY。
 
 ### 2.3 停止商业顾问生成（建议对接）

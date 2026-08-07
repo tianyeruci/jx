@@ -16,6 +16,30 @@ from ai_management.models import (
 )
 
 
+def test_exception_details_include_redacted_traceback_and_context():
+    from ai_management.services.observability import exception_details
+
+    try:
+        raise ValueError("解析失败: 原始文件名.md")
+    except ValueError as exc:
+        details = exception_details(
+            exc,
+            phase="cleaning_file",
+            sensitive_values=("原始文件名.md",),
+            file_id="file-1",
+            batch_id="batch-1",
+            strategy_code="xiaobot_post",
+        )
+
+    assert details["exception_type"] == "ValueError"
+    assert details["exception_message"] == "解析失败: [redacted]"
+    assert "traceback" in details
+    assert "ValueError" in details["traceback"]
+    assert "原始文件名.md" not in details["traceback"]
+    assert details["file_id"] == "file-1"
+    assert details["batch_id"] == "batch-1"
+
+
 def _file(batch_id: str) -> CleaningFile:
     return CleaningFile(
         batch_id=batch_id,
@@ -137,6 +161,80 @@ def test_content_model_plan_forces_realtime_for_large_batch(service_db, monkeypa
         assert task.status == "queued"
         assert task.candidate_count == 1
         assert task.batch.status == "model_validating"
+
+
+def test_model_daily_budget_stops_batch_and_queues_source_fallback(
+    service_db,
+    monkeypatch,
+):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    monkeypatch.setattr(worker.settings, "cleaning_daily_budget_yuan", 0.01)
+    monkeypatch.setattr(worker.settings, "cleaning_realtime_input_price_per_million", 1000)
+    monkeypatch.setattr(worker.settings, "cleaning_realtime_output_price_per_million", 1000)
+    monkeypatch.setattr(worker.settings, "cleaning_realtime_price_version", "test")
+    monkeypatch.setattr(worker.settings, "cleaning_realtime_price_effective_date", "2026-01-01")
+    monkeypatch.setattr(worker.settings, "cleaning_realtime_price_valid_until", "2099-01-01")
+    queued: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        worker.publish_dify_shard,
+        "apply_async",
+        lambda *args, **kwargs: queued.append((args, kwargs)),
+    )
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="processing",
+            common_metadata={
+                "_cleaning_review_policy": {
+                    "enabled": True,
+                    "review_required_enabled": True,
+                    "source_markdown_fallback_enabled": True,
+                }
+            },
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="预算测试",
+            dify_document_name="budget.md",
+            document_key="budget-1",
+            status="awaiting_model",
+            stage="model_queued",
+            content_sha256="c" * 64,
+            metadata_json={
+                "record_type": "article",
+                "_cleaning_review_policy": batch.common_metadata[
+                    "_cleaning_review_policy"
+                ],
+            },
+            chunking_json={},
+            audit_json={"model_blocks": {"b0001": "先验证客户问题，再设计最小交付。" * 20}},
+            warnings_json=[],
+            cleaned_markdown="# 预算测试\n\n先验证客户问题，再设计最小交付。" * 20,
+        )
+        session.add(document)
+        session.commit()
+        batch_id = batch.id
+        document_id = document.id
+
+    assert worker.maybe_plan_model_task(batch_id) is None
+
+    with service_db() as session:
+        document = session.get(CleaningDocument, document_id)
+        assert document.status == "shard_pending"
+        assert document.audit_json["source_markdown_fallback"]["model_output_ignored"] is True
+        assert session.scalar(select(ModelCleaningTask).where(ModelCleaningTask.batch_id == batch_id)) is None
+
+    assert queued
 
 
 def test_catalog_batch_switch_forces_realtime_with_its_own_price_snapshot(
@@ -656,6 +754,57 @@ def test_catalog_model_payload_preserves_nonempty_source_semantics_when_model_is
     )
     assert route.audit_json["catalog_record"]["direction"] == "来源方向"
     assert route.audit_json["catalog_record"]["target"] == "来源目标"
+
+
+def test_catalog_route_uses_neutral_fallback_when_source_has_no_target():
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    route = CleaningDocument(
+        title="来源路线",
+        status="model_processing",
+        stage="model_running",
+        audit_json={
+            "catalog_kind": "route",
+            "catalog_draft": {
+                "route_id": "route_1",
+                "name": "来源路线",
+                "direction": "",
+                "target": "",
+                "stages": [
+                    {
+                        "stage_id": "stage_1",
+                        "name": "入门阶段",
+                        "order": 1,
+                        "course_ids": ["course_1"],
+                    }
+                ],
+            },
+        },
+        metadata_json={},
+    )
+    worker._apply_model_payload(
+        route,
+        "course_route_catalog",
+        PromptRequest(
+            strategy_code="course_route_catalog",
+            item_id="item-route-fallback",
+            content_sha256="c" * 64,
+            title="来源路线",
+            blocks={"b001": "路线名称：来源路线"},
+        ),
+        {
+            "direction_candidate": "",
+            "description": "",
+            "audience": "",
+            "highlights": [],
+            "learning_outcomes": [],
+            "problems": [],
+            "route_target": "",
+        },
+    )
+    record = route.audit_json["catalog_record"]
+    assert record["direction"] == "课程学习路线"
+    assert record["target"] == "来源路线"
 
 
 def test_batch_approval_invalidates_cached_batch_status(service_db, monkeypatch):
@@ -1221,6 +1370,20 @@ def test_post_model_result_keeps_only_evidenced_blocks():
             "topic": "产品与客户",
             "time_sensitive": False,
             "confidence": 0.99,
+            "knowledge_units": [
+                {
+                    "unit_id": "u001",
+                    "title": "定位验证",
+                    "topic": "产品与客户",
+                    "problem": "客户问题需要先确认。",
+                    "conclusion": "先访谈客户再调整定位。",
+                    "reasoning": "来源给出访谈和调整顺序。",
+                    "applicable_conditions": ["需要确认真实客户问题。"],
+                    "actions": ["访谈客户", "调整产品定位"],
+                    "risks_or_limits": [],
+                    "source_block_ids": ["b0001"],
+                }
+            ],
         },
     )
 
@@ -1275,6 +1438,20 @@ def test_post_model_review_uses_keep_blocks_when_review_gate_is_disabled():
             "topic": "产品与客户",
             "time_sensitive": False,
             "confidence": 0.4,
+            "knowledge_units": [
+                {
+                    "unit_id": "u001",
+                    "title": "定位验证",
+                    "topic": "产品与客户",
+                    "problem": "客户问题需要先确认。",
+                    "conclusion": "先访谈客户再调整定位。",
+                    "reasoning": "来源给出访谈和调整顺序。",
+                    "applicable_conditions": ["需要确认真实客户问题。"],
+                    "actions": ["访谈客户", "调整产品定位"],
+                    "risks_or_limits": [],
+                    "source_block_ids": ["b0001"],
+                }
+            ],
         },
     )
 
@@ -1323,6 +1500,113 @@ def test_model_review_restores_source_markdown_for_publishable_new_policy():
     assert document.metadata_json == source_metadata
     assert document.audit_json["source_markdown_fallback"]["model_output_ignored"] is True
     assert document.error_code is None
+
+
+def test_post_model_knowledge_units_become_independent_local_documents(service_db):
+    from ai_management.workers.tasks.model_cleaning import _apply_model_payload
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="xiaobot_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="model_validating",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        source_blocks = {
+            "b0001": "客户问题需要先通过访谈确认，再用最小交付验证产品定位。" * 4,
+            "b0002": "定价不能脱离交付边界，应该根据客户价值和交付成本持续复盘。" * 4,
+        }
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="商业方法合集",
+            dify_document_name="source__001.md",
+            document_key="item-1",
+            status="model_processing",
+            stage="model_running",
+            content_sha256="b" * 64,
+            metadata_json={
+                "record_type": "article",
+                "source_title": "商业方法合集",
+                "_cleaning_review_policy": {
+                    "enabled": True,
+                    "review_required_enabled": True,
+                    "source_markdown_fallback_enabled": True,
+                },
+            },
+            chunking_json={"parent_separator": "<<<P>>>"},
+            audit_json={"model_blocks": source_blocks},
+            warnings_json=[],
+            cleaned_markdown="\n\n".join(source_blocks.values()),
+        )
+        session.add(document)
+        session.commit()
+
+        _apply_model_payload(
+            document,
+            "xiaobot_post",
+            PromptRequest(
+                strategy_code="xiaobot_post",
+                item_id=document.id,
+                content_sha256=document.content_sha256,
+                title=document.title,
+                blocks=source_blocks,
+            ),
+            {
+                "disposition": "keep",
+                "business_relevance": "transferable",
+                "reason_code": "business_method",
+                "keep_block_ids": ["b0001", "b0002"],
+                "drop_block_ids": [],
+                "topic": "产品与客户",
+                "time_sensitive": False,
+                "confidence": 0.9,
+                "knowledge_units": [
+                    {
+                        "unit_id": "u001",
+                        "title": "定位验证",
+                        "topic": "产品与客户",
+                        "problem": "客户问题需要先确认。",
+                        "conclusion": "先访谈客户再验证定位。",
+                        "reasoning": "来源给出访谈和最小交付的顺序。",
+                        "applicable_conditions": ["需要确认真实客户问题。"],
+                        "actions": ["访谈客户", "验证产品定位"],
+                        "risks_or_limits": ["不能把计划当成结果。"],
+                        "source_block_ids": ["b0001"],
+                    },
+                    {
+                        "unit_id": "u002",
+                        "title": "定价与交付边界",
+                        "topic": "产品与客户",
+                        "problem": "定价需要匹配交付边界。",
+                        "conclusion": "定价应结合客户价值和交付成本复盘。",
+                        "reasoning": "来源明确指出定价与交付的关联。",
+                        "applicable_conditions": ["交付成本可能变化。"],
+                        "actions": ["明确交付边界", "持续复盘定价"],
+                        "risks_or_limits": ["不能脱离交付能力承诺。"],
+                        "source_block_ids": ["b0002"],
+                    },
+                ],
+            },
+            session=session,
+        )
+        documents = list(
+            session.scalars(
+                select(CleaningDocument)
+                .where(CleaningDocument.file_id == file_row.id)
+                .order_by(CleaningDocument.id)
+            )
+        )
+
+    assert len(documents) == 2
+    assert {item.title for item in documents} == {"定位验证", "定价与交付边界"}
+    assert all(item.status == "shard_pending" for item in documents)
+    assert all(item.metadata_json.get("knowledge_unit_id") for item in documents)
 
 
 def test_consultation_review_uses_kept_source_blocks_when_review_gate_is_disabled():
@@ -1493,6 +1777,20 @@ def test_realtime_post_contract_failure_skips_without_retry(
                     "topic": "产品与客户",
                     "time_sensitive": False,
                     "confidence": 0.9,
+                    "knowledge_units": [
+                        {
+                            "unit_id": "u001",
+                            "title": "定位验证",
+                            "topic": "产品与客户",
+                            "problem": "客户问题需要确认。",
+                            "conclusion": "先访谈客户再调整定位。",
+                            "reasoning": "来源给出验证顺序。",
+                            "applicable_conditions": [],
+                            "actions": ["访谈客户", "调整产品定位"],
+                            "risks_or_limits": [],
+                            "source_block_ids": ["b0001"],
+                        }
+                    ],
                 },
                 {"input_tokens": 1, "output_tokens": 1},
             )
@@ -1506,6 +1804,20 @@ def test_realtime_post_contract_failure_skips_without_retry(
                 "topic": "产品与客户",
                 "time_sensitive": False,
                 "confidence": 0.9,
+                "knowledge_units": [
+                    {
+                        "unit_id": "u001",
+                        "title": "定位验证",
+                        "topic": "产品与客户",
+                        "problem": "客户问题需要确认。",
+                        "conclusion": "先访谈客户再调整定位。",
+                        "reasoning": "来源给出验证顺序。",
+                        "applicable_conditions": [],
+                        "actions": ["访谈客户", "调整产品定位"],
+                        "risks_or_limits": [],
+                        "source_block_ids": ["b0001"],
+                    }
+                ],
             },
             {"input_tokens": 1, "output_tokens": 1},
         )
@@ -1598,6 +1910,20 @@ def test_realtime_post_no_response_retries_once(service_db, monkeypatch):
                 "topic": "产品与客户",
                 "time_sensitive": False,
                 "confidence": 0.9,
+                "knowledge_units": [
+                    {
+                        "unit_id": "u001",
+                        "title": "定位验证",
+                        "topic": "产品与客户",
+                        "problem": "客户问题需要确认。",
+                        "conclusion": "先访谈客户再调整定位。",
+                        "reasoning": "来源给出验证顺序。",
+                        "applicable_conditions": [],
+                        "actions": ["访谈客户", "调整产品定位"],
+                        "risks_or_limits": [],
+                        "source_block_ids": ["b0001"],
+                    }
+                ],
             },
             {"input_tokens": 1, "output_tokens": 1},
         )

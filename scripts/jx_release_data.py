@@ -1340,7 +1340,24 @@ def clean_v3(output: Path, plan_path: Path, private_result: Path) -> dict[str, A
         if targets["direction_codes"] and CourseDirection is not None:
             session.execute(delete(CourseDirection).where(CourseDirection.code.in_(targets["direction_codes"])))
         if targets["cleaning_batch_ids"]:
-            session.execute(delete(SystemEventLog).where(SystemEventLog.resource_id.in_(targets["cleaning_batch_ids"])))
+            # PDF conversion events are scoped to the exact CleaningFile ID,
+            # while batch-level events use the CleaningBatch ID.  Capture the
+            # file IDs before the cascade so exact cleanup removes both kinds
+            # of test audit rows without touching unrelated history.
+            file_ids = [
+                str(value)
+                for value in session.scalars(
+                    select(CleaningFile.id).where(
+                        CleaningFile.batch_id.in_(targets["cleaning_batch_ids"])
+                    )
+                )
+            ]
+            event_resource_ids = [*targets["cleaning_batch_ids"], *file_ids]
+            session.execute(
+                delete(SystemEventLog).where(
+                    SystemEventLog.resource_id.in_(event_resource_ids)
+                )
+            )
             session.execute(delete(CleaningBatch).where(CleaningBatch.id.in_(targets["cleaning_batch_ids"])))
         non_target_after = _catalog_summary(
             session,

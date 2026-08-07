@@ -9,10 +9,12 @@ from sqlalchemy import select
 
 from ai_management.cache import Cache
 from ai_management.cleaning import STRATEGY_REGISTRY
+from ai_management.conversations import _route_followup_guidance
 from ai_management.course_import import (
     _route_text,
     load_course_records_text,
     load_route_records_text,
+    replace_course_route_catalog_rows,
     sync_cleaning_catalog_record,
 )
 from ai_management.courses import (
@@ -21,7 +23,13 @@ from ai_management.courses import (
     rebuild_snapshot,
     validate_recommendation,
 )
-from ai_management.models import Course, LearningRoute, LearningRouteProgress
+from ai_management.models import (
+    Course,
+    CourseCollection,
+    CourseCollectionMember,
+    LearningRoute,
+    LearningRouteProgress,
+)
 from ai_management.schemas import RecommendationDecision
 from ai_management.services.admin_settings import bump_catalog_revision
 from ai_management.workers.tasks.cleaning import _course_document_publish_order
@@ -203,6 +211,69 @@ series_name: 不推断系列
         assert row.series_name == "不推断系列"
 
 
+def test_full_course_route_catalog_replacement_removes_stale_rows_and_resets_progress(
+    service_db,
+):
+    with service_db() as session:
+        session.add_all([_course("keep"), _course("stale")])
+        session.add_all(
+            [
+                LearningRoute(
+                    route_id="keep-route",
+                    name="保留路线",
+                    direction="AI商业",
+                    target="测试",
+                    stages=[{"stage_id": "s1", "name": "第一阶段", "order": 1, "course_ids": ["keep"]}],
+                ),
+                LearningRoute(
+                    route_id="stale-route",
+                    name="旧路线",
+                    direction="AI商业",
+                    target="测试",
+                    stages=[{"stage_id": "s1", "name": "第一阶段", "order": 1, "course_ids": ["stale"]}],
+                ),
+                CourseCollection(
+                    collection_id="keep-collection", name="保留合集", raw_title="保留合集"
+                ),
+                CourseCollection(
+                    collection_id="stale-collection", name="旧合集", raw_title="旧合集"
+                ),
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                CourseCollectionMember(
+                    collection_id="keep-collection", course_id="keep", order_rank=1
+                ),
+                CourseCollectionMember(
+                    collection_id="stale-collection", course_id="stale", order_rank=1
+                ),
+                LearningRouteProgress(
+                    user_hash="user", route_id="stale-route", status="active", current_stage_id="s1"
+                ),
+            ]
+        )
+        session.flush()
+        result = replace_course_route_catalog_rows(
+            session,
+            incoming_course_ids={"keep"},
+            incoming_route_ids={"keep-route"},
+            source_file="课程信息与学习路线.xlsx",
+        )
+        session.commit()
+        assert result == {
+            "removed_courses": 1,
+            "removed_routes": 1,
+            "removed_collections": 1,
+            "reset_progress": 1,
+        }
+        assert session.get(Course, "stale") is None
+        assert session.get(LearningRoute, "stale-route") is None
+        assert session.get(CourseCollection, "stale-collection") is None
+        assert session.scalar(select(LearningRouteProgress.id)) is None
+
+
 def test_latest_catalog_query_uses_structured_fields_and_excludes_inactive(service_db):
     with service_db() as session:
         session.add_all(
@@ -257,6 +328,15 @@ def test_route_cards_require_stage_confirmation_and_keep_route_order(service_db)
         )
         pending = validate_recommendation(session, selected, user_hash="u", query="我确认选择有序路线")
         assert pending["course_cards"] == []
+        assert [stage["name"] for stage in pending["learning_route"]["stages"]] == [
+            "第一阶段",
+            "第二阶段",
+        ]
+        assert pending["learning_route"]["stages"][0]["course_names"] == [
+            "c1",
+            "c2",
+            "c3",
+        ]
         confirmed = RecommendationDecision(
             intent="route_recommendation",
             candidate_route_id="route_order",
@@ -272,6 +352,27 @@ def test_route_cards_require_stage_confirmation_and_keep_route_order(service_db)
         assert "expert_insight" not in active
         assert active["learning_route"]["current_stage_id"] == "s1"
         assert active["learning_route"]["next_stage_id"] == "s2"
+
+
+def test_route_followup_guidance_is_state_specific_and_does_not_repeat_route():
+    route = {
+        "name": "AI商业学习路线",
+        "stages": [
+            {"stage_id": "s1", "name": "入门阶段", "order": 1, "course_ids": ["c1"]},
+            {"stage_id": "s2", "name": "高手进阶", "order": 2, "course_ids": ["c2"]},
+        ],
+    }
+    assert "我确认学习路线：AI商业学习路线" in _route_followup_guidance(
+        {**route, "state": "awaiting_route_confirmation"}
+    )
+    assert "我目前在：入门阶段" in _route_followup_guidance(
+        {**route, "state": "awaiting_stage_confirmation"}
+    )
+    active = _route_followup_guidance(
+        {**route, "state": "active", "current_stage_id": "s2"}
+    )
+    assert "完成高手进阶" in active
+    assert "学习路线：" not in active
 
 
 def test_route_snapshot_uses_authoritative_stage_order_and_public_names(service_db):
@@ -303,6 +404,85 @@ def test_route_snapshot_uses_authoritative_stage_order_and_public_names(service_
             "stage_beginner",
             "stage_advanced",
         ]
+
+
+def test_learning_route_adds_stage_collection_names_from_snapshot_order(service_db):
+    with service_db() as session:
+        session.add_all([_course("c1"), _course("c2"), _course("c3"), _course("c4")])
+        session.add_all(
+            [
+                CourseCollection(
+                    collection_id="collection_a",
+                    name="课程集A",
+                    raw_title="课程集A",
+                ),
+                CourseCollection(
+                    collection_id="collection_b",
+                    name="课程集B",
+                    raw_title="课程集B",
+                ),
+            ]
+        )
+        session.flush()
+        session.add_all(
+            [
+                CourseCollectionMember(
+                    collection_id="collection_a", course_id="c1", order_rank=1
+                ),
+                CourseCollectionMember(
+                    collection_id="collection_a", course_id="c2", order_rank=2
+                ),
+                CourseCollectionMember(
+                    collection_id="collection_b", course_id="c3", order_rank=1
+                ),
+            ]
+        )
+        session.add(
+            LearningRoute(
+                route_id="route_collection_names",
+                name="课程集路线",
+                direction="AI商业",
+                target="测试",
+                stages=[
+                    {
+                        "stage_id": "stage_1",
+                        "name": "第一阶段",
+                        "order": 1,
+                        "course_ids": ["c2", "c1", "c3", "c2"],
+                    },
+                    {
+                        "stage_id": "stage_2",
+                        "name": "第二阶段",
+                        "order": 2,
+                        "course_ids": ["c4"],
+                    },
+                ],
+            )
+        )
+        session.commit()
+        snapshot = rebuild_snapshot(session)
+        decision = RecommendationDecision(
+            intent="route_recommendation",
+            candidate_route_id="route_collection_names",
+            progress_action={
+                "type": "confirm_route",
+                "route_id": "route_collection_names",
+                "evidence_quote": "我确认选择课程集路线",
+            },
+        )
+        result = validate_recommendation(
+            session,
+            decision,
+            user_hash="u",
+            query="我确认选择课程集路线",
+        )
+
+        assert "course_collection_names" not in snapshot["routes"]["route_collection_names"]["stages"][0]
+        assert result["learning_route"]["stages"][0]["course_collection_names"] == [
+            "课程集A",
+            "课程集B",
+        ]
+        assert result["learning_route"]["stages"][1]["course_collection_names"] == []
 
 
 def test_route_document_contains_course_names_and_canonical_stage_order():
@@ -385,6 +565,45 @@ def test_explicit_stage_confirmation_recovers_selected_route_when_dify_has_no_ro
         assert [item["course_id"] for item in recovered["course_cards"]] == ["c1", "c2"]
         assert recovered["learning_route"]["current_stage_id"] == "intro"
         assert recovered["learning_route"]["state"] == "active"
+
+
+def test_explicit_route_confirmation_recovers_selected_route_when_dify_has_no_route(service_db):
+    """An explicit route-name confirmation must advance without retrieval output."""
+
+    with service_db() as session:
+        session.add(_course("c1"))
+        session.add(
+            LearningRoute(
+                route_id="route_explicit_confirmation",
+                name="明确路线",
+                direction="AI商业",
+                target="测试",
+                stages=[
+                    {"stage_id": "intro", "name": "入门", "order": 1, "course_ids": ["c1"]},
+                ],
+            )
+        )
+        session.commit()
+        rebuild_snapshot(session)
+
+        pending = validate_recommendation(
+            session,
+            RecommendationDecision(intent="general_qa"),
+            user_hash="u",
+            query="我确认学习路线：明确路线",
+        )
+
+        assert pending["course_cards"] == []
+        assert pending["learning_route"]["route_id"] == "route_explicit_confirmation"
+        assert pending["learning_route"]["state"] == "awaiting_stage_confirmation"
+        progress = session.scalar(
+            select(LearningRouteProgress).where(
+                LearningRouteProgress.user_hash == "u",
+                LearningRouteProgress.route_id == "route_explicit_confirmation",
+            )
+        )
+        assert progress is not None
+        assert progress.status == "pending_stage"
 
 
 def test_route_availability_question_cannot_be_treated_as_route_confirmation(service_db):

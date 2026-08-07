@@ -56,6 +56,13 @@ def test_cleanup_records_exact_upload_batch_ids_for_volume_cleanup():
     assert '"removed_cleaning_batch_ids": batch_ids' in SOURCE
 
 
+def test_cleanup_removes_batch_and_file_scoped_event_rows():
+    source = SOURCE[SOURCE.index("def clean_v3") : SOURCE.index("def safe_summary")]
+    assert "select(CleaningFile.id)" in source
+    assert "event_resource_ids" in source
+    assert "SystemEventLog.resource_id.in_(event_resource_ids)" in source
+
+
 def test_cleanup_candidates_are_manifest_only_not_all_local_associations(monkeypatch):
     """A local association alone cannot prove that a document belongs to this run."""
     monkeypatch.setattr(

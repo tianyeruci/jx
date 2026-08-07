@@ -15,7 +15,12 @@ from knowledge_cleaner.consultation_v2 import (
     verify_parent_child_blocks,
 )
 
-SAMPLE = Path("文件清洗样本/会议咨询总结/咨询会议总结清洗策略优化包_20260731/06_样本_结构化清洗结果.json")
+SAMPLE = (
+    Path(__file__).resolve().parents[1]
+    / "文件清洗样本"
+    / "咨询会议总结清洗策略优化包_20260731"
+    / "06_样本_结构化清洗结果.json"
+)
 
 
 def _sample() -> tuple[dict, dict[str, str]]:

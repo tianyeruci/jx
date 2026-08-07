@@ -172,7 +172,7 @@ Content-Type: application/json
 | retriever_resources | 否 | 检索来源 |
 | learning_route | 否 | 学习路线 |
 | course_cards | 否 | 课程卡片 |
-| course_recommendation_note | 否 | 推荐说明 |
+| course_recommendation_note | 否 | 已校验课程的下一步建议 |
 | message_end | 成功或正常停止时 | 请求结束 |
 | error | 失败时 | 流式错误；出现后不再返回 message_end |
 request_started 出参：
@@ -190,7 +190,7 @@ data: {"schema_version":"2.0","request_id":"req-001","sequence":1,"conversation_
 status 出参：
 | 字段 | 类型 | 一定返回 | 可空 | 说明 |
 | --- | --- | --- | --- | --- |
-| code | string | 是 | 否 | retrieving 或 task_started 等 |
+| code | string | 是 | 否 | retrieving、task_started；商业顾问分段回答还可能为 progress_answer_started 或 final_answer_started |
 | message | string | 是 | 否 | 状态文案 |
 | task_id | string | 否 | 是 | code=task_started 时返回 |
 ~~~text
@@ -205,6 +205,7 @@ answer_delta 出参：
 event: answer_delta
 data: {"schema_version":"2.0","request_id":"req-001","sequence":3,"delta":"建议先从高频办公场景开始。"}
 ~~~
+商业顾问的即时提示和最终答案都使用同一个 `answer_delta` 事件；`status.code=progress_answer_started` 与 `status.code=final_answer_started` 仅用于需要分栏展示的客户端识别边界，旧客户端仍可顺序追加全部增量。
 retriever_resources 出参：
 | 字段 | 类型 | 一定返回 | 可空 |
 | --- | --- | --- | --- |
@@ -225,6 +226,8 @@ learning_route 出参：
 | stages[].name | string | 是 | 否 | 阶段名称 |
 | stages[].order | integer | 是 | 否 | 阶段顺序 |
 | stages[].course_ids | array<string> | 是 | 否 | 课程 ID |
+| stages[].course_names | array<string> | 是 | 否 | 与 `course_ids` 一一对应、同序的课程名称 |
+| stages[].course_collection_names | array<string> | 是 | 否 | 按阶段内原始目录顺序去重的课程集名称 |
 | current_stage_id | string | 是 | 是 | 当前阶段 ID |
 | next_stage_id | string | 是 | 是 | 下一阶段 ID |
 | state | string | 是 | 否 | 路线确认状态 |
@@ -232,7 +235,7 @@ learning_route 出参：
 | confirmation_required | boolean | 是 | 否 | 是否需要用户确认 |
 ~~~text
 event: learning_route
-data: {"schema_version":"2.0","request_id":"req-001","sequence":5,"route_id":"route-ai-basic","name":"AI入门路线","direction":"AI基础","target":"完成AI基础使用","stages":[{"stage_id":"stage-1","name":"入门","order":1,"course_ids":["course-ai-001"]}],"current_stage_id":null,"next_stage_id":null,"state":"awaiting_route_confirmation","progress_status":"pending_route","confirmation_required":true}
+data: {"schema_version":"2.0","request_id":"req-001","sequence":5,"route_id":"route-ai-basic","name":"AI入门路线","direction":"AI基础","target":"完成AI基础使用","stages":[{"stage_id":"stage-1","name":"入门","order":1,"course_ids":["course-ai-001"],"course_names":["AI工具入门"],"course_collection_names":["AI写作课"]}],"current_stage_id":null,"next_stage_id":null,"state":"awaiting_route_confirmation","progress_status":"pending_route","confirmation_required":true}
 ~~~
 course_cards 出参：
 | 字段 | 类型 | 一定返回 | 可空 | 说明 |
@@ -266,7 +269,7 @@ course_recommendation_note 出参：
 | content | string | 是 | 否 |
 ~~~text
 event: course_recommendation_note
-data: {"schema_version":"2.0","request_id":"req-001","sequence":7,"content":"该课程与已确认的学习目标匹配。"}
+data: {"schema_version":"2.0","request_id":"req-001","sequence":7,"content":"建议先完成这门课程的核心练习，完成后告诉我进度，我再安排下一步。"}
 ~~~
 message_end 出参：
 | 字段 | 类型 | 一定返回 | 可空 |

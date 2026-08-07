@@ -4,9 +4,57 @@
 
 ## 当前执行状态（2026-08-03）
 
-- 当前线上商业顾问行为基线仍为 `dify/商业顾问（当前使用版本）.yml`；候选“统一修复版”只完成本地生成与静态契约检查，未导入或发布到正式应用。
+- 当前线上商业顾问行为基线仍为 `dify/商业顾问（当前使用版本）.yml`；本轮本地修复完成后，发布必须按“导出备份 → 导入/保存 → 发布 → `/parameters` 与真实 SSE 验收”顺序留存证据，不能只以本地 DSL 通过作为上线结论。
 - 远端只读契约检查已验证四个应用的参数/调用路径；两个知识库检索结果为 0，不能据此宣称 RAG 召回通过。候选 DSL 导入/发布需要受控 Dify 管理员会话或 Enterprise API，并应通过 HTTPS/安全隧道完成；缺少这些条件时不得使用 HTTP 管理接口、猜测凭据或直接改数据库。
 - 商业顾问轻量语义评测仍有未通过案例；个人商业咨询模型契约和课程目录结构复核也必须保持复核门禁，不能为了提高通过率放宽 schema 或自动批准。
+
+## 当前功能修改索引（2026-08-05）
+
+以下结论以当前使用的商业顾问 DSL `dify/商业顾问（当前使用版本）.yml`、两个 Workflow DSL 和 jx-now 适配代码为准。
+
+| 功能 | 当前来源 | 修改位置与注意事项 |
+| --- | --- | --- |
+| 商业顾问打开页面的推荐问题 | Dify App 的 `suggested_questions` 参数，经 `entry.py` 的 `/parameters` 读取 | 当前固定为 3 条 AI 课程相关问题；入口接口按 Dify 当前已发布参数返回推荐问题，并缓存 300 秒。问题文案应在 Dify App 参数或 `dify/商业顾问（当前使用版本）.yml` 中修改，修改本地 DSL 后仍需保存、发布并重新核对 `/parameters`，不能只改本地文件后宣称线上已更新。 |
+| 商业顾问回答后的推荐问题 | Dify 的 `suggested_questions_after_answer.enabled` 开关和 Dify 消息上下文 | 当前 DSL 只打开了该开关；jx-now 没有把 Dify 的回答后推荐问题接口转发给小程序/测试页。因此要改变生成逻辑，应在 Dify App 的回答后推荐问题能力中修改并单独验收，不能只改 `suggested_questions`；如要让本项目展示，还需要新增受控 API/SSE 字段，这不在本次计划内。 |
+| 商业顾问下一步建议 | DSL 的 `combined_response_general/course/mixed` 与三条格式修复分支均输出 `expert_insight`、`expert_course_ids`，并由 `recommendation_decision_*` 解析透传；服务端 `ai_management/courses.py` 的 `validate_recommendation()` 与 `ai_management/conversations.py` | DSL 不再生成 `answer_plan` 或推荐理由。服务端只在已校验课程卡片存在时发送一条 `course_recommendation_note`；模型建议须通过 `expert_course_ids` 全量一致、链接和内部 ID 门禁，不合规时由服务端生成同长度约束的安全默认组合建议。无卡、待路线/阶段确认或解析失败不发送。事件名及 `{"content":"..."}` 结构不变；路线完整阶段、`course_names` 与 `course_collection_names` 由服务端补充；修改 DSL 后必须导入、保存、发布并执行真实 SSE 验收。小程序卡片标题改为“下一步建议”需在其独立源码中另行处理。 |
+| 朋友圈顾问、日常写作界面引导语 | Dify App 的 `opening_statement` 参数，经 `entry.py` 的 `/parameters` 读取 | `dify/dsl/moments_advisor.yml` 和 `dify/dsl/writing_advisor.yml` 是 Workflow DSL，当前只定义 Start→LLM→End 图，没有可供 `entry-config` 读取的 `opening_statement`；用户看到的引导语应在对应 Dify App 的界面/参数设置中修改并发布。不要把引导语只写进 LLM Prompt，否则不会成为入口配置。 |
+| 朋友圈顾问、日常写作输出 | 两个 Workflow DSL 的 LLM Prompt | 朋友圈修改 `dify/dsl/moments_advisor.yml` 的 `llm` 节点；日常写作修改 `dify/dsl/writing_advisor.yml` 的 `llm` 节点。当前 Start→LLM→End 结构已经足够，不需要为界面引导语或商业顾问的分段回答增加节点；修改后需重新导入、保存、发布并分别验收。 |
+
+### 商业顾问首屏固定问题配置
+
+当前仓库配置文件为 `dify/商业顾问（当前使用版本）.yml`，位置是 `workflow.features.suggested_questions`。固定问题聚焦 `AI高手提效课`，当前为：
+
+1. `我想系统学习AI工具，应该从哪里开始？`
+2. `有没有适合公众号运营入门的课程？`
+3. `我已经有一些基础，如何选择AI写作进阶课程？`
+
+在 Dify 控制台打开商业顾问 Chatflow 的应用设置，修改开场引导/推荐问题中的 `suggested_questions`，保存并发布。发布后依次核对 Dify `/parameters` 和 jx `/internal/v1/entry-config`；jx 入口配置缓存最长约 300 秒。这个配置只影响首次进入页面的推荐问题，不改变回答后的推荐问题能力。
+
+### 商业顾问“即时提示 + 最终答案”的流式边界
+
+当前商业顾问 DSL 已有 `progress_answer`（固定即时提示）和多个最终 `answer_*` 节点。此前 `ai_management/conversations.py` 只处理 `message` 的 `answer` 字段，把两个节点产生的文本连续写进同一段服务端状态，因此测试页只能在整个流结束后一起看到。
+
+本次只调整 jx-now 适配层和测试页，不修改或重新发布商业顾问 DSL：
+
+1. Dify 进入 `progress_answer` 时发送 `status.code=progress_answer_started`；Dify 1.13.3 的固定 Answer 节点正文实际位于 `node_finished.data.outputs.answer`，适配层将其转成原有 `answer_delta`。
+2. Dify 进入最终 `answer_*` 节点时发送 `status.code=final_answer_started`，最终答案继续使用原有 `answer_delta` 流式输出。
+3. `answer_delta` 事件名、`data.delta` 字段和 `schema_version` 均不变；旧客户端继续按顺序追加所有 `answer_delta` 即可。需要分栏展示的客户端按两个可选 `status.code` 切换显示区。
+4. 即时提示不写入助手历史，只有最终答案写入本地助手消息；测试页已分为“即时提示”和“最终回答”两个占位区。
+
+如果 Dify 版本或导出 DSL 改名了节点，适配层识别的节点规则位于 `ai_management/conversations.py` 顶部的 `PROGRESS_ANSWER_NODE_ID`、`QUICK_ANSWER_NODE_ID` 和 `ANSWER_NODE_PREFIX`。修改节点 ID 后必须补充 SSE 契约测试，并重新执行真实 Chatflow 验收；2026-08-05 已在 jx 发布并用真实合成请求、浏览器测试页验证“即时提示 → 最终答案”顺序。
+
+### 商业顾问课程/路线名称与内部标识边界
+
+Chatflow 的决策 JSON 可以继续使用 `course_id`、`route_id`、`stage_id` 做候选、校验和进度动作；这些字段不能为了改善文案而从决策结果删除。`ai-management` 在用户可见文本出口读取已审核课程目录快照，把课程、路线、阶段 ID 转成对应正式名称，并清理英文标签、裸标识和旧的“内部标识已隐藏”占位词。
+
+- 用户看到的是目录正式名称；错误名称与有效 ID 同时出现时，以目录名称为准。
+- 路线快照按“新手必看 → 入门阶段 → 高手进阶”排序，保留现有阶段 ID，避免影响已确认进度。
+- 路线列表展示正式课程名称；普通推荐的课程卡片仍由 `courses.py` 按已校验 ID 生成签名 `redirect_url`，结构化 `course_cards`、`learning_route`、停止和反馈字段保持兼容。
+- ID 无效或课程已下架时不生成课程卡片，用户文案使用不可用提示；不能根据 ID 猜测课程名称。
+- 处理范围覆盖流式回答、历史正文、标题、推荐说明、专家建议和引用资源中的可见字符串；引用资源的 `course_id`/`route_id`/`stage_id` 元数据字段保持结构但不作为用户文案展示。
+- 路线确认沿用现有机器字段和接口，不新增字段；服务端接受小程序实际发送的“我确认学习路线：路线名称”后进入阶段确认，用户明确确认阶段后才生成对应课程卡片。
+
+这部分是 jx-now 适配层的内部处理，不需要修改固定接口文档，也不要求重新发布 DSL；只有课程目录或 Chatflow 决策字段发生变化时，才需要重新执行对应的目录/DSL 契约测试。
 
 ## 1. 建两个知识库
 
@@ -65,22 +113,11 @@ DSL 记录 Tongyi 插件和 `qwen-plus`。如果目标环境插件版本不同�
 
 DSL 不包含模型 API Key。
 
-### 3.1 独立 PDF→Markdown Code 节点测试 Workflow
+### 3.1 PDF→Markdown Dify Workflow（已退役）
 
-用于验证 PDF 转 Markdown 的独立 DSL 为 `dify/dsl/pdf_to_markdown_code_test.yml`。它不是四个业务应用的一部分，不绑定知识库，也不要求修改 jx API/Worker。
+独立的 `pdf_to_markdown_code_test.yml` Workflow 和 `sandbox-pdf-probe` 构建材料已按 2026-08-05 决定全部退役，不再作为当前导入、发布或验收入口。PDF 转 Markdown 统一由 jx-now 的 `knowledge_cleaner.pdf_markdown_refine` 共享核心和现有 `ai_ocr` 上传清洗队列负责；不会再通过 Dify Code 节点复制一套转换逻辑。
 
-导入和使用：
-
-1. 在 Dify 控制台以管理员身份导入该 YAML，作为新的 `workflow` 应用；不要覆盖四个现有应用。
-2. 上传一个纯文本或纯图片 PDF；`OCR DPI` 默认 200（允许 150–300），`最大页数`用于纯图片 PDF，默认 50（允许 1–200）。文本型 PDF 先走 PyMuPDF，不受该 OCR 页数限制。
-3. 运行后查看 `status`、`backend` 和 `warnings`；文字 PDF 预期 `backend=pymupdf`，无文字层的扫描 PDF 预期 `backend=rapidocr`，Markdown 在 `markdown` 字段。
-4. 先用合成/脱敏样本各跑一遍，再核对页数、输出长度和置信度；不要把样本正文复制到日志、报告或仓库。RapidOCR/ONNX Runtime 的 INFO/WARNING 可能写 stderr，测试 DSL 已在 OCR 调用期间处理该输出，避免被 Sandbox 误判为 RuntimeError。
-
-如果此前已经导入旧版本，必须重新导入本地修复后的 `pdf_to_markdown_code_test.yml` 并保存/发布新 Workflow 版本；Dify 不会自动同步本地 YAML。旧版本会继续出现“文本 PDF 超过 max_pages”或 RapidOCR 日志导致节点异常。
-
-本次服务器验证对 Dify Sandbox 做了临时覆盖：离线安装 PyMuPDF/RapidOCR/ONNX Runtime，扩大 syscall 白名单并将 Code 执行超时调到 180 秒；当前按用户要求保留该自测窗口，SSRF 仅放行 `112.74.37.111:80`。窗口结束后必须从 `/opt/ai-management/backups/20260804-pdf-code-sandbox-pre` 恢复并按哈希确认。默认 Dify Sandbox 的 seccomp 会阻断 ONNX Runtime，不能把“镜像能 import”误当成“Workflow 可运行”。
-
-该 DSL 仍只是独立测试资产，不绑定正式知识库，也不替换生产清洗策略；导入后的 UI 运行结果以 Dify 追踪日志和 `status/backend/warnings` 为准。
+远端已从 `/opt/ai-management/backups/20260804-pdf-code-sandbox-pre` 恢复 Sandbox、SSRF、超时和环境基线，并删除临时 override；退役前快照位于 `/opt/ai-management/backups/20260805-pdf-workflow-retire-pre`。历史验证和踩坑证据保留在日期化报告，不代表当前生产配置。
 
 ### 3.2 PDF Workflow 已验证踩坑清单（2026-08-04）
 
@@ -92,7 +129,7 @@ DSL 不包含模型 API Key。
 | `/dev/null` 或临时文件方案继续失败 | 受限 Sandbox 没有 `/dev/null`，也没有可用临时目录 | 不依赖文件系统 sink；固定使用 `os.pipe()`，并在 `finally` 恢复 fd 2、关闭管道。 |
 | 本地 YAML 已修复但 Dify 仍报旧错误 | Dify 已导入的应用不会自动读取本地文件 | 重新导入 YAML，保存并发布新 Workflow 版本后再测。 |
 
-最终扫描样本验收：`code=0`、`error` 为空、`status=succeeded`、`backend=rapidocr`、3 页、平均置信度 `0.9969`。报告中不保存样本正文。
+上述 Dify Workflow 验收结果仅作历史记录；当前 PDF 验收请使用本地全量样本、jx 代表样本、上传清洗状态和 PDF 问题中心接口。
 
 ## 4. 绑定商业顾问知识库
 
@@ -182,6 +219,8 @@ Workflow：
 - 父子分段。
 - 索引状态 completed/error。
 - 零分块判定。
+
+知识库文档清洗发布的额外契约：上传策略先按支持矩阵完成 PDF/DOCX→Markdown 或 Markdown/TXT 规范化，再执行表格清洗；模型、人工复核和文章拆分在 `create-by-text` 前都必须执行最终无 Markdown/HTML 表格门禁。单个源文件中多篇公众号文章/小报童帖子必须先拆成多个逻辑条目，每个逻辑条目独立调用一次 `create-by-text`、等待索引并回读父子块和 Metadata；不能把多个条目合并成一个远端文档。Dify 管理名保留逻辑条目标题语义并统一为 `.md`，同源多文档使用 `__001.md`、`__002.md` 等序号；多个上传文件通过本地发布队列逐条调用，不超过单条请求的数量和字节上限。内部来源文件名、源哈希、批次 ID 不得写入 Dify 自定义 Metadata。
 - Metadata 创建和设置。
 - 文档删除。
 - 中文和超长名称。

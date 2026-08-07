@@ -1,6 +1,6 @@
 # API 与 SSE 说明
 
-2026-07-30 会话记忆与管理审计字段发布：公开路由和 SSE 交互保持不变；测试页会复用服务端返回的本地会话 ID，管理接口改为返回原始 `user_id` 和审计指标。课程路线内部确认校验不要求调用方修改接口；`expert_insight` 不属于公开 SSE 契约。
+2026-08-06/07 商业顾问“下一步建议”与学习路线展示调整：公开路由、请求字段和 SSE 事件名保持不变；`learning_route` 在既有结构上增加可选展示数组 `course_names`、`course_collection_names`，旧客户端可忽略；`course_recommendation_note` 仍是可选的 `{"content":"..."}`，但新会话仅在课程卡通过服务端校验后用它发送下一步建议。
 
 除课程签名跳转和健康检查外，内部接口均要求：
 
@@ -61,6 +61,21 @@ error
 {"delta":"本次新增文本"}
 ```
 
+商业顾问的 `answer_delta` 可以在同一条 SSE 流中出现多次。当前 DSL 的 `progress_answer` 即时提示和最终 `answer_*` 节点都复用该事件，不新增事件名或字段。为支持需要分栏展示的页面，服务端在两个阶段之间复用现有 `status` 事件发送可选边界码：
+
+```json
+{"code":"progress_answer_started","message":"已开始返回即时提示"}
+{"code":"final_answer_started","message":"已开始返回最终答案"}
+```
+
+收到 `progress_answer_started` 后的 `answer_delta` 属于即时提示；收到 `final_answer_started` 后的 `answer_delta` 属于最终答案。旧客户端可以继续按顺序追加所有 `answer_delta`，无需修改接口字段。当前测试页使用两个展示区，并且只把最终答案写入助手历史；即时提示不是持久化回答。
+
+课程卡片、路线和下一步引导仍复用上述事件：服务端在课程卡片和 `course_recommendation_note` 之后，可能再发送一条 `answer_delta` 作为路线下一步操作提示；这不是新事件，旧客户端追加文本即可。
+
+在 Dify 1.13.3 中，固定 `progress_answer` 节点可能只在 `node_finished.data.outputs.answer` 返回正文，不发送 `message.answer`；AI 管理服务会在适配层把该输出规范化为一个或多个 `answer_delta`，调用方无需感知 Dify 原始事件差异。
+
+服务端会在用户可见文本出口过滤课程、路线和阶段内部标识，包括 `课程ID`、`路线ID`、`阶段ID`、`course_id`、`route_id`、`stage_id` 及对应的内部 ID 值；历史正文、推荐说明、专家建议和引用资源中的可见字符串同样适用。过滤不会删除 Chatflow 的内部决策字段，也不会改变 `course_cards`、`learning_route` 中供小程序处理课程链接和路线进度的结构化机器字段。
+
 `message_end` 包含本地会话/消息 ID、Dify message/task ID、状态、首 Token、总耗时和 Token 用量。若流中收到 `error`，不能把此前部分文本标记为完整回答。
 
 同一会话已有生成时返回：
@@ -102,9 +117,11 @@ GET /internal/v1/entry-config
 
 `learning_route` 表示服务端已校验过的官方路线。它可能处于 `awaiting_route_confirmation`、`awaiting_stage_confirmation`、`active` 或 `completed`；只有用户明确确认路线和当前阶段后，才允许出现该路线的 `course_cards`。
 
+`learning_route` 每次返回完整路线的全部阶段，阶段按目录顺序排列。每个 `stages[]` 同时保留机器字段 `course_ids`，并提供与其一一对应、同序的用户展示字段 `course_names`；另外提供 `course_collection_names`，按该阶段课程在原始目录中的顺序返回且同一课程集只出现一次。没有可用课程集时返回空数组。这些字段由现有课程目录快照派生，不新增 Redis 键。
+
 `course_cards.items` 只包含启用且审核通过的课程。卡片中的 `redirect_url` 是唯一允许客户端打开的课程地址；不要从回答正文、Dify 文档或 `official_url` 推导链接。每轮最多 5 门，路线卡片严格按当前阶段、下一阶段顺序返回。
 
-`course_recommendation_note` 是可选的简短匹配理由，只能基于用户已确认目标、当前问题、阶段和课程真实介绍。课程级 `expert_insight` 已停用，不是当前 SSE 契约，客户端无需等待或渲染该事件。
+`course_recommendation_note` 是可选的“下一步建议”：服务端在本轮确实返回有效课程卡时只发送一条，内容为 1–2 句、最多 80 字的组合学习动作，不带“匹配理由：”或“专家建议：”前缀。模型建议会经过课程卡 ID 全量一致、链接和内部 ID 门禁；缺失或不合规时使用同样受限的服务端默认建议，确保有效课程卡后仍有一条安全点评。无课程卡、路线/阶段待确认或解析失败时不发送。该事件名和 `{"content":"..."}` payload 不变。小程序现有卡片标题“推荐理由”的改名不在本仓库。
 
 ## AI 管理端文件清洗
 
@@ -113,9 +130,12 @@ GET  /internal/v1/admin/knowledge-bases/{kb_code}/cleaning-strategies
 POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches
 GET  /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}
 POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/retry
+POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/model-tasks/{task_id}/items/{item_id}/retry
 ```
 
 以上接口还要求 `X-Admin-Token`；`kb_code` 只能为 `general` 或 `course`。当前测试页的课程与路线资料统一使用 `course_route_catalog`（`.xlsx`）；`course_information`、`learning_route` 仍由后端兼容历史批次和旧调用，但不在页面展示或本轮页面验收。完整条目查询、复核、启停和删除接口以 [小程序后端与 AI 管理服务接口对接标准](小程序后端与AI管理服务接口对接标准.md) 为准。
+
+模型契约精确重试接口只接受已完成、唯一候选、`realtime` 模式且错误码为 `MODEL_CONTRACT_INVALID` 的条目；它只重新排队该条目，不开启 Bailian Batch、不绕过严格契约。其他状态返回 `409`，客户端应按错误码处理，不解析模型原始错误文字。
 
 上传为 `multipart/form-data`：
 
@@ -159,4 +179,4 @@ GET /internal/v1/admin/course-clicks
 GET /internal/v1/admin/catalog
 ```
 
-会话审计接口的 `user_id` 是管理人员可见的原始用户 ID，不返回内部 `user_hash`。列表使用最近一条助手消息的推荐课程、专业见解、推荐理由、token 消耗和首 token/总响应耗时；详情在每条消息上提供同一组结构化字段，并在顶层重复最近一条助手消息的汇总。推荐课程、专业见解和推荐理由没有值时返回空数组或空字符串；历史记录未保存原始 ID 时 `user_id` 为空。`expert_insight` 仅作为历史消息中的只读兼容数据，不会在本次管理查询中重新生成。
+会话审计接口的 `user_id` 是管理人员可见的原始用户 ID，不返回内部 `user_hash`。列表使用最近一条助手消息的推荐课程、专业见解、推荐理由、token 消耗和首 token/总响应耗时；详情在每条消息上提供同一组结构化字段，并在顶层重复最近一条助手消息的汇总。推荐课程、专业见解和推荐理由没有值时返回空数组或空字符串；历史记录未保存原始 ID 时 `user_id` 为空。新会话不再写入 `recommendation_note`，但旧推荐理由和旧专家见解保留为只读兼容数据，不回填、不改写。

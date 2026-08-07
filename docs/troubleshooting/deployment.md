@@ -176,7 +176,19 @@
 - 根因：快速发布路径的上传范围不包含共享清洗包；服务器旧构建资产没有当前仓库新增模块，构建导入门禁正确阻断。
 - 解决：保留快速发布失败现场并自动回滚；执行发布前备份后构建完整 wheel，核对 wheel SHA-256 和包内共享模块，再走完整 release 发布。发布后在 API 容器内做模块导入、路由发现、ready、Dify 可达和测试页检查。
 - 非解决：在运行容器内临时 `pip install`、只上传 `ai_management`、跳过全模块导入门禁，或用快速发布覆盖跨包变更。
-- 验证：完整 release `20260806-065957-full-bd1c4762d48d` 首次验证了 `knowledge_cleaner.markdown_table_cleaner` 导入和失败条目路由；后续 release `20260806-111200-full-8f59f14169c9` 再次通过共享模块导入、API/Worker/UI 同源、ready 和测试页 HTTP 200，并完成真实清洗批次知识库发布。
+- 验证：完整 release `20260806-065957-full-bd1c4762d48d` 首次验证了 `knowledge_cleaner.markdown_table_cleaner` 导入和失败条目路由；后续 release `20260806-111200-full-8f59f14169c9` 再次通过共享模块导入、API/Worker/UI 同源、ready 和测试页 HTTP 200。release `20260806-190738-business-next-step` 再次通过 wheel SHA-256、共享模块导入、迁移 head、Dify ready、同源服务与测试页检查，且未发布 Dify App。
 - 预防：发布前按变更域判断快速/完整路径；凡涉及 `knowledge_cleaner`、共享脚本或构建元数据即使用完整 wheel，保留备份和失败报告。
 - 证据：jx 发布报告 `/opt/ai-management/var/reports/v2/20260806-111200-full-8f59f14169c9-deploy`、备份 `/opt/ai-management/backups/20260806-review-switch-fix-predeploy`、本地脱敏记录 `var/reports/20260806-review-switch/issues.jsonl`。
+- 最后验证：2026-08-06。
+
+## DEPLOY-017：完整发布必须在任何副作用前保存 `.env`
+
+- 适用：jx `scripts/jx_deploy_release.sh` 的完整 wheel 发布与切换后自动回滚。
+- 触发：发布成功或切换后失败时，备份目录缺少 `env.backup`，而回滚路径会恢复该文件。
+- 根因：旧脚本备份了 wheel、Compose 和迁移文件，却没有在暂停 OCR、安装 wheel 或改写 `.env` 前复制 `.env`。
+- 解决：在注册回滚 trap 后、任何发布副作用前执行 `cp -a .env "$BACKUP_DIR/env.backup"`；以发布契约测试锁定该前置条件。
+- 非解决：切换后才复制当前 `.env`、在运行容器内临时改环境，或假定历史备份可代表本次配置。
+- 验证：`tests/test_cleaning_release_contract.py` 新增契约断言和 `bash -n scripts/jx_deploy_release.sh` 均通过；修订脚本已校验 SHA-256 后同步至 jx。当前服务不因该脚本同步而重启。
+- 预防：完整发布报告或发布前门禁必须确认本次 `env.backup` 已存在；发布脚本的每个 rollback 输入都应由同一脚本显式创建。
+- 证据：本地脱敏记录 `var/reports/20260806-business-next-step-release/issues.jsonl`，jx 发布 `20260806-190738-business-next-step` 的备份目录。
 - 最后验证：2026-08-06。

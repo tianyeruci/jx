@@ -49,6 +49,41 @@ def test_wechat_parser_prefers_longer_near_duplicate_body(tmp_path):
     assert unit.metadata["body_origin"] == "deduplicated_longer_after"
 
 
+def test_wechat_parser_splits_multiple_articles_in_one_source_file(tmp_path):
+    source = tmp_path / "account.txt"
+    text = (
+        "【文章1】第一篇\\n先访谈客户，再验证定位。\n"
+        "2026-01-02 03:04:05  测试账号\n"
+        "第一篇正文。\n"
+        "【文章2】第二篇\\n第二篇讨论定价和交付。\n"
+        "2026-01-03 03:04:05  测试账号\n"
+        "第二篇正文。\n"
+    )
+    source.write_bytes(text.encode("gb18030"))
+
+    units = parse_wechat_public_account(source)
+
+    assert [unit.title for unit in units] == ["第一篇", "第二篇"]
+    assert [unit.sequence for unit in units] == ["1", "2"]
+    assert all(unit.body for unit in units)
+
+
+def test_markdown_post_parser_splits_multiple_posts_in_one_source_file(tmp_path):
+    source = tmp_path / "posts.md"
+    source.write_text(
+        "# 帖子合集\n\n"
+        "# 第一篇\n先访谈客户，再验证定位。\n\n"
+        "# 第二篇\n定价要和交付边界一起设计。\n",
+        encoding="utf-8",
+    )
+
+    units = parse_markdown_posts(source)
+
+    assert [unit.title for unit in units] == ["第一篇", "第二篇"]
+    assert [unit.sequence for unit in units] == ["1", "2"]
+    assert [unit.source_type for unit in units] == ["markdown_post", "markdown_post"]
+
+
 def test_markdown_course_uses_lesson_h2_not_part_h1(tmp_path):
     source = tmp_path / "course.md"
     source.write_text(

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from knowledge_cleaner.chunking import DIFY_PARENT_SEPARATOR
-
 
 @dataclass(frozen=True, slots=True)
 class ShardItem:
@@ -33,39 +31,27 @@ def plan_post_shards(
     max_items: int = 200,
     max_bytes: int = 1_000_000,
 ) -> list[PublicationShardPlan]:
+    """Plan one remote Dify document for each source item.
+
+    The limits remain as defensive configuration checks. They no longer
+    authorize combining multiple articles/posts into one remote document.
+    """
+
     if max_items < 1 or max_bytes < 1:
         raise ValueError("分片上限必须为正数")
     plans: list[PublicationShardPlan] = []
-    current_items: list[ShardItem] = []
-    current_parts: list[str] = []
-
-    def flush() -> None:
-        if not current_items:
-            return
-        plans.append(
-            PublicationShardPlan(
-                index=len(plans) + 1,
-                items=tuple(current_items),
-                markdown=f"\n{DIFY_PARENT_SEPARATOR}\n".join(current_parts),
-            )
-        )
-        current_items.clear()
-        current_parts.clear()
 
     for item in items:
         rendered = _render_item(item)
         if len(rendered.encode("utf-8")) > max_bytes:
             raise ValueError(f"条目 {item.item_id} 单条超过Dify分片字节上限")
-        candidate_parts = [*current_parts, rendered]
-        candidate = f"\n{DIFY_PARENT_SEPARATOR}\n".join(candidate_parts)
-        if current_items and (
-            len(current_items) >= max_items
-            or len(candidate.encode("utf-8")) > max_bytes
-        ):
-            flush()
-        current_items.append(item)
-        current_parts.append(rendered)
-    flush()
+        plans.append(
+            PublicationShardPlan(
+                index=len(plans) + 1,
+                items=(item,),
+                markdown=rendered,
+            )
+        )
     return plans
 
 

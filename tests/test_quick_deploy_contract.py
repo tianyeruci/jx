@@ -32,7 +32,26 @@ def test_quick_deploy_is_backed_up_validated_and_rollback_capable():
     assert "alembic current" in source
     assert "/health/ready" in source
     assert "ai-management-test/" in source
+    assert "TEST_PAGE_READY=0" in source
+    assert "seq 1 30" in source
+    assert "test page did not become ready within 60 seconds" in source
     assert "critical errors were found in recent service logs" in source
+
+
+def test_quick_deploy_restores_an_existing_ocr_worker_after_failure():
+    source = _source("scripts/jx_quick_deploy.sh")
+
+    assert "if test \"$OCR_WORKER_WAS_RUNNING\" -eq 1; then" in source
+    assert "ocr_id=\"$(compose ps -q ai-ocr-worker" in source
+    assert "compose stop -t 660 ai-ocr-worker" in source
+    assert "compose up -d ai-ocr-worker" in source
+    assert "if command -v systemctl >/dev/null 2>&1; then" in source
+
+
+def test_quick_deploy_restores_ocr_before_successful_exit_cleanup_is_disabled():
+    source = _source("scripts/jx_quick_deploy.sh")
+
+    assert 'restore_ocr_autoscaler\nOCR_WORKER_WAS_RUNNING=0\ntrap - EXIT' in source
 
 
 def test_quick_deploy_cleanup_is_explicit_and_scoped():

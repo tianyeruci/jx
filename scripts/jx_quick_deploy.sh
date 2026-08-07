@@ -66,28 +66,31 @@ compose() {
 }
 
 pause_ocr_autoscaler() {
-  command -v systemctl >/dev/null 2>&1 || return 0
-  if systemctl cat jx-ocr-autoscaler.timer >/dev/null 2>&1; then
-    if systemctl is-active --quiet jx-ocr-autoscaler.timer; then
-      systemctl stop jx-ocr-autoscaler.timer
-      OCR_AUTOSCALER_WAS_ACTIVE=1
+  if command -v systemctl >/dev/null 2>&1; then
+    if systemctl cat jx-ocr-autoscaler.timer >/dev/null 2>&1; then
+      if systemctl is-active --quiet jx-ocr-autoscaler.timer; then
+        systemctl stop jx-ocr-autoscaler.timer
+        OCR_AUTOSCALER_WAS_ACTIVE=1
+      fi
+      systemctl stop jx-ocr-autoscaler.service >/dev/null 2>&1 || true
     fi
-    systemctl stop jx-ocr-autoscaler.service >/dev/null 2>&1 || true
   fi
   local ocr_id
-  ocr_id="$(docker compose -f docker-compose.ai.yml ps -q ai-ocr-worker 2>/dev/null || true)"
+  ocr_id="$(compose ps -q ai-ocr-worker 2>/dev/null || true)"
   if test -n "$ocr_id" && test "$(docker inspect --format '{{.State.Status}}' "$ocr_id" 2>/dev/null || true)" = running; then
-    docker compose -f docker-compose.ai.yml stop -t 660 ai-ocr-worker
+    compose stop -t 660 ai-ocr-worker
     OCR_WORKER_WAS_RUNNING=1
   fi
 }
 
 restore_ocr_autoscaler() {
-  command -v systemctl >/dev/null 2>&1 || return 0
-  if test "$OCR_AUTOSCALER_WAS_ACTIVE" -eq 1; then
-    systemctl start jx-ocr-autoscaler.timer >/dev/null 2>&1 || true
-  elif test "$OCR_WORKER_WAS_RUNNING" -eq 1; then
-    docker compose -f docker-compose.ai.yml up -d ai-ocr-worker >/dev/null 2>&1 || true
+  if command -v systemctl >/dev/null 2>&1 && systemctl cat jx-ocr-autoscaler.timer >/dev/null 2>&1; then
+    if test "$OCR_AUTOSCALER_WAS_ACTIVE" -eq 1; then
+      systemctl start jx-ocr-autoscaler.timer >/dev/null 2>&1 || true
+    fi
+  fi
+  if test "$OCR_WORKER_WAS_RUNNING" -eq 1; then
+    compose up -d ai-ocr-worker >/dev/null 2>&1 || true
   fi
 }
 
@@ -545,9 +548,17 @@ test "$(grep -c "$UI_IMAGE" "$REPORT_DIR/container-images.txt")" -eq 1
 docker image inspect "$OCR_REPOSITORY:$RELEASE_ID" --format '{{.Id}} {{.RepoTags}}' \
   > "$REPORT_DIR/ocr-image-ref.txt"
 
-curl --fail --silent --show-error -o /dev/null -w '%{http_code}\n' \
-  http://127.0.0.1/ai-management-test/ > "$REPORT_DIR/test-page-http-status.txt"
-test "$(tr -d '[:space:]' < "$REPORT_DIR/test-page-http-status.txt")" = "200"
+TEST_PAGE_READY=0
+for _ in $(seq 1 30); do
+  curl --silent --show-error -o /dev/null -w '%{http_code}\n' \
+    http://127.0.0.1/ai-management-test/ > "$REPORT_DIR/test-page-http-status.txt" || true
+  if test "$(tr -d '[:space:]' < "$REPORT_DIR/test-page-http-status.txt")" = "200"; then
+    TEST_PAGE_READY=1
+    break
+  fi
+  sleep 2
+done
+test "$TEST_PAGE_READY" -eq 1 || die "test page did not become ready within 60 seconds"
 
 LOG_FAILURES=0
 for service in "${ALL_SERVICES[@]}"; do
@@ -606,6 +617,8 @@ rm -f -- "$INCOMING_ZIP"
 rm -rf -- "$OLD_SOURCE"
 SOURCE_SWAPPED=0
 SWITCHED=0
+restore_ocr_autoscaler
+OCR_WORKER_WAS_RUNNING=0
 trap - EXIT
 if test -n "$TEMP_ROOT"; then
   rm -rf -- "$TEMP_ROOT"

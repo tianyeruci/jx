@@ -109,8 +109,11 @@ def test_consultation_gate_returns_review_item_instead_of_publishable_or_file_fa
         source.name,
     )
     assert len(cleaned) == 1
-    assert cleaned[0].disposition == "review_required"
-    assert cleaned[0].error_code == "PRIVACY_REVIEW_REQUIRED"
+    assert cleaned[0].disposition == "awaiting_model"
+    assert cleaned[0].warnings == []
+    assert "表格结构无法可靠对齐" in cleaned[0].audit["pdf_conversion"]["review_reasons"]
+    assert cleaned[0].error_code is None
+    assert cleaned[0].error_message is None
 
 
 @pytest.mark.parametrize("strategy_code", ["zsxq_post", "xiaobot_post"])
@@ -158,13 +161,13 @@ def test_wechat_strategy_hides_account_name_and_person_name(tmp_path):
 
 def test_dify_child_document_names_use_source_name_and_three_digit_sequence():
     source_hash = hashlib.sha256(b"same-source").hexdigest()
-    assert dify_document_name("访谈记录.docx", source_hash, 1) == "访谈记录.docx"
-    assert dify_document_name("另一个名字.pdf", source_hash, 12, split=True) == "另一个名字__012.pdf"
+    assert dify_document_name("访谈记录.docx", source_hash, 1) == "访谈记录.md"
+    assert dify_document_name("另一个名字.pdf", source_hash, 12, split=True) == "另一个名字__012.md"
     long_name = "非常长的来源文件名" + "甲" * 200 + ".pdf"
     first = dify_document_name(long_name, source_hash, 3, split=True)
     second = dify_document_name(long_name, source_hash, 3, split=True)
     assert first == second
-    assert first.endswith("__003.pdf")
+    assert first.endswith("__003.md")
     assert len(first) <= 300
 
 
@@ -188,7 +191,7 @@ def test_business_stream_history_and_resources_hide_known_name_and_source_filena
 
     forbidden_name = "陈北"
     forbidden_filename = "陈北商业咨询纪要.pdf"
-    remote_name = "陈北商业咨询纪要__001.pdf"
+    remote_name = "陈北商业咨询纪要__001.md"
 
     with service_db() as session:
         batch = CleaningBatch(

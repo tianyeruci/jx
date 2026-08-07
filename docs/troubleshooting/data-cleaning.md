@@ -256,6 +256,43 @@
 - 证据：`var/reports/20260806-review-switch/issues.jsonl`、jx 发布报告 `/opt/ai-management/var/reports/v2/20260806-111200-full-8f59f14169c9-deploy`、[当前状态交接](../../AI管理服务当前状态与后续测试交接.md:10)。
 - 最后验证：2026-08-06。
 
+## DATA-026：PDF 首页/末页低文字告警不等于整份文档失败
+
+- 适用：共享 PDF→Markdown 核心和所有使用 PDF 输入的清洗策略。
+- 触发：多页文字型 PDF 的首页或末页只有少量文字，正文页均有可用文字层。
+- 根因：旧分类器把孤立的首页/末页低文字页统一归为 uncertain，导致本可读正文在转换前被硬阻断。
+- 解决：仅当低文字页位于首/末页、无图片且每个其他页面均达文字阈值时继续转换，并在本地审计记录 `PDF_BOUNDARY_LOW_TEXT_WARNING`；该告警不投影到 Dify Metadata 或用户文本。
+- 非解决：不得放行中间低文字页、含图低文字页、混合扫描、纯扫描 OCR 失败、空正文或隐私残留，也不得把告警写入用户回答或绕过 Dify 发布门禁。
+- 仍阻断：中间低文字页、低文字含图片、文字/扫描混合、纯扫描 OCR 失败、空正文和隐私残留。
+- 验证：`tests/test_pdf_ocr_quality.py` 覆盖边界放行、warning 非阻断、中间页/含图拦截及低文字全篇不误走 OCR；部署后页面验收需检查问题中心的 warning/blocked 分级。
+- 预防：所有 PDF 入口继续复用共享分类核心；新增边界例外必须同时补首尾、页中、含图、纯扫描和隐私门禁回归，不得按单一策略放宽。
+- 证据：`knowledge_cleaner/pdf_convert.py`、`ai_management/cleaning.py`、`ai_management/workers/tasks/cleaning.py`、`docs/执行计划合集/资料钩子 PDF 清洗入库根因定位方案.md`。
+- 最后验证：2026-08-07。
+
+## DATA-027：Dify 删除已不存在文档必须按幂等成功处理
+
+- 适用：重复上传预检、源文件删除、Dify 文档精确清理和去重状态释放。
+- 触发：远端文档已经不存在，但源删除接口返回 502，`source_deleted` 未完成，后续重复上传仍被旧去重记录阻断。
+- 根因：删除接口把 Dify 的 404 当作普通请求失败；删除语义本身是幂等的，“已不存在”与“刚刚删除”都表示目标已不在远端。
+- 解决：仅对删除请求的 HTTP 404 视为成功；401、403、429、5xx 和其他异常继续失败并记录脱敏上下文。删除成功后按精确文件/分片范围释放去重状态，不按文件名或时间窗口扩大清理。
+- 非解决：忽略所有 HTTP 错误、直接修改 Dify 数据库、重建整个知识库或删除整批历史数据。
+- 验证：`tests/test_dify_client.py` 覆盖 404 删除幂等行为；jx 重复上传预检源删除返回 200，旧远端 ID 数量为 0，去重状态成功释放。
+- 预防：所有外部删除 API 明确区分幂等 404 与权限/网络错误；发布和清理报告保存精确目标 ID、状态和错误码。
+- 证据：`knowledge_cleaner/dify.py`、`ai_management/cleaning.py`、`tests/test_dify_client.py`、`docs/执行计划合集/20260807-商业顾问全链路发布与目录验收.md`。
+- 最后验证：2026-08-07。
+
+## DATA-028：课程路线行缺少方向/目标时不能阻断整批导入
+
+- 适用：`course_route_catalog` 课程与学习路线工作簿的模型丰富、严格解析和原子发布。
+- 触发：路线行没有独立方向/目标，模型未返回对应字段，导致整批文档进入 `CATALOG_AUTO_PUBLISH_BLOCKED`，用户无法得到完整路线。
+- 根因：路线的方向/目标是辅助检索字段，不应被误当作课程 ID、来源或收益承诺；旧流程在缺失时直接抛出通用字段错误，把可确定的路线名称也一并阻断。
+- 解决：仅对 `route` 使用中性的默认方向“课程学习路线”；目标缺失时回退为路线名称。课程/路线 ID、来源文件、课程卡与阶段顺序门禁保持严格；不自动补写收益、效果或营销结论。
+- 非解决：为课程生成虚构目标、放宽候选 ID 全量一致性、部分提交课程目录或覆盖历史目录。
+- 验证：新增模型清洗回归覆盖无独立目标的路线行；成功批次 `019fd8cc-232a-79ac-bd34-9ee6fab49dff` 完成 110 个文档，当前目录统计为课程 105、路线 5、课程合集 33、成员 103。
+- 预防：导入前静态检查路线必需的可推导字段；模型字段缺失时只允许白名单中性的技术兜底；批次报告记录被兜底的文档数量和原因。
+- 证据：`ai_management/workers/tasks/model_cleaning.py`、`tests/test_model_cleaning_workflow.py`、`ai_management/course_import.py`、`docs/执行计划合集/20260807-商业顾问全链路发布与目录验收.md`。
+- 最后验证：2026-08-07。
+
 ## DATA-021（历史规则）：策略空正文异常曾归入 review_required 而不是普通失败重试
 
 - 适用：Markdown/TXT 清洗策略返回空文档或抛出明确“没有可清洗正文”异常的 Worker 路径。
@@ -279,6 +316,42 @@
 - 日志：`CLEANING_FILE_FAILED`、`DIFY_PUBLICATION_SHARD_FAILED` 和源 Markdown 降级事件记录 `file_id/batch_id/strategy_code/extension/attempts/phase/exception_type/脱敏 exception_message`；不记录正文、密钥、原始敏感文件名或完整路径。
 - 非解决：把空正文填充占位符、把 `course_route_catalog` 降级为文本发布、直接修改 Dify 数据库、增加未确认的多文档 API，或仅把批次标成 `completed`。
 - 验证：本地模型/清洗/分片回归覆盖源 Markdown 恢复、模型输出不落入最终正文、Dify 分片失败后聚合刷新和发布队列；发布后需用批次/文件/分片精确 ID 检查 Dify 索引、父子块、Metadata 回读和文件状态。
-- 预防：旧批次没有新 policy 快照时 fail-closed；新批次创建时固定策略/Metadata/chunking 快照；多个文件不拼接为一个 Dify 正文，文章分片遵守 `DIFY_SHARD_MAX_ITEMS`（默认 200）和字节上限。
+- 预防：旧批次没有新 policy 快照时 fail-closed；新批次创建时固定策略/Metadata/chunking 快照；每个逻辑文章/帖子单独调用一次 Dify `create-by-text`，多个文件和逻辑条目不拼接为一个远端正文；`DIFY_SHARD_MAX_ITEMS` 仅保留为兼容/防御性校验，单条正文仍受字节上限约束。
 - 证据：`ai_management/cleaning.py`、`ai_management/workers/tasks/cleaning.py`、`ai_management/workers/tasks/model_cleaning.py`、`ai_management/workers/tasks/maintenance.py`、`tests/test_model_cleaning_workflow.py`、`tests/test_ai_management.py`。
-- 最后验证：2026-08-06，本地全量回归通过；jx release `20260806-144000-full-9afc8b78bc35` 的合成 Markdown 批次成功到达 Dify 并按精确 file ID 清理。
+- 最后验证：2026-08-06，本地相关回归通过；jx release `20260806-165915-full-23162b2` readiness、同源镜像和容器烟测通过。
+
+## DATA-023：非模型策略不得在本地预写 Dify 控制分隔符
+
+- 适用：`lead_magnet`、`book` 等确定性策略，以及所有最终进入 Dify 父子块发布的正文。
+- 触发：资料钩子文件没有生成 `CleaningDocument`，文件反复处于 pending/retry，错误为 `正文包含保留的 Dify parent 分隔符`。
+- 根因：确定性策略在本地调用分块渲染器，把 `<<<DIFY_PARENT>>>` / `<<<DIFY_CHILD>>>` 写入源 Markdown；后续统一边界校验把这些内部控制符当成用户正文，形成必然失败的自相矛盾链路。
+- 解决：确定性策略只保存表格清洗后的源 Markdown；发布 Worker 将保存的父子块分隔符、上限和 Metadata 一起传给 Dify，由 Dify 执行分块。该修复不回写历史批次。
+- 非解决：删除边界校验、把控制符直接当普通正文上传、或用占位符掩盖空正文。
+- 验证：`tests/test_large_scale_cleaning.py` 覆盖资料钩子不含控制分隔符；jx release `20260806-165915-full-23162b2` 容器内策略烟测通过，readiness、Dify 可达和发布报告门禁通过。
+- 预防：确定性策略回归必须同时断言正文非空且不含两个 Dify 控制分隔符；模型输出/发布渲染若需要控制符，必须只在对应发布阶段生成。
+- 证据：`ai_management/cleaning.py`、`ai_management/workers/tasks/cleaning.py`、`tests/test_large_scale_cleaning.py`、`/opt/ai-management/var/reports/v2/20260806-165915-full-23162b2-deploy`。
+- 最后验证：2026-08-06。
+
+## DATA-024：书籍 PDF 转换硬门禁失败不是模型降级场景
+
+- 适用：`book` 策略上传 PDF 的 PDF→Markdown 转换阶段。
+- 触发：文件终态为 `CONTENT_EMPTY_AFTER_CLEANING`，错误消息包含 `PDF_TYPE_REVIEW_REQUIRED`，没有本地 `CleaningDocument` 和模型任务。
+- 根因：PDF 被判定为混合、低文字层或无法判定页面，转换器拒绝产生可安全入库的 Markdown；既然没有源 Markdown，就不能执行“忽略模型结果、恢复源 Markdown”的降级。
+- 解决：保持明确失败并记录完整转换异常；应改用可读文字层/可安全 OCR 的 PDF 或单独修复 PDF 转换输入，不把原始 PDF 二进制冒充 Markdown 发布。该边界不属于 `review_required` 绕过范围。
+- 非解决：用空占位正文、直接上传 PDF 二进制、把转换失败伪装成模型成功，或只把批次标记为 completed。
+- 验证：jx 测试批次 `019fd5cf-1141-7fde-a595-cc09dea7f87e` 查询显示无模型任务，文件错误为 `CONTENT_EMPTY_AFTER_CLEANING`，容器内复现转换异常为 `PDF_TYPE_REVIEW_REQUIRED`。
+- 预防：PDF 验收必须区分“有非空源 Markdown 的模型失败降级”和“没有源 Markdown 的转换硬失败”；两者分别检查源快照和转换诊断。
+- 证据：`ai_management/cleaning.py`、`knowledge_cleaner/pdf_convert.py`、`ai_management/workers/tasks/cleaning.py`、上述精确批次记录。
+- 最后验证：2026-08-06。
+
+## DATA-025：认知分享模型必须返回证据绑定知识单元
+
+- 适用：`wechat_public_account_cognition`、`zsxq_post`、`xiaobot_post` 的新模型输出。
+- 触发：模型任务已完成且返回 `keep/drop`，但最终正文几乎只是来源块，无法说明模型完成了问题、结论、推理和行动提取。
+- 根因：旧模型 schema 只表达来源块保留/排除和主题标签；如果校验器把没有知识单元的 `keep` 当成成功，就会把“模型走过”误认为“完成知识提取”。
+- 解决：新契约要求 `keep/review` 且存在保留块时返回至少一个知识单元；每个单元必须引用 `keep` 来源块，数字/日期不得超出引用证据。缺少知识单元或证据不闭合即为模型契约失败；新批次有非空源 Markdown 时忽略模型结果并自动降级发布。
+- 非解决：把整篇原文包一层标题伪装成提取结果、放宽来源块覆盖、接受模型编造的数字/日期，或让契约失败进入人工审批队列。
+- 验证：历史 `zsxq_post` 批次的模型结果记录 `knowledge_units_count=0`，其 `keep` 条目因此只能证明旧式筛选，不证明知识提取；本地知识单元独立文档和缺失知识单元契约测试通过；jx release `20260806-172003-full-23162b2` 容器契约烟测通过。
+- 预防：Prompt、Pydantic schema、来源证据校验和渲染器必须同步升级；模型输出审计只保存结构/计数和脱敏原因，不记录正文。
+- 证据：`ai_management/model_cleaning.py`、`ai_management/workers/tasks/model_cleaning.py`、`tests/test_model_cleaning_workflow.py`、`/opt/ai-management/var/reports/v2/20260806-172003-full-23162b2-deploy`。
+- 最后验证：2026-08-06。

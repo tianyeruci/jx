@@ -22,6 +22,7 @@ from .models import (
     CourseCollectionMember,
     ExternalDeletionTask,
     LearningRoute,
+    LearningRouteProgress,
 )
 from .schemas import CourseRecord, RouteRecord
 from .services.admin_settings import bump_catalog_revision
@@ -32,6 +33,85 @@ from .services.observability import record_event
 class Catalog:
     courses: list[CourseRecord]
     routes: list[RouteRecord]
+
+
+def replace_course_route_catalog_rows(
+    session,
+    *,
+    incoming_course_ids: set[str],
+    incoming_route_ids: set[str],
+    source_file: str,
+) -> dict[str, int]:
+    """Make the merged XLSX catalog authoritative after atomic publication.
+
+    This is intentionally separate from the additive legacy
+    ``course_information``/``learning_route`` import path.  It is called only
+    after every document in one ``course_route_catalog`` source has been
+    staged and its Dify metadata verified, so stale courses/routes,
+    collection memberships, and route progress cannot survive a full replace.
+    """
+
+    incoming_course_ids = {str(value) for value in incoming_course_ids if str(value)}
+    incoming_route_ids = {str(value) for value in incoming_route_ids if str(value)}
+    if not incoming_course_ids:
+        raise ValueError("全量替换课程目录时至少需要一个有效课程")
+    members = list(session.scalars(select(CourseCollectionMember)))
+    for member in members:
+        if member.course_id not in incoming_course_ids:
+            session.delete(member)
+    session.flush()
+
+    retained_collection_ids = {
+        member.collection_id
+        for member in session.scalars(select(CourseCollectionMember))
+        if member.course_id in incoming_course_ids
+    }
+    removed_collections = 0
+    for collection in list(session.scalars(select(CourseCollection))):
+        if collection.collection_id not in retained_collection_ids:
+            session.delete(collection)
+            removed_collections += 1
+
+    removed_courses = 0
+    for course in list(session.scalars(select(Course))):
+        if course.course_id not in incoming_course_ids:
+            session.delete(course)
+            removed_courses += 1
+    removed_routes = 0
+    for route in list(session.scalars(select(LearningRoute))):
+        if route.route_id not in incoming_route_ids:
+            session.delete(route)
+            removed_routes += 1
+
+    reset_progress = len(list(session.scalars(select(LearningRouteProgress))))
+    for progress in list(session.scalars(select(LearningRouteProgress))):
+        session.delete(progress)
+    session.flush()
+    record_event(
+        level="WARNING",
+        category="operation",
+        component="course_catalog",
+        event_code="COURSE_CATALOG_FULL_REPLACED",
+        status="succeeded",
+        message="合并课程目录已完成全量替换并重置学习路线进度",
+        resource_type="source_file",
+        resource_id=source_file,
+        details={
+            "removed_courses": removed_courses,
+            "removed_routes": removed_routes,
+            "removed_collections": removed_collections,
+            "reset_progress": reset_progress,
+            "incoming_courses": len(incoming_course_ids),
+            "incoming_routes": len(incoming_route_ids),
+        },
+        session=session,
+    )
+    return {
+        "removed_courses": removed_courses,
+        "removed_routes": removed_routes,
+        "removed_collections": removed_collections,
+        "reset_progress": reset_progress,
+    }
 
 
 def _generated_id(prefix: str, *parts: Any) -> str:

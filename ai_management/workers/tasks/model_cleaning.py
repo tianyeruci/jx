@@ -6,6 +6,7 @@ import logging
 import tempfile
 import time
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -532,6 +533,38 @@ def _fail_catalog_auto_run(session, batch: CleaningBatch, reason: str) -> None:
     batch.status = "completed"
 
 
+def _daily_model_reserved_cost(session) -> Decimal:
+    """Return today's conservative model-cost reservation in server timezone."""
+
+    from zoneinfo import ZoneInfo
+
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    total = Decimal("0")
+    # A failed provider call may still have consumed tokens. Keep its
+    # reservation for the day; only tasks explicitly cancelled/superseded
+    # before a provider call are excluded.
+    excluded_statuses = {"cancelled", "superseded"}
+    tasks = session.scalars(select(ModelCleaningTask)).all()
+    for task in tasks:
+        created_at = task.created_at
+        if created_at is None:
+            continue
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        if created_at.astimezone(ZoneInfo("Asia/Shanghai")).date() != today:
+            continue
+        if task.status in excluded_statuses:
+            continue
+        try:
+            total += Decimal(str(task.estimated_cost_high or "0"))
+        except (InvalidOperation, ValueError):
+            logger.warning(
+                "invalid model cost reservation task_id=%s",
+                task.id,
+            )
+    return total
+
+
 def maybe_plan_model_task(batch_id: str) -> str | None:
     """Create exactly one model plan after every source file is parsed."""
 
@@ -668,6 +701,48 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
             * price_discount
         )
         estimated_cost_high = input_cost + output_cost
+        daily_budget = Decimal(str(settings.cleaning_daily_budget_yuan))
+        daily_reserved = _daily_model_reserved_cost(session)
+        estimated_cost = Decimal(str(estimated_cost_high))
+        if daily_reserved + estimated_cost > daily_budget:
+            fallback_applied, fallback_pending_ids, fallback_shard_ids = (
+                _fallback_failed_model_documents(
+                    session,
+                    batch_id,
+                    reason_code="MODEL_DAILY_BUDGET_EXCEEDED",
+                    reason_message=(
+                        "本批次模型预估费用超过当日预算，已停止模型调用并尝试使用"
+                        "清洗源 Markdown 继续入库"
+                    ),
+                )
+            )
+            if not fallback_applied and batch.strategy_code == "course_route_catalog":
+                _fail_catalog_auto_run(
+                    session,
+                    batch,
+                    "模型当日预算不足",
+                )
+            record_event(
+                level="WARNING",
+                category="task",
+                component="model_cleaning_worker",
+                event_code="MODEL_DAILY_BUDGET_EXCEEDED",
+                status="failed",
+                message="模型清洗批次超过当日预算，未发起模型调用",
+                resource_type="cleaning_batch",
+                resource_id=batch_id,
+                details={
+                    "daily_budget_yuan": str(daily_budget),
+                    "daily_reserved_yuan": str(daily_reserved),
+                    "estimated_cost_high_yuan": str(estimated_cost),
+                    "fallback_pending_count": len(fallback_pending_ids),
+                    "fallback_shard_count": len(fallback_shard_ids),
+                },
+                session=session,
+            )
+            session.commit()
+            _queue_publication_outputs(fallback_pending_ids, fallback_shard_ids)
+            return None
         task = ModelCleaningTask(
             batch_id=batch_id,
             mode=mode,
@@ -853,17 +928,93 @@ def _count_model_result(counts: dict[str, int], document: CleaningDocument) -> N
     counts[key] = counts.get(key, 0) + 1
 
 
+def _render_post_knowledge_unit(
+    unit: Any,
+    *,
+    source_blocks: dict[str, str],
+) -> str:
+    """Render an evidence-bound model unit without adding unsupported facts."""
+
+    evidence = "\n\n".join(
+        source_blocks[block_id]
+        for block_id in unit.source_block_ids
+        if block_id in source_blocks
+    ).strip()
+    sections: list[str] = []
+    for heading, value in (
+        ("问题", unit.problem),
+        ("结论", unit.conclusion),
+        ("推理依据", unit.reasoning),
+    ):
+        if str(value or "").strip():
+            sections.append(f"## {heading}\n\n{str(value).strip()}")
+    for heading, values in (
+        ("适用条件", unit.applicable_conditions),
+        ("行动建议", unit.actions),
+        ("风险与边界", unit.risks_or_limits),
+    ):
+        cleaned = [str(value).strip() for value in values if str(value).strip()]
+        if cleaned:
+            sections.append(f"## {heading}\n\n" + "\n".join(f"- {value}" for value in cleaned))
+    sections.append("## 来源证据\n\n" + evidence)
+    return sanitize_for_knowledge(
+        f"# {unit.title.strip()}\n\n"
+        + (f"主题：{unit.topic.strip()}\n\n" if unit.topic.strip() else "")
+        + "\n\n".join(sections)
+    )
+
+
+def _render_post_markdown(*, body: str, title: str, topic: str) -> str:
+    chunks = prepare_chunks(
+        body,
+        title=title,
+        content_type="article",
+        topics=(topic,) if topic else (),
+        overlap=0,
+    )
+    raw_children = [
+        child
+        for chunk in chunks
+        for child in chunk.children
+        if child.strip()
+    ]
+    children = [
+        _post_child_for_dify(child, title=title)
+        for child in raw_children
+    ]
+    if any(child is None for child in children):
+        raise ValueError("DIFY_CHILD_TOO_SHORT: 帖子有效内容不足以满足知识库最小分段长度")
+    children = [child for child in children if child is not None]
+    context = (
+        chunks[0].content.partition("\n")[0]
+        if chunks
+        else f"【上下文】{title}｜article"
+    )
+    one_parent = (
+        f"{context}\n\n"
+        + "\n\n<<<DIFY_CHILD>>>\n\n".join(children)
+        if children
+        else body
+    )
+    return sanitize_for_knowledge(one_parent)
+
+
 def _apply_model_payload(
     document: CleaningDocument,
     strategy_code: str,
     request: PromptRequest,
     payload: dict[str, Any],
+    *,
+    session=None,
 ) -> None:
     audit = dict(document.audit_json or {})
     available = set(request.blocks)
     if strategy_code in POST_STRATEGIES:
         result = validate_semantic_response(
-            strategy_code, payload, available_block_ids=available
+            strategy_code,
+            payload,
+            available_block_ids=available,
+            source_blocks=request.blocks,
         )
         audit["model_result"] = result.model_dump(mode="json")
         if result.disposition == "exclude":
@@ -917,56 +1068,118 @@ def _apply_model_payload(
                 document.error_code, document.error_message = short_reason
                 document.audit_json = audit
                 return
-            chunks = prepare_chunks(
-                body,
-                title=document.title,
-                content_type="article",
-                topics=(result.topic,) if result.topic else (),
-                overlap=0,
-            )
-            raw_children = [
-                child
-                for chunk in chunks
-                for child in chunk.children
-                if child.strip()
-            ]
-            children = [
-                _post_child_for_dify(child, title=document.title)
-                for child in raw_children
-            ]
-            if any(child is None for child in children):
-                document.status = "failed"
-                document.stage = "failed"
-                document.error_code = "DIFY_CHILD_TOO_SHORT"
-                document.error_message = (
-                    "帖子有效内容不足以满足知识库最小分段长度，已跳过"
+            unit_specs: list[tuple[str, str, str, dict[str, Any]]] = []
+            if result.knowledge_units:
+                for unit in result.knowledge_units:
+                    unit_body = _render_post_knowledge_unit(
+                        unit,
+                        source_blocks=request.blocks,
+                    )
+                    unit_specs.append(
+                        (
+                            unit.title.strip(),
+                            unit_body,
+                            unit.topic.strip() or result.topic,
+                            unit.model_dump(mode="json"),
+                        )
+                    )
+            else:
+                unit_specs.append((document.title, body, result.topic, {}))
+
+            rendered_units: list[tuple[str, str, str, dict[str, Any]]] = []
+            for unit_title, unit_body, unit_topic, unit_payload in unit_specs:
+                short_reason = content_review_reason(
+                    unit_body,
+                    strategy_code,
+                    document.metadata_json or {},
                 )
-                document.retryable = True
-                document.audit_json = audit
-                return
-            children = [child for child in children if child is not None]
-            context = (
-                chunks[0].content.partition("\n")[0]
-                if chunks
-                else f"【上下文】{document.title}｜article"
+                if short_reason:
+                    raise ValueError(short_reason[0])
+                rendered_units.append(
+                    (
+                        unit_title,
+                        _render_post_markdown(
+                            body=unit_body,
+                            title=unit_title,
+                            topic=unit_topic,
+                        ),
+                        unit_topic,
+                        unit_payload,
+                    )
+                )
+
+            from .cleaning import _content_sha
+            source_article_title = document.title
+
+            def apply_rendered(
+                target: CleaningDocument,
+                unit_title: str,
+                rendered: str,
+                unit_topic: str,
+                unit_payload: dict[str, Any],
+            ) -> None:
+                metadata = dict(target.metadata_json or {})
+                metadata["source_title"] = source_article_title
+                metadata["source_document_id"] = document.id
+                if unit_title != source_article_title:
+                    metadata["unit_title"] = unit_title
+                if unit_payload.get("unit_id"):
+                    metadata["knowledge_unit_id"] = unit_payload["unit_id"]
+                if unit_topic:
+                    metadata["topic"] = unit_topic
+                target.title = unit_title[:300]
+                target.cleaned_markdown = rendered
+                target.metadata_json = metadata
+                target.status = "shard_pending"
+                target.stage = "shard_pending"
+                target.error_code = None
+                target.error_message = None
+                target.retryable = True
+                target.content_sha256 = _content_sha(
+                    target.cleaned_markdown,
+                    target.metadata_json,
+                    target.chunking_json or {},
+                )
+
+            first_title, first_rendered, first_topic, first_payload = rendered_units[0]
+            apply_rendered(
+                document,
+                first_title,
+                first_rendered,
+                first_topic,
+                first_payload,
             )
-            one_parent = (
-                f"{context}\n\n"
-                + "\n\n<<<DIFY_CHILD>>>\n\n".join(children)
-                if children
-                else body
-            )
-            document.cleaned_markdown = sanitize_for_knowledge(
-                one_parent
-            )
-            metadata = dict(document.metadata_json or {})
-            if result.topic:
-                metadata["topic"] = result.topic
-            document.metadata_json = metadata
-            document.status = "shard_pending"
-            document.stage = "shard_pending"
-            document.error_code = None
-            document.error_message = None
+            if session is not None and len(rendered_units) > 1:
+                for unit_index, (unit_title, rendered, unit_topic, unit_payload) in enumerate(
+                    rendered_units[1:], start=2
+                ):
+                    child_audit = {
+                        **audit,
+                        "model_result": {"knowledge_unit": unit_payload},
+                        "source_article_document_id": document.id,
+                    }
+                    child = CleaningDocument(
+                        file_id=document.file_id,
+                        sequence=document.sequence * 1000 + unit_index,
+                        title=unit_title[:300],
+                        dify_document_name=document.dify_document_name,
+                        document_key=f"{document.document_key}:unit:{unit_index}",
+                        status="shard_pending",
+                        stage="shard_pending",
+                        content_sha256="",
+                        metadata_json=dict(document.metadata_json or {}),
+                        chunking_json=dict(document.chunking_json or {}),
+                        audit_json=child_audit,
+                        warnings_json=list(document.warnings_json or []),
+                        cleaned_markdown=rendered,
+                        retryable=True,
+                    )
+                    session.add(child)
+                    session.flush()
+                    apply_rendered(child, unit_title, rendered, unit_topic, unit_payload)
+            elif len(rendered_units) > 1:
+                raise ValueError("模型返回多个知识单元，但当前任务没有可写入会话")
+            document.audit_json = audit
     elif strategy_code == "personal_business_consultation":
         # v2 is opt-in by an explicit schema marker so historical model tasks
         # remain replayable under the existing sections contract.
@@ -1086,6 +1299,8 @@ def _apply_model_payload(
         direction = result.direction_candidate.strip() or str(
             draft.get("direction") or ""
         ).strip()
+        if not direction and kind == "route":
+            direction = "课程学习路线"
         if not direction:
             raise ValueError("课程目录模型未返回方向候选")
         if kind == "course":
@@ -1132,8 +1347,13 @@ def _apply_model_payload(
             route_target = result.route_target.strip() or str(
                 draft.get("target") or ""
             ).strip()
+            # The workbook's route rows are authoritative for the complete
+            # stage/course structure but may not contain a separate marketing
+            # target.  Keep those routes publishable without inventing a
+            # promise: use the route name as a neutral deterministic target
+            # when neither the source nor the model supplied one.
             if not route_target:
-                raise ValueError("学习路线模型未返回路线目标")
+                route_target = str(draft.get("name") or document.title).strip()
             draft.update(
                 {
                     "direction": direction,
@@ -1358,10 +1578,16 @@ def _plan_post_publication(session, batch_id: str) -> list[str]:
                 content_sha256=digest,
                 markdown=shard_markdown,
                 metadata_json={
-                    "record_type": "article_shard",
+                    "record_type": str(
+                        (by_id[plan.items[0].item_id].metadata_json or {}).get(
+                            "record_type"
+                        )
+                        or "article"
+                    ),
                     "content_format": "markdown",
                     "cleaning_strategy": batch.strategy_code,
                     "cleaning_spec_revision": batch.spec_revision,
+                    "source_title": by_id[plan.items[0].item_id].title,
                     "chunking": {
                         "doc_form": "hierarchical_model",
                         "process_mode": "hierarchical",
@@ -1393,7 +1619,12 @@ def _fallback_failed_model_documents(
     reason_code: str,
     reason_message: str,
 ) -> tuple[bool, list[str], list[str]]:
-    """Restore a new-policy batch after a task-level model failure."""
+    """Restore a new-policy batch after a task-level model failure.
+
+    Historical model tasks do not have the source-fallback policy snapshot.
+    They must retain their original approval/retry semantics instead of being
+    silently reinterpreted by a newer worker.
+    """
     from ...cleaning import source_markdown_fallback_enabled
     from .cleaning import _finish_batch, _refresh_file_state
 
@@ -1403,18 +1634,20 @@ def _fallback_failed_model_documents(
     documents = list(
         _iter_documents_for_batch(session, batch_id)
     )
-    eligible = [
+    candidates = [
         document
         for document in documents
         if document.status in {"awaiting_model", "model_processing"}
-        and source_markdown_fallback_enabled(
-            batch.strategy_code, document.metadata_json or {}
-        )
     ]
-    if not eligible:
+    if not candidates:
+        return False, [], []
+    if not any(
+        isinstance((document.metadata_json or {}).get("_cleaning_review_policy"), dict)
+        for document in candidates
+    ):
         return False, [], []
     touched_files: set[str] = set()
-    for document in eligible:
+    for document in candidates:
         source_markdown = document.cleaned_markdown
         source_metadata = dict(document.metadata_json or {})
         source_chunking = dict(document.chunking_json or {})
@@ -1423,7 +1656,9 @@ def _fallback_failed_model_documents(
         document.error_code = reason_code
         document.error_message = reason_message
         document.retryable = True
-        if source_markdown.strip():
+        if source_markdown.strip() and source_markdown_fallback_enabled(
+            batch.strategy_code, document.metadata_json or {}
+        ):
             _apply_source_markdown_fallback(
                 document,
                 batch.strategy_code,
@@ -1434,7 +1669,11 @@ def _fallback_failed_model_documents(
         else:
             document.retryable = False
             document.error_code = "MODEL_FALLBACK_SOURCE_EMPTY"
-            document.error_message = "模型处理失败且没有可入库的清洗源 Markdown"
+            document.error_message = (
+                "模型处理失败且当前策略未启用源 Markdown 降级"
+                if source_markdown.strip()
+                else "模型处理失败且没有可入库的清洗源 Markdown"
+            )
         touched_files.add(str(document.file_id))
     for file_id in touched_files:
         _refresh_file_state(session, file_id, commit=False)
@@ -1635,7 +1874,11 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                             client, request, model=task.model
                         )
                         _apply_model_payload(
-                            document, batch.strategy_code, request, payload
+                            document,
+                            batch.strategy_code,
+                            request,
+                            payload,
+                            session=session,
                         )
                         _finalize_model_document(
                             document, strategy_code=batch.strategy_code
@@ -1649,7 +1892,7 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                         )
                         usage["input_tokens"] += item_usage["input_tokens"]
                         usage["output_tokens"] += item_usage["output_tokens"]
-                    except ModelNoResponseError as exc:
+                    except ModelNoResponseError:
                         audit = dict(document.audit_json or {})
                         audit["model_attempts"] = 2
                         document.audit_json = audit
@@ -1659,7 +1902,11 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                                 client, request, model=task.model
                             )
                             _apply_model_payload(
-                                document, batch.strategy_code, request, payload
+                                document,
+                                batch.strategy_code,
+                                request,
+                                payload,
+                                session=session,
                             )
                             _finalize_model_document(
                                 document, strategy_code=batch.strategy_code
@@ -1747,6 +1994,24 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                     )
                     if fallback_pending_ids or fallback_shard_ids:
                         batch.status = "processing"
+                record_event(
+                    level="ERROR",
+                    category="task",
+                    component="model_cleaning_worker",
+                    event_code="MODEL_TASK_FAILED",
+                    status="failed",
+                    message="模型清洗任务失败",
+                    resource_type="model_cleaning_task",
+                    resource_id=task_id,
+                    details=exception_details(
+                        exc,
+                        phase="realtime_model_task",
+                        task_id=task_id,
+                        batch_id=task.batch_id,
+                        strategy_code=(batch.strategy_code if batch else ""),
+                    ),
+                    session=session,
+                )
                 session.commit()
         _queue_publication_outputs(fallback_pending_ids, fallback_shard_ids)
         return False
@@ -2197,6 +2462,7 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                         batch.strategy_code,
                         request,
                         item["payload"],
+                        session=session,
                     )
                     _finalize_model_document(
                         document, strategy_code=batch.strategy_code
@@ -2263,6 +2529,7 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                                 batch.strategy_code,
                                 request,
                                 payload,
+                                session=session,
                             )
                             _finalize_model_document(
                                 document, strategy_code=batch.strategy_code
@@ -2487,10 +2754,18 @@ def publish_dify_shard(self, shard_id: str) -> bool:
             session.commit()
             from ...cleaning import dify_document_name
 
-            remote_name = dify_document_name(
+            source_title = next(
+                (
+                    document.title.strip()
+                    for document in shard.documents
+                    if document.title and document.title.strip()
+                ),
                 shard.file.original_filename,
+            )
+            remote_name = dify_document_name(
+                source_title,
                 shard.content_sha256,
-                shard.shard_index + 1,
+                shard.shard_index,
                 split=True,
             )
             from ...cleaning import finalize_knowledge_markdown
@@ -2540,6 +2815,7 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                     "content_format",
                     "cleaning_strategy",
                     "cleaning_spec_revision",
+                    "source_title",
                 )
                 if shard_metadata.get(key) not in (None, "", [], {})
             }
@@ -2567,7 +2843,8 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 document.dify_document_name = remote_name
                 document.dify_document_id = document_id
                 document.dify_batch_id = dify_batch_id
-                document.remote_parent_count = 1
+                document.remote_parent_count = int(structure["parent_count"])
+                document.remote_child_count = int(structure["child_count"])
                 document.status = "succeeded"
                 document.stage = "completed"
             session.commit()

@@ -17,8 +17,8 @@ from ...cleaning import (
     STRATEGY_REGISTRY,
     ChunkingConfig,
     cleaning_batch_cache_key,
-    dify_document_name,
     content_review_reason,
+    dify_document_name,
     finalize_knowledge_markdown,
     get_settings,
     preserve_review_reason,
@@ -27,15 +27,20 @@ from ...cleaning import (
     user_visible_warnings,
     validate_chunking_boundaries,
 )
-from ...course_import import sync_cleaning_catalog_record
+from ...course_import import (
+    replace_course_route_catalog_rows,
+    sync_cleaning_catalog_record,
+)
 from ...courses import rebuild_snapshot
 from ...db import SessionLocal
 from ...models import (
     CleaningBatch,
     CleaningDocument,
     CleaningFile,
+    Course,
     DifyPublicationShard,
     ExternalDeletionTask,
+    LearningRoute,
     utcnow,
 )
 from ...services.admin_settings import bump_catalog_revision
@@ -641,6 +646,38 @@ def _commit_source_publication(
                 )
                 if old_id and old_id != document.dify_document_id:
                     replaced_document_ids.append(old_id)
+            if batch.strategy_code == "course_route_catalog":
+                incoming_course_ids = {
+                    str((document.audit_json or {}).get("catalog_record", {}).get("course_id") or "")
+                    for document in documents
+                    if (document.audit_json or {}).get("catalog_kind") == "course"
+                }
+                incoming_route_ids = {
+                    str((document.audit_json or {}).get("catalog_record", {}).get("route_id") or "")
+                    for document in documents
+                    if (document.audit_json or {}).get("catalog_kind") == "route"
+                }
+                # Full replacement also retires remote Dify copies that are
+                # absent from the new workbook; collect their IDs before the
+                # authority rows are deleted.
+                replaced_document_ids.extend(
+                    str(row.dify_document_id)
+                    for row in session.scalars(select(Course))
+                    if row.course_id not in incoming_course_ids
+                    and row.dify_document_id
+                )
+                replaced_document_ids.extend(
+                    str(row.dify_document_id)
+                    for row in session.scalars(select(LearningRoute))
+                    if row.route_id not in incoming_route_ids
+                    and row.dify_document_id
+                )
+                replace_course_route_catalog_rows(
+                    session,
+                    incoming_course_ids=incoming_course_ids,
+                    incoming_route_ids=incoming_route_ids,
+                    source_file=file_row.original_filename,
+                )
             bump_catalog_revision(session)
         for document in documents:
             document.status = "succeeded"
@@ -668,7 +705,7 @@ def _commit_source_publication(
         if replaced_document_ids:
             client = _knowledge_client(batch)
             try:
-                for document_id in replaced_document_ids:
+                for document_id in dict.fromkeys(replaced_document_ids):
                     if not _remove_or_disable_document(client, document_id):
                         _queue_document_cleanup(document_id, client.dataset_id)
             finally:

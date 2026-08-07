@@ -445,11 +445,21 @@ class DifyKnowledgeClient:
 
         The online cleaning orchestrator uses this as compensation when only
         part of a source file was indexed successfully.
+
+        Deletion is intentionally idempotent.  A document may already have
+        been removed by a previous cleanup/replacement attempt while its
+        local provenance row still contains the remote ID.  Treating Dify's
+        404 as success lets source-level deletion finish and release the
+        duplicate-protection lock instead of returning a false 502.
         """
-        self._request(
-            "DELETE",
-            f"datasets/{self.dataset_id}/documents/{document_id}",
-        )
+        try:
+            self._request(
+                "DELETE",
+                f"datasets/{self.dataset_id}/documents/{document_id}",
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
 
     def iter_documents(self, *, page_size: int = 100) -> Iterator[dict[str, Any]]:
         page = 1

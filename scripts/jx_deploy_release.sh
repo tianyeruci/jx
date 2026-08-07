@@ -84,11 +84,16 @@ pause_ocr_autoscaler() {
 }
 
 restore_ocr_autoscaler_after_failure() {
-  command -v systemctl >/dev/null 2>&1 || return 0
-  if test "$OCR_AUTOSCALER_INSTALLED" -eq 1 && test "$OCR_AUTOSCALER_WAS_ACTIVE" -eq 0; then
-    systemctl disable --now jx-ocr-autoscaler.timer >/dev/null 2>&1 || true
-  elif test "$OCR_AUTOSCALER_WAS_ACTIVE" -eq 1; then
-    systemctl start jx-ocr-autoscaler.timer >/dev/null 2>&1 || true
+  if command -v systemctl >/dev/null 2>&1; then
+    if test "$OCR_AUTOSCALER_INSTALLED" -eq 1 && test "$OCR_AUTOSCALER_WAS_ACTIVE" -eq 0; then
+      systemctl disable --now jx-ocr-autoscaler.timer >/dev/null 2>&1 || true
+    elif test "$OCR_AUTOSCALER_WAS_ACTIVE" -eq 1; then
+      systemctl start jx-ocr-autoscaler.timer >/dev/null 2>&1 || true
+    fi
+  fi
+  if test "$OCR_WORKER_WAS_RUNNING" -eq 1; then
+    docker compose -f docker-compose.ai.yml up -d ai-ocr-worker \
+      >> "$REPORT_DIR/rollback.log" 2>&1 || true
   fi
 }
 
@@ -105,10 +110,6 @@ rollback() {
       --profile test up -d --force-recreate \
       api worker model-realtime-worker model-batch-worker publication-worker scheduler test-ui \
       >> "$REPORT_DIR/rollback.log" 2>&1 || true
-    if test "$OCR_WORKER_WAS_RUNNING" -eq 1; then
-      docker compose -f docker-compose.ai.yml up -d ai-ocr-worker \
-        >> "$REPORT_DIR/rollback.log" 2>&1 || true
-    fi
   fi
   if test -f "$BACKUP_DIR/$WHEEL_FILE.before-release"; then
     cp -a "$BACKUP_DIR/$WHEEL_FILE.before-release" "wheelhouse/$WHEEL_FILE"
@@ -148,6 +149,11 @@ rollback() {
   exit "$status"
 }
 trap rollback EXIT
+
+# Keep the exact pre-release service configuration beside the immutable
+# wheel/Compose backups.  The rollback path restores this file after a
+# post-switch failure, so it must exist before any deployment side effect.
+cp -a .env "$BACKUP_DIR/env.backup"
 
 pause_ocr_autoscaler
 
@@ -190,8 +196,11 @@ for file in \
   jx_capture_ui_cleanup_manifest.sh \
   jx_quick_deploy.sh \
   jx_reset_cleaning_local_state.sh \
+  jx_reset_course_route_catalog.sh \
+  jx_reset_course_route_catalog.py \
   jx_resource_guard.sh \
   jx_release_data.py \
+  jx_acceptance_budget.py \
   backfill_course_collections.py \
   evaluate_business_e2e.py
 do
@@ -317,6 +326,7 @@ require_cleaning_price_snapshots() {
 }
 
 set_default_env BAILIAN_BATCH_ENABLED "false"
+set_default_env JX_ACCEPTANCE_CLEANING_BUDGET_MAX_YUAN "5.00"
 require_cleaning_price_snapshots
 APP_RUNTIME_UID="$(docker run --rm --entrypoint id "$CORE_IMAGE" -u)"
 APP_RUNTIME_GID="$(docker run --rm --entrypoint id "$CORE_IMAGE" -g)"
@@ -340,8 +350,8 @@ upsert_env MAX_ACTIVE_CLEANING_BATCHES "5"
 upsert_env CLEANING_WORKER_CONCURRENCY "4"
 upsert_env PDF_OCR_ENABLED "true"
 upsert_env PDF_OCR_BACKEND "rapidocr_onnxruntime"
-upsert_env PDF_OCR_MAX_PAGES "10"
-upsert_env PDF_OCR_TASK_TIMEOUT_SECONDS "600"
+upsert_env PDF_OCR_MAX_PAGES "50"
+upsert_env PDF_OCR_TASK_TIMEOUT_SECONDS "3600"
 upsert_env PDF_OCR_IDLE_SECONDS "600"
 upsert_env PDF_OCR_RENDER_DPI "200"
 upsert_env PDF_OCR_RETRY_DPI "300"

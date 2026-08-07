@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -11,7 +11,7 @@ from ...db import get_session
 from ...errors import ServiceError
 from ...models import SystemEventLog
 from ...security import require_admin_token, require_internal_token
-from ...services.observability import event_to_dict
+from ...services.observability import event_to_dict, sanitize_details
 
 router = APIRouter(
     prefix="/internal/v1/admin",
@@ -77,4 +77,75 @@ def get_system_log(
     event = session.get(SystemEventLog, log_id)
     if event is None:
         raise ServiceError("NOT_FOUND", "日志不存在", 404, False)
+    return event_to_dict(event, include_details=True)
+
+
+@router.get("/pdf-conversion-issues")
+def list_pdf_conversion_issues(
+    kb_code: str | None = None,
+    from_time: datetime | None = None,
+    to_time: datetime | None = None,
+    status: str | None = Query(default=None, pattern="^(open|resolved)$"),
+    severity: str | None = Query(default=None, pattern="^(warning|blocked)$"),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=100),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """List redacted PDF conversion issues stored in the common event log."""
+
+    filters = [
+        SystemEventLog.category == "pdf_conversion",
+        SystemEventLog.event_code.in_(
+            ["PDF_CONVERSION_WARNING", "PDF_CONVERSION_BLOCKED"]
+        ),
+    ]
+    if from_time:
+        filters.append(SystemEventLog.occurred_at >= from_time)
+    if to_time:
+        filters.append(SystemEventLog.occurred_at <= to_time)
+    if status:
+        filters.append(SystemEventLog.status == status)
+    if severity:
+        filters.append(SystemEventLog.event_code == f"PDF_CONVERSION_{severity.upper()}")
+    candidates = list(
+        session.scalars(
+            select(SystemEventLog)
+            .where(*filters)
+            .order_by(SystemEventLog.occurred_at.desc(), SystemEventLog.id.desc())
+            .limit(5000)
+        )
+    )
+    if kb_code:
+        candidates = [
+            item
+            for item in candidates
+            if str((item.details or {}).get("knowledge_base_code") or "") == kb_code
+        ]
+    total = len(candidates)
+    start = (page - 1) * limit
+    return {
+        "items": [event_to_dict(item, include_details=True) for item in candidates[start : start + limit]],
+        "page": page,
+        "limit": limit,
+        "total": total,
+    }
+
+
+@router.post("/pdf-conversion-issues/{issue_id}/resolve")
+def resolve_pdf_conversion_issue(
+    issue_id: str,
+    payload: dict[str, Any] = Body(default_factory=dict),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    event = session.get(SystemEventLog, issue_id)
+    if event is None or event.category != "pdf_conversion":
+        raise ServiceError("NOT_FOUND", "PDF 转换问题不存在", 404, False)
+    event.status = "resolved"
+    details = dict(event.details or {})
+    details["resolution"] = sanitize_details(
+        {"note": str(payload.get("note") or "")[:200], "resolved_at": datetime.now().isoformat()}
+    )
+    event.details = sanitize_details(details)
+    session.commit()
+    session.refresh(event)
     return event_to_dict(event, include_details=True)

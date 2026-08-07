@@ -71,6 +71,7 @@ class Settings(BaseSettings):
     cleaning_realtime_price_valid_until: str = ""
     cleaning_realtime_input_price_per_million: float = Field(default=0, ge=0)
     cleaning_realtime_output_price_per_million: float = Field(default=0, ge=0)
+    cleaning_daily_budget_yuan: float = Field(default=10.0, ge=0)
     # Content-model cleaning only: short source entries are a human-review
     # condition.  This is server-side policy; it is snapshotted per batch by
     # the cleaning admission path and never accepted from upload metadata.

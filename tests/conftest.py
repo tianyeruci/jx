@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
 
 os.environ["APP_ENV"] = "test"
-TEST_DATABASE_PATH = Path(os.environ.get("TEST_DATABASE_PATH", "test_ai_management.db"))
+_configured_test_database = os.environ.get("TEST_DATABASE_PATH", "").strip()
+if _configured_test_database:
+    TEST_DATABASE_PATH = Path(_configured_test_database)
+else:
+    # A timed-out pytest process can retain SQLite's journal/lock.  Keep an
+    # explicit override for debugging, but isolate the normal test session so
+    # sequential or accidentally overlapping runners never share one file.
+    TEST_DATABASE_PATH = (
+        Path(tempfile.gettempdir()) / f"jx-now-test-ai-management-{os.getpid()}.db"
+    )
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DATABASE_PATH.as_posix()}"
 os.environ["REDIS_URL"] = "redis://127.0.0.1:6399/15"
 os.environ["INTERNAL_API_TOKEN"] = "test-internal-token"

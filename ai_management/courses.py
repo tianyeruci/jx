@@ -128,6 +128,37 @@ def _progress_confirmation_decision(
     """
 
     snapshot = get_snapshot(session)
+
+    # Route confirmation is a deterministic user action.  The short answer
+    # often causes the workflow to omit the retrieved route (or to return a
+    # generic clarification), so resolve the unique published route name
+    # directly from the authoritative snapshot before consulting any model
+    # output.  Ambiguous names deliberately fall through to the normal flow.
+    if _explicit_route_confirmation(query):
+        normalized_query = _normalize_text(query)
+        route_matches = [
+            (route_id, route)
+            for route_id, route in (snapshot.get("routes") or {}).items()
+            if isinstance(route, dict)
+            and route.get("enabled")
+            and route.get("review_status") == "approved"
+            and (
+                (route_name := _normalize_text(str(route.get("name") or "")))
+                and route_name in normalized_query
+            )
+        ]
+        if len(route_matches) == 1:
+            route_id, _route = route_matches[0]
+            return RecommendationDecision(
+                intent="route_recommendation",
+                candidate_route_id=str(route_id),
+                progress_action={
+                    "type": "confirm_route",
+                    "route_id": str(route_id),
+                    "evidence_quote": query,
+                },
+            )
+
     progresses = list(
         session.scalars(
             select(LearningRouteProgress).where(
@@ -457,6 +488,55 @@ def _score_query_match(query: str, *texts: str) -> int:
 
 def _sorted_route_stages(route: dict[str, Any]) -> list[dict[str, Any]]:
     return _ordered_stage_dicts(route.get("stages"))
+
+
+def _attach_course_collection_names(
+    route: dict[str, Any],
+    collections: dict[str, dict[str, Any]] | None,
+    courses: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Add display-only course and collection names to each route stage.
+
+    Collection membership is resolved from the in-memory snapshot at response
+    time.  The route snapshot itself is left unchanged so this additive field
+    does not require a new Redis key or a catalog schema change.
+    """
+
+    names_by_course: dict[str, list[str]] = {}
+    for collection in (collections or {}).values():
+        if not isinstance(collection, dict):
+            continue
+        name = str(collection.get("name") or "").strip()
+        if not name:
+            continue
+        for course_id in collection.get("course_ids") or []:
+            course_key = str(course_id or "").strip()
+            if course_key:
+                names_by_course.setdefault(course_key, []).append(name)
+
+    stages: list[dict[str, Any]] = []
+    for source_stage in route.get("stages") or []:
+        stage = dict(source_stage)
+        course_ids = [str(course_id or "").strip() for course_id in stage.get("course_ids") or []]
+        # ``course_ids`` remains the stable machine-facing field.  The
+        # parallel ``course_names`` field is intentionally built in exactly
+        # the same order (including duplicate source entries) so clients can
+        # render a complete route without exposing internal IDs.
+        if courses is not None:
+            stage["course_names"] = [
+                str((courses.get(course_id) or {}).get("name") or "")
+                for course_id in course_ids
+            ]
+        names: list[str] = []
+        seen: set[str] = set()
+        for course_id in course_ids:
+            for name in names_by_course.get(course_id, []):
+                if name not in seen:
+                    seen.add(name)
+                    names.append(name)
+        stage["course_collection_names"] = names
+        stages.append(stage)
+    return {**route, "stages": stages}
 
 
 def _first_stage_course_ids(route: dict[str, Any]) -> list[str]:
@@ -857,6 +937,13 @@ def validate_recommendation(
         # back to model-supplied course IDs.  Ask for clarification instead.
         valid_course_records = {}
 
+    if route and decision.intent == "route_recommendation":
+        route = _attach_course_collection_names(
+            route,
+            snapshot.get("collections"),
+            snapshot.get("courses"),
+        )
+
     valid_courses: list[dict[str, Any]] = []
     for course_id, course in list(valid_course_records.items())[:5]:
         card = {key: value for key, value in course.items() if key != "official_url"}
@@ -865,17 +952,27 @@ def validate_recommendation(
         valid_courses.append(card)
 
     expert_insight = str(getattr(decision, "expert_insight", "") or "").strip()
-    expert_ids = list(dict.fromkeys(str(item).strip() for item in getattr(decision, "expert_course_ids", []) if str(item).strip()))
+    expert_ids = list(
+        dict.fromkeys(
+            str(item).strip()
+            for item in getattr(decision, "expert_course_ids", [])
+            if str(item).strip()
+        )
+    )
     final_ids = [str(item.get("course_id") or "") for item in valid_courses]
-    if expert_insight and expert_ids == final_ids:
+    if expert_insight and valid_courses and expert_ids == final_ids:
         # The model is not allowed to leak internal identifiers or direct
         # links. A failed content gate suppresses only the expert portion;
         # validated course cards remain usable.
         forbidden = set(final_ids) | set(routes) | set(courses)
-        if not any(value and value in expert_insight for value in forbidden) and not re.search(
-            r"https?://|www\.", expert_insight, flags=re.IGNORECASE
-        ):
-            expert_insight = expert_insight[:800]
+        if not any(
+            value and value in expert_insight for value in forbidden
+        ) and not re.search(r"https?://|www\.", expert_insight, flags=re.IGNORECASE):
+            expert_insight = re.sub(r"\s+", " ", expert_insight).strip()
+            expert_insight = re.sub(
+                r"^(?:专家建议|下一步建议)\s*[:：]?\s*", "", expert_insight
+            ).strip()
+            expert_insight = expert_insight[:80].rstrip()
         else:
             expert_insight = ""
     else:
@@ -888,7 +985,6 @@ def validate_recommendation(
         "intent": decision.intent,
         "course_cards": valid_courses,
         "learning_route": route,
-        "recommendation_note": decision.answer_plan if valid_courses else "",
         "progress_applied": progress_applied,
     }
     if expert_insight:

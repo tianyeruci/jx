@@ -447,10 +447,29 @@ def test_post_shard_keeps_explicit_parent_boundaries_and_titles():
         max_bytes=10_000,
     )
 
-    assert len(plans) == 1
-    assert f"\n{DIFY_PARENT_SEPARATOR}\n" in plans[0].markdown
+    assert len(plans) == 2
+    assert all(len(plan.items) == 1 for plan in plans)
+    assert f"\n{DIFY_PARENT_SEPARATOR}\n" not in plans[0].markdown
     assert "# 短标题" in plans[0].markdown
-    assert "# 另一个标题" in plans[0].markdown
+    assert "# 另一个标题" in plans[1].markdown
+
+
+def test_post_shards_keep_each_source_item_in_its_own_remote_document():
+    from ai_management.publication_shards import ShardItem, plan_post_shards
+
+    items = [
+        ShardItem(item_id="post-1", title="第一篇", markdown="正文一"),
+        ShardItem(item_id="post-2", title="第二篇", markdown="正文二"),
+    ]
+
+    plans = plan_post_shards(items, max_items=200, max_bytes=10_000)
+
+    assert [plan.index for plan in plans] == [1, 2]
+    assert [[item.item_id for item in plan.items] for plan in plans] == [
+        ["post-1"],
+        ["post-2"],
+    ]
+    assert [plan.markdown for plan in plans] == ["# 第一篇\n\n正文一", "# 第二篇\n\n正文二"]
 
 
 def test_post_shard_structure_allows_dify_to_split_large_source_items():
@@ -617,6 +636,8 @@ def test_nonblocking_pdf_table_warning_keeps_readable_linear_text(
     assert len(result) == 1
     assert result[0].disposition == "pending"
     assert "付费意愿" in result[0].markdown
+    assert "<<<DIFY_PARENT>>>" not in result[0].markdown
+    assert "<<<DIFY_CHILD>>>" not in result[0].markdown
 
 
 def test_consultation_pdf_table_warning_still_enters_model_cleaning(

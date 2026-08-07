@@ -274,6 +274,33 @@ def render_course_recommendation(result: Any, *, label: str = "课程推荐") ->
         state = route.get("state") or route.get("progress_status") or ""
         route_name = str(route.get("name") or "未命名路线")
         st.caption(f"学习路线：{route_name} · {state}")
+        stages = route.get("stages") or []
+        if isinstance(stages, list):
+            for stage_index, stage in enumerate(stages, start=1):
+                if not isinstance(stage, dict):
+                    continue
+                stage_name = str(stage.get("name") or f"阶段{stage_index}")
+                names = [
+                    str(value).strip()
+                    for value in (stage.get("course_names") or [])
+                    if str(value).strip()
+                ]
+                if not names:
+                    names = [
+                        str(value).strip()
+                        for value in (stage.get("course_ids") or [])
+                        if str(value).strip()
+                    ]
+                collections = [
+                    str(value).strip()
+                    for value in (stage.get("course_collection_names") or [])
+                    if str(value).strip()
+                ]
+                st.markdown(f"**{stage_index}. {stage_name}**")
+                if collections:
+                    st.caption("课程合集：" + "、".join(collections))
+                for course_index, course_name in enumerate(names, start=1):
+                    st.write(f"{stage_index}.{course_index} {course_name}")
     note_payload = result.get("course_recommendation_note")
     note = note_payload.get("content") if isinstance(note_payload, dict) else note_payload
     if str(note or "").strip() and isinstance(cards, list) and cards:

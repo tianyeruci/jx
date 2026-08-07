@@ -83,10 +83,7 @@ workflow:
     suggested_questions:
     - 我想系统学习AI工具，应该从哪里开始？
     - 有没有适合公众号运营入门的课程？
-    - 我有一个具体的商业问题，如何分析？
-    - 我是新手，应该先学习哪些课程？
-    - 我已经有一些基础，如何选择进阶课程？
-    - 课程应该按什么顺序学习？
+    - 我已经有一些基础，如何选择AI写作进阶课程？
     suggested_questions_after_answer:
       enabled: true
     text_to_speech:
@@ -761,14 +758,14 @@ workflow:
           required: false
           type: paragraph
           variable: expert_insight_style
-      height: 308
+      height: 309
       id: start
       position:
         x: 0
-        y: 375
+        y: 376
       positionAbsolute:
         x: 0
-        y: 375
+        y: 376
       selected: false
       type: custom
       width: 242
@@ -867,14 +864,14 @@ workflow:
           - env
           - WECHAT_QR_URL
           variable: wechat_qr_url
-      height: 111
+      height: 112
       id: quick_intent
       position:
         x: 342
-        y: 473
+        y: 475
       positionAbsolute:
         x: 342
-        y: 473
+        y: 475
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -897,14 +894,14 @@ workflow:
         selected: false
         title: 是否直接回复
         type: if-else
-      height: 191
+      height: 192
       id: quick_route
       position:
         x: 684
-        y: 433
+        y: 435
       positionAbsolute:
         x: 684
-        y: 433
+        y: 435
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -917,14 +914,14 @@ workflow:
         title: 固定场景直接回复
         type: answer
         variables: []
-      height: 146
+      height: 147
       id: quick_answer
       position:
         x: 1046
-        y: 280
+        y: 282
       positionAbsolute:
         x: 1046
-        y: 280
+        y: 282
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -940,14 +937,14 @@ workflow:
         title: 首字等待提示
         type: answer
         variables: []
-      height: 159
+      height: 160
       id: progress_answer
       position:
         x: 1046
-        y: 506
+        y: 509
       positionAbsolute:
         x: 1046
-        y: 506
+        y: 509
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -1012,14 +1009,14 @@ workflow:
         selected: false
         title: 意图识别与检索规划
         type: llm
-      height: 147
+      height: 148
       id: question_split
       position:
         x: 1388
-        y: 512
+        y: 515
       positionAbsolute:
         x: 1388
-        y: 512
+        y: 515
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -1089,14 +1086,14 @@ workflow:
           - sys
           - query
           variable: original_query
-      height: 95
+      height: 96
       id: query_split_normalize
       position:
         x: 1730
-        y: 538
+        y: 541
       positionAbsolute:
         x: 1730
-        y: 538
+        y: 541
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -1141,14 +1138,14 @@ workflow:
         selected: false
         title: 代码化检索范围路由
         type: if-else
-      height: 335
+      height: 336
       id: question_classifier
       position:
         x: 2072
-        y: 418
+        y: 421
       positionAbsolute:
         x: 2072
-        y: 418
+        y: 421
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -1174,14 +1171,14 @@ workflow:
         selected: false
         title: 通用知识检索
         type: knowledge-retrieval
-      height: 95
+      height: 134
       id: general_knowledge
       position:
         x: 2434
-        y: 361
+        y: 364
       positionAbsolute:
         x: 2434
-        y: 361
+        y: 364
       selected: false
       type: custom
       width: 242
@@ -1212,14 +1209,14 @@ workflow:
         selected: false
         title: 课程路线检索
         type: knowledge-retrieval
-      height: 95
+      height: 134
       id: course_knowledge
       position:
         x: 2434
-        y: 574
+        y: 578
       positionAbsolute:
         x: 2434
-        y: 574
+        y: 578
       selected: false
       type: custom
       width: 242
@@ -1243,14 +1240,14 @@ workflow:
         selected: false
         title: 混合问题通用知识检索
         type: knowledge-retrieval
-      height: 111
+      height: 150
       id: general_knowledge_mixed
       position:
         x: 2434
-        y: 787
+        y: 792
       positionAbsolute:
         x: 2434
-        y: 787
+        y: 792
       selected: false
       type: custom
       width: 242
@@ -1281,14 +1278,14 @@ workflow:
         selected: false
         title: 混合问题课程路线检索
         type: knowledge-retrieval
-      height: 95
+      height: 134
       id: course_knowledge_mixed
       position:
         x: 2434
-        y: 1016
+        y: 1022
       positionAbsolute:
         x: 2434
-        y: 1016
+        y: 1022
       selected: false
       type: custom
       width: 242
@@ -1331,14 +1328,14 @@ workflow:
           - general_knowledge
           - result
           variable: results
-      height: 95
+      height: 96
       id: general_evidence_compact
       position:
         x: 2776
-        y: 380
+        y: 383
       positionAbsolute:
         x: 2776
-        y: 380
+        y: 383
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -1383,14 +1380,14 @@ workflow:
           - course_knowledge
           - result
           variable: results
-      height: 95
+      height: 96
       id: course_evidence_compact
       position:
         x: 2776
-        y: 593
+        y: 597
       positionAbsolute:
         x: 2776
-        y: 593
+        y: 597
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -1453,14 +1450,14 @@ workflow:
           - course_knowledge_mixed
           - result
           variable: course_results
-      height: 95
+      height: 96
       id: mixed_evidence_join
       position:
         x: 2796
-        y: 1020
+        y: 1025
       positionAbsolute:
         x: 2796
-        y: 1020
+        y: 1025
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -1486,10 +1483,21 @@ workflow:
 
             必须输出以下结构：
 
-            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","answer_plan":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
+            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"expert_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
 
 
             通用规则：
+
+            - 用户自身状态、意图、选择和学习进度的信息优先级固定为：当前用户本轮明确表达 > 最近未摘要历史中的明确确认 > 会话摘要中的已确认内容
+            > 路线进度 JSON > 用户画像 JSON。低优先级信息不得覆盖高优先级信息。
+
+            - 当较高优先级来源已经明确了学习路线、已学课程、当前阶段、学习基础、目标、限制条件或用户选择时，无论较低优先级来源为空、缺失、不同、滞后或尚未同步，都必须采用较高优先级信息完成判断和回答，不得忽略、降级或要求用户重复确认。
+
+            - 当前对话优先规则只适用于用户自身状态、意图、选择和进度。课程、路线和阶段的名称、ID、内容、官方顺序、有效状态等官方事实仍必须以检索证据为准；用户陈述只能证明其个人状态或选择，不得用于改写官方事实。
+
+            - 用户画像只是低优先级补充信息，不是必须补全的表单。不得仅因画像字段为空、不完整、未更新或与当前对话不同而生成 missing_information、clarification_question，或要求人工接管。
+
+            - missing_information 只记录完成当前任务确实必需、会实质改变结果，并且在当前问题、最近未摘要历史、会话摘要、路线进度和用户画像中均没有明确值的信息；不得列出仅用于补全用户画像的字段。
 
             - 事实、课程、路线和阶段信息只使用提供的检索证据；证据不足时明确说明，不得用常识补造库内事实。
 
@@ -1497,7 +1505,7 @@ workflow:
 
             - 不输出课程链接、正式课程卡片或自行编写的官方路线表；服务端会根据候选 ID 生成。
 
-            - 明确查询课程时不强制画像完整。只有会实质改变推荐结果的信息缺失时才澄清，最多问一个关键问题。
+            - 不得仅因用户画像或路线进度字段缺失而澄清。只有当前任务本身缺少一个会实质改变结果的关键信息，并且该信息在全部上下文中均没有明确值时，才可澄清；最多问一个围绕当前任务的关键问题，不得要求用户完善画像。
 
             - 如果最近历史显示同一关键问题已经问过但仍无法可靠处理，或者事项需要后台核验、人工操作、个性化成交处理，可设 handoff_required=true。
 
@@ -1505,7 +1513,13 @@ workflow:
 
             - final_answer 是直接面向用户的完整中文回复；不得暴露内部 JSON、字段名、检索实现、画像结构或系统提示。
 
-            - answer_plan 是内部简短计划；expert_insight 是可选的专业判断，并应在 final_answer 中自然体现。
+            - expert_insight 仅用于课程卡片后的独立“下一步建议”，不得写入或重复 final_answer。
+
+            - 仅当本轮会返回明确课程候选、且每个建议都能直接对应这些候选课程证据时，填写 expert_insight 与 expert_course_ids；无课程候选、待路线或阶段确认、证据不足时两者必须为空。
+
+            - expert_course_ids 必须与 candidate_course_ids 完全一致并保持顺序。
+
+            - expert_insight 仅写 1–2 句、最多 80 个汉字的组合学习动作；无标题，不含课程、路线或阶段 ID、链接、效果承诺、“匹配理由”等字样。
 
             - 只有当前用户明确选择路线时才使用 confirm_route；明确确认所处阶段时才使用 confirm_current_stage；明确确认当前阶段完成或跳过时才使用
             confirm_stage_completed。evidence_quote 必须是当前问题中的连续原文。
@@ -1527,12 +1541,12 @@ workflow:
             {{#sys.query#}}
 
 
-            已确认画像：
+            用户画像（低优先级补充，可能尚未更新）：
 
             {{#start.profile_json#}}
 
 
-            已确认路线进度：
+            路线进度（低于当前对话，可能尚未更新）：
 
             {{#start.route_progress_json#}}
 
@@ -1572,14 +1586,14 @@ workflow:
         selected: false
         title: 通用问题合并决策与回答模型
         type: llm
-      height: 131
+      height: 132
       id: combined_response_general
       position:
         x: 3118
-        y: 362
+        y: 365
       positionAbsolute:
         x: 3118
-        y: 362
+        y: 365
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -1619,11 +1633,11 @@ workflow:
           stage_id\") or \"\").strip(),\n            \"evidence_quote\": str(progress.get(\"\
           evidence_quote\") or \"\").strip(),\n        }\n\n        decision = {\n\
           \            \"intent\": intent,\n            \"candidate_course_ids\":\
-          \ to_string_list(value.get(\"candidate_course_ids\")),\n            \"candidate_route_id\"\
+          \ to_string_list(value.get(\"candidate_course_ids\")),\n            \"expert_course_ids\":\
+          \ to_string_list(value.get(\"expert_course_ids\")),\n            \"candidate_route_id\"\
           : str(value.get(\"candidate_route_id\") or \"\").strip(),\n            \"\
           missing_information\": to_string_list(value.get(\"missing_information\"\
           )),\n            \"clarification_question\": str(value.get(\"clarification_question\"\
-          ) or \"\").strip(),\n            \"answer_plan\": str(value.get(\"answer_plan\"\
           ) or \"\").strip(),\n            \"expert_insight\": str(value.get(\"expert_insight\"\
           ) or \"\").strip(),\n            \"progress_action\": progress_action,\n\
           \        }\n\n        handoff_raw = value.get(\"handoff_required\", False)\n\
@@ -1640,14 +1654,15 @@ workflow:
           \     \"text\": decision_json,\n            \"final_text\": answer,\n  \
           \          \"decision_json\": decision_json,\n            \"valid\": \"\
           true\",\n            \"candidate_course_ids_json\": json.dumps(decision[\"\
-          candidate_course_ids\"], ensure_ascii=False),\n            \"candidate_route_id\"\
+          candidate_course_ids\"], ensure_ascii=False),\n            \"expert_course_ids_json\":\
+          \ json.dumps(decision[\"expert_course_ids\"], ensure_ascii=False),\n            \"candidate_route_id\"\
           : decision[\"candidate_route_id\"],\n            \"progress_action_json\"\
           : json.dumps(progress_action, ensure_ascii=False),\n            \"handoff_required\"\
           : \"true\" if handoff else \"false\",\n            \"parse_error\": \"\"\
           ,\n        }\n    except Exception as exc:\n        return {\n         \
           \   \"text\": \"\",\n            \"final_text\": \"\",\n            \"decision_json\"\
           : \"\",\n            \"valid\": \"false\",\n            \"candidate_course_ids_json\"\
-          : \"[]\",\n            \"candidate_route_id\": \"\",\n            \"progress_action_json\"\
+          : \"[]\",\n            \"expert_course_ids_json\": \"[]\",\n            \"candidate_route_id\": \"\",\n            \"progress_action_json\"\
           : '{\"type\":\"none\",\"route_id\":\"\",\"stage_id\":\"\",\"evidence_quote\"\
           :\"\"}',\n            \"handoff_required\": \"false\",\n            \"parse_error\"\
           : str(exc)[:500],\n        }"
@@ -1655,6 +1670,9 @@ workflow:
         desc: 解析合并 JSON；text 输出保持原推荐决策 JSON 字段与语义，final_text 供最终回答节点使用。
         outputs:
           candidate_course_ids_json:
+            children: null
+            type: string
+          expert_course_ids_json:
             children: null
             type: string
           candidate_route_id:
@@ -1693,14 +1711,14 @@ workflow:
           - quick_intent
           - human_response
           variable: human_response
-      height: 111
+      height: 112
       id: recommendation_decision_general
       position:
         x: 3460
-        y: 372
+        y: 375
       positionAbsolute:
         x: 3460
-        y: 372
+        y: 375
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -1708,11 +1726,11 @@ workflow:
       width: 242
     - data:
         code: "def main(final_text: str, valid: str, decision_json: str, candidate_course_ids_json:\
-          \ str, candidate_route_id: str, progress_action_json: str, handoff_required:\
+          \ str, expert_course_ids_json: str, candidate_route_id: str, progress_action_json: str, handoff_required:\
           \ str, parse_error: str) -> dict:\n    return {\n        \"text\": str(final_text\
           \ or \"\"),\n        \"valid\": str(valid or \"false\"),\n        \"decision_json\"\
           : str(decision_json or \"\"),\n        \"candidate_course_ids_json\": str(candidate_course_ids_json\
-          \ or \"[]\"),\n        \"candidate_route_id\": str(candidate_route_id or\
+          \ or \"[]\"),\n        \"expert_course_ids_json\": str(expert_course_ids_json or \"[]\"),\n        \"candidate_route_id\": str(candidate_route_id or\
           \ \"\"),\n        \"progress_action_json\": str(progress_action_json or\
           \ \"\"),\n        \"handoff_required\": str(handoff_required or \"false\"\
           ),\n        \"parse_error\": str(parse_error or \"\"),\n    }"
@@ -1720,6 +1738,9 @@ workflow:
         desc: text 输出保持原最终回答节点引用兼容；同时透传结构化决策和解析状态。
         outputs:
           candidate_course_ids_json:
+            children: null
+            type: string
+          expert_course_ids_json:
             children: null
             type: string
           candidate_route_id:
@@ -1765,6 +1786,10 @@ workflow:
           variable: candidate_course_ids_json
         - value_selector:
           - recommendation_decision_general
+          - expert_course_ids_json
+          variable: expert_course_ids_json
+        - value_selector:
+          - recommendation_decision_general
           - candidate_route_id
           variable: candidate_route_id
         - value_selector:
@@ -1779,14 +1804,14 @@ workflow:
           - recommendation_decision_general
           - parse_error
           variable: parse_error
-      height: 95
+      height: 96
       id: final_answer_general
       position:
         x: 3802
-        y: 380
+        y: 383
       positionAbsolute:
         x: 3802
-        y: 380
+        y: 383
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -1809,14 +1834,14 @@ workflow:
         selected: false
         title: 通用问题结果是否有效
         type: if-else
-      height: 167
+      height: 168
       id: general_parse_gate
       position:
         x: 4164
-        y: 142
+        y: 143
       positionAbsolute:
         x: 4164
-        y: 142
+        y: 143
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -1829,7 +1854,7 @@ workflow:
         title: 通用问题回答
         type: answer
         variables: []
-      height: 130
+      height: 131
       id: answer_general
       position:
         x: 4526
@@ -1862,10 +1887,21 @@ workflow:
 
             必须输出以下结构：
 
-            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","answer_plan":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
+            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"expert_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
 
 
             通用规则：
+
+            - 用户自身状态、意图、选择和学习进度的信息优先级固定为：当前用户本轮明确表达 > 最近未摘要历史中的明确确认 > 会话摘要中的已确认内容
+            > 路线进度 JSON > 用户画像 JSON。低优先级信息不得覆盖高优先级信息。
+
+            - 当较高优先级来源已经明确了学习路线、已学课程、当前阶段、学习基础、目标、限制条件或用户选择时，无论较低优先级来源为空、缺失、不同、滞后或尚未同步，都必须采用较高优先级信息完成判断和回答，不得忽略、降级或要求用户重复确认。
+
+            - 当前对话优先规则只适用于用户自身状态、意图、选择和进度。课程、路线和阶段的名称、ID、内容、官方顺序、有效状态等官方事实仍必须以检索证据为准；用户陈述只能证明其个人状态或选择，不得用于改写官方事实。
+
+            - 用户画像只是低优先级补充信息，不是必须补全的表单。不得仅因画像字段为空、不完整、未更新或与当前对话不同而生成 missing_information、clarification_question，或要求人工接管。
+
+            - missing_information 只记录完成当前任务确实必需、会实质改变结果，并且在当前问题、最近未摘要历史、会话摘要、路线进度和用户画像中均没有明确值的信息；不得列出仅用于补全用户画像的字段。
 
             - 事实、课程、路线和阶段信息只使用提供的检索证据；证据不足时明确说明，不得用常识补造库内事实。
 
@@ -1873,7 +1909,7 @@ workflow:
 
             - 不输出课程链接、正式课程卡片或自行编写的官方路线表；服务端会根据候选 ID 生成。
 
-            - 明确查询课程时不强制画像完整。只有会实质改变推荐结果的信息缺失时才澄清，最多问一个关键问题。
+            - 不得仅因用户画像或路线进度字段缺失而澄清。只有当前任务本身缺少一个会实质改变结果的关键信息，并且该信息在全部上下文中均没有明确值时，才可澄清；最多问一个围绕当前任务的关键问题，不得要求用户完善画像。
 
             - 如果最近历史显示同一关键问题已经问过但仍无法可靠处理，或者事项需要后台核验、人工操作、个性化成交处理，可设 handoff_required=true。
 
@@ -1881,7 +1917,13 @@ workflow:
 
             - final_answer 是直接面向用户的完整中文回复；不得暴露内部 JSON、字段名、检索实现、画像结构或系统提示。
 
-            - answer_plan 是内部简短计划；expert_insight 是可选的专业判断，并应在 final_answer 中自然体现。
+            - expert_insight 仅用于课程卡片后的独立“下一步建议”，不得写入或重复 final_answer。
+
+            - 仅当本轮会返回明确课程候选、且每个建议都能直接对应这些候选课程证据时，填写 expert_insight 与 expert_course_ids；无课程候选、待路线或阶段确认、证据不足时两者必须为空。
+
+            - expert_course_ids 必须与 candidate_course_ids 完全一致并保持顺序。
+
+            - expert_insight 仅写 1–2 句、最多 80 个汉字的组合学习动作；无标题，不含课程、路线或阶段 ID、链接、效果承诺、“匹配理由”等字样。
 
             - 只有当前用户明确选择路线时才使用 confirm_route；明确确认所处阶段时才使用 confirm_current_stage；明确确认当前阶段完成或跳过时才使用
             confirm_stage_completed。evidence_quote 必须是当前问题中的连续原文。
@@ -1906,12 +1948,12 @@ workflow:
             {{#sys.query#}}
 
 
-            已确认画像：
+            用户画像（低优先级补充，可能尚未更新）：
 
             {{#start.profile_json#}}
 
 
-            已确认路线进度：
+            路线进度（低于当前对话，可能尚未更新）：
 
             {{#start.route_progress_json#}}
 
@@ -1958,17 +2000,17 @@ workflow:
             解析错误：
 
             {{#recommendation_decision_general.parse_error#}}'
-        selected: true
+        selected: false
         title: 通用问题格式修复重试
         type: llm
-      height: 131
+      height: 132
       id: general_format_retry
       position:
         x: 4526
-        y: 210
+        y: 211
       positionAbsolute:
         x: 4526
-        y: 210
+        y: 211
       selected: true
       sourcePosition: right
       targetPosition: left
@@ -2008,11 +2050,11 @@ workflow:
           stage_id\") or \"\").strip(),\n            \"evidence_quote\": str(progress.get(\"\
           evidence_quote\") or \"\").strip(),\n        }\n\n        decision = {\n\
           \            \"intent\": intent,\n            \"candidate_course_ids\":\
-          \ to_string_list(value.get(\"candidate_course_ids\")),\n            \"candidate_route_id\"\
+          \ to_string_list(value.get(\"candidate_course_ids\")),\n            \"expert_course_ids\":\
+          \ to_string_list(value.get(\"expert_course_ids\")),\n            \"candidate_route_id\"\
           : str(value.get(\"candidate_route_id\") or \"\").strip(),\n            \"\
           missing_information\": to_string_list(value.get(\"missing_information\"\
           )),\n            \"clarification_question\": str(value.get(\"clarification_question\"\
-          ) or \"\").strip(),\n            \"answer_plan\": str(value.get(\"answer_plan\"\
           ) or \"\").strip(),\n            \"expert_insight\": str(value.get(\"expert_insight\"\
           ) or \"\").strip(),\n            \"progress_action\": progress_action,\n\
           \        }\n\n        handoff_raw = value.get(\"handoff_required\", False)\n\
@@ -2029,14 +2071,15 @@ workflow:
           \     \"text\": decision_json,\n            \"final_text\": answer,\n  \
           \          \"decision_json\": decision_json,\n            \"valid\": \"\
           true\",\n            \"candidate_course_ids_json\": json.dumps(decision[\"\
-          candidate_course_ids\"], ensure_ascii=False),\n            \"candidate_route_id\"\
+          candidate_course_ids\"], ensure_ascii=False),\n            \"expert_course_ids_json\":\
+          \ json.dumps(decision[\"expert_course_ids\"], ensure_ascii=False),\n            \"candidate_route_id\"\
           : decision[\"candidate_route_id\"],\n            \"progress_action_json\"\
           : json.dumps(progress_action, ensure_ascii=False),\n            \"handoff_required\"\
           : \"true\" if handoff else \"false\",\n            \"parse_error\": \"\"\
           ,\n        }\n    except Exception as exc:\n        return {\n         \
           \   \"text\": \"\",\n            \"final_text\": \"\",\n            \"decision_json\"\
           : \"\",\n            \"valid\": \"false\",\n            \"candidate_course_ids_json\"\
-          : \"[]\",\n            \"candidate_route_id\": \"\",\n            \"progress_action_json\"\
+          : \"[]\",\n            \"expert_course_ids_json\": \"[]\",\n            \"candidate_route_id\": \"\",\n            \"progress_action_json\"\
           : '{\"type\":\"none\",\"route_id\":\"\",\"stage_id\":\"\",\"evidence_quote\"\
           :\"\"}',\n            \"handoff_required\": \"false\",\n            \"parse_error\"\
           : str(exc)[:500],\n        }"
@@ -2044,6 +2087,9 @@ workflow:
         desc: 解析格式修复结果；text 仍为旧决策 JSON。
         outputs:
           candidate_course_ids_json:
+            children: null
+            type: string
+          expert_course_ids_json:
             children: null
             type: string
           candidate_route_id:
@@ -2082,14 +2128,14 @@ workflow:
           - quick_intent
           - human_response
           variable: human_response
-      height: 95
+      height: 96
       id: general_retry_decision_parse
       position:
         x: 4868
-        y: 228
+        y: 229
       positionAbsolute:
         x: 4868
-        y: 228
+        y: 229
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -2097,11 +2143,11 @@ workflow:
       width: 242
     - data:
         code: "def main(final_text: str, valid: str, decision_json: str, candidate_course_ids_json:\
-          \ str, candidate_route_id: str, progress_action_json: str, handoff_required:\
+          \ str, expert_course_ids_json: str, candidate_route_id: str, progress_action_json: str, handoff_required:\
           \ str, parse_error: str) -> dict:\n    return {\n        \"text\": str(final_text\
           \ or \"\"),\n        \"valid\": str(valid or \"false\"),\n        \"decision_json\"\
           : str(decision_json or \"\"),\n        \"candidate_course_ids_json\": str(candidate_course_ids_json\
-          \ or \"[]\"),\n        \"candidate_route_id\": str(candidate_route_id or\
+          \ or \"[]\"),\n        \"expert_course_ids_json\": str(expert_course_ids_json or \"[]\"),\n        \"candidate_route_id\": str(candidate_route_id or\
           \ \"\"),\n        \"progress_action_json\": str(progress_action_json or\
           \ \"\"),\n        \"handoff_required\": str(handoff_required or \"false\"\
           ),\n        \"parse_error\": str(parse_error or \"\"),\n    }"
@@ -2109,6 +2155,9 @@ workflow:
         desc: 把修复后的 final_text 转为兼容 text 输出。
         outputs:
           candidate_course_ids_json:
+            children: null
+            type: string
+          expert_course_ids_json:
             children: null
             type: string
           candidate_route_id:
@@ -2154,6 +2203,10 @@ workflow:
           variable: candidate_course_ids_json
         - value_selector:
           - general_retry_decision_parse
+          - expert_course_ids_json
+          variable: expert_course_ids_json
+        - value_selector:
+          - general_retry_decision_parse
           - candidate_route_id
           variable: candidate_route_id
         - value_selector:
@@ -2168,14 +2221,14 @@ workflow:
           - general_retry_decision_parse
           - parse_error
           variable: parse_error
-      height: 95
+      height: 96
       id: general_retry_final_answer
       position:
         x: 5210
-        y: 228
+        y: 229
       positionAbsolute:
         x: 5210
-        y: 228
+        y: 229
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -2198,14 +2251,14 @@ workflow:
         selected: false
         title: 通用问题重试是否有效
         type: if-else
-      height: 167
+      height: 168
       id: general_retry_gate
       position:
         x: 5552
-        y: 192
+        y: 193
       positionAbsolute:
         x: 5552
-        y: 192
+        y: 193
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -2218,14 +2271,14 @@ workflow:
         title: 通用问题重试回答
         type: answer
         variables: []
-      height: 130
+      height: 131
       id: answer_general_retry
       position:
         x: 5914
-        y: 227
+        y: 228
       positionAbsolute:
         x: 5914
-        y: 227
+        y: 228
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -2251,10 +2304,21 @@ workflow:
 
             必须输出以下结构：
 
-            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","answer_plan":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
+            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"expert_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
 
 
             通用规则：
+
+            - 用户自身状态、意图、选择和学习进度的信息优先级固定为：当前用户本轮明确表达 > 最近未摘要历史中的明确确认 > 会话摘要中的已确认内容
+            > 路线进度 JSON > 用户画像 JSON。低优先级信息不得覆盖高优先级信息。
+
+            - 当较高优先级来源已经明确了学习路线、已学课程、当前阶段、学习基础、目标、限制条件或用户选择时，无论较低优先级来源为空、缺失、不同、滞后或尚未同步，都必须采用较高优先级信息完成判断和回答，不得忽略、降级或要求用户重复确认。
+
+            - 当前对话优先规则只适用于用户自身状态、意图、选择和进度。课程、路线和阶段的名称、ID、内容、官方顺序、有效状态等官方事实仍必须以检索证据为准；用户陈述只能证明其个人状态或选择，不得用于改写官方事实。
+
+            - 用户画像只是低优先级补充信息，不是必须补全的表单。不得仅因画像字段为空、不完整、未更新或与当前对话不同而生成 missing_information、clarification_question，或要求人工接管。
+
+            - missing_information 只记录完成当前任务确实必需、会实质改变结果，并且在当前问题、最近未摘要历史、会话摘要、路线进度和用户画像中均没有明确值的信息；不得列出仅用于补全用户画像的字段。
 
             - 事实、课程、路线和阶段信息只使用提供的检索证据；证据不足时明确说明，不得用常识补造库内事实。
 
@@ -2262,7 +2326,7 @@ workflow:
 
             - 不输出课程链接、正式课程卡片或自行编写的官方路线表；服务端会根据候选 ID 生成。
 
-            - 明确查询课程时不强制画像完整。只有会实质改变推荐结果的信息缺失时才澄清，最多问一个关键问题。
+            - 不得仅因用户画像或路线进度字段缺失而澄清。只有当前任务本身缺少一个会实质改变结果的关键信息，并且该信息在全部上下文中均没有明确值时，才可澄清；最多问一个围绕当前任务的关键问题，不得要求用户完善画像。
 
             - 如果最近历史显示同一关键问题已经问过但仍无法可靠处理，或者事项需要后台核验、人工操作、个性化成交处理，可设 handoff_required=true。
 
@@ -2270,7 +2334,13 @@ workflow:
 
             - final_answer 是直接面向用户的完整中文回复；不得暴露内部 JSON、字段名、检索实现、画像结构或系统提示。
 
-            - answer_plan 是内部简短计划；expert_insight 是可选的专业判断，并应在 final_answer 中自然体现。
+            - expert_insight 仅用于课程卡片后的独立“下一步建议”，不得写入或重复 final_answer。
+
+            - 仅当本轮会返回明确课程候选、且每个建议都能直接对应这些候选课程证据时，填写 expert_insight 与 expert_course_ids；无课程候选、待路线或阶段确认、证据不足时两者必须为空。
+
+            - expert_course_ids 必须与 candidate_course_ids 完全一致并保持顺序。
+
+            - expert_insight 仅写 1–2 句、最多 80 个汉字的组合学习动作；无标题，不含课程、路线或阶段 ID、链接、效果承诺、“匹配理由”等字样。
 
             - 只有当前用户明确选择路线时才使用 confirm_route；明确确认所处阶段时才使用 confirm_current_stage；明确确认当前阶段完成或跳过时才使用
             confirm_stage_completed。evidence_quote 必须是当前问题中的连续原文。
@@ -2292,12 +2362,12 @@ workflow:
             {{#sys.query#}}
 
 
-            已确认画像：
+            用户画像（低优先级补充，可能尚未更新）：
 
             {{#start.profile_json#}}
 
 
-            已确认路线进度：
+            路线进度（低于当前对话，可能尚未更新）：
 
             {{#start.route_progress_json#}}
 
@@ -2337,14 +2407,14 @@ workflow:
         selected: false
         title: 课程问题合并决策与回答模型
         type: llm
-      height: 131
+      height: 132
       id: combined_response_course
       position:
         x: 3118
-        y: 575
+        y: 579
       positionAbsolute:
         x: 3118
-        y: 575
+        y: 579
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -2384,11 +2454,11 @@ workflow:
           stage_id\") or \"\").strip(),\n            \"evidence_quote\": str(progress.get(\"\
           evidence_quote\") or \"\").strip(),\n        }\n\n        decision = {\n\
           \            \"intent\": intent,\n            \"candidate_course_ids\":\
-          \ to_string_list(value.get(\"candidate_course_ids\")),\n            \"candidate_route_id\"\
+          \ to_string_list(value.get(\"candidate_course_ids\")),\n            \"expert_course_ids\":\
+          \ to_string_list(value.get(\"expert_course_ids\")),\n            \"candidate_route_id\"\
           : str(value.get(\"candidate_route_id\") or \"\").strip(),\n            \"\
           missing_information\": to_string_list(value.get(\"missing_information\"\
           )),\n            \"clarification_question\": str(value.get(\"clarification_question\"\
-          ) or \"\").strip(),\n            \"answer_plan\": str(value.get(\"answer_plan\"\
           ) or \"\").strip(),\n            \"expert_insight\": str(value.get(\"expert_insight\"\
           ) or \"\").strip(),\n            \"progress_action\": progress_action,\n\
           \        }\n\n        handoff_raw = value.get(\"handoff_required\", False)\n\
@@ -2405,14 +2475,15 @@ workflow:
           \     \"text\": decision_json,\n            \"final_text\": answer,\n  \
           \          \"decision_json\": decision_json,\n            \"valid\": \"\
           true\",\n            \"candidate_course_ids_json\": json.dumps(decision[\"\
-          candidate_course_ids\"], ensure_ascii=False),\n            \"candidate_route_id\"\
+          candidate_course_ids\"], ensure_ascii=False),\n            \"expert_course_ids_json\":\
+          \ json.dumps(decision[\"expert_course_ids\"], ensure_ascii=False),\n            \"candidate_route_id\"\
           : decision[\"candidate_route_id\"],\n            \"progress_action_json\"\
           : json.dumps(progress_action, ensure_ascii=False),\n            \"handoff_required\"\
           : \"true\" if handoff else \"false\",\n            \"parse_error\": \"\"\
           ,\n        }\n    except Exception as exc:\n        return {\n         \
           \   \"text\": \"\",\n            \"final_text\": \"\",\n            \"decision_json\"\
           : \"\",\n            \"valid\": \"false\",\n            \"candidate_course_ids_json\"\
-          : \"[]\",\n            \"candidate_route_id\": \"\",\n            \"progress_action_json\"\
+          : \"[]\",\n            \"expert_course_ids_json\": \"[]\",\n            \"candidate_route_id\": \"\",\n            \"progress_action_json\"\
           : '{\"type\":\"none\",\"route_id\":\"\",\"stage_id\":\"\",\"evidence_quote\"\
           :\"\"}',\n            \"handoff_required\": \"false\",\n            \"parse_error\"\
           : str(exc)[:500],\n        }"
@@ -2420,6 +2491,9 @@ workflow:
         desc: 解析合并 JSON；text 输出保持原推荐决策 JSON 字段与语义，final_text 供最终回答节点使用。
         outputs:
           candidate_course_ids_json:
+            children: null
+            type: string
+          expert_course_ids_json:
             children: null
             type: string
           candidate_route_id:
@@ -2458,14 +2532,14 @@ workflow:
           - quick_intent
           - human_response
           variable: human_response
-      height: 111
+      height: 112
       id: recommendation_decision_course
       position:
         x: 3460
-        y: 585
+        y: 589
       positionAbsolute:
         x: 3460
-        y: 585
+        y: 589
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -2473,11 +2547,11 @@ workflow:
       width: 242
     - data:
         code: "def main(final_text: str, valid: str, decision_json: str, candidate_course_ids_json:\
-          \ str, candidate_route_id: str, progress_action_json: str, handoff_required:\
+          \ str, expert_course_ids_json: str, candidate_route_id: str, progress_action_json: str, handoff_required:\
           \ str, parse_error: str) -> dict:\n    return {\n        \"text\": str(final_text\
           \ or \"\"),\n        \"valid\": str(valid or \"false\"),\n        \"decision_json\"\
           : str(decision_json or \"\"),\n        \"candidate_course_ids_json\": str(candidate_course_ids_json\
-          \ or \"[]\"),\n        \"candidate_route_id\": str(candidate_route_id or\
+          \ or \"[]\"),\n        \"expert_course_ids_json\": str(expert_course_ids_json or \"[]\"),\n        \"candidate_route_id\": str(candidate_route_id or\
           \ \"\"),\n        \"progress_action_json\": str(progress_action_json or\
           \ \"\"),\n        \"handoff_required\": str(handoff_required or \"false\"\
           ),\n        \"parse_error\": str(parse_error or \"\"),\n    }"
@@ -2485,6 +2559,9 @@ workflow:
         desc: text 输出保持原最终回答节点引用兼容；同时透传结构化决策和解析状态。
         outputs:
           candidate_course_ids_json:
+            children: null
+            type: string
+          expert_course_ids_json:
             children: null
             type: string
           candidate_route_id:
@@ -2530,6 +2607,10 @@ workflow:
           variable: candidate_course_ids_json
         - value_selector:
           - recommendation_decision_course
+          - expert_course_ids_json
+          variable: expert_course_ids_json
+        - value_selector:
+          - recommendation_decision_course
           - candidate_route_id
           variable: candidate_route_id
         - value_selector:
@@ -2544,14 +2625,14 @@ workflow:
           - recommendation_decision_course
           - parse_error
           variable: parse_error
-      height: 95
+      height: 96
       id: final_answer_course
       position:
         x: 3802
-        y: 593
+        y: 597
       positionAbsolute:
         x: 3802
-        y: 593
+        y: 597
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -2574,14 +2655,14 @@ workflow:
         selected: false
         title: 课程问题结果是否有效
         type: if-else
-      height: 167
+      height: 168
       id: course_parse_gate
       position:
         x: 4144
-        y: 557
+        y: 561
       positionAbsolute:
         x: 4144
-        y: 557
+        y: 561
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -2594,14 +2675,14 @@ workflow:
         title: 课程问题回答
         type: answer
         variables: []
-      height: 130
+      height: 131
       id: answer_course
       position:
         x: 4506
-        y: 421
+        y: 423
       positionAbsolute:
         x: 4506
-        y: 421
+        y: 423
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -2627,10 +2708,21 @@ workflow:
 
             必须输出以下结构：
 
-            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","answer_plan":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
+            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"expert_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
 
 
             通用规则：
+
+            - 用户自身状态、意图、选择和学习进度的信息优先级固定为：当前用户本轮明确表达 > 最近未摘要历史中的明确确认 > 会话摘要中的已确认内容
+            > 路线进度 JSON > 用户画像 JSON。低优先级信息不得覆盖高优先级信息。
+
+            - 当较高优先级来源已经明确了学习路线、已学课程、当前阶段、学习基础、目标、限制条件或用户选择时，无论较低优先级来源为空、缺失、不同、滞后或尚未同步，都必须采用较高优先级信息完成判断和回答，不得忽略、降级或要求用户重复确认。
+
+            - 当前对话优先规则只适用于用户自身状态、意图、选择和进度。课程、路线和阶段的名称、ID、内容、官方顺序、有效状态等官方事实仍必须以检索证据为准；用户陈述只能证明其个人状态或选择，不得用于改写官方事实。
+
+            - 用户画像只是低优先级补充信息，不是必须补全的表单。不得仅因画像字段为空、不完整、未更新或与当前对话不同而生成 missing_information、clarification_question，或要求人工接管。
+
+            - missing_information 只记录完成当前任务确实必需、会实质改变结果，并且在当前问题、最近未摘要历史、会话摘要、路线进度和用户画像中均没有明确值的信息；不得列出仅用于补全用户画像的字段。
 
             - 事实、课程、路线和阶段信息只使用提供的检索证据；证据不足时明确说明，不得用常识补造库内事实。
 
@@ -2638,7 +2730,7 @@ workflow:
 
             - 不输出课程链接、正式课程卡片或自行编写的官方路线表；服务端会根据候选 ID 生成。
 
-            - 明确查询课程时不强制画像完整。只有会实质改变推荐结果的信息缺失时才澄清，最多问一个关键问题。
+            - 不得仅因用户画像或路线进度字段缺失而澄清。只有当前任务本身缺少一个会实质改变结果的关键信息，并且该信息在全部上下文中均没有明确值时，才可澄清；最多问一个围绕当前任务的关键问题，不得要求用户完善画像。
 
             - 如果最近历史显示同一关键问题已经问过但仍无法可靠处理，或者事项需要后台核验、人工操作、个性化成交处理，可设 handoff_required=true。
 
@@ -2646,7 +2738,13 @@ workflow:
 
             - final_answer 是直接面向用户的完整中文回复；不得暴露内部 JSON、字段名、检索实现、画像结构或系统提示。
 
-            - answer_plan 是内部简短计划；expert_insight 是可选的专业判断，并应在 final_answer 中自然体现。
+            - expert_insight 仅用于课程卡片后的独立“下一步建议”，不得写入或重复 final_answer。
+
+            - 仅当本轮会返回明确课程候选、且每个建议都能直接对应这些候选课程证据时，填写 expert_insight 与 expert_course_ids；无课程候选、待路线或阶段确认、证据不足时两者必须为空。
+
+            - expert_course_ids 必须与 candidate_course_ids 完全一致并保持顺序。
+
+            - expert_insight 仅写 1–2 句、最多 80 个汉字的组合学习动作；无标题，不含课程、路线或阶段 ID、链接、效果承诺、“匹配理由”等字样。
 
             - 只有当前用户明确选择路线时才使用 confirm_route；明确确认所处阶段时才使用 confirm_current_stage；明确确认当前阶段完成或跳过时才使用
             confirm_stage_completed。evidence_quote 必须是当前问题中的连续原文。
@@ -2671,12 +2769,12 @@ workflow:
             {{#sys.query#}}
 
 
-            已确认画像：
+            用户画像（低优先级补充，可能尚未更新）：
 
             {{#start.profile_json#}}
 
 
-            已确认路线进度：
+            路线进度（低于当前对话，可能尚未更新）：
 
             {{#start.route_progress_json#}}
 
@@ -2726,14 +2824,14 @@ workflow:
         selected: false
         title: 课程问题格式修复重试
         type: llm
-      height: 131
+      height: 132
       id: course_format_retry
       position:
         x: 4506
-        y: 631
+        y: 634
       positionAbsolute:
         x: 4506
-        y: 631
+        y: 634
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -2773,11 +2871,11 @@ workflow:
           stage_id\") or \"\").strip(),\n            \"evidence_quote\": str(progress.get(\"\
           evidence_quote\") or \"\").strip(),\n        }\n\n        decision = {\n\
           \            \"intent\": intent,\n            \"candidate_course_ids\":\
-          \ to_string_list(value.get(\"candidate_course_ids\")),\n            \"candidate_route_id\"\
+          \ to_string_list(value.get(\"candidate_course_ids\")),\n            \"expert_course_ids\":\
+          \ to_string_list(value.get(\"expert_course_ids\")),\n            \"candidate_route_id\"\
           : str(value.get(\"candidate_route_id\") or \"\").strip(),\n            \"\
           missing_information\": to_string_list(value.get(\"missing_information\"\
           )),\n            \"clarification_question\": str(value.get(\"clarification_question\"\
-          ) or \"\").strip(),\n            \"answer_plan\": str(value.get(\"answer_plan\"\
           ) or \"\").strip(),\n            \"expert_insight\": str(value.get(\"expert_insight\"\
           ) or \"\").strip(),\n            \"progress_action\": progress_action,\n\
           \        }\n\n        handoff_raw = value.get(\"handoff_required\", False)\n\
@@ -2794,14 +2892,15 @@ workflow:
           \     \"text\": decision_json,\n            \"final_text\": answer,\n  \
           \          \"decision_json\": decision_json,\n            \"valid\": \"\
           true\",\n            \"candidate_course_ids_json\": json.dumps(decision[\"\
-          candidate_course_ids\"], ensure_ascii=False),\n            \"candidate_route_id\"\
+          candidate_course_ids\"], ensure_ascii=False),\n            \"expert_course_ids_json\":\
+          \ json.dumps(decision[\"expert_course_ids\"], ensure_ascii=False),\n            \"candidate_route_id\"\
           : decision[\"candidate_route_id\"],\n            \"progress_action_json\"\
           : json.dumps(progress_action, ensure_ascii=False),\n            \"handoff_required\"\
           : \"true\" if handoff else \"false\",\n            \"parse_error\": \"\"\
           ,\n        }\n    except Exception as exc:\n        return {\n         \
           \   \"text\": \"\",\n            \"final_text\": \"\",\n            \"decision_json\"\
           : \"\",\n            \"valid\": \"false\",\n            \"candidate_course_ids_json\"\
-          : \"[]\",\n            \"candidate_route_id\": \"\",\n            \"progress_action_json\"\
+          : \"[]\",\n            \"expert_course_ids_json\": \"[]\",\n            \"candidate_route_id\": \"\",\n            \"progress_action_json\"\
           : '{\"type\":\"none\",\"route_id\":\"\",\"stage_id\":\"\",\"evidence_quote\"\
           :\"\"}',\n            \"handoff_required\": \"false\",\n            \"parse_error\"\
           : str(exc)[:500],\n        }"
@@ -2809,6 +2908,9 @@ workflow:
         desc: 解析格式修复结果；text 仍为旧决策 JSON。
         outputs:
           candidate_course_ids_json:
+            children: null
+            type: string
+          expert_course_ids_json:
             children: null
             type: string
           candidate_route_id:
@@ -2847,14 +2949,14 @@ workflow:
           - quick_intent
           - human_response
           variable: human_response
-      height: 95
+      height: 96
       id: course_retry_decision_parse
       position:
         x: 4868
-        y: 649
+        y: 652
       positionAbsolute:
         x: 4868
-        y: 649
+        y: 652
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -2862,11 +2964,11 @@ workflow:
       width: 242
     - data:
         code: "def main(final_text: str, valid: str, decision_json: str, candidate_course_ids_json:\
-          \ str, candidate_route_id: str, progress_action_json: str, handoff_required:\
+          \ str, expert_course_ids_json: str, candidate_route_id: str, progress_action_json: str, handoff_required:\
           \ str, parse_error: str) -> dict:\n    return {\n        \"text\": str(final_text\
           \ or \"\"),\n        \"valid\": str(valid or \"false\"),\n        \"decision_json\"\
           : str(decision_json or \"\"),\n        \"candidate_course_ids_json\": str(candidate_course_ids_json\
-          \ or \"[]\"),\n        \"candidate_route_id\": str(candidate_route_id or\
+          \ or \"[]\"),\n        \"expert_course_ids_json\": str(expert_course_ids_json or \"[]\"),\n        \"candidate_route_id\": str(candidate_route_id or\
           \ \"\"),\n        \"progress_action_json\": str(progress_action_json or\
           \ \"\"),\n        \"handoff_required\": str(handoff_required or \"false\"\
           ),\n        \"parse_error\": str(parse_error or \"\"),\n    }"
@@ -2874,6 +2976,9 @@ workflow:
         desc: 把修复后的 final_text 转为兼容 text 输出。
         outputs:
           candidate_course_ids_json:
+            children: null
+            type: string
+          expert_course_ids_json:
             children: null
             type: string
           candidate_route_id:
@@ -2919,6 +3024,10 @@ workflow:
           variable: candidate_course_ids_json
         - value_selector:
           - course_retry_decision_parse
+          - expert_course_ids_json
+          variable: expert_course_ids_json
+        - value_selector:
+          - course_retry_decision_parse
           - candidate_route_id
           variable: candidate_route_id
         - value_selector:
@@ -2933,14 +3042,14 @@ workflow:
           - course_retry_decision_parse
           - parse_error
           variable: parse_error
-      height: 95
+      height: 96
       id: course_retry_final_answer
       position:
         x: 5210
-        y: 649
+        y: 652
       positionAbsolute:
         x: 5210
-        y: 649
+        y: 652
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -2963,14 +3072,14 @@ workflow:
         selected: false
         title: 课程问题重试是否有效
         type: if-else
-      height: 167
+      height: 168
       id: course_retry_gate
       position:
         x: 5552
-        y: 613
+        y: 616
       positionAbsolute:
         x: 5552
-        y: 613
+        y: 616
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -2983,14 +3092,14 @@ workflow:
         title: 课程问题重试回答
         type: answer
         variables: []
-      height: 130
+      height: 131
       id: answer_course_retry
       position:
         x: 5914
-        y: 456
+        y: 457
       positionAbsolute:
         x: 5914
-        y: 456
+        y: 457
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -3016,10 +3125,21 @@ workflow:
 
             必须输出以下结构：
 
-            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","answer_plan":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
+            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"expert_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
 
 
             通用规则：
+
+            - 用户自身状态、意图、选择和学习进度的信息优先级固定为：当前用户本轮明确表达 > 最近未摘要历史中的明确确认 > 会话摘要中的已确认内容
+            > 路线进度 JSON > 用户画像 JSON。低优先级信息不得覆盖高优先级信息。
+
+            - 当较高优先级来源已经明确了学习路线、已学课程、当前阶段、学习基础、目标、限制条件或用户选择时，无论较低优先级来源为空、缺失、不同、滞后或尚未同步，都必须采用较高优先级信息完成判断和回答，不得忽略、降级或要求用户重复确认。
+
+            - 当前对话优先规则只适用于用户自身状态、意图、选择和进度。课程、路线和阶段的名称、ID、内容、官方顺序、有效状态等官方事实仍必须以检索证据为准；用户陈述只能证明其个人状态或选择，不得用于改写官方事实。
+
+            - 用户画像只是低优先级补充信息，不是必须补全的表单。不得仅因画像字段为空、不完整、未更新或与当前对话不同而生成 missing_information、clarification_question，或要求人工接管。
+
+            - missing_information 只记录完成当前任务确实必需、会实质改变结果，并且在当前问题、最近未摘要历史、会话摘要、路线进度和用户画像中均没有明确值的信息；不得列出仅用于补全用户画像的字段。
 
             - 事实、课程、路线和阶段信息只使用提供的检索证据；证据不足时明确说明，不得用常识补造库内事实。
 
@@ -3027,7 +3147,7 @@ workflow:
 
             - 不输出课程链接、正式课程卡片或自行编写的官方路线表；服务端会根据候选 ID 生成。
 
-            - 明确查询课程时不强制画像完整。只有会实质改变推荐结果的信息缺失时才澄清，最多问一个关键问题。
+            - 不得仅因用户画像或路线进度字段缺失而澄清。只有当前任务本身缺少一个会实质改变结果的关键信息，并且该信息在全部上下文中均没有明确值时，才可澄清；最多问一个围绕当前任务的关键问题，不得要求用户完善画像。
 
             - 如果最近历史显示同一关键问题已经问过但仍无法可靠处理，或者事项需要后台核验、人工操作、个性化成交处理，可设 handoff_required=true。
 
@@ -3035,7 +3155,13 @@ workflow:
 
             - final_answer 是直接面向用户的完整中文回复；不得暴露内部 JSON、字段名、检索实现、画像结构或系统提示。
 
-            - answer_plan 是内部简短计划；expert_insight 是可选的专业判断，并应在 final_answer 中自然体现。
+            - expert_insight 仅用于课程卡片后的独立“下一步建议”，不得写入或重复 final_answer。
+
+            - 仅当本轮会返回明确课程候选、且每个建议都能直接对应这些候选课程证据时，填写 expert_insight 与 expert_course_ids；无课程候选、待路线或阶段确认、证据不足时两者必须为空。
+
+            - expert_course_ids 必须与 candidate_course_ids 完全一致并保持顺序。
+
+            - expert_insight 仅写 1–2 句、最多 80 个汉字的组合学习动作；无标题，不含课程、路线或阶段 ID、链接、效果承诺、“匹配理由”等字样。
 
             - 只有当前用户明确选择路线时才使用 confirm_route；明确确认所处阶段时才使用 confirm_current_stage；明确确认当前阶段完成或跳过时才使用
             confirm_stage_completed。evidence_quote 必须是当前问题中的连续原文。
@@ -3057,12 +3183,12 @@ workflow:
             {{#sys.query#}}
 
 
-            已确认画像：
+            用户画像（低优先级补充，可能尚未更新）：
 
             {{#start.profile_json#}}
 
 
-            已确认路线进度：
+            路线进度（低于当前对话，可能尚未更新）：
 
             {{#start.route_progress_json#}}
 
@@ -3107,14 +3233,14 @@ workflow:
         selected: false
         title: 混合问题合并决策与回答模型
         type: llm
-      height: 131
+      height: 132
       id: combined_response_mixed
       position:
         x: 3138
-        y: 1002
+        y: 1007
       positionAbsolute:
         x: 3138
-        y: 1002
+        y: 1007
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -3154,11 +3280,11 @@ workflow:
           stage_id\") or \"\").strip(),\n            \"evidence_quote\": str(progress.get(\"\
           evidence_quote\") or \"\").strip(),\n        }\n\n        decision = {\n\
           \            \"intent\": intent,\n            \"candidate_course_ids\":\
-          \ to_string_list(value.get(\"candidate_course_ids\")),\n            \"candidate_route_id\"\
+          \ to_string_list(value.get(\"candidate_course_ids\")),\n            \"expert_course_ids\":\
+          \ to_string_list(value.get(\"expert_course_ids\")),\n            \"candidate_route_id\"\
           : str(value.get(\"candidate_route_id\") or \"\").strip(),\n            \"\
           missing_information\": to_string_list(value.get(\"missing_information\"\
           )),\n            \"clarification_question\": str(value.get(\"clarification_question\"\
-          ) or \"\").strip(),\n            \"answer_plan\": str(value.get(\"answer_plan\"\
           ) or \"\").strip(),\n            \"expert_insight\": str(value.get(\"expert_insight\"\
           ) or \"\").strip(),\n            \"progress_action\": progress_action,\n\
           \        }\n\n        handoff_raw = value.get(\"handoff_required\", False)\n\
@@ -3175,14 +3301,15 @@ workflow:
           \     \"text\": decision_json,\n            \"final_text\": answer,\n  \
           \          \"decision_json\": decision_json,\n            \"valid\": \"\
           true\",\n            \"candidate_course_ids_json\": json.dumps(decision[\"\
-          candidate_course_ids\"], ensure_ascii=False),\n            \"candidate_route_id\"\
+          candidate_course_ids\"], ensure_ascii=False),\n            \"expert_course_ids_json\":\
+          \ json.dumps(decision[\"expert_course_ids\"], ensure_ascii=False),\n            \"candidate_route_id\"\
           : decision[\"candidate_route_id\"],\n            \"progress_action_json\"\
           : json.dumps(progress_action, ensure_ascii=False),\n            \"handoff_required\"\
           : \"true\" if handoff else \"false\",\n            \"parse_error\": \"\"\
           ,\n        }\n    except Exception as exc:\n        return {\n         \
           \   \"text\": \"\",\n            \"final_text\": \"\",\n            \"decision_json\"\
           : \"\",\n            \"valid\": \"false\",\n            \"candidate_course_ids_json\"\
-          : \"[]\",\n            \"candidate_route_id\": \"\",\n            \"progress_action_json\"\
+          : \"[]\",\n            \"expert_course_ids_json\": \"[]\",\n            \"candidate_route_id\": \"\",\n            \"progress_action_json\"\
           : '{\"type\":\"none\",\"route_id\":\"\",\"stage_id\":\"\",\"evidence_quote\"\
           :\"\"}',\n            \"handoff_required\": \"false\",\n            \"parse_error\"\
           : str(exc)[:500],\n        }"
@@ -3190,6 +3317,9 @@ workflow:
         desc: 解析合并 JSON；text 输出保持原推荐决策 JSON 字段与语义，final_text 供最终回答节点使用。
         outputs:
           candidate_course_ids_json:
+            children: null
+            type: string
+          expert_course_ids_json:
             children: null
             type: string
           candidate_route_id:
@@ -3228,14 +3358,14 @@ workflow:
           - quick_intent
           - human_response
           variable: human_response
-      height: 111
+      height: 112
       id: recommendation_decision_mixed
       position:
         x: 3480
-        y: 1012
+        y: 1017
       positionAbsolute:
         x: 3480
-        y: 1012
+        y: 1017
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -3243,11 +3373,11 @@ workflow:
       width: 242
     - data:
         code: "def main(final_text: str, valid: str, decision_json: str, candidate_course_ids_json:\
-          \ str, candidate_route_id: str, progress_action_json: str, handoff_required:\
+          \ str, expert_course_ids_json: str, candidate_route_id: str, progress_action_json: str, handoff_required:\
           \ str, parse_error: str) -> dict:\n    return {\n        \"text\": str(final_text\
           \ or \"\"),\n        \"valid\": str(valid or \"false\"),\n        \"decision_json\"\
           : str(decision_json or \"\"),\n        \"candidate_course_ids_json\": str(candidate_course_ids_json\
-          \ or \"[]\"),\n        \"candidate_route_id\": str(candidate_route_id or\
+          \ or \"[]\"),\n        \"expert_course_ids_json\": str(expert_course_ids_json or \"[]\"),\n        \"candidate_route_id\": str(candidate_route_id or\
           \ \"\"),\n        \"progress_action_json\": str(progress_action_json or\
           \ \"\"),\n        \"handoff_required\": str(handoff_required or \"false\"\
           ),\n        \"parse_error\": str(parse_error or \"\"),\n    }"
@@ -3255,6 +3385,9 @@ workflow:
         desc: text 输出保持原最终回答节点引用兼容；同时透传结构化决策和解析状态。
         outputs:
           candidate_course_ids_json:
+            children: null
+            type: string
+          expert_course_ids_json:
             children: null
             type: string
           candidate_route_id:
@@ -3300,6 +3433,10 @@ workflow:
           variable: candidate_course_ids_json
         - value_selector:
           - recommendation_decision_mixed
+          - expert_course_ids_json
+          variable: expert_course_ids_json
+        - value_selector:
+          - recommendation_decision_mixed
           - candidate_route_id
           variable: candidate_route_id
         - value_selector:
@@ -3314,14 +3451,14 @@ workflow:
           - recommendation_decision_mixed
           - parse_error
           variable: parse_error
-      height: 95
+      height: 96
       id: final_answer_mixed
       position:
         x: 3822
-        y: 1020
+        y: 1025
       positionAbsolute:
         x: 3822
-        y: 1020
+        y: 1025
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -3344,14 +3481,14 @@ workflow:
         selected: false
         title: 混合问题结果是否有效
         type: if-else
-      height: 167
+      height: 168
       id: mixed_parse_gate
       position:
         x: 4164
-        y: 984
+        y: 989
       positionAbsolute:
         x: 4164
-        y: 984
+        y: 989
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -3364,14 +3501,14 @@ workflow:
         title: 混合问题回答
         type: answer
         variables: []
-      height: 130
+      height: 131
       id: answer_mixed
       position:
         x: 4526
-        y: 842
+        y: 846
       positionAbsolute:
         x: 4526
-        y: 842
+        y: 846
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -3397,10 +3534,21 @@ workflow:
 
             必须输出以下结构：
 
-            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","answer_plan":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
+            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"expert_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
 
 
             通用规则：
+
+            - 用户自身状态、意图、选择和学习进度的信息优先级固定为：当前用户本轮明确表达 > 最近未摘要历史中的明确确认 > 会话摘要中的已确认内容
+            > 路线进度 JSON > 用户画像 JSON。低优先级信息不得覆盖高优先级信息。
+
+            - 当较高优先级来源已经明确了学习路线、已学课程、当前阶段、学习基础、目标、限制条件或用户选择时，无论较低优先级来源为空、缺失、不同、滞后或尚未同步，都必须采用较高优先级信息完成判断和回答，不得忽略、降级或要求用户重复确认。
+
+            - 当前对话优先规则只适用于用户自身状态、意图、选择和进度。课程、路线和阶段的名称、ID、内容、官方顺序、有效状态等官方事实仍必须以检索证据为准；用户陈述只能证明其个人状态或选择，不得用于改写官方事实。
+
+            - 用户画像只是低优先级补充信息，不是必须补全的表单。不得仅因画像字段为空、不完整、未更新或与当前对话不同而生成 missing_information、clarification_question，或要求人工接管。
+
+            - missing_information 只记录完成当前任务确实必需、会实质改变结果，并且在当前问题、最近未摘要历史、会话摘要、路线进度和用户画像中均没有明确值的信息；不得列出仅用于补全用户画像的字段。
 
             - 事实、课程、路线和阶段信息只使用提供的检索证据；证据不足时明确说明，不得用常识补造库内事实。
 
@@ -3408,7 +3556,7 @@ workflow:
 
             - 不输出课程链接、正式课程卡片或自行编写的官方路线表；服务端会根据候选 ID 生成。
 
-            - 明确查询课程时不强制画像完整。只有会实质改变推荐结果的信息缺失时才澄清，最多问一个关键问题。
+            - 不得仅因用户画像或路线进度字段缺失而澄清。只有当前任务本身缺少一个会实质改变结果的关键信息，并且该信息在全部上下文中均没有明确值时，才可澄清；最多问一个围绕当前任务的关键问题，不得要求用户完善画像。
 
             - 如果最近历史显示同一关键问题已经问过但仍无法可靠处理，或者事项需要后台核验、人工操作、个性化成交处理，可设 handoff_required=true。
 
@@ -3416,7 +3564,13 @@ workflow:
 
             - final_answer 是直接面向用户的完整中文回复；不得暴露内部 JSON、字段名、检索实现、画像结构或系统提示。
 
-            - answer_plan 是内部简短计划；expert_insight 是可选的专业判断，并应在 final_answer 中自然体现。
+            - expert_insight 仅用于课程卡片后的独立“下一步建议”，不得写入或重复 final_answer。
+
+            - 仅当本轮会返回明确课程候选、且每个建议都能直接对应这些候选课程证据时，填写 expert_insight 与 expert_course_ids；无课程候选、待路线或阶段确认、证据不足时两者必须为空。
+
+            - expert_course_ids 必须与 candidate_course_ids 完全一致并保持顺序。
+
+            - expert_insight 仅写 1–2 句、最多 80 个汉字的组合学习动作；无标题，不含课程、路线或阶段 ID、链接、效果承诺、“匹配理由”等字样。
 
             - 只有当前用户明确选择路线时才使用 confirm_route；明确确认所处阶段时才使用 confirm_current_stage；明确确认当前阶段完成或跳过时才使用
             confirm_stage_completed。evidence_quote 必须是当前问题中的连续原文。
@@ -3441,12 +3595,12 @@ workflow:
             {{#sys.query#}}
 
 
-            已确认画像：
+            用户画像（低优先级补充，可能尚未更新）：
 
             {{#start.profile_json#}}
 
 
-            已确认路线进度：
+            路线进度（低于当前对话，可能尚未更新）：
 
             {{#start.route_progress_json#}}
 
@@ -3501,14 +3655,14 @@ workflow:
         selected: false
         title: 混合问题格式修复重试
         type: llm
-      height: 131
+      height: 132
       id: mixed_format_retry
       position:
         x: 4526
-        y: 1052
+        y: 1057
       positionAbsolute:
         x: 4526
-        y: 1052
+        y: 1057
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -3548,11 +3702,11 @@ workflow:
           stage_id\") or \"\").strip(),\n            \"evidence_quote\": str(progress.get(\"\
           evidence_quote\") or \"\").strip(),\n        }\n\n        decision = {\n\
           \            \"intent\": intent,\n            \"candidate_course_ids\":\
-          \ to_string_list(value.get(\"candidate_course_ids\")),\n            \"candidate_route_id\"\
+          \ to_string_list(value.get(\"candidate_course_ids\")),\n            \"expert_course_ids\":\
+          \ to_string_list(value.get(\"expert_course_ids\")),\n            \"candidate_route_id\"\
           : str(value.get(\"candidate_route_id\") or \"\").strip(),\n            \"\
           missing_information\": to_string_list(value.get(\"missing_information\"\
           )),\n            \"clarification_question\": str(value.get(\"clarification_question\"\
-          ) or \"\").strip(),\n            \"answer_plan\": str(value.get(\"answer_plan\"\
           ) or \"\").strip(),\n            \"expert_insight\": str(value.get(\"expert_insight\"\
           ) or \"\").strip(),\n            \"progress_action\": progress_action,\n\
           \        }\n\n        handoff_raw = value.get(\"handoff_required\", False)\n\
@@ -3569,14 +3723,15 @@ workflow:
           \     \"text\": decision_json,\n            \"final_text\": answer,\n  \
           \          \"decision_json\": decision_json,\n            \"valid\": \"\
           true\",\n            \"candidate_course_ids_json\": json.dumps(decision[\"\
-          candidate_course_ids\"], ensure_ascii=False),\n            \"candidate_route_id\"\
+          candidate_course_ids\"], ensure_ascii=False),\n            \"expert_course_ids_json\":\
+          \ json.dumps(decision[\"expert_course_ids\"], ensure_ascii=False),\n            \"candidate_route_id\"\
           : decision[\"candidate_route_id\"],\n            \"progress_action_json\"\
           : json.dumps(progress_action, ensure_ascii=False),\n            \"handoff_required\"\
           : \"true\" if handoff else \"false\",\n            \"parse_error\": \"\"\
           ,\n        }\n    except Exception as exc:\n        return {\n         \
           \   \"text\": \"\",\n            \"final_text\": \"\",\n            \"decision_json\"\
           : \"\",\n            \"valid\": \"false\",\n            \"candidate_course_ids_json\"\
-          : \"[]\",\n            \"candidate_route_id\": \"\",\n            \"progress_action_json\"\
+          : \"[]\",\n            \"expert_course_ids_json\": \"[]\",\n            \"candidate_route_id\": \"\",\n            \"progress_action_json\"\
           : '{\"type\":\"none\",\"route_id\":\"\",\"stage_id\":\"\",\"evidence_quote\"\
           :\"\"}',\n            \"handoff_required\": \"false\",\n            \"parse_error\"\
           : str(exc)[:500],\n        }"
@@ -3584,6 +3739,9 @@ workflow:
         desc: 解析格式修复结果；text 仍为旧决策 JSON。
         outputs:
           candidate_course_ids_json:
+            children: null
+            type: string
+          expert_course_ids_json:
             children: null
             type: string
           candidate_route_id:
@@ -3622,14 +3780,14 @@ workflow:
           - quick_intent
           - human_response
           variable: human_response
-      height: 95
+      height: 96
       id: mixed_retry_decision_parse
       position:
         x: 4868
-        y: 1070
+        y: 1075
       positionAbsolute:
         x: 4868
-        y: 1070
+        y: 1075
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -3637,11 +3795,11 @@ workflow:
       width: 242
     - data:
         code: "def main(final_text: str, valid: str, decision_json: str, candidate_course_ids_json:\
-          \ str, candidate_route_id: str, progress_action_json: str, handoff_required:\
+          \ str, expert_course_ids_json: str, candidate_route_id: str, progress_action_json: str, handoff_required:\
           \ str, parse_error: str) -> dict:\n    return {\n        \"text\": str(final_text\
           \ or \"\"),\n        \"valid\": str(valid or \"false\"),\n        \"decision_json\"\
           : str(decision_json or \"\"),\n        \"candidate_course_ids_json\": str(candidate_course_ids_json\
-          \ or \"[]\"),\n        \"candidate_route_id\": str(candidate_route_id or\
+          \ or \"[]\"),\n        \"expert_course_ids_json\": str(expert_course_ids_json or \"[]\"),\n        \"candidate_route_id\": str(candidate_route_id or\
           \ \"\"),\n        \"progress_action_json\": str(progress_action_json or\
           \ \"\"),\n        \"handoff_required\": str(handoff_required or \"false\"\
           ),\n        \"parse_error\": str(parse_error or \"\"),\n    }"
@@ -3649,6 +3807,9 @@ workflow:
         desc: 把修复后的 final_text 转为兼容 text 输出。
         outputs:
           candidate_course_ids_json:
+            children: null
+            type: string
+          expert_course_ids_json:
             children: null
             type: string
           candidate_route_id:
@@ -3694,6 +3855,10 @@ workflow:
           variable: candidate_course_ids_json
         - value_selector:
           - mixed_retry_decision_parse
+          - expert_course_ids_json
+          variable: expert_course_ids_json
+        - value_selector:
+          - mixed_retry_decision_parse
           - candidate_route_id
           variable: candidate_route_id
         - value_selector:
@@ -3708,14 +3873,14 @@ workflow:
           - mixed_retry_decision_parse
           - parse_error
           variable: parse_error
-      height: 95
+      height: 96
       id: mixed_retry_final_answer
       position:
         x: 5210
-        y: 1070
+        y: 1075
       positionAbsolute:
         x: 5210
-        y: 1070
+        y: 1075
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -3738,14 +3903,14 @@ workflow:
         selected: false
         title: 混合问题重试是否有效
         type: if-else
-      height: 167
+      height: 168
       id: mixed_retry_gate
       position:
         x: 5552
-        y: 1034
+        y: 1039
       positionAbsolute:
         x: 5552
-        y: 1034
+        y: 1039
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -3758,14 +3923,14 @@ workflow:
         title: 混合问题重试回答
         type: answer
         variables: []
-      height: 130
+      height: 131
       id: answer_mixed_retry
       position:
         x: 5914
-        y: 1069
+        y: 1074
       positionAbsolute:
         x: 5914
-        y: 1069
+        y: 1074
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -3778,21 +3943,21 @@ workflow:
         title: 统一人工兜底
         type: answer
         variables: []
-      height: 162
+      height: 163
       id: answer_manual_fallback
       position:
         x: 5914
-        y: 666
+        y: 668
       positionAbsolute:
         x: 5914
-        y: 666
+        y: 668
       selected: false
       sourcePosition: right
       targetPosition: left
       type: custom
       width: 242
     viewport:
-      x: -2542.8999999999987
-      y: 105.80000000000003
-      zoom: 0.7
+      x: 26.553465559652523
+      y: 289.890179008632
+      zoom: 0.2943137453388
   rag_pipeline_variables: []

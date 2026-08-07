@@ -17,6 +17,7 @@ import httpx
 from docx import Document
 from openpyxl import Workbook, load_workbook
 
+from ai_management.acceptance_budget import AcceptanceBudget
 from ai_management.cleaning import dify_document_name
 from ai_management.config import get_settings
 from knowledge_cleaner.dify import DifyKnowledgeClient
@@ -50,6 +51,7 @@ REMOTE_PROVENANCE_FIELDS = {
     # identities, build IDs and UI-test markers remain local-only.
     "cleaning_strategy",
     "cleaning_spec_revision",
+    "content_format",
 }
 REMOTE_ALLOWED_FIELDS = {
     "personal_business_consultation": {
@@ -250,9 +252,16 @@ def _remote_metadata(document: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _expected_remote_name(source_sha256: str, sequence: int) -> str:
-    """The public Dify name is content-addressed, never based on a filename."""
-    return dify_document_name("", source_sha256, sequence)
+def _expected_remote_name(
+    original_filename: str, source_sha256: str, sequence: int, *, split: bool = False
+) -> str:
+    """The public Dify name keeps the source stem and normalizes to Markdown."""
+    return dify_document_name(
+        original_filename,
+        source_sha256,
+        sequence,
+        split=split,
+    )
 
 
 def _leak_fingerprints(value: Any, forbidden: list[str]) -> list[str]:
@@ -274,6 +283,11 @@ def _storage_sanitization_failures(
         failures.append("STORAGE_WHITESPACE_NOT_NORMALIZED")
     if "\n\n\n" in markdown:
         failures.append("STORAGE_NEWLINE_NOT_NORMALIZED")
+    if re.search(
+        r"(?m)^\s*\|.*\|\s*$\n\s*\|\s*:?-{1,}:?\s*(?:\|\s*:?-{1,}:?\s*)+\|?",
+        markdown,
+    ):
+        failures.append("STORAGE_MARKDOWN_TABLE_RETAINED")
     if require_toc_removed and ("# 目录" in markdown or "........" in markdown):
         failures.append("TOC_RETAINED")
     return failures
@@ -624,6 +638,8 @@ class AcceptanceRunner:
     ) -> None:
         settings = get_settings()
         self.settings = settings
+        self.budget = AcceptanceBudget.from_settings(settings)
+        self._budget_reserved_task_ids: set[str] = set()
         self.input_root = input_root
         self.manifest_path = manifest_path
         self.client = httpx.Client(
@@ -657,6 +673,11 @@ class AcceptanceRunner:
             "cases": [],
             "chat_checks": [],
             "model_batch_approvals": 0,
+            "acceptance_budget": {
+                "max_yuan": f"{self.budget.max_yuan:.2f}",
+                "spent_yuan": "0.00",
+                "remaining_yuan": f"{self.budget.max_yuan:.2f}",
+            },
         }
         self._manifest: dict[str, Any] = {
             "schema_version": 3,
@@ -865,6 +886,15 @@ class AcceptanceRunner:
             fingerprint = str(task.get("candidate_fingerprint") or "")
             if not task_id or not fingerprint:
                 raise RuntimeError("model batch approval payload is incomplete")
+            if task_id not in self._budget_reserved_task_ids:
+                estimated = task.get("estimated_cost_high") or task.get("estimated_cost") or 0
+                self.budget.reserve(estimated)
+                self._budget_reserved_task_ids.add(task_id)
+                self.report["acceptance_budget"] = {
+                    "max_yuan": f"{self.budget.max_yuan:.2f}",
+                    "spent_yuan": f"{self.budget.spent_yuan:.2f}",
+                    "remaining_yuan": f"{self.budget.remaining_yuan:.2f}",
+                }
             response = self.client.post(
                 f"/internal/v1/admin/knowledge-bases/{kb}/upload-batches/{batch_id}/"
                 f"model-tasks/{task_id}/approve",
@@ -1178,8 +1208,10 @@ class AcceptanceRunner:
                     )
                     is_shard = bool(item.get("shard_id"))
                     expected_name = _expected_remote_name(
+                        str(file_payload.get("original_filename") or ""),
                         result["source_sha256"],
                         int(item.get("sequence") or 0),
+                        split=len(details) > 1,
                     )
                     allowed = REMOTE_ALLOWED_FIELDS.get(spec["strategy"])
                     if allowed is not None:
@@ -1188,7 +1220,15 @@ class AcceptanceRunner:
                         "name_matches": (
                             bool(
                                 re.fullmatch(
-                                    r"commercial-shard-[a-f0-9]{16}\.md",
+                                    re.escape(
+                                        _expected_remote_name(
+                                            str(file_payload.get("original_filename") or ""),
+                                            result["source_sha256"],
+                                            1,
+                                            split=True,
+                                        ).rsplit("__", 1)[0]
+                                    )
+                                    + r"__\d{3}\.md",
                                     remote_name,
                                 )
                             )

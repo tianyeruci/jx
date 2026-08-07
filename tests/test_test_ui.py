@@ -80,6 +80,47 @@ def test_conversation_id_from_sse_result_prefers_terminal_then_started_event():
     assert test_ui.conversation_id_from_sse_result({}) is None
 
 
+def test_consume_sse_renders_progress_and_final_answers_separately():
+    class Response:
+        def iter_lines(self):
+            return iter(
+                [
+                    "event: status",
+                    'data: {"code":"progress_answer_started"}',
+                    "",
+                    "event: answer_delta",
+                    'data: {"delta":"即时提示"}',
+                    "",
+                    "event: status",
+                    'data: {"code":"final_answer_started"}',
+                    "",
+                    "event: answer_delta",
+                    'data: {"delta":"最终答案"}',
+                    "",
+                ]
+            )
+
+    class Placeholder:
+        def __init__(self):
+            self.values = []
+
+        def markdown(self, value):
+            self.values.append(value)
+
+    final_placeholder = Placeholder()
+    progress_placeholder = Placeholder()
+    result = test_ui.consume_sse(
+        Response(),
+        final_placeholder,
+        progress_placeholder=progress_placeholder,
+    )
+
+    assert result["progress_answer"] == "即时提示"
+    assert result["answer"] == "最终答案"
+    assert progress_placeholder.values == ["即时提示"]
+    assert final_placeholder.values == ["最终答案"]
+
+
 def test_cleaning_batch_view_state_is_strictly_scoped_to_knowledge_base_and_batch():
     state: dict[str, object] = {}
     first = test_ui.set_cleaning_batch_view_state(

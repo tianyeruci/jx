@@ -171,7 +171,7 @@ def test_business_chat_stream_and_history(service_db, monkeypatch):
         }
         yield {
             "event": "message",
-            "answer": "这是测试回答。",
+            "answer": "这是测试回答，路线ID：route_ai_basic，阶段ID：stage_1，课程ID：course_ai_001。（内部标识已隐藏）",
             "task_id": "task-001",
             "message_id": "dify-message-001",
             "conversation_id": "dify-conversation-001",
@@ -182,7 +182,16 @@ def test_business_chat_stream_and_history(service_db, monkeypatch):
             "conversation_id": "dify-conversation-001",
             "metadata": {
                 "usage": {"total_tokens": 42},
-                "retriever_resources": [{"document_name": "测试资料.md"}],
+                "retriever_resources": [
+                    {
+                        "document_name": "测试资料.md",
+                        "metadata": {
+                            "course_id": "course_ai_001",
+                            "route_id": "route_ai_basic",
+                            "stage_id": "stage_1",
+                        },
+                    }
+                ],
             },
         }
 
@@ -197,7 +206,15 @@ def test_business_chat_stream_and_history(service_db, monkeypatch):
             body = "".join(response.iter_text())
         assert response.status_code == 200
         assert "event: answer_delta" in body
-        assert "这是测试回答" in body
+        assert "这是" in body
+        assert "测试回答" in body
+        assert "路线ID" not in body
+        assert "阶段ID" not in body
+        assert "课程ID" not in body
+        assert "route_ai_basic" not in body
+        assert "stage_1" not in body
+        assert "course_ai_001" not in body
+        assert "内部标识已隐藏" not in body
         assert "event: message_end" in body
 
         conversations = client.get(
@@ -212,10 +229,209 @@ def test_business_chat_stream_and_history(service_db, monkeypatch):
         ).json()
         assert [item["role"] for item in messages["items"]] == ["user", "assistant"]
         assert messages["items"][1]["content"] == "这是测试回答。"
+        assert messages["items"][1]["retriever_resources"][0]["metadata"] == {
+            "course_id": "",
+            "route_id": "",
+            "stage_id": "",
+        }
     with service_db() as session:
         profile = session.get(BusinessProfile, user_hash("user-001"))
         assert profile is not None
         assert profile.user_id == "user-001"
+
+
+def test_business_chat_stream_separates_progress_answer_from_final_history(
+    service_db, monkeypatch
+):
+    from ai_management.dify import DifyAppClient
+
+    progress_text = "正在结合你的情况进行分析，请稍候……"
+    final_text = "最终答案第一段，这里是最终答案的第二段内容，用于验证分段流式输出。"
+
+    def fake_stream(self, **kwargs):
+        yield {"event": "workflow_started", "task_id": "task-split-001"}
+        yield {
+            "event": "node_started",
+            "data": {"node_id": "progress_answer"},
+        }
+        yield {
+            "event": "node_finished",
+            "data": {
+                "node_id": "progress_answer",
+                "outputs": {"answer": progress_text},
+            },
+        }
+        yield {
+            "event": "node_started",
+            "data": {"node_id": "answer_general"},
+        }
+        yield {
+            "event": "message",
+            "answer": final_text[:12],
+            "task_id": "task-split-001",
+            "message_id": "dify-message-split-001",
+            "conversation_id": "dify-conversation-split-001",
+        }
+        yield {
+            "event": "message",
+            "answer": final_text[12:],
+            "task_id": "task-split-001",
+            "message_id": "dify-message-split-001",
+            "conversation_id": "dify-conversation-split-001",
+        }
+        yield {
+            "event": "message_end",
+            "message_id": "dify-message-split-001",
+            "conversation_id": "dify-conversation-split-001",
+            "metadata": {"usage": {"total_tokens": 42}},
+        }
+
+    monkeypatch.setattr(DifyAppClient, "stream_chat", fake_stream)
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/internal/v1/business/chat",
+            headers=HEADERS,
+            json={"query": "请分段回答测试问题"},
+        ) as response:
+            body = "".join(response.iter_text())
+
+        events = []
+        for block in body.split("\n\n"):
+            lines = block.splitlines()
+            event_name = next(
+                (line[6:].strip() for line in lines if line.startswith("event:")),
+                None,
+            )
+            data_line = next(
+                (line[5:].strip() for line in lines if line.startswith("data:")),
+                None,
+            )
+            if event_name and data_line:
+                events.append((event_name, json.loads(data_line)))
+
+        status_codes = [
+            payload.get("code")
+            for name, payload in events
+            if name == "status" and isinstance(payload, dict)
+        ]
+        assert status_codes.index("progress_answer_started") < status_codes.index(
+            "final_answer_started"
+        )
+        answer_deltas = [
+            payload["delta"]
+            for name, payload in events
+            if name == "answer_delta"
+        ]
+        assert "".join(answer_deltas) == progress_text + final_text
+        progress_status_index = next(
+            index
+            for index, (name, payload) in enumerate(events)
+            if name == "status" and payload.get("code") == "progress_answer_started"
+        )
+        final_status_index = next(
+            index
+            for index, (name, payload) in enumerate(events)
+            if name == "status" and payload.get("code") == "final_answer_started"
+        )
+        first_delta_index = next(
+            index for index, (name, _payload) in enumerate(events) if name == "answer_delta"
+        )
+        final_delta_index = next(
+            index
+            for index, (name, payload) in enumerate(events)
+            if name == "answer_delta" and payload.get("delta") in final_text
+        )
+        assert progress_status_index < first_delta_index < final_status_index < final_delta_index
+
+        conversation_id = client.get(
+            "/internal/v1/business/conversations", headers=HEADERS
+        ).json()["items"][0]["conversation_id"]
+        messages = client.get(
+            f"/internal/v1/business/conversations/{conversation_id}/messages",
+            headers=HEADERS,
+        ).json()
+        assert messages["items"][1]["content"] == final_text
+        assert progress_text not in messages["items"][1]["content"]
+
+
+def test_business_chat_renders_catalog_names_in_stream_and_history(service_db, monkeypatch):
+    from ai_management.dify import DifyAppClient
+
+    with service_db() as session:
+        _seed_catalog(session)
+
+    def fake_stream(self, **kwargs):
+        yield {"event": "workflow_started", "task_id": "task-catalog-001"}
+        yield {
+            "event": "workflow_node_finished",
+            "data": {
+                "outputs": {
+                    "recommendation_decision": json.dumps(
+                        {
+                            "intent": "general_qa",
+                            "candidate_course_ids": [],
+                            "candidate_route_id": "",
+                        }
+                    )
+                }
+            },
+        }
+        yield {
+            "event": "message",
+            "answer": (
+                "路线ID：route_1，阶段ID：stage_1，课程ID：course_1。"
+                "focus_directions 不应展示。"
+            ),
+            "task_id": "task-catalog-001",
+            "message_id": "dify-message-catalog-001",
+            "conversation_id": "dify-conversation-catalog-001",
+        }
+        yield {
+            "event": "message_end",
+            "message_id": "dify-message-catalog-001",
+            "conversation_id": "dify-conversation-catalog-001",
+            "metadata": {
+                "retriever_resources": [
+                    {
+                        "document_name": "课程 course_1 资料",
+                        "metadata": {"course_id": "course_1"},
+                    }
+                ]
+            },
+        }
+
+    monkeypatch.setattr(DifyAppClient, "stream_chat", fake_stream)
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/internal/v1/business/chat",
+            headers=HEADERS,
+            json={"query": "请介绍课程"},
+        ) as response:
+            body = "".join(response.iter_text())
+
+        assert response.status_code == 200
+        assert "测试路线" in body
+        assert "入门" in body
+        assert "第一阶段课程" in body
+        assert "focus_directions" not in body
+        assert "route_1" not in body
+        assert "stage_1" not in body
+        assert "course_1" not in body
+        assert "内部标识已隐藏" not in body
+
+        conversation_id = client.get(
+            "/internal/v1/business/conversations", headers=HEADERS
+        ).json()["items"][0]["conversation_id"]
+        messages = client.get(
+            f"/internal/v1/business/conversations/{conversation_id}/messages",
+            headers=HEADERS,
+        ).json()
+        assert "第一阶段课程" in messages["items"][1]["content"]
+        assert messages["items"][1]["retriever_resources"][0]["metadata"] == {
+            "course_id": ""
+        }
 
 
 def test_history_course_cards_are_re_signed_from_current_catalog(service_db):
@@ -1181,12 +1397,24 @@ def test_admin_document_list_uses_local_cleaning_source_fallback(service_db, mon
 
 def test_admin_knowledge_item_endpoints(service_db, monkeypatch):
     from ai_management.tasks import process_cleaning_document
+    from ai_management.workers.tasks import model_cleaning
 
     queued: list[tuple[str, str]] = []
     monkeypatch.setattr(
         process_cleaning_document,
         "apply_async",
         lambda args, queue: queued.append((args[0], queue)),
+    )
+    shard_queued: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        model_cleaning,
+        "_plan_post_publication",
+        lambda _session, _batch_id: ["review-shard-1"],
+    )
+    monkeypatch.setattr(
+        model_cleaning.publish_dify_shard,
+        "apply_async",
+        lambda args, queue: shard_queued.append((args[0], queue)),
     )
     with service_db() as session:
         batch = CleaningBatch(
@@ -1290,14 +1518,97 @@ def test_admin_knowledge_item_endpoints(service_db, monkeypatch):
     assert retry_review_required.status_code == 409
     assert retry_review_required.json()["message"] == "只有失败条目可以重试；待复核条目请先执行人工复核"
     assert review.status_code == 200
-    assert review.json()["status"] == "pending"
+    assert review.json()["status"] == "shard_pending"
     assert review.json()["review_revision"] == 1
-    assert queued == [(item_id, "ai_cleaning")]
+    assert queued == []
+    assert shard_queued == [("review-shard-1", "ai_publication")]
     with service_db() as session:
         refreshed = session.get(CleaningDocument, item_id)
         assert refreshed is not None
         assert refreshed.cleaned_markdown.endswith("修订后的正文")
         assert refreshed.metadata_json["topic"] == "AI与智能体"
+
+
+def test_failed_item_export_is_paged_and_keeps_failure_reason(service_db):
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="completed",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = CleaningFile(
+            batch_id=batch.id,
+            original_filename="批量帖子.md",
+            storage_filename="failed.md",
+            extension=".md",
+            source_sha256="2" * 64,
+            size_bytes=100,
+            status="mixed",
+            outcome="mixed",
+            stage="failed",
+        )
+        session.add(file_row)
+        session.flush()
+        documents = [
+            CleaningDocument(
+                file_id=file_row.id,
+                sequence=index,
+                title=f"失败条目{index}",
+                dify_document_name=f"failed-{index}.md",
+                document_key=f"failed-{index}",
+                status="failed",
+                stage="failed",
+                error_code=code,
+                error_message=reason,
+                retryable=True,
+                audit_json={"model_attempts": index},
+            )
+            for index, (code, reason) in enumerate(
+                [("MODEL_CONTRACT_INVALID", "契约字段不合法"), ("MODEL_NO_RESPONSE", "模型未返回")],
+                start=1,
+            )
+        ]
+        session.add_all(documents)
+        session.commit()
+        batch_id = batch.id
+
+    admin_headers = {
+        "X-Internal-Token": "test-internal-token",
+        "X-Admin-Token": "test-admin-token",
+    }
+    path = (
+        f"/internal/v1/admin/knowledge-bases/general/upload-batches/{batch_id}"
+        "/failed-items"
+    )
+    with TestClient(app) as client:
+        first = client.get(path, headers=admin_headers, params={"limit": 1})
+        second = client.get(
+            path,
+            headers=admin_headers,
+            params={"limit": 1, "cursor": first.json()["next_cursor"]},
+        )
+        filtered = client.get(
+            path,
+            headers=admin_headers,
+            params={"error_code": "MODEL_NO_RESPONSE"},
+        )
+        exported = client.get(
+            path,
+            headers=admin_headers,
+            params={"format": "csv"},
+        )
+
+    assert first.status_code == 200
+    assert first.json()["total"] == 2
+    assert first.json()["items"][0]["filename"] == "批量帖子.md"
+    assert first.json()["items"][0]["error_reason"] == "契约字段不合法"
+    assert second.json()["items"][0]["error_code"] == "MODEL_NO_RESPONSE"
+    assert filtered.json()["total"] == 1
+    assert "MODEL_CONTRACT_INVALID" in exported.text
+    assert "批量帖子.md" in exported.text
 
 
 def test_review_required_file_retry_is_rejected(service_db):
@@ -1549,7 +1860,7 @@ def test_cleaning_worker_enqueues_pending_items(service_db, monkeypatch, tmp_pat
 
     assert process_cleaning_file.run(file_id) is True
     assert len(queued) == 1
-    assert queued[0][1] == "ai_cleaning"
+    assert queued[0][1] == "ai_publication"
 
     with service_db() as session:
         items = list(
@@ -1560,6 +1871,55 @@ def test_cleaning_worker_enqueues_pending_items(service_db, monkeypatch, tmp_pat
         assert len(items) == 1
         assert items[0].status == "pending"
         assert items[0].chunking_json["parent_separator"] == "<<<DIFY_PARENT>>>"
+
+
+def test_empty_content_strategy_is_failed_without_retry(
+    service_db, monkeypatch, tmp_path
+):
+    from ai_management.tasks import process_cleaning_file
+
+    monkeypatch.setattr(get_settings(), "upload_root", tmp_path)
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="processing",
+            build_version="test-build",
+        )
+        session.add(batch)
+        session.flush()
+        storage_dir = tmp_path / batch.id
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        file_name = "empty.md"
+        source = "   \n"
+        (storage_dir / file_name).write_text(source, encoding="utf-8")
+        row = CleaningFile(
+            batch_id=batch.id,
+            original_filename="empty.md",
+            storage_filename=file_name,
+            extension=".md",
+            source_sha256=hashlib.sha256(source.encode("utf-8")).hexdigest(),
+            size_bytes=(storage_dir / file_name).stat().st_size,
+            status="pending",
+            stage="upload",
+        )
+        session.add(row)
+        session.commit()
+        file_id = row.id
+
+    assert process_cleaning_file.run(file_id) is True
+
+    with service_db() as session:
+        batch = session.get(CleaningBatch, batch.id)
+        row = session.get(CleaningFile, file_id)
+        assert batch is not None
+        assert row is not None
+        assert row.status == "failed"
+        assert row.outcome == "failed"
+        assert row.error_code == "CONTENT_EMPTY_AFTER_CLEANING"
+        assert row.attempts == 1
+        assert batch.status == "completed"
 
 
 def test_book_scope_is_trusted_and_enqueued_without_model(
@@ -1634,8 +1994,6 @@ def test_dsl_and_gold_data_are_complete():
         "moments_advisor.yml",
         "writing_advisor.yml",
         "summary_profile.yml",
-        # 独立 PDF→Markdown Code 节点验证 Workflow，不绑定业务应用。
-        "pdf_to_markdown_code_test.yml",
     }
     assert expected_dsl.issubset({file.name for file in files})
     for file in files:
@@ -1676,5 +2034,6 @@ def test_test_page_exposes_all_documented_management_entry_points():
         "/upload-batches",
         "/review-decisions",
         "/internal/v1/admin/logs",
+        "/internal/v1/admin/pdf-conversion-issues",
     )
     assert all(fragment in source for fragment in required_path_fragments)

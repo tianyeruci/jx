@@ -220,6 +220,8 @@ event: status
 data: {"schema_version":"2.0","request_id":"req-001","sequence":3,"code":"task_started","message":"已开始生成","task_id":"task_001"}
 ```
 
+商业顾问分段回答时，`status.code` 还可能为 `progress_answer_started` 和 `final_answer_started`，分别标记即时提示与最终答案的边界。两段内容仍都通过原有 `answer_delta` 返回；旧客户端可以继续顺序追加全部 `answer_delta`，需要分栏的客户端按状态码切换展示区。
+
 `answer_delta` 示例：
 
 ```Plain Text
@@ -244,18 +246,20 @@ data: {"schema_version":"2.0","request_id":"req-001","sequence":5,"items":[{"cou
 
 ```Plain Text
 event: learning_route
-data: {"schema_version":"2.0","request_id":"req-001","sequence":6,"route_id":"route_ai_basic","name":"AI入门路线","direction":"AI基础","target":"完成AI基础使用","stages":[{"stage_id":"stage_1","name":"入门","order":1,"course_ids":["course_ai_001"]}],"current_stage_id":null,"next_stage_id":null,"state":"awaiting_route_confirmation","progress_status":"pending_route","confirmation_required":true}
+data: {"schema_version":"2.0","request_id":"req-001","sequence":6,"route_id":"route_ai_basic","name":"AI入门路线","direction":"AI基础","target":"完成AI基础使用","stages":[{"stage_id":"stage_1","name":"入门","order":1,"course_ids":["course_ai_001"],"course_names":["AI工具入门"],"course_collection_names":["AI写作课"]}],"current_stage_id":null,"next_stage_id":null,"state":"awaiting_route_confirmation","progress_status":"pending_route","confirmation_required":true}
 ```
 
 课程/路线规则：
 
 - `learning_route.state=awaiting_route_confirmation` 或 `awaiting_stage_confirmation` 时，`course_cards` 必须为空；调用方应引导用户明确确认路线和当前阶段。
+- `learning_route.stages[].course_collection_names` 是按阶段内原始目录顺序去重后的课程集名称数组，不是课程名称；没有课程集时为空数组。
+- `learning_route.stages[].course_names` 与 `course_ids` 一一对应、保持相同顺序，用于用户展示；`course_ids` 仍是供客户端和服务端校验的机器字段。
 
 - 只有 `active` 路线才返回当前阶段及下一阶段的课程卡片，最多 5 门且保持路线顺序。
 
 - 没有官方匹配路线时，服务可返回独立课程；不得临时拼接成路线。
 
-- `course_recommendation_note` 是可选的匹配理由，不是课程事实扩写。课程级 `expert_insight` 已停用，客户端不得等待或渲染它。
+- `course_recommendation_note` 是可选的“下一步建议”，仅在服务端已校验课程卡后出现；多门课程只发送一条 1–2 句、最多 80 字的组合建议，不带“匹配理由：”或“专家建议：”前缀。课程级 `expert_insight` 事件已停用，客户端不得等待或渲染它；小程序卡片标题改造不在本仓库。
 
 `message_end` 示例：
 
@@ -1470,6 +1474,8 @@ PDF/DOCX 在策略处理前按源文档顺序转换为 Markdown，尽量保留�
 
 - `answer_delta`、`retriever_resources`、消息历史和会话标题会统一隐藏清洗审计中登记的真实姓名、昵称、笔名、账号称呼、原文件名及 Dify 管理名称。
 - 跨多个 `answer_delta` 分片出现的姓名也必须被完整替换；调用方不能假设一个姓名一定落在同一 SSE 分片。
+- 商业顾问用户可见文本还必须过滤课程、路线、阶段的中文/英文标签及完整或短内部 ID、`course_`/`route_`/`stage_` 裸标识、括号形式标识和跨 SSE 分片标识；不得输出“内部标识已隐藏”等占位词。
+- Chatflow 决策 JSON 中的候选 ID 和 `course_cards`、`learning_route` 等结构化机器字段保持兼容，不因公开文本过滤而删除；课程卡 `redirect_url` 仍由服务端校验和签名生成。
 - 检索引用中的非受控 URL 会被移除；服务端生成的课程卡 `redirect_url` 不受影响。
 - 清洗条目仍可逐条查询和复核，但发布与失败重试以源文件为事务边界。任一待复核或失败条目会阻止同源其他条目完成发布。
 - 新生成的 Dify 管理名称为 `原文件名主体__001.原扩展名`、`__002`……。完整原文件名仅用于受保护的管理与审计，不得作为公开引用返回。

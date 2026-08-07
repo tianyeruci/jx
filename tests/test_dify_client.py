@@ -1,5 +1,7 @@
 import json
 
+import httpx
+
 from dify_client import (
     SSEDecoder,
     decode_sse_json,
@@ -7,6 +9,25 @@ from dify_client import (
     input_fields,
     normalize_and_validate_inputs,
 )
+from knowledge_cleaner.dify import DifyKnowledgeClient
+
+
+def test_knowledge_delete_treats_missing_remote_document_as_success():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "DELETE"
+        assert request.url.path.endswith("/datasets/dataset/documents/doc-1")
+        return httpx.Response(404, json={"message": "not found"}, request=request)
+
+    client = DifyKnowledgeClient(
+        "http://dify.local",
+        "test-key",
+        "dataset",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        client.delete_document("doc-1")
+    finally:
+        client.close()
 
 
 def test_decoder_handles_split_chunks_and_multiple_events():

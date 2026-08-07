@@ -14,7 +14,12 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-_CORE_PATH = Path(__file__).resolve().parents[1] / "knowledge_cleaner" / "pdf_markdown_refine.py"
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from knowledge_cleaner.markdown_table_cleaner import clean_markdown_tables
+
+_CORE_PATH = _REPO_ROOT / "knowledge_cleaner" / "pdf_markdown_refine.py"
 _CORE_SPEC = importlib.util.spec_from_file_location("_jx_pdf_markdown_core", _CORE_PATH)
 if _CORE_SPEC is None or _CORE_SPEC.loader is None:
     raise ImportError(f"共享 PDF 核心不可用: {_CORE_PATH}")
@@ -34,7 +39,13 @@ _text_pdf_to_markdown = _core._text_pdf_to_markdown
 _ocr_pdf_to_markdown = _core._ocr_pdf_to_markdown
 
 
-def convert_file(path: Path, output_path: Path, dpi: int) -> dict[str, Any]:
+def convert_file(
+    path: Path,
+    output_path: Path,
+    dpi: int,
+    *,
+    clean_tables: bool = False,
+) -> dict[str, Any]:
     """Convert one PDF using the shared layout core and write Markdown."""
 
     import pdfplumber
@@ -57,6 +68,16 @@ def convert_file(path: Path, output_path: Path, dpi: int) -> dict[str, Any]:
                 markdown, details = _ocr_pdf_to_markdown(path, dpi)
             if not markdown.strip():
                 raise ValueError("no_effective_text_or_table")
+            if clean_tables:
+                table_result = clean_markdown_tables(markdown)
+                markdown = table_result.markdown
+                result["table_cleaning"] = table_result.as_dict()
+                result["warnings"].extend(
+                    f"table_{issue.action}:{issue.reason}"
+                    for issue in table_result.issues
+                )
+            if not markdown.strip():
+                raise ValueError("no_effective_text_after_table_cleaning")
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(markdown, encoding="utf-8", newline="\n")
             try:
@@ -79,6 +100,11 @@ def _arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True, help="Markdown 输出目录")
     parser.add_argument("--ocr-dpi", type=int, default=200, help="图片 PDF OCR DPI，默认 200")
     parser.add_argument("--force", action="store_true", help="覆盖已经存在的 Markdown")
+    parser.add_argument(
+        "--clean-tables",
+        action="store_true",
+        help="转换完成后把 Markdown 表格转为语义句",
+    )
     return parser.parse_args(argv)
 
 
@@ -102,7 +128,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 {"input": str(path), "output": str(output_path), "status": "skipped", "warnings": ["output_exists"]}
             )
             continue
-        summaries.append(convert_file(path, output_path, args.ocr_dpi))
+        summaries.append(
+            convert_file(
+                path,
+                output_path,
+                args.ocr_dpi,
+                clean_tables=args.clean_tables,
+            )
+        )
     print(json.dumps(summaries, ensure_ascii=False, indent=2))
     return 0 if all(item["status"] in {"succeeded", "skipped"} for item in summaries) else 1
 

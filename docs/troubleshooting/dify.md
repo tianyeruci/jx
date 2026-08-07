@@ -65,7 +65,7 @@
 - 适用：Dify 1.13.3 的 Code 节点在 Sandbox 0.2.14 中加载 RapidOCR/ONNX Runtime。
 - 触发：PyMuPDF 文字分支成功，但扫描 PDF 分支返回 `operation not permitted`；Sandbox 日志出现 `signal: bad system call`。
 - 根因：Sandbox 子进程 seccomp syscall allowlist 没有覆盖 ONNX Runtime 所需调用；仅在容器内成功 `import` 不能证明 Code 节点可执行。
-- 解决（仅测试窗口）：使用隔离的离线 Sandbox 镜像安装 PyMuPDF、RapidOCR、ONNX Runtime 和 headless OpenCV；临时扩大子进程 syscall 白名单、延长 Code/API 读取超时，并把 SSRF 规则限制到测试文件主机；完成后按原始备份恢复。
+- 解决：仅在测试窗口使用隔离的离线 Sandbox 镜像安装 PyMuPDF、RapidOCR、ONNX Runtime 和 headless OpenCV；临时扩大子进程 syscall 白名单、延长 Code/API 读取超时，并把 SSRF 规则限制到测试文件主机；完成后按原始备份恢复。
 - 非解决：只安装 Python wheel、只重启 Sandbox、只验证容器 import，或把临时 syscall 放宽直接带入生产。
 - 验证：Dify Sandbox `/v1/sandbox/run` 文字 PDF 为 `succeeded/pymupdf`；扫描 PDF 为 `succeeded/rapidocr`、3 页、平均置信度 `0.9969`；Dify API 与 Sandbox health 均正常。
 - 预防：将依赖镜像、syscall、超时和下载白名单作为同一份可回滚测试配置管理；生产启用前完成最小权限、资源、镜像和许可证评审。
@@ -96,14 +96,52 @@
 - 证据：`var/reports/20260804-pdf-rapidocr-docker/issues.jsonl`、本次脱敏 Sandbox 运行响应。
 - 最后验证：2026-08-04。
 
-## DIFY-009：PDF 页数门禁必须在文本/图片分类之后
+## DIFY-009：PDF 页数门禁必须在文本/图片分类之后（历史，Workflow 已退役）
 
-- 适用：Dify PDF→Markdown 测试 Workflow；文本层 PDF 与纯图片 PDF 分流。
+- 适用：历史 Dify PDF→Markdown 测试 Workflow；文本层 PDF 与纯图片 PDF 分流。该 Workflow 已于 2026-08-05 退役。
 - 触发：多页文本型 PDF 报“超过 max_pages”，即使它不需要 OCR。
 - 根因：旧逻辑在读取文字层前统一执行页数门禁，把 OCR 资源限制错误应用到 PyMuPDF 文本分支。
 - 解决：先探测前两页文字层；有文字直接走 PyMuPDF 且不受 OCR 页数限制；无文字才检查 `max_pages` 并进入 RapidOCR。
 - 非解决：只把默认页数从 5 调大、删除所有页数限制，或按文件扩展名判断 PDF 类型。
 - 验证：DSL 静态回归确认文字层探测位于页数门禁之前；已有文字分支 Sandbox smoke 返回 `succeeded/pymupdf`。
 - 预防：页数、DPI、资源限制只作用于实际需要 OCR 的分支；分类顺序纳入 DSL 契约检查。
-- 证据：`var/reports/20260804-pdf-rapidocr-docker/issues.jsonl`、`dify/dsl/pdf_to_markdown_code_test.yml`。
+- 证据：`var/reports/20260804-pdf-rapidocr-docker/issues.jsonl`、退役前资产快照；当前实现见 `knowledge_cleaner/pdf_convert.py` 与 `knowledge_cleaner/pdf_markdown_refine.py`。
 - 最后验证：2026-08-04。
+
+## DIFY-010：Chatflow 多个 Answer 节点被适配层合并时，必须保留阶段边界
+
+- 适用：商业顾问 Chatflow 同时包含固定即时提示 `progress_answer` 和最终 `answer_*` 节点的流式调用。
+- 触发：Dify Chatflow 预览页能先显示即时提示，jx 测试页却把即时提示和最终答案放在同一展示区，并且只有最终生成结束后才看起来像一次完整回答。
+- 根因：Dify 1.13.3 对固定 `progress_answer` 节点不发送 `message.answer`，而是在 `node_finished.data.outputs.answer` 返回正文；最终 `answer_*` 节点才通过 `message.answer` 流式返回。旧适配层只处理 `message`，因此能发边界却没有即时提示正文。
+- 解决：`ai_management/conversations.py` 在 `progress_answer` 开始时发送现有 `status` 事件的 `progress_answer_started`，在最终 `answer_*` 开始时发送 `final_answer_started`；同时把 `node_finished.data.outputs.answer` 转为原有 `answer_delta`。`ai_management/test_ui.py` 按状态码使用两个展示区，并只把最终段写入助手历史。
+- 兼容：没有分栏需求的旧客户端仍可按顺序追加全部 `answer_delta`；没有即时提示的 `quick_answer` 路径保持单段最终回答。
+- 验证：本地 `tests/test_ai_management.py::test_business_chat_stream_separates_progress_answer_from_final_history` 通过；`consume_sse` 分栏等价检查通过；目标文件 `ruff check` 和 Python 编译检查通过。
+- 验证：本地单测、jx 发布 smoke、真实合成商业顾问请求和公网浏览器测试页均通过；SSE 收到 1 个即时提示 delta、2 个最终答案 delta，顺序和两个展示区符合预期。测试用户会话已按精确 ID 删除。
+- 非解决：复制即时提示到最终答案、修改对外 SSE 字段或只在 Dify 预览页验证而不验证 jx 适配层。
+- 预防：修改商业顾问 Answer 节点 ID 时同步更新适配层节点常量和 SSE 契约测试；不要为了修复展示问题复制或改造对外 `answer_delta` 字段。
+- 证据：`ai_management/conversations.py`、`tests/test_ai_management.py`、`docs/Dify创建导入绑定与契约测试.md`。
+- 最后验证：2026-08-05（本地代码、jx 发布、SSE 和浏览器测试页）。
+
+## DIFY-011：目录 ID 不能在服务出口一律删除，必须恢复正式名称
+
+- 适用：商业顾问 Chatflow 返回课程推荐、学习路线或阶段进度的场景。
+- 触发：小程序正文出现“课程ID/阶段ID/路线ID”、`course_`/`stage_`/`route_`，或课程列表全部变成“内部标识已隐藏”；模型还可能因缺少名称而臆造课程名。
+- 根因：Chatflow 决策 JSON 必须保留内部 ID 供服务端校验和生成签名卡片，但旧公开文本过滤器只做删除，没有使用已审核课程目录把 ID 映射回名称；路线阶段还依赖来源 `order`，无法保证产品规定顺序。
+- 解决：在 `ai-management` 公开文本出口读取目录快照，将有效 ID、标签和列表占位转换为正式名称；错误名称以目录为准，未知 ID 使用不可用提示；结构化 `course_cards`/`learning_route` 及停止、反馈字段保留机器 ID。路线统一按“新手必看 → 入门阶段 → 高手进阶”排序，并通过快照版本使旧缓存自动失效。
+- 非解决：从 Chatflow 决策 JSON 删除候选 ID、只在小程序端隐藏字符串、根据 ID 猜测课程名称或把所有无效项静默删除成空列表。
+- 验证：`tests/test_stream_filter.py` 覆盖完整/短 ID、标签、括号、跨分片、占位列表、错误名称和未知 ID；`tests/test_ai_management.py` 覆盖流式回答、历史正文和引用资源结构；`tests/test_course_route_catalog.py` 覆盖阶段排序、课程名称、路线资料文本和“确认学习路线”真实操作文案；最终 jx release 真实 SSE 覆盖三条首屏问题、路线确认、阶段确认、课程卡片链接和精确会话清理。
+- 预防：课程/路线目录变更后重建快照并执行公开文本回归；真实 SSE 同时核对正文、课程卡片、路线确认、阶段确认和历史消息。
+- 证据：`ai_management/stream_filter.py`、`ai_management/courses.py`、`ai_management/conversations.py`、上述测试文件。
+- 最后验证：2026-08-05（本地定向回归、jx release `quick-20260805-142049-ddc348e62453`、入口配置和真实 SSE）。
+
+## DIFY-012：多文件清洗要做本地批量编排，不猜测 Dify 多文档创建接口
+
+- 适用：用户一次上传多个 PDF/DOCX/Markdown，完成父子块、Metadata 和索引后写入知识库。
+- 触发：把多个源文件拼成一个 Dify 文档、并发调用创建接口导致限流，或只看到创建响应就把批次标成成功。
+- 根因：Dify `create-by-text` 是单文档创建；响应中的 `batch` 是该文档的异步索引批次，不等同于可提交任意数量源文件的批量创建接口。不同部署版本还可能对请求体、分片条数和并发有独立限制。
+- 解决：服务端保留用户外部批次，在本地按文件/文章/知识单元编排；每个逻辑条目逐个调用 `create-by-text`，所有 Dify 写入统一进入 `ai_publication` 单并发 Worker。一个源文件中包含多篇公众号文章或小报童帖子时，先在清洗阶段拆成多个本地条目，再分别创建远端文档；`DIFY_SHARD_MAX_BYTES` 仍限制单条正文，`DIFY_SHARD_MAX_ITEMS` 仅保留为兼容性和防御性校验，不再把多个逻辑条目合并成一个远端文档。每个文档都等待索引、校验父子块、写 Metadata 并回读。多文件不会合并正文，也不会调用仓库未验证的多文档 endpoint。
+- 非解决：把 Celery 批次 ID 当作 Dify 多文档 batch、按文件数盲目并发、只核对 HTTP 200、直接改 Dify 业务数据库或为了吞吐取消 Metadata/结构回读。
+- 验证：本地发布契约确认 `ai_publication --concurrency=1`、分片上限和 `create-by-text` 单文档调用；远端需按精确 batch/file/shard ID 核对 Dify 索引终态、父子块、Metadata 回读和本地聚合。
+- 预防：Dify API 版本升级时先用隔离 Dataset 验证真实上限，再调整配置；发布失败必须保留脱敏异常阶段和精确资源 ID，并刷新文件/批次状态。
+- 证据：`knowledge_cleaner/dify.py`、`ai_management/workers/tasks/cleaning.py`、`ai_management/workers/tasks/model_cleaning.py`、`docker-compose.ai.yml`、`tests/test_batch_cleaner.py`、`tests/test_cleaning_release_contract.py`。
+- 最后验证：2026-08-06，本地 Dify 客户端、分片和发布队列回归通过；jx release `20260806-165915-full-23162b2` readiness、同源镜像和容器烟测通过。

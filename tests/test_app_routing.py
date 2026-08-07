@@ -4,7 +4,10 @@ from fastapi.testclient import TestClient
 
 from ai_management.cache import cache
 from ai_management.main import app
-from ai_management.models import Course, CourseClickDaily
+from ai_management.models import (
+    Course,
+    CourseClickDaily,
+)
 from ai_management.timeutil import business_today
 
 EXPECTED_ROUTES = {
@@ -44,15 +47,26 @@ EXPECTED_ROUTES = {
     ("DELETE", "/internal/v1/admin/knowledge-bases/{kb_code}/sources/{file_id}"),
     ("GET", "/internal/v1/admin/logs"),
     ("GET", "/internal/v1/admin/logs/{log_id}"),
+    ("GET", "/internal/v1/admin/pdf-conversion-issues"),
+    ("POST", "/internal/v1/admin/pdf-conversion-issues/{issue_id}/resolve"),
     ("GET", "/health/live"),
     ("GET", "/health/ready"),
 }
 
 
 def test_modular_app_keeps_public_routes() -> None:
+    def _iter_http_routes(routes):
+        for route in routes:
+            included_router = getattr(route, "original_router", None)
+            if included_router is not None:
+                yield from _iter_http_routes(included_router.routes)
+                continue
+            if getattr(route, "path", None) is not None:
+                yield route
+
     actual = {
         (method, route.path)
-        for route in app.routes
+        for route in _iter_http_routes(app.routes)
         for method in (route.methods or set())
     }
     assert EXPECTED_ROUTES <= actual

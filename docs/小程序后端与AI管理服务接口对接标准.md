@@ -131,6 +131,7 @@ X-Internal-Token: <内部服务令牌>
   ]
 }
 ```
+
 ### 3.2 商业顾问聊天
 ```http
 POST /internal/v1/business/chat
@@ -179,6 +180,15 @@ data: {"schema_version":"2.0","request_id":"req-001","sequence":2,"code":"retrie
 event: status
 data: {"schema_version":"2.0","request_id":"req-001","sequence":3,"code":"task_started","message":"已开始生成","task_id":"task_001"}
 ```
+商业顾问分段回答时，`status.code` 还可能为：
+```text
+event: status
+data: {"schema_version":"2.0","request_id":"req-001","sequence":4,"code":"progress_answer_started","message":"已开始返回即时提示"}
+
+event: status
+data: {"schema_version":"2.0","request_id":"req-001","sequence":6,"code":"final_answer_started","message":"已开始返回最终答案"}
+```
+这两个状态码只标记同一条 SSE 流中即时提示和最终答案的边界，不改变 `answer_delta` 事件名或 `data.delta` 字段。旧客户端可以继续顺序追加所有 `answer_delta`；需要分栏的客户端在边界码后切换展示区。
 `answer_delta` 示例：
 ```text
 event: answer_delta
@@ -195,13 +205,15 @@ data: {"schema_version":"2.0","request_id":"req-001","sequence":5,"items":[{"cou
 `learning_route` 示例：
 ```text
 event: learning_route
-data: {"schema_version":"2.0","request_id":"req-001","sequence":6,"route_id":"route_ai_basic","name":"AI入门路线","direction":"AI基础","target":"完成AI基础使用","stages":[{"stage_id":"stage_1","name":"入门","order":1,"course_ids":["course_ai_001"]}],"current_stage_id":null,"next_stage_id":null,"state":"awaiting_route_confirmation","progress_status":"pending_route","confirmation_required":true}
+data: {"schema_version":"2.0","request_id":"req-001","sequence":6,"route_id":"route_ai_basic","name":"AI入门路线","direction":"AI基础","target":"完成AI基础使用","stages":[{"stage_id":"stage_1","name":"入门","order":1,"course_ids":["course_ai_001"],"course_names":["AI工具入门"],"course_collection_names":["AI写作课"]}],"current_stage_id":null,"next_stage_id":null,"state":"awaiting_route_confirmation","progress_status":"pending_route","confirmation_required":true}
 ```
 课程/路线规则：
 - `learning_route.state=awaiting_route_confirmation` 或 `awaiting_stage_confirmation` 时，`course_cards` 必须为空；调用方应引导用户明确确认路线和当前阶段。
+- `learning_route.stages[].course_collection_names` 是按阶段内原始目录顺序去重后的课程集名称数组，不是课程名称；没有课程集时为空数组。
+- `learning_route.stages[].course_names` 与 `course_ids` 一一对应、保持同序，用于用户展示；`course_ids` 仍是机器字段。
 - 只有 `active` 路线才返回当前阶段及下一阶段的课程卡片，最多 5 门且保持路线顺序。
 - 没有官方匹配路线时，服务可返回独立课程；不得临时拼接成路线。
-- `course_recommendation_note` 是可选的匹配理由，不是课程事实扩写。课程级 `expert_insight` 已停用，客户端不得等待或渲染它。
+- `course_recommendation_note` 是可选的下一步建议，仅在服务端已校验课程卡且内部课程 ID 全量一致时出现；`content` 直接是 1–2 句、最多 80 字的组合学习动作，不含匹配理由或专家建议前缀。事件名和 `{"content":"..."}` 结构不变；小程序当前卡片标题“推荐理由”的改名不在本仓库。
 `message_end` 示例：
 ```text
 event: message_end
@@ -1181,8 +1193,9 @@ GET /internal/v1/admin/logs/{log_id}
 
 本轮未改变既有接口路径、请求字段、SSE 事件名和公开响应结构。以下约束从本版本开始作为接口标准的一部分：
 
-- 商业顾问公开输出中的真实姓名、昵称、笔名、个人账号称呼、原文件名和 Dify 管理名称必须被服务端替换；范围包括 `answer_delta`、`retriever_resources`、会话标题和历史消息。
+- 商业顾问公开输出中的真实姓名、昵称、笔名、个人账号称呼、原文件名、Dify 管理名称，以及课程/路线/阶段的中文或英文内部标识必须被服务端过滤；范围包括 `answer_delta`、`retriever_resources`、会话标题和历史消息。过滤覆盖标签、完整或短 ID、`course_`/`route_`/`stage_` 裸标识、括号形式标识和跨 SSE 分片文本。
 - 姓名过滤必须覆盖跨 SSE 分片的情况。小程序后端仍按标准 SSE 事件解析，不自行拼接或还原受保护来源。
+- Chatflow 决策 JSON 中的候选 ID 不属于用户可见文本，不删除；`course_cards`、`learning_route` 等结构化机器字段及课程卡 `redirect_url`、路线进度字段保持原契约，供小程序后端继续校验、查询和展示。
 - 检索引用不得携带非受控 URL；课程卡中的 `redirect_url` 是服务端签名生成的受控字段，继续按原契约使用。
 - 原文件名允许出现在管理员鉴权保护下的清洗详情中；不得进入公开回答、公开引用、测试安全摘要或普通运行日志。
 - 清洗状态 API 仍返回条目明细，但同一源文件的发布和失败重试是一个原子单元。任一应发布条目失败时，同源本轮 Dify 写入会被删除或停用，课程/路线目录不得部分提交。

@@ -1,10 +1,149 @@
 # AI 管理服务当前状态与后续测试交接
 
-> 更新时间：2026-08-04
+> 更新时间：2026-08-07
 > 用途：保存最新线上事实、回滚点、数据状态和开放事项。新任务先读 `AGENTS.md` 与 `docs/README.md`，再按功能域读取本文顶部最新状态。  
 > 本文不是需求或设计基线；权威顺序以 `docs/V2决策记录.md` 和 `docs/README.md` 为准。第 1～8 节为历史过程记录，不再作为当前执行指令。
 
-## 0.25 2026-08-04 PDF→Markdown Dify Code 节点用户自测窗口（当前最新）
+## 0.37 2026-08-06 学习路线阶段课程集名称与 jx 完整发布（当前最新）
+
+- 已按用户确认补充 `learning_route` SSE 事件的阶段字段 `course_collection_names: string[]`。字段只返回课程集名称，不返回课程名称或 ID；名称按该阶段现有 `course_ids` 的原始目录顺序首次出现去重，没有课程集时返回空数组。实现从既有 `ai:course:snapshot` 的 `collections` 运行时派生，不新增 Redis Key、数据库字段或迁移。
+- 本地验证：课程/路线定向回归 `22 passed`，商业顾问/路由/应用回归 `13 passed`，全量 pytest 收集 `339 passed`；目标代码 Ruff、Python 编译、功能索引检查和 `git diff --check` 通过。
+- jx 快速发布第一次在核心导入 smoke 阶段发现旧运行时缺少 `knowledge_cleaner.markdown_table_cleaner`，未切换 release，自动回滚并确认旧服务 readiness 正常；随后改用包含 `ai_management` 与 `knowledge_cleaner` 的完整 wheel 发布成功。release `20260806-195815-course-collections`，wheel SHA-256 `d53b6603d0d467e1f397f33c3a0f2af21ba8c3d83ef59f8fdffd9eab037a6692`，发布前备份 `/opt/ai-management/backups/20260806-195815-course-collections-predeploy`，报告 `/opt/ai-management/var/reports/v2/20260806-195815-course-collections-deploy`。
+- 发布后 API、Worker、实时/Batch 模型 Worker、发布 Worker、Scheduler、UI 使用同源新镜像；`health/ready=ready`，数据库/Redis/Dify 均可达，迁移为 `j6a7b8c9d0e1 (head)`，测试页 HTTP 200，OCR autoscaler timer 为 `active`。队列空闲时 OCR Worker 按 autoscaler 退出，不作为发布失败。
+- 远端直接 SSE 验收通过：`learning_route` 事件存在，路线 `AI高手提效课` 返回 2 个阶段；每个阶段均有数组字段，示例阶段课程集名称为 `公众号AI爆款`、`AI写作课`/`AI智能体写作`/`AI阅读博主`/`AI知识库`。合成会话已删除；未清理正式课程、路线、Dify 数据、Redis 整库或持久卷，未执行 Git commit/push。
+
+## 0.38 2026-08-07 商业顾问学习路线、综合点评与课程目录全链路验收（当前最新）
+
+- 已按本轮确认完成商业顾问服务端改造：路线确认优先读取当前轮/摘要信息，明确回复“我确认学习路线：…”时直接恢复权威路线并进入阶段确认；`learning_route` 返回完整阶段、按原始顺序的 `course_names` 与去重后的 `course_collection_names`；阶段确认后返回课程卡，并在卡片之后只发送一条 `course_recommendation_note` 综合专家点评，缺少合规模型点评时由服务端生成安全默认建议。未增加 HTTP 路径、请求字段或 SSE 事件；既有 `learning_route` 仅增加向后兼容的展示数组字段，既有客户端可忽略未知字段。
+- 全量课程目录已通过 `course_route_catalog` 完整替换导入并重置旧进度：数据库当前 `Course=105`、`LearningRoute=5`、`CourseCollection=33`、`CourseCollectionMember=103`；目录导入批次 `019fd8cc-232a-79ac-bd34-9ee6fab49dff` 完成，Dify 课程知识库分页总量为 115 条。验收结束后已删除本轮合成会话并清除其唯一进度记录，正式课程/路线/Dify 数据未清理。
+- 本轮导入先发现并修复两类真实问题：Dify 对已不存在文档返回 404 会阻断源删除，现按删除语义幂等处理并保留其他错误；课程路线表中缺少独立方向/目标会触发整批原子阻断，现对路线使用中性的默认方向/目标，不猜测收益或承诺。失败批次和重复上传状态均保留审计，不回写历史业务数据。
+- jx 最终 release `20260807-0450-route-fallback`，wheel SHA-256 `43127dcba6ea28be37f15c38be88499588fc48d3e785fe480db268cd0c7233f4`；发布前备份 `/opt/ai-management/backups/20260807-0450-route-fallback-predeploy`，报告 `/opt/ai-management/var/reports/v2/20260807-0450-route-fallback-deploy`。API、Worker、模型 Worker、发布 Worker、Scheduler、测试 UI 均使用同源镜像且 running；`health/ready` 返回 `ready`，数据库/Redis/Dify 配置和连通性均为 true。
+- Dify DSL 已在真实 Dify 页面完成发布，页面状态为“最新发布/已发布”；本地 DSL 与远端发布文件 SHA 一致。未增加模型调用、LLM 节点、SSE 事件或对外接口；未修改真实小程序源码/卡片标题，标题仍由前端另行改为“下一步建议”。
+- 真实页面验收：路线首问展示 `AI高手提效课` 的完整两阶段及课程合集名称；回复路线确认后不重复路线/画像问题并进入阶段确认；回复“我目前在：入门阶段”后返回课程卡，卡后出现唯一一条无“匹配理由/专家建议”前缀的综合点评，并追加“完成后回复：我已完成：入门阶段”的下一步引导。
+- 本地验证：首次全量测试仅因功能索引在源码变更后未重新生成而失败，已运行 `scripts/generate_project_index.py --write/--check` 修复；随后定向回归 `tests/test_project_documentation_contract.py tests/test_course_route_catalog.py tests/test_business_chat_dedupe.py tests/test_dify_client.py tests/test_model_cleaning_workflow.py` 全部通过。索引更新后最终全量 pytest 为 `372 passed`，仅有既有 Starlette/httpx 弃用警告；`tk` 命令在本机不存在，按项目规则回退使用虚拟环境 Python。
+- 真实验收页面保持在 jx 测试页供复核；验收完成后会关闭 Dify/测试临时页，仅按用户需要保留测试页交接，不执行 Git commit/push。
+
+## 0.36 2026-08-06 帖子知识单元契约强化与最终发布（历史）
+
+- 在 0.35 的链路修复基础上，进一步收紧 `wechat_public_account_cognition`、`zsxq_post`、`xiaobot_post` 的模型契约：`keep/review` 且存在保留来源块时必须返回证据绑定知识单元；只返回 `keep/drop` 的旧式结果不再被当作“已提取成功”。契约失败按新批次源 Markdown 降级，不阻塞入库。
+- 本地最终回归：相关清洗/分片/模型工作流/PDF/发布契约/文档契约/快速发布契约测试通过；目标代码 Ruff、功能索引检查和 diff 检查通过。
+- jx 最终完整发布成功：release `20260806-172003-full-23162b2`，wheel SHA-256 `03c2b6073ffab328fb9d08ef67ae680ec6c9d6cccb7d8c8282660d3299590f92`；发布前备份 `/opt/ai-management/backups/20260806-172003-full-23162b2-predeploy`，报告 `/opt/ai-management/var/reports/v2/20260806-172003-full-23162b2-deploy`。API、普通 Worker、实时/Batch 模型 Worker、发布 Worker、Scheduler、UI 使用同源新镜像；readiness 为 `ready`，迁移为 `j6a7b8c9d0e1 (head)`，OCR autoscaler 为 `enabled/active`，容器内最终契约和资料钩子烟测通过。
+- 第一次 SSH 会话在发布启动前断开，未产生发布报告且服务仍保持上一 release；未重复启动并发发布，随后单次重试成功。未修改对外 HTTP/SSE 接口、数据库模型或迁移；未回写用户提供的历史批次，未执行 Git commit/push。
+
+## 0.35 2026-08-06 清洗链路根因修复、日志增强与完整发布（历史）
+
+- 已修复资料钩子 `lead_magnet` 必然重试的根因：非模型策略之前在本地正文预写 `<<<DIFY_PARENT>>>` / `<<<DIFY_CHILD>>>`，随后被正文边界校验误判为用户输入，导致文件停在 pending。现在本地保留源 Markdown，发布 Worker 按保存的父子块配置交给 Dify 处理；已有批次不回写，新上传批次使用修复后的逻辑。
+- 已核对用户提供的测试批次：`zsxq_post` 批次曾完成实时模型调用，2 个条目中 1 个被模型判定为纯红包/节日祝福而排除，另 1 个成功；它属于旧 release，模型只做保留/排除判断，未执行新的知识单元提取。新代码已把帖子模型契约扩展为“问题、结论、推理、条件、行动、风险、来源证据”的知识单元，并支持每个知识单元独立本地/Dify 文档。
+- `lead_magnet` 旧批次的 `CLEANING_FAILED` 原因是上述 Dify 分隔符误判，不是模型问题；`book` 旧批次是 `CONTENT_EMPTY_AFTER_CLEANING`，PDF 转换返回 `PDF_TYPE_REVIEW_REQUIRED`，没有可安全使用的 Markdown 源，因此没有模型任务可降级。两批次按既定“历史批次不静默改写”规则保留原状态。
+- 错误事件已记录文件/批次/策略/知识库/扩展名/尝试次数/阶段/异常类型/脱敏消息和 traceback；不记录正文、密钥、敏感原始文件名或完整路径。
+- 本地验证：清洗、分片、模型工作流、发布契约和 PDF 策略相关测试通过；目标代码 Ruff、Python 编译、功能索引检查和 diff 检查通过。全量测试仍受当前工作树的脚本导入路径/依赖和长套件等待影响，未将其误报为通过。
+- jx 完整发布成功：release `20260806-165915-full-23162b2`，wheel SHA-256 `c40174f3d84def665cf4d5b34ed8230c2aab8ad519e6f9ddc7c4f39dda5fc0d7`；发布前备份 `/opt/ai-management/backups/20260806-165915-full-23162b2-predeploy`，报告 `/opt/ai-management/var/reports/v2/20260806-165915-full-23162b2-deploy`。API、普通 Worker、实时/Batch 模型 Worker、发布 Worker、Scheduler、UI 使用同源新镜像；readiness 为 `ready`，Dify/数据库/Redis 可达，迁移为 `j6a7b8c9d0e1 (head)`，OCR autoscaler 为 `enabled/active`。容器内资料钩子和异常详情烟测通过。
+- 未修改对外 HTTP/SSE 接口、数据库模型或迁移；未清理或改写上述历史测试批次；未执行 Git commit/push。保留发布备份用于回滚。
+
+## 0.34 2026-08-06 新批次源 Markdown 降级、看门狗与完整 wheel 发布（当前最新）
+
+- 已按用户确认修复清洗全链路：新建 `cleaned` 批次（`course_route_catalog` 除外）保存 `source_markdown_fallback_enabled` 策略快照；PDF/DOCX 转换后的 Markdown、上传 Markdown/TXT 规范化后的 Markdown，先经过统一表格清洗和最终无表格门禁。模型 `review`、契约失败、无响应、任务级异常只要源 Markdown 非空，就保留内部原因、明确忽略模型返回值，恢复源 Markdown 为普通 `pending` 或文章 `shard_pending` 发布；空正文、转换失败和 Dify 硬约束失败仍为 `failed`。历史批次缺少策略快照时 fail-closed，课程目录保持严格原子路径。
+- 多文件发布统一进入 `ai_publication` 单并发队列；文章分片遵守 `DIFY_SHARD_MAX_ITEMS`（默认 200）和字节上限。Dify 仍按单个最终文档调用 `create-by-text`，返回的 `batch` 仅用于索引轮询；没有增加或调用未确认的多文档外部接口。每 5 分钟看门狗会重新调度长期未更新的 pending、模型处理和 Dify 分片，并刷新文件/批次聚合，避免依赖人工逐条解卡。
+- 错误日志已补充 `file_id/batch_id/strategy_code/knowledge_base_code/extension/attempts/phase/exception_type/脱敏 exception_message` 等定位上下文；不记录正文、密钥、原始敏感文件名或完整路径。模型源 Markdown 降级、清洗文件失败、Dify 分片失败分别有可检索事件码。
+- 本地验证：项目 `.venv` 全量 `pytest -q` 通过；Python 编译、功能索引生成/检查、文档/清洗/发布契约测试通过。未修改对外 HTTP/SSE 接口、数据库模型或迁移。
+- jx 快速发布第一次按门禁自动回滚：`quick-20260806-141531-d5397dcb7e5f` 在核心导入 smoke 发现旧运行时缺少 `knowledge_cleaner.markdown_table_cleaner`，没有切换数据或 Dify；回滚后 readiness 和旧 release 恢复正常。
+- jx 完整发布成功：release `20260806-144000-full-9afc8b78bc35`，wheel SHA-256 `9afc8b78bc351602391e500ee9e1179881a7f3f626f15da9e51b0b56807c8a46`；发布前备份 `/opt/ai-management/backups/20260806-144000-full-9afc8b78bc35-predeploy`，报告 `/opt/ai-management/var/reports/v2/20260806-144000-full-9afc8b78bc35-deploy`。API、普通 Worker、实时/Batch 模型 Worker、发布 Worker、Scheduler、UI 同源运行，readiness 为 `ready`，Dify/数据库/Redis 可达，迁移保持 `j6a7b8c9d0e1 (head)`，OCR autoscaler 为 `enabled/active`。
+- 真实远端合成回归：`test_markdown` 通过 API→清洗→Dify `create-by-text`→索引/Metadata/状态聚合，批次 `019fd5c2-02c6-74f1-bbe0-d69ce23fa5ff` 文件和条目均 `succeeded`，Dify 文档计数为 1；随后按精确 file ID 调用源删除，HTTP 200、删除 1 个文档，测试数据已清理。发布后相关 Worker 近 5 分钟错误/异常关键字计数均为 0。
+- 未修改 `AGENTS.md`、小程序后端和既有外部接口；未执行 Git commit/push；保留完整发布备份和脱敏报告用于回滚/审计。
+
+## 0.33 2026-08-06 review_required 开关、空正文修复与最终 jx 验收（历史）
+
+- 已增加配置 `CLEANING_REVIEW_REQUIRED_ENABLED`：默认值为 `true`，jx 测试环境为 `false`。配置按上传批次快照生效，不改变已创建批次；只作用于四个内容模型策略，不作用于 `course_route_catalog`。
+- 开关关闭时，非空正文的短文本、隐私/来源复核和内容模型 `review` 不再阻塞后续模型/发布；原复核原因只保存在内部审计，不写公共错误码或知识库 Metadata。空源文件、清洗后为空、模型无正文和 Dify 硬约束仍保持 `review_required`；模型契约失败、第二次无响应和发布异常仍记录为 `failed` 并跳过，不重试契约失败。
+- 本轮发现并修复空正文边界：知识星球/小报童策略抛出的“没有可清洗的正文”未被 Worker 识别，导致先重试后变成 `CLEANING_FAILED`；修复后明确归入 `CONTENT_EMPTY_AFTER_CLEANING`/`review_required`，非空异常仍按原规则处理。
+- 本地最终验证：目标清洗、模型工作流和契约套件通过；重新生成 `docs/功能与接口索引.md` 后，全量 `pytest tests -q` 全部通过，索引检查、Python 编译和 diff 检查通过。
+- jx 完整 wheel 发布：release `20260806-111200-full-8f59f14169c9`，wheel SHA-256 `8f59f14169c912c6b16ee035f72c76bcf2f759287e15f4f540080d8305d64d3b`；报告 `/opt/ai-management/var/reports/v2/20260806-111200-full-8f59f14169c9-deploy`，发布前备份 `/opt/ai-management/backups/20260806-review-switch-fix-predeploy`。API/Worker/模型 Worker/发布 Worker/Scheduler/UI 使用同源新镜像；`health/ready=ready`，Dify 可达，OCR autoscaler timer enabled/active；`BAILIAN_BATCH_ENABLED=false` 未改变。
+- 测试页最终验收：空文档新批次 `019fd511-11ea-718b-bfed-0ba266f08d4d` 为 `completed`，文件 `review_required`、`CONTENT_EMPTY_AFTER_CLEANING`，无模型任务和发布分片；唯一非空合成帖子批次 `019fd515-596b-78b2-8733-05cb5ab460c4` 为 `completed`，文件/条目 `succeeded`，实时模型完成，Dify 分片 `succeeded`，点击“读取条目”后出现条目详情入口。
+- 测试问题已脱敏记录于 `var/reports/20260806-review-switch/issues.jsonl`：空正文误归类、快速发布缺少共享模块、SSH 会话在发布期间断开、HTML 不支持咨询策略、咨询样本被模型明确 `exclude`、浏览器控件时序超时；已分别修复、确认预期门禁或通过重试验证。未修改小程序后端和既有 AI 管理接口，未做数据库迁移，未提交或推送 Git。
+
+## 0.32 2026-08-06 清洗失败隔离策略发布与测试页入库验收（历史最新）
+
+- 清洗策略已按用户确认执行：`personal_business_consultation`、`wechat_public_account_cognition`、`zsxq_post`、`xiaobot_post` 的模型技术失败按文档隔离为 `failed` 并继续兄弟文档；仅无数据、最终清洗正文少于 200 字、隐私/来源风险或服务端强制配置进入 `review_required`。模型只有无可用返回值才对该文档重试一次；非空但契约不合法不重试。`course_route_catalog` 保留严格/来源原子语义。
+- 失败记录新增只读接口 `/internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/failed-items`，支持 JSON 分页、CSV、状态和错误码筛选；终态批次/失败记录保留 7 天。未修改小程序后端和既有 AI 管理接口，仅增加该管理查询接口。
+- 本地验证：`.\.venv\Scripts\python.exe -m pytest tests -q` 全部通过；Python 编译、功能索引和 diff 检查通过。服务端策略为批次快照，客户端 Metadata 不能放宽门禁。
+- jx 全量发布：release `20260806-065957-full-bd1c4762d48d`，wheel SHA-256 `bd1c4762d48d46911f79530f832ffc3a5033f630f8d8f055fb3b0412e4178e9e`；报告 `/opt/ai-management/var/reports/v2/20260806-065957-full-bd1c4762d48d-deploy`，发布前备份 `/opt/ai-management/backups/20260806-065957-full-bd1c4762d48d-predeploy`。API/Worker/Scheduler/UI/模型/发布服务同源，API ready、Dify 可达、测试页 HTTP 200、OCR autoscaler timer enabled/active；队列为空时 OCR Worker 不常驻。
+- 测试页真实验收：选择 `general` 知识库和 `zsxq_post` 策略上传合成 Markdown，批次 `019fd42f-7599-7cc0-a4ce-6eacc1063dc1` 最终 `completed`，文件/条目 `succeeded`，模型为 `qwen-plus`、模式为 `realtime`，发布分片 `succeeded`；通过“读取条目详情”确认最终 Markdown 和 `record_type`、`source_title`、`topic` Metadata 已入条目。
+- 测试期间问题已脱敏记录于 `var/reports/20260806-cleaning-policy/issues.jsonl`：OCR 显式授权门禁、快速发布缺少共享清洗模块导致的导入失败、测试页隐藏文件控件操作方式；均已处理并重跑成功。测试源文件和知识库测试条目按项目规则保留，未执行模糊名称清理。
+
+## 0.31 2026-08-05 统一文档清洗链路发布与新数据验收（当前最新）
+
+- 根因已闭环：正式上传链路原先的 PDF 入口与 `scripts/pdf_markdown_refine.py` 使用的共享核心不一致；`raw` 分支显式跳过表格清洗；转换产物保存早于表格清洗；策略/模型/人工复核后的正文没有统一最终无表格门禁；Dify 名称仍沿用原扩展名；文章人工复核还会错误地走普通单文档发布。上述问题共同造成原始 PDF/DOCX 名称、原始正文或表格进入知识库的风险。
+- 当前统一链路：用户选择策略并上传后，先按策略支持矩阵校验扩展名；PDF/DOCX/Markdown/TXT 等输入统一得到 Markdown，再清洗 Markdown 表格；`cleaned` 继续走对应策略和模型/复核，`raw` 跳过策略语义处理但不跳过统一转换和表格清洗；父子分隔符、Metadata、内容哈希和最终正文在发布前再次校验。Dify 统一使用 `create-by-text`，正文为最终清洗后的 Markdown，`content_format=markdown`。
+- 表格规则：可靠表格转为语义文本；无法可靠对齐的表格保留线性单元格文本，不猜测列关系；`table_review` 只进入内部审计，不作为用户可见 warning；最终进入知识库的正文不含 Markdown/HTML 表格。
+- 发布命名与元数据：原始文件名只保留 stem，Dify 文档统一为 `.md`；同名文档按 `__001.md` 递增；系统 Metadata 不可被策略覆盖，策略 Metadata 覆盖公共 Metadata，文件身份/哈希等私有字段不发送到 Dify。文章策略保留合并 shard，并在 shard 层写入分隔符、父块限制和 shard Metadata。
+- jx 完整发布：release `20260805-cleaning-unify-0d1125af5d56`，wheel SHA-256 `0d1125af5d5624428fca0dd920be73bdb9433401e438250ea4f4b5fd68aabdf1`；报告 `/opt/ai-management/var/reports/v2/20260805-cleaning-unify-0d1125af5d56-deploy`，发布前备份 `/opt/ai-management/backups/20260805-cleaning-unify-0d1125af5d56-predeploy`。API、Worker、模型 Worker、发布 Worker、Scheduler、UI、OCR 均为同一 release，API ready、迁移 `j6a7b8c9d0e1 (head)`、测试页 HTTP 200、OCR timer active。
+- 新数据标准文档验收：PDF、DOCX、Markdown 三个 `standard_document` 案例均 `succeeded`；本地正文无表格、Dify 名称匹配 Markdown 规则、Metadata 边界通过。验收产生的 3 个批次、3 个 Dify 文档和 Redis 键已按 manifest 精确清理，未触碰历史正式数据。
+- 新数据 raw 验收：PDF、DOCX、Markdown 三个 `raw` 案例均 `succeeded`；统一转换、最终无表格、Dify 名称和 Metadata 边界通过。验收产生的 3 个批次、2 个 Dify 文档和 Redis 键已按 manifest 精确清理，专用输入目录已删除，正式历史输入保留。
+- 全量代表性验收另有 7 个非本链路失败：个人咨询模型严格复核/身份审计门禁和课程目录验收 runner 异常；已通过的 11/18 案例、3/3 聊天检查无表格或存储清洗失败。个人咨询 `review_required` 仍是安全终态，不为全绿而绕过策略门禁；该批次的 18 个新批次、8 个 Dify 文档已按 manifest 精确清理。
+- 本地回归：全量 pytest `337 passed`；随后新增发布回滚契约测试通过，Ruff、Python 编译、功能索引和文档契约通过。发布过程中发现的 OCR 早期失败恢复边界已修复并同步远端；未修改 `AGENTS.md`，未提交或推送 Git。
+
+## 0.30 2026-08-05 PDF 表格清洗与个人商业咨询批次入库（当前最新）
+
+- 根因已闭环：`table_review` 是 PDF 转换非阻断告警，不是批次未入库的原因；原批次真正进入 `review_required` 的原因是 `personal_business_consultation` 严格模型契约拒绝 `decision_units[0].risks_or_limits` 的事实状态。生产链路此前还运行旧镜像，未包含共享 Markdown 表格清洗模块。
+- 当前规则：正式链路先完成 PDF→Markdown，再清洗 Markdown 表格；可靠表格转语义句，坏行跳过并按表聚合一条脱敏日志，结构无法可靠对齐的完整表格块跳过，前后正文继续。`scripts/pdf_markdown_refine.py --clean-tables` 可复现该阶段；Markdown 围栏内容不处理。
+- 已增加窄范围模型重试接口：仅允许唯一候选、已完成、`realtime`、`MODEL_CONTRACT_INVALID` 条目重新排队；严格契约不放宽、不自动改写、不启用 Bailian Batch。`BAILIAN_BATCH_ENABLED=false` 保持不变。
+- jx 最终完整发布：release `20260805-pdf-table-final-b87e4ef9fb46`，wheel SHA-256 `b87e4ef9fb46d4025585278a37ccc37f0d72b6f8d302245d7f7ae7f3d6131c2c`；报告 `/opt/ai-management/var/reports/v2/20260805-pdf-table-final-b87e4ef9fb46-deploy`，发布前备份 `/opt/ai-management/backups/20260805-pdf-table-final-b87e4ef9fb46-predeploy`。SSH 曾在备份后断开，但远端发布进程继续完成；未并发启动第二个发布。
+- 发布后证据：API、普通 Worker、realtime/batch model Worker、publication Worker、Scheduler、UI、OCR 均运行最终 release 对应镜像；API `/health/ready` 为 `ready`，数据库/Redis/Dify 均可达；OCR Worker 已按精确服务名强制重建并为 running。
+- 指定批次 `019fcfe1-b610-7157-ba27-913a98cbb612` 已闭环：批次 `completed`，文件/文档 `succeeded`，文档错误码为空；转换 Markdown 非空、`blocking_reasons=[]`，保留 1 条 `table_review` 告警；Dify 文档存在、启用、索引 `completed`，父块 1、子块 4。未重传源文件、未按名称清理数据。
+- 任务记录中的 `result_counts.succeeded=0` 属于修复统计逻辑部署前已完成的历史任务快照，不回填、不重复调用模型；文件/文档聚合状态和 Dify 回读是本批次入库结果依据。后续任务使用已修复的统计逻辑。
+- 本地最终回归：从仓库根目录设置 `PYTHONPATH` 后，当前 pytest 收集 328 项，328 项通过；索引和排障文档契约通过。历史交接中的“384 项”是旧快照，已记录为测试报告问题，不作为当前数量。
+- 本轮问题已记录于 `var/reports/20260805-full-test-jx-fix/issues.jsonl`；未修改 `AGENTS.md`，未提交或推送 Git。无待处理的本轮产品阻断项；受保护样本、跨域批量等旧环境阻塞仍按历史记录独立管理。
+
+## 0.29 2026-08-05 商业顾问目录名称恢复与学习路线顺序修复（当前最新）
+
+- 已处理用户可见文案：`ai_management/stream_filter.py` 不再对已审核目录中的课程、路线、阶段 ID 做一律删除，而是按目录快照转换为正式名称；同时覆盖中文/英文标签、裸 ID、括号形式、短 ID、跨 SSE 分片、旧占位词、错误名称与有效 ID 并存、课程列表占位项和已知机器字段名。
+- 已处理课程/路线链路：`conversations.py` 对流式回答、历史正文/标题、推荐说明、专家建议和引用资源可见字符串使用同一目录映射；`courses.py` 保留决策 JSON、`course_cards`、`learning_route`、签名跳转链接、停止/反馈字段所需机器 ID。引用资源的 ID 元数据保持结构但不作为用户文案展示。
+- 已处理路线顺序与确认：后端按“新手必看 → 入门阶段 → 高手进阶”排序并规范快照序号，保留已有 `stage_id`；快照版本升级后会自动丢弃旧缓存，避免线上继续使用旧阶段顺序。补充接受小程序实际使用的“我确认学习路线：路线名称”确认文案，确认路线后进入阶段确认，确认阶段后才生成课程卡片。未知阶段不猜测名称，保留原顺序并进入后续目录复核。
+- 已处理知识库路线材料：`course_import.py` 生成路线资料时同时写入课程正式名称和内部 ID，供 Chatflow 决策使用；本轮不删除 Chatflow 决策字段，也未重新发布 Dify DSL。
+- 本地回归：课程路线套件 `14 passed`；本次相关组合回归两组分别为 `3 passed`、`23 passed`，快速部署契约 `11 passed`，目标代码 Ruff、Python 编译、功能索引检查通过；Starlette/httpx 仅有既有弃用警告。一次完整跨文件长测曾超出工具等待窗口，未将其误报为全量通过。
+- 远端配置与发布：`/internal/v1/entry-config` 已返回恰好 3 条固定问题且文案完全匹配；最终 `ai-management` release 为 `quick-20260805-142049-ddc348e62453`，源码指纹为 `ddc348e62453aff31e27c872e6a248cd0c170a3846a9c61892ec1b91b55b39fd`，报告 `/opt/ai-management/var/reports/v2/quick-20260805-142049-ddc348e62453-quick-deploy`，发布前备份 `/opt/ai-management/backups/quick-20260805-142049-ddc348e62453-predeploy`，模式为 `--keep-data`。API readiness、Dify 可达、测试 UI HTTP 200、API/Worker/UI/OCR 均通过。
+- 真实 SSE：三条固定问题均 HTTP 200；课程/路线/阶段名称正常展示，可见回答和推荐说明未出现 ID、`course_`/`route_`/`stage_`、旧占位词；课程卡片 `redirect_url` 有效。连续路线链路已验证 `awaiting_route_confirmation → awaiting_stage_confirmation → active`，阶段确认后返回 5 张课程卡片；4 个合成用户会话删除接口均返回 HTTP 200。
+- 部署问题已统一修复：首次成功路径因在 `trap - EXIT` 前未执行 OCR 恢复，导致原本 running 的 OCR worker 保持退出；已在本地/远端部署脚本中补充成功路径恢复并加契约测试，远端脚本原文件备份为 `/opt/ai-management/backups/20260805-142023-quick-deploy-script-before-ocr-restore-fix/`，最终 release 已验证 OCR 自动恢复为 running。
+- 小程序侧开放项：当前仓库没有小程序页面源码，无法在本轮修改“已开始返回最终答案”、耗时/token、首屏问题悬浮和底部安全区遮挡等纯前端展示；后端已确保这些状态/机器字段不进入用户回答正文，页面是否渲染仍需在小程序仓库按现有固定接口核对。
+- 仍需处理的测试环境项：文档契约 11 项中 10 项通过，唯一失败是测试配置 `_IncludedRouter` 缺少 `path`；`test_app_routing.py` 在本机 120 秒内未返回终态。它们不涉及本次课程名称、路线确认或用户可见文本代码，保留为独立环境/测试兼容问题，未伪报全量通过。
+- 本轮不修改固定接口文档：`docs/小程序后端与 AI 管理服务接口对接交互版本.md`、正式接口标准和 `docs/API与SSE说明.md` 保持不作为本轮编辑目标；不修改 `AGENTS.md`，不提交或推送 Git。
+
+## 0.28 2026-08-05 商业顾问首屏问题与用户可见内部标识过滤（历史）
+
+- 已处理首屏问题：`dify/商业顾问（当前使用版本）.yml` 的 `workflow.features.suggested_questions` 固定为 3 条，均聚焦现有 `AI高手提效课`：系统学习 AI 工具、公众号运营入门、已有基础后的 AI 写作进阶课程选择。本轮只改首次进入页面的问题，不改回答后的推荐问题，也未新增接口。
+- 已处理用户可见文本：`ai_management/stream_filter.py` 过滤课程、路线、阶段的中文/英文标签、完整或短内部 ID、`course_`/`route_`/`stage_` 裸标识、括号形式标识和旧占位词，并支持标识跨 SSE 分片出现；流式回答、历史正文/标题、推荐说明、专家建议和引用资源的可见字符串均接入同一规则。
+- 已保留机器字段：Chatflow 决策 JSON 中的候选 ID 不删除；`courses.py` 仍负责 ID 校验、课程链接查询和签名卡片生成；`course_cards`、`learning_route` 及停止/反馈所需字段保持结构兼容。测试页在缺少路线名称时显示通用文案，不回退展示 `route_id`。
+- 已同步稳定文档：`docs/API与SSE说明.md`、`docs/Dify创建导入绑定与契约测试.md`、`docs/小程序后端与AI管理服务接口对接标准.md` 和 `docs/小程序后端与 AI 管理服务接口对接交互版本.md` 已明确公开文本过滤边界、结构化机器字段兼容边界和首屏 3 条问题的配置/发布/缓存说明。
+- 已修复文档契约问题：排障条目 `DEPLOY-013` 补齐必填“证据”字段；文档字段契约检查已通过。剩余失败不再是文档字段缺失，而是路由静态索引测试读取 `_IncludedRouter.path` 的兼容问题。
+- 本地验证已完成：流过滤与统一 DSL 定向回归 `13 passed`；商业顾问流式/历史及课程卡片回归 `3 passed`；路线确认/阶段进度回归 `2 passed`；测试页回归 `13 passed`；优化版 DSL 回归 `9 passed`。目标代码和测试 Ruff、Python 编译、统一 DSL 构建检查、功能索引检查及 diff 检查均通过。
+- 仍需处理的线上配置项：本轮未执行 Dify 保存/发布或远端写入，因此仓库 DSL 不是线上已更新的证据。需由有权限的发布人员在 Dify 商业顾问 App 中保存并发布后，核对 Dify `/parameters`、jx `/internal/v1/entry-config` 和 3 条问题的实际 SSE；入口缓存最长约 300 秒，需缓存失效后复核。
+- 仍需处理的测试项：`tests/test_app_routing.py::test_modular_app_keeps_public_routes` 与 `tests/test_project_documentation_contract.py::test_static_route_index_matches_test_configured_fastapi_app` 当前在 `_IncludedRouter` 缺少 `methods`/`path` 处失败，未涉及本轮首屏或文本过滤代码，需单独诊断运行环境/路由测试兼容问题；全量 pytest、跨域批量测试和受保护清洗样本缺失仍沿用现有脱敏阻塞记录，不能据此宣称全量通过。
+- 本轮未修改 `AGENTS.md`，未发布 Dify、未执行远端写入、未提交或推送 Git；上述未完成项已与代码已处理项分开记录。
+
+## 0.27 2026-08-05 两份执行计划合并执行完成（当前最新）
+
+- 本轮已在本地完成 PDF 共享核心迁移：`knowledge_cleaner/pdf_markdown_refine.py` 统一承载布局/目录/段落/表格/OCR 文本恢复，`scripts/pdf_markdown_refine.py` 保留为薄 CLI；上传 PDF 仍统一进入 `ai_ocr` 队列。OCR 目标配置为最多 50 页、任务超时 3600 秒。
+- PDF 上传链路已按“告警继续、硬阻断复核”分级：`PDF_CONVERSION_WARNING`/`PDF_CONVERSION_BLOCKED` 复用 `SystemEventLog`；新增问题中心查询和精确 resolve 接口，`open` PDF 事件不受普通日志清理影响。问题中心不保存正文、原始文件名或密钥。
+- 商业顾问适配层已加入跨 SSE chunk 的即时提示精确前缀去重：仅当最终答案开头（忽略前导空白）与已发送即时提示逐字相同时剥离；不匹配和正文中间重复原样保留；历史只保存最终答案。未修改 Dify DSL。
+- 验收累计预算已增加机器配置 `JX_ACCEPTANCE_CLEANING_BUDGET_MAX_YUAN`，默认 5.00 元；`full_cleaning_acceptance.py` 在新的 Batch 付费任务审批前 fail-closed 累计估算费用。
+- Dify PDF Workflow 和 Sandbox 临时探针已全部退役：jx 已从 `/opt/ai-management/backups/20260804-pdf-code-sandbox-pre` 恢复 Sandbox/SSRF/超时基线，临时 override 已删除；退役前快照为 `/opt/ai-management/backups/20260805-pdf-workflow-retire-pre`。本地测试 DSL 和探针材料已删除，历史报告保留。
+- 验证结果：本地定向相关套件最终通过（发布/清理/策略/问题中心/预算/流式去重等 47 项重点回归，扩展契约组 63 项）；样本集清单为 31 个文件（22 PDF、8 Markdown、1 DOCX），非 PDF 9/9 成功，PDF 代表性文字/扫描/混合样本均按预期进入转换或复核状态。完整全量 pytest 和部分跨域批量测试因超时/缺失受保护夹具而保留脱敏问题记录，未将环境阻塞误报为代码通过。
+- jx 第二次完整 wheel 发布为 `20260805-merge-fix`，报告 `/opt/ai-management/var/reports/v2/20260805-merge-fix-deploy`；API、Worker、Scheduler、UI 使用同源镜像，`/health/ready` 为 `ready` 且 `dify_reachable=true`，OCR 默认 50 页/3600 秒，机器费用上限回读 5.00 元，公网测试页 HTTP 200。
+- 远端代表性 PDF 实测上传→`ai_ocr`→清洗→Dify 发布成功，随后通过 v3 精确清单删除 1 个批次、1 个 general Dify 文档和对应 Redis 键；首轮发现的 file-scoped PDF 事件孤儿已修复清理脚本并第二轮重跑，问题中心 `status=open` 现为 0。历史首轮告警按精确 ID resolve，未触碰正式数据。
+- 商业顾问真实 SSE 实测 HTTP 200、10 个事件、3 个答案 delta、`message_end=completed`，会话精确删除返回 200，未检测到最终答案精确前缀重复。机器预算预检 `0.80/5.00` 通过。
+- 测试阶段全部问题集中记录于 `var/reports/20260805-plan-merge/issues.jsonl`；已统一修复并重跑，未提交或推送 Git。
+- 未完成项（环境/输入阻塞，不是本轮已确认的产品缺陷）：全量 `pytest` 在工具等待窗口内未返回终态；跨域批量测试仍有超时；`tests/test_consultation_v2.py` 依赖的受保护清洗样本缺失。已按测试规范保留脱敏证据，未生成替代样本、未把这些阻塞写成通过。既有排障模板缺少“最后验证”字段也未改写历史条目。
+
+## 0.26 2026-08-05 商业顾问分段流式发布与 jx 测试页验收（历史）
+
+- jx 最终发布号为 `quick-20260805-020249-034af4811733`；Core、UI、OCR Worker 均使用该发布号，发布模式为 `--keep-data`。发布前备份为 `/opt/ai-management/backups/quick-20260805-020249-034af4811733-predeploy`，报告为 `/opt/ai-management/var/reports/v2/quick-20260805-020249-034af4811733-quick-deploy`。
+- 发布后 API `/health/ready` 为 `ready`，database、Redis、Dify 应用/知识库配置和 Dify 可达性均为 `true`；公网测试页 `http://112.74.37.111/ai-management-test/` 返回 HTTP `200`。Core/UI/OCR 镜像指纹和迁移 head 已由发布脚本核对。
+- 商业顾问真实合成 SSE 验收：同一流收到 `progress_answer_started` → 1 个即时提示 `answer_delta` → `final_answer_started` → 2 个最终答案 `answer_delta`，无 `error`；即时提示长度 20、最终段长度 184，仅最终段写入历史。浏览器测试页已实测出现独立“即时提示”和“最终回答”区域，且请求可完成。
+- 失败与修复：首次部署暴露服务器 `knowledge_cleaner/pdf_convert.py` 落后导致 OCR 预检导入失败；第二次暴露 UI 冷启动瞬时 502；随后补齐服务器已提交基线、部署脚本页面重试和 OCR Worker 无 systemd/完整 Compose 恢复逻辑，最终发布通过。失败报告保留在 `quick-20260805-013308-8408d2e634e4-quick-deploy` 和 `quick-20260805-014156-8408d2e634e4-quick-deploy`。
+- 测试清理：本轮 3 个合成用户创建的本地会话及关联 Dify 会话均按精确 ID 删除，删除接口均返回 200；未清理正式课程、知识库、Redis 整库或上传卷。
+- 当前修改入口：`ai_management/conversations.py` 处理 Dify `progress_answer` 的 `node_finished.data.outputs.answer` 并复用 `answer_delta`；`ai_management/test_ui.py` 按 status 边界分栏；节点来源/推荐问题/专家建议/朋友圈与写作引导语见 `docs/Dify创建导入绑定与契约测试.md`。
+
+## 0.25 2026-08-04 PDF→Markdown Dify Code 节点用户自测窗口（历史记录）
 
 - 按用户最新指令，远端 Dify Sandbox 当前保持自测配置：镜像 `jx-dify-sandbox-pdf-probe:20260804`，PyMuPDF/RapidOCR/ONNX Runtime 可导入，`WORKER_TIMEOUT=180`，API `CODE_EXECUTION_READ_TIMEOUT=180`，OCR 所需 syscall 白名单已临时放宽。
 - SSRF 代理仅临时放行 `112.74.37.111:80` 供 Dify 文件签名 URL 下载；没有开放通用外网。Dify API、Sandbox 均 healthy，四个 OCR 依赖的导入烟测通过。
@@ -1125,3 +1264,150 @@ D:\work\projectc\jx-now\docs\README.md
 - 最终验证：使用现有 `jx-now-ai-management-ocr:20260804-rapidocr-semantic-78f9a1` 一次性容器、`--ocr-dpi 200 --force` 覆盖输出；输入 5 个且空文件数为 0，退出码 `0`，5/5 成功（3 个 `pdfplumber`、2 个 `RapidOCR`），合计 263 页。输出 5 个均非空、权限 `600`；目录样本 25 个普通目录项，跨页几何表格 1 个连续表格块；代码围栏、`None`、OCR 页脚模式均为 0。复测确认此前句内断行已合并。
 - 官方依据与限制：`pdfplumber` 官方按页返回表格且不提供跨页/正文阅读顺序自动合并；RapidOCR 官方只提供行框、文本和置信度，段落/标题/页脚均由本脚本启发式恢复。无边框复杂表格、多栏版式和 OCR 表格结构仍需人工复核。
 - 证据：最终日志 `/opt/ai-management/tmp/pdf-markdown-refine/runs/20260804-234210/`；脱敏问题记录 `var/reports/20260804-pdf-markdown-refine/issues.jsonl` 的 `PDF-MD-002`、`PDF-MD-003`。本次未修改输入 PDF、OCR Worker、Compose、Dify、数据库、Redis 或生产清洗链路。
+
+### 2026-08-05：按通用结构规则平铺目录并覆盖重跑
+
+- 修改原因：用户确认目录只用于匹配正文标题，要求保留原始目录标题、统一一层、删除子目录和页码；并强调样本只是示例，不能固定写死条目。
+- 修改前：目录输出仍可能保留页码，编号标点被统一改写；当 PDF 把多行目录拆分或拼接时，子目录可能混入一级目录，长目录候选数还可能少一项。
+- 修改后：`scripts/pdf_markdown_refine.py` 保留原始编号/标点/标题，使用编号层级、子项标记、目录行 `x0`/缩进和同级序列筛选顶层，移除点线与页码，统一输出无嵌套 `- 原始编号 标题`；同时保留 RapidOCR 页脚、段落和字段断行规则。该逻辑不依赖样本文件名或固定标题。
+- 服务器动作：旧脚本先备份到 `/opt/ai-management/tmp/pdf-markdown-refine/backups/20260805-pre-flat-toc/`、`/opt/ai-management/tmp/pdf-markdown-refine/backups/20260805-pre-toc-count-fix/` 和 `/opt/ai-management/tmp/pdf-markdown-refine/backups/20260805-pre-generic-fixture-comments/`，再同步脚本；使用现有 `jx-now-ai-management-ocr:20260804-rapidocr-semantic-78f9a1`、`--ocr-dpi 200 --force` 覆盖输出。未修改输入 PDF、OCR Worker、Compose、Dify、数据库、Redis 或生产清洗链路。
+- 验证：日志 `/opt/ai-management/tmp/pdf-markdown-refine/runs/20260805-010112/`，退出码 `0`，5/5 成功（3 个 `pdfplumber`、2 个 `RapidOCR`），共 263 页，输出 5 个非空 Markdown 且权限均为 `600`；长目录 25 个一级条目、0 个嵌套条目、0 个页码；代码围栏、`None`、OCR 页脚和错误标记均为 0。本地直接调用 6 个回归函数全部通过，回归夹具已改为泛化占位内容；本机未安装 `pytest`，未将其缺失误报为失败。当前服务器脚本 SHA-256：`974892b84eb65b928fa5ab1256aca301e84fe4e8e87f254f3818099af67fcc05`。
+- 已知边界：同编号、同标点且无缩进的父子目录在 PDF 信息中不可唯一判定；无边框复杂表格、多栏阅读顺序和 OCR 表格列结构仍需人工复核。
+
+### 2026-08-05：商业顾问分段流式发布、问题修复与文档同步
+
+- 修改原因：用户要求把 Chatflow 中先返回的即时提示与最终答案分开展示，并部署到 jx 测试页完成真实验证。
+- 修改前：本地适配层只按 `message.answer` 追加 delta；Dify 1.13.3 的 `progress_answer` 固定 Answer 节点实际通过 `node_finished.data.outputs.answer` 返回，因此线上只能发阶段边界，不能发即时提示正文。快速部署脚本还会把 UI 冷启动 502 判为失败，并在无 systemd 时漏掉 OCR Worker 恢复。
+- 修改后：`ai_management/conversations.py` 将 `progress_answer` 输出转为现有 `answer_delta`，以 `progress_answer_started`/`final_answer_started` 切换阶段；测试页使用“即时提示/最终回答”两个占位区。快速部署脚本增加 60 秒测试页重试，并使用完整 Compose、独立于 systemd 的 OCR Worker 状态恢复。同步更新 Dify、SSE、部署排障和接口说明。
+- 验证：本地定向测试 11 项通过；jx 最终发布 `quick-20260805-020249-034af4811733`，API ready、测试页 HTTP 200、Core/UI/OCR 同源且 OCR Worker running；真实合成 SSE 为 1 个即时提示 delta + 2 个最终答案 delta，无错误；公网浏览器测试页出现两个独立展示区并完成请求。
+- 清理：3 个合成用户会话及关联 Dify 会话按精确 ID删除，未清理正式数据；失败发布报告和最终报告保留在服务器固定报告目录。未提交或推送 Git。
+
+### 2026-08-05：修复 PDF 标题误判、目录层级与段落换行
+
+- 修改原因：用户反馈加粗正文被错误输出为标题、长文跨行标题被拆成两个层级，以及连接内容被错误拆段；要求继续使用通用规律，不按样本文档写死。
+- 修改前：粗体本身可能触发 H2/H3；有目录的正文可能出现多个 H1；标题换行在分类前被当作独立行；OCR/文字 PDF 的段落阈值在不同版式下可能把独立段落粘连或把未结束句拆开。
+- 修改后：`scripts/pdf_markdown_refine.py` 以目录匹配、相对字号、编号、独立行和上下间距联合判定标题；粗体且正文同字号不升级；有目录时 `# 目录` 为唯一 H1、正文从 H2 开始；标题先合并再分类；正文仅在几何大间距、句末标点、字段标签或缩进变化时断段，未结束句续接；清理 PDF 中源文本行首 `# `，避免伪 Markdown 标题。OCR 改为使用全文件字号基线。
+- 服务器动作：旧脚本备份到 `/opt/ai-management/tmp/pdf-markdown-refine/backups/20260805-pre-heading-paragraph-final/` 和 `/opt/ai-management/tmp/pdf-markdown-refine/backups/20260805-pre-heading-global-ocr/`；旧 OCR 镜像标签已被清理，使用现有等价离线镜像 `jx-now-ai-management-ocr:quick-20260805-020249-034af4811733`，未联网拉取、未新增服务。
+- 验证：日志 `/opt/ai-management/tmp/pdf-markdown-refine/runs/20260805-024839/`，退出码 `0`，5/5 成功（3 个 `pdfplumber`、2 个 `RapidOCR`），263 页；5 个输出均非空且权限 `600`。有目录的 5 页/239 页文字样本分别生成 5/25 个目录项，均仅保留一个 H1（目录）、0 个嵌套/页码；长标题跨行合并 1 次；粗体正文误判 0；OCR 页脚、代码围栏、`None` 和错误标记均为 0。本地 14 项回归函数和编译检查通过。当前服务器脚本 SHA-256：`4a320e2d96df75aa8493eadd5731cbc923358efdc26fa3faf4033cad76d98b91`。
+- 已知边界：没有目录匹配、字号与正文相同且间距不明显的编号行会保守按正文/列表处理；无边框复杂表格、多栏阅读顺序和 OCR 表格列结构仍需人工复核。
+
+### 2026-08-05：合并 PDF 清洗与商业顾问去重执行计划
+
+- 修改原因：按用户确认合并两份执行计划，增加机器可配置验收费用上限，并按“测试阶段集中记录、测试完成后统一修复”执行。
+- 修改前：PDF 版式核心仍由独立脚本维护，上传链路没有统一 PDF 问题中心；商业顾问最终答案可能重复即时提示；验收费用没有机器侧累计门禁；Dify PDF Workflow 临时资产仍被当前索引引用。
+- 修改后：共享 PDF 核心接入 `knowledge_cleaner`，PDF 告警/阻断复用 `SystemEventLog` 问题中心；商业顾问按精确前缀跨 chunk 去重；新增 `JX_ACCEPTANCE_CLEANING_BUDGET_MAX_YUAN`（默认 5.00 元）和 fail-closed 预检；Dify PDF Workflow/探针退役并恢复 jx 原始 Sandbox/SSRF 基线。当前只记录脱敏测试证据，未提交或推送 Git。
+
+### 2026-08-05：合并计划统一修复、远端复测与精确清理
+
+- 修改原因：远端代表性 PDF 验收发现问题中心事件按 `cleaning_file` 资源记录，而精确清理脚本只按批次 ID 删除，导致已清理测试批次仍残留 1 条 open 告警。
+- 修改前：`scripts/jx_release_data.py` 删除批次事件时只匹配 `CleaningBatch.id`；首轮发布 `20260805-merge-6c843e` 的 PDF 测试批次与 Dify 文档已删除，但 file-scoped 告警仍可查询。
+- 修改后：清理前读取目标批次的 `CleaningFile.id`，按“批次 ID + 文件 ID”精确删除对应 `SystemEventLog`；新增清理契约测试。第二次完整发布 `20260805-merge-fix` 后，代表性 PDF 第二轮成功并完成批次/Dify/Redis/事件精确清理，问题中心 open 总数为 0；首轮遗留事件按精确 ID resolve。
+- 证据：发布报告 `/opt/ai-management/var/reports/v2/20260805-merge-fix-deploy`；本地脱敏报告 `var/reports/20260805-plan-merge/`；未提交或推送 Git。
+
+### 2026-08-05：补充完成度与未完成测试阻塞说明
+
+- 修改原因：用户要求明确区分已完成、未完成和测试问题处理状态，并按项目级 Agents 补齐当前状态文档。
+- 修改前：顶部状态已记录主要功能和远端结果，但未单独列出全量测试超时、跨域批量超时及受保护样本缺失的未完成项。
+- 修改后：明确产品实现、定向回归、远端验收和问题修复均已完成；环境/输入阻塞仍未完成且保留在脱敏 `issues.jsonl`，不生成替代样本、不伪报通过。未修改 `AGENTS.md`，未提交或推送 Git。
+
+### 2026-08-05：补齐排障文档模板并复核测试状态
+
+- 修改原因：文档契约测试发现历史排障条目字段不完整；用户要求按项目级 Agents 更新相关文档并明确测试问题是否全部处理。
+- 修改前：DEPLOY-007/009/010/011/012、部分 DATA/DIFY 条目缺少模板字段；状态区未区分已修复的产品问题与仍开放的测试环境阻塞。
+- 修改后：补齐部署、数据清理、Dify 排障条目的完整字段，文档契约测试 `11/11` 通过；状态区明确全量 pytest/跨域批量超时和受保护样本缺失仍为 `open` 环境/输入阻塞，未生成替代样本或伪报通过。证据和状态见 `var/reports/20260805-plan-merge/issues.jsonl`。
+
+### 2026-08-05：补充商业顾问首屏问题、内部标识过滤及剩余事项
+
+- 修改原因：用户要求只调整商业顾问首次进入页面的固定问题，并在 `ai-management` 用户可见文本出口过滤路线、阶段、课程内部标识，同时明确已处理问题、测试结果和仍需处理的问题。
+- 修改前：当前 DSL 的首屏固定问题数量和文案未满足本轮确认口径；服务端公开文本过滤边界未在正式接口标准中明确覆盖阶段标识、英文/短 ID、括号形式和跨 SSE 分片；状态交接未集中记录本轮线上发布限制与路由契约测试阻塞。
+- 修改后：首屏固定为 3 条现有 `AI高手提效课` 相关问题；服务端统一过滤用户可见回答、历史、推荐、专家建议和引用资源中的课程/路线/阶段标识及旧占位词，同时保留 Chatflow 决策 ID 和课程卡/路线进度机器字段；补充 API/SSE、Dify 配置指南、正式接口标准和本状态交接。
+- 验证结果：相关定向回归、Ruff、Python 编译、统一 DSL 构建检查、功能索引检查和排障文档字段检查均通过；仍保留 Dify 未发布、两个 `_IncludedRouter` 路由契约测试失败、全量长测/受保护夹具环境阻塞，未将其误报为完成。
+- 变更边界：未修改 `AGENTS.md`，未执行 Dify 发布、远端写入、Git commit 或 push；完成线上配置仍需按本状态顶部说明由有权限人员发布并在缓存失效后核对。
+
+### 2026-08-05：恢复课程/路线正式名称并统一后端公开文本出口
+
+- 修改原因：用户实测发现过滤器把课程名称列表变成“内部标识已隐藏”，并继续泄露阶段 ID；要求从课程推荐、路线确认、阶段进度和历史链路整体修复。
+- 修改前：`stream_filter.py` 只删除 ID/占位词，无法把 ID 还原为目录名称；路线快照按原始 `order` 返回，`AI高手提效课` 可能先显示“高手进阶”；路线知识库材料主要提供 ID，模型容易臆造课程名。
+- 修改后：新增已审核目录 ID→名称映射、占位列表恢复、错误名称纠正、未知 ID 不可用提示和跨 SSE 分片处理；`courses.py` 固定阶段顺序并升级快照版本；`course_import.py` 生成路线资料时补充课程名称；结构化机器字段保持兼容。
+- 本地证据：`tests/test_stream_filter.py`、`tests/test_ai_management.py`、`tests/test_course_route_catalog.py` 相关用例通过；目标代码 Ruff、Python 编译通过。组合长测曾被遗留 pytest 进程占用 SQLite 文件，已拆分运行并保留该环境现象，不把它写成代码失败。
+- 后续：发布、真实 SSE 和精确测试会话清理已完成；小程序纯前端渲染问题继续保留为开放事项。
+
+### 2026-08-05：线上发布、路线确认修复与最终真实 SSE 验收
+
+- 修改原因：真实回归发现小程序实际发送的“我确认学习路线：AI高手提效课”未命中后端路线确认判定；同时需确认名称恢复、课程卡片、阶段顺序和三条首屏问题在最终 release 上整体生效。
+- 修改前：后端只接受“确认选择”等少数路线确认表达，截图文案会持续停在待确认；快速部署脚本成功路径关闭退出 trap 前没有执行 OCR 状态恢复；首次成功部署后 OCR worker 保持 exited。
+- 修改后：`courses.py` 接受明确的“确认学习路线/选择学习路线”表达并保留问题句拒绝规则；补充路线确认回归测试。`scripts/jx_quick_deploy.sh` 在成功关闭 trap 前显式恢复发布前 running 的 OCR worker；远端原脚本已按精确目录备份后更新。
+- 验证：最终 release `quick-20260805-142049-ddc348e62453` 保留数据发布成功；API ready、Dify reachable、test UI 200、OCR running。三条固定问题和路线连续链路真实 SSE 均通过，路线确认后进入阶段确认，阶段确认后为 active 并返回 5 张卡片；可见文本无内部标识/旧占位词，课程链接有效。入口配置返回 3 条问题且与目标文案完全一致。
+- 清理边界：仅删除本轮 4 个合成用户的会话，删除接口均返回 200；未删除正式课程、路线、Dify 数据集、Redis 整库或持久卷。未修改固定接口文档，未执行 Git commit/push。
+- 遗留验证：`tests/test_project_documentation_contract.py` 仅剩 `_IncludedRouter.path` 测试配置兼容失败；`tests/test_app_routing.py` 本轮超出 120 秒等待窗口。两项均按脱敏证据保留，未扩展本次业务改动范围。
+
+### 文档修改记录（2026-08-05 统一清洗链路任务）
+
+- 修改原因：记录本轮统一转换、表格清洗、策略/模型/复核、父子分隔符、Metadata、Dify 发布和 jx 新数据验收的最终事实，并覆盖部署中发现的 OCR 早期失败恢复问题。
+- 修改前：顶部最新状态仍以旧 PDF 表格告警行为、旧 release 和旧测试快照为准，未记录统一 Markdown 最终门禁、Dify `.md` 命名及本轮标准 PDF/DOCX/Markdown 验收。
+- 修改后：新增 0.31 当前状态，记录根因、统一链路、release/备份/报告、3 个标准文档验收和精确清理结果；历史章节保留不改写。
+
+### 文档修改记录（2026-08-05 raw 验收补充）
+
+- 修改原因：补充用户确认的 raw 上传模式验证，避免只验证 `cleaned` 而遗漏 raw 的转换和表格清洗分支。
+- 修改前：0.31 已记录 `standard_document` 的 PDF、DOCX、Markdown 新数据验收，但未记录 raw 三种文件类型的远端结果。
+- 修改后：补充 raw PDF、DOCX、Markdown 均成功、Dify 名称/Metadata 通过及精确清理结果；专用输入目录已删除，历史输入和正式数据未清理。
+
+### 文档修改记录（2026-08-06 清洗失败隔离策略与 jx 验收）
+
+- 修改原因：用户确认不再让几十万个文档因模型契约或单文档异常整体进入人工审批；要求模型无返回值最多重试一次，仍失败则记录文件名、策略和失败原因并跳过，失败记录保留 7 天，同时完成 jx 测试页到知识库入口的真实验收。
+- 修改前：内容模型策略的契约/模型异常可能被聚合为 `review_required`，缺少按文档失败隔离和统一失败记录查询；快速发布无法覆盖本轮新增的共享 `knowledge_cleaner` 模块。
+- 修改后：四类内容模型策略按文档隔离 `failed`、`review_required` 和成功结果；仅无响应重试一次，非空契约失败不重试；新增失败条目分页/CSV 查询接口和 7 天保留；通过完整 wheel 发布解决共享模块导入门禁。
+- 验证：release `20260806-065957-full-bd1c4762d48d` 的 ready、Dify、测试页和同源服务检查通过；测试页批次 `019fd42f-7599-7cc0-a4ce-6eacc1063dc1` 使用 `zsxq_post` 成功完成实时模型调用、Dify 发布和条目详情回读，Metadata 可读；本地 `pytest tests -q` 全部通过。
+- 问题与证据：首次快速发布的 OCR 授权门禁和共享模块导入失败，以及测试页隐藏上传控件问题，均记录在 `var/reports/20260806-cleaning-policy/issues.jsonl` 并已解决。发布报告/备份路径见顶部 0.32；未修改小程序后端和既有 AI 管理接口，未提交或推送 Git。
+
+### 文档修改记录（2026-08-06 review_required 开关修复与最终验收）
+
+- 修改原因：用户确认需要通过环境配置关闭过严的 `review_required` 阻断，同时要求空文档仍复核、非空文档继续模型/知识库链路，并在 jx 测试页验证到条目入口。
+- 修改前：jx 测试环境没有明确的开关语义；空正文策略异常未被 Worker 的空内容识别规则匹配，空文档重试后变成 `CLEANING_FAILED`；上一轮状态只记录了旧 release 和旧测试批次。
+- 修改后：补充 0.33 状态，记录默认开启/jx 测试关闭、批次快照、非空复核旁路与安全硬门禁；Worker 修复“没有可清洗的正文”分类；同步记录新 release、备份、问题报告、空文档复核和非空文档入库证据。
+- 验证：本地全量 pytest、索引和编译检查通过；jx release `20260806-111200-full-8f59f14169c9` ready；空文档批次 `019fd511-11ea-718b-bfed-0ba266f08d4d` 进入 `review_required`，非空批次 `019fd515-596b-78b2-8733-05cb5ab460c4` 成功发布并可读取条目详情。未修改 `AGENTS.md`、小程序后端和既有 AI 管理接口，未提交或推送 Git。
+
+### 文档修改记录（2026-08-06 新批次降级与完整发布）
+
+- 修改原因：用户要求模型失败时自动使用表格清洗后的源 Markdown 入库，避免几十万个文档卡在 `review_required/failed`，同时要求完善错误定位日志、Dify 多文件上限处理和看门狗，并完成 jx 部署。
+- 修改前：模型复核/技术失败可能成为人工阻塞；普通发布任务未统一进入单并发 Dify 队列；Dify 分片异常路径可能不刷新文件/批次聚合；错误事件只有异常类型，难以定位文件和阶段。
+- 修改后：新增新批次源 Markdown 降级和历史批次 fail-closed；空源明确失败；所有 Dify 写入走 `ai_publication` 单并发；Dify 文章分片遵守配置上限；新增 5 分钟清洗管线看门狗；错误事件保存脱敏上下文和异常摘要；同步 ADR、清洗/Dify 排障文档和功能索引。
+- 验证：本地全量 pytest、编译、文档索引和契约通过；快速发布因远端缺少共享模块自动回滚；完整 wheel release `20260806-144000-full-9afc8b78bc35` 发布成功；真实合成 Markdown 上传到 Dify 后成功并按精确 file ID 清理。未修改 `AGENTS.md`、对外接口或 Git 历史。
+
+### 文档修改记录（2026-08-06 根因修复、日志增强与完整发布）
+
+- 修改原因：用户提供 `lead_magnet` pending、`book` failed 和 `zsxq_post` 清洗结果疑似未提取的问题，要求从上传、策略、模型、分隔符/Metadata、Dify 发布到日志完整定位，并部署修复。
+- 修改前：资料钩子在本地预写 Dify 分隔符后又被边界校验拒绝；书籍 PDF 转换硬门禁原因未在任务详情中充分显式；帖子模型只保存保留/排除后的源块，未要求结构化知识单元；失败日志缺少可定位异常上下文。
+- 修改后：资料钩子保留源 Markdown，由发布 Worker 统一交给 Dify 分块；帖子模型增加证据绑定知识单元和独立文档编排；错误事件补充脱敏异常消息与 traceback；保留历史批次状态，不自动回写旧数据。
+- 验证：本地目标回归、Ruff、编译、索引和 diff 检查通过；jx release `20260806-165915-full-23162b2` ready、迁移 head、同源镜像、OCR timer 和容器内烟测通过。未修改 `AGENTS.md`、对外接口或 Git 历史。
+
+### 文档修改记录（2026-08-06 帖子知识单元契约强化与最终发布）
+
+- 修改原因：复核 `zsxq_post` 历史模型结果后确认旧 schema 只有 `keep/drop`，不能证明完成了认知提取；用户要求认知分享真正提取可迁移商业知识，同时仍保证失败不阻塞入库。
+- 修改前：模型返回非空 `keep/drop` 即可进入成功路径，帖子正文可能与源 Markdown 基本一致。
+- 修改后：保留内容必须有问题、结论、推理、适用条件、行动、风险和来源块组成的知识单元；缺失知识单元按契约失败处理，新批次自动回退源 Markdown。
+- 验证：本地相关套件通过；jx 最终 release `20260806-172003-full-23162b2`、wheel SHA、备份、报告、readiness、迁移、同源镜像、OCR timer 和容器契约烟测均通过。未修改 `AGENTS.md`、对外接口或 Git 历史。
+
+### 文档修改记录（2026-08-06 学习路线阶段课程集名称与完整发布）
+
+- 修改原因：用户确认学习路线目前缺少课程集名称，要求按阶段内原始文档顺序展示课程集名称，不增加课程名称、课程 ID 或复杂存储结构，并要求完成本地测试和 jx 部署。
+- 修改前：`learning_route.stages[]` 只有阶段/课程相关字段，客户端无法直接展示阶段对应的课程集名称；部署验证记录未包含本轮字段契约和真实 SSE 结果。
+- 修改后：新增 `stages[].course_collection_names` 数组，按阶段 `course_ids` 顺序从既有课程快照运行时派生并首次出现去重；同步公开 SSE 契约文档、部署验证记录和顶部最新线上状态。第一次快速发布因旧运行时缺共享模块自动回滚，随后用完整 wheel 成功发布。
+- 验证：本地全量 `339 passed`，Ruff/编译/索引/diff 检查通过；jx release `20260806-195815-course-collections` ready，真实 SSE 返回 2 个阶段且所有阶段字段均为数组；合成会话已精确删除，正式数据未清理。
+- 变更边界：未新增 Redis Key、数据库字段或迁移，未修改小程序后端和 Dify App，未执行 Git commit/push。
+
+### 文档修改记录（2026-08-06 商业顾问“下一步建议”服务端发布）
+
+- 修改原因：用户确认将本地商业顾问“推荐理由”调整的服务端实现部署到 jx，并要求解决部署中发现的问题、沉淀本地排障资料。
+- 修改前：快速发布只上传 `ai_management`，服务器宿主机源码缺少 `knowledge_cleaner.markdown_table_cleaner`，导入门禁在服务切换前中止；完整发布脚本的 post-switch 回滚会引用 `env.backup`，但没有自行创建该文件。
+- 修改后：构建含 `ai_management` 和 `knowledge_cleaner` 的完整 wheel，完成 release `20260806-190738-business-next-step`；API、Worker、Scheduler、三个专用 Worker 与测试页已切换为同源镜像。`scripts/jx_deploy_release.sh` 在任何副作用前备份 `.env`，并已校验后同步至 jx；新增对应发布契约测试和 DEPLOY-017 排障条目。
+- 验证：wheel SHA-256 与服务器一致；API ready、数据库/Redis/Dify 配置与可达性为 true，容器内可导入 `ai_management.conversations` 和 `knowledge_cleaner.markdown_table_cleaner`，Alembic 为 `j6a7b8c9d0e1 (head)`，测试页 HTTP 200，OCR autoscaler timer active。发布过程未清理数据、未发布 Dify App、未改对外接口或 SSE 事件。
+- 边界：当前已部署服务端门禁与 SSE 语义代码；因用户已确认不发布 Dify，线上商业顾问 Chatflow/DSL 仍未导入或发布，新的 `expert_course_ids` 输出契约尚未在 Dify 端生效。未提交或 push Git。
+
+### 文档修改记录（2026-08-07 回到最新版供问题验证）
+
+- 修改原因：用户在回退到 `20260806-172003-full-23162b2` 后，要求切换回 jx 当前最新版以复现和验证问题。
+- 修改前：jx 运行 `20260806-172003-full-23162b2`；服务器最新完整三镜像为 `20260806-195815-course-collections`。
+- 修改后：先完成 `forward-20260807-013426-to-20260806-195815-course-collections` 的数据库、Redis、上传卷和配置快照，再恢复 `195815-course-collections` 的核心/UI/OCR 镜像与 wheel；未修改数据库、Redis、上传卷或 Dify 应用。
+- 验证：API、Worker、Scheduler、测试页均为目标镜像且 running；ready、数据库/Redis/Dify 连通、Alembic `j6a7b8c9d0e1 (head)`、容器内共享模块导入、测试页 HTTP 200、OCR autoscaler timer active 均通过。用户可直接开始问题验证。

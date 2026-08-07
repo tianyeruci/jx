@@ -26,7 +26,9 @@ def test_bailian_batch_is_opt_in_when_no_environment_override(monkeypatch):
 def test_miniapp_interface_document_is_frozen_for_internal_cleaning_changes():
     path = ROOT / "docs/小程序后端与 AI 管理服务接口对接交互版本.md"
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    assert digest == "67b3247c51f99a7253ded281f221f5a81cfb5c6dac26bcb840d8967b28f75f3c"
+    # The contract text now documents the unchanged event/payload with the
+    # current next-step semantics and route display fields.
+    assert digest == "984989a6a943af7efd8e9cb0289f8a53bbc80efb0c95f2f879d7fcb62c897ba9"
 
 
 def test_remote_cleaning_acceptance_uses_anonymous_names_and_covers_new_flow():
@@ -104,6 +106,7 @@ def test_jx_release_scripts_manage_all_cleaning_workers_and_exact_upload_targets
     assert "ET_XMLFILE_WHEEL" in deploy
     assert "MIGRATION_FILES" in deploy
     assert "docker-compose.ai.yml.before-release" in deploy
+    assert 'cp -a .env "$BACKUP_DIR/env.backup"' in deploy
     assert 'h4e5f6a7b8c9_expand_cleaning_batch_status.py' in deploy
     assert 'DIFY_PUBLISH_WINDOW_END_HOUR "24"' in deploy
     assert 'DIFY_PARENT_MAX_TOKENS "2000"' in deploy
@@ -118,6 +121,8 @@ def test_jx_release_scripts_manage_all_cleaning_workers_and_exact_upload_targets
     assert "jx_capture_ui_cleanup_manifest.sh" in deploy
     assert "jx_quick_deploy.sh" in deploy
     assert "jx_reset_cleaning_local_state.sh" in deploy
+    assert "jx_reset_course_route_catalog.sh" in deploy
+    assert "jx_reset_course_route_catalog.py" in deploy
     assert "find /data -mindepth 1 -delete" not in clean
 
 
@@ -204,6 +209,41 @@ def test_local_cleaning_state_reset_is_explicit_recoverable_and_never_deletes_di
     assert 'target="/data/$batch_id"' in reset
     assert "external_deletion_task" in reset
     assert "/health/ready" in reset
+
+
+def test_course_route_catalog_reset_is_exact_recoverable_and_isolated():
+    wrapper = _source("scripts/jx_reset_course_route_catalog.sh")
+    helper = _source("scripts/jx_reset_course_route_catalog.py")
+
+    assert "RESET_COURSE_ROUTE_CATALOG" in wrapper
+    assert 'APP_DIR="/opt/ai-management"' in wrapper
+    assert 'BACKUP_SCRIPT="$APP_DIR/scripts/jx_prebaseline_backup.sh"' in wrapper
+    assert 'PY_SCRIPT="$APP_DIR/scripts/jx_reset_course_route_catalog.py"' in wrapper
+    assert "JX_COURSE_CATALOG_QUIESCED=1" in wrapper
+    assert "scope changed after backup; refusing deletion" in wrapper
+    assert "dify.dump" in wrapper
+    assert "dify-redis-dump.rdb" in wrapper
+    assert "/health/ready" in wrapper
+
+    assert 'KNOWLEDGE_BASE_CODE = "course"' in helper
+    assert 'STRATEGY_CODE = "course_route_catalog"' in helper
+    assert "CleaningBatch.strategy_code == STRATEGY_CODE" in helper
+    assert "source_collision_strategies" in helper
+    assert "unsafe_collection_count" in helper
+    assert "DIFY_COURSE_DATASET_ID" in helper
+    assert "dify_general_dataset_id" in helper
+    assert "client.delete_document(document_id)" in helper
+    assert "delete(CleaningBatch)" in helper
+    assert "delete(Course)" in helper
+    assert "delete(LearningRoute)" in helper
+    assert "delete(CourseCollection)" in helper
+    assert "delete(LearningRouteProgress)" in helper
+    assert 'match="ai:cleaning:batch:*"' in helper
+    assert "shutil.rmtree(target)" in helper
+    safe_report = helper[helper.index("def _safe_report") : helper.index("def _scope_fingerprint")]
+    assert "source_files_sha256" in safe_report
+    assert '"source_files": snapshot' not in safe_report
+    assert "general knowledge-base data" in wrapper
 
 
 def test_force_reset_has_a_separate_confirmation_and_preserves_dify_boundary():

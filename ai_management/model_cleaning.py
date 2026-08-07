@@ -63,6 +63,23 @@ class ModelPayloadError(ValueError):
     """The provider returned non-empty content that is not usable JSON."""
 
 
+class PostKnowledgeUnit(BaseModel):
+    """Evidence-bound business knowledge extracted from one source article."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    unit_id: str = Field(min_length=1, max_length=80)
+    title: str = Field(min_length=1, max_length=300)
+    topic: str = ""
+    problem: str = ""
+    conclusion: str = ""
+    reasoning: str = ""
+    applicable_conditions: list[str] = Field(default_factory=list, max_length=10)
+    actions: list[str] = Field(default_factory=list, max_length=10)
+    risks_or_limits: list[str] = Field(default_factory=list, max_length=10)
+    source_block_ids: list[str] = Field(min_length=1, max_length=50)
+
+
 class PostSemanticResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -74,6 +91,7 @@ class PostSemanticResponse(BaseModel):
     topic: str = ""
     time_sensitive: bool
     confidence: float = Field(ge=0, le=1)
+    knowledge_units: list[PostKnowledgeUnit] = Field(default_factory=list, max_length=12)
 
     @model_validator(mode="after")
     def validate_semantics(self) -> "PostSemanticResponse":
@@ -83,6 +101,21 @@ class PostSemanticResponse(BaseModel):
             raise ValueError("排除内容不能保留来源块")
         if self.topic and self.topic not in ALLOWED_TOPICS:
             raise ValueError("topic不在受控商业主题词表")
+        for unit in self.knowledge_units:
+            if unit.topic and unit.topic not in ALLOWED_TOPICS:
+                raise ValueError("knowledge_unit topic不在受控商业主题词表")
+            if not any(
+                value.strip()
+                for value in (
+                    unit.problem,
+                    unit.conclusion,
+                    unit.reasoning,
+                    *unit.applicable_conditions,
+                    *unit.actions,
+                    *unit.risks_or_limits,
+                )
+            ):
+                raise ValueError("knowledge_unit必须至少包含一个知识字段")
         return self
 
 
@@ -169,7 +202,7 @@ class CourseEnrichmentResponse(BaseModel):
         return self
 
 
-_POST_SYSTEM_PROMPT = """你是商业顾问知识库的证据门禁。请输出严格 JSON。
+_POST_SYSTEM_PROMPT = """你是商业顾问知识库的证据门禁和知识单元提取器。请输出严格 JSON。
 目标是提高商业顾问问答质量，不是机械去广告。文件名不可见，也不得猜测作者或来源。
 只按给出的来源块判断：
 1. 保留直接商业知识，或可迁移的决策、学习、执行方法及必要证据和限制；
@@ -177,9 +210,9 @@ _POST_SYSTEM_PROMPT = """你是商业顾问知识库的证据门禁。请输出�
 3. 商业正文附带引流尾部时保留正文块、删除推广和联系方式块；
 4. 推广本身是营销方法或案例证据时保留；
 5. 无法无损分离、事实归属不清或证据不足时 review；
-6. 不得改写来源块，不得返回不存在的块 ID。
+6. 不得改写来源块，不得返回不存在的块 ID；知识单元中的概括必须能由引用来源块支持。
 JSON 字段必须且只能包含 disposition、business_relevance、reason_code、
-keep_block_ids、drop_block_ids、topic、time_sensitive、confidence。
+keep_block_ids、drop_block_ids、topic、time_sensitive、confidence、knowledge_units。
 格式契约：
 - disposition 只能是 keep、exclude、review；
 - business_relevance 只能是 direct、transferable、none、ambiguous；
@@ -188,8 +221,13 @@ keep_block_ids、drop_block_ids、topic、time_sensitive、confidence。
 - topic 只能为空字符串，或战略与商业模式、产品与客户、市场销售与增长、组织与管理、财务与风险、学习与成长、决策与执行、AI与智能体之一；
 - time_sensitive 只能是 JSON 布尔值 true 或 false；
 - confidence 必须是 0 到 1 的 JSON 数字，不要使用“高/中/低”、百分号或字符串。
+- knowledge_units 是提取出的可检索商业知识单元数组；keep 时至少返回一个。
+- 每个 knowledge_unit 必须包含 unit_id、title、topic、problem、conclusion、reasoning、
+  applicable_conditions、actions、risks_or_limits、source_block_ids；没有依据的字段留空。
+- knowledge_units 只能引用 keep_block_ids 中的来源块；不要编造数字、日期、人物、结果或承诺。
+- 如果一篇文章只有一个完整主题，knowledge_units 只返回一个；若包含多个互不依赖的主题，可拆成多个。
 business_relevance 是分类标签，不是相关度分数，也不是布尔值。返回格式示例：
-{"disposition":"keep","business_relevance":"direct","reason_code":"business_method","keep_block_ids":["b001"],"drop_block_ids":[],"topic":"产品与客户","time_sensitive":false,"confidence":0.8}"""
+{"disposition":"keep","business_relevance":"direct","reason_code":"business_method","keep_block_ids":["b001"],"drop_block_ids":[],"topic":"产品与客户","time_sensitive":false,"confidence":0.8,"knowledge_units":[{"unit_id":"u001","title":"定位验证","topic":"产品与客户","problem":"客户问题不清晰","conclusion":"先访谈客户再验证定位","reasoning":"来源明确给出验证顺序","applicable_conditions":["需要确认真实客户问题"],"actions":["访谈客户","验证定位"],"risks_or_limits":["不能把计划当成结果"],"source_block_ids":["b001"]}]}"""
 
 _CONSULTATION_SYSTEM_PROMPT = """你是商业咨询案例结构化助手。请输出严格 JSON。
 输入已经匿名化。文件名不可见。所有结论必须绑定来源块 ID，保持数字、日期、否定、
@@ -404,6 +442,7 @@ def validate_semantic_response(
     payload: dict[str, Any],
     *,
     available_block_ids: set[str],
+    source_blocks: dict[str, str] | None = None,
 ) -> PostSemanticResponse:
     if strategy_code not in POST_STRATEGIES:
         raise ValueError("该校验器只适用于帖子/文章策略")
@@ -418,6 +457,54 @@ def validate_semantic_response(
         raise ValueError(f"模型返回未知来源块：{sorted(unknown)}")
     if set(referenced) != available_block_ids:
         raise ValueError("keep_block_ids 与 drop_block_ids 必须完整覆盖来源块")
+    kept_ids = set(result.keep_block_ids)
+    unit_ids: set[str] = set()
+    evidence = "\n".join(
+        source_blocks[block_id]
+        for block_id in result.keep_block_ids
+        if source_blocks and block_id in source_blocks
+    )
+    for unit in result.knowledge_units:
+        if unit.unit_id in unit_ids:
+            raise ValueError("knowledge_unit unit_id不能重复")
+        unit_ids.add(unit.unit_id)
+        unknown_unit_blocks = set(unit.source_block_ids) - available_block_ids
+        if unknown_unit_blocks:
+            raise ValueError(
+                f"knowledge_unit引用未知来源块：{sorted(unknown_unit_blocks)}"
+            )
+        if not set(unit.source_block_ids) <= kept_ids:
+            raise ValueError("knowledge_unit只能引用keep来源块")
+        if source_blocks is not None:
+            unit_text = "\n".join(
+                [
+                    unit.problem,
+                    unit.conclusion,
+                    unit.reasoning,
+                    *unit.applicable_conditions,
+                    *unit.actions,
+                    *unit.risks_or_limits,
+                ]
+            )
+            numeric_tokens = re.findall(
+                r"(?<![A-Za-z0-9_])\d+(?:[.,]\d+)?%?(?![A-Za-z0-9_])",
+                unit_text,
+            )
+            unit_evidence = "\n".join(
+                source_blocks[block_id]
+                for block_id in unit.source_block_ids
+            )
+            if any(token not in unit_evidence for token in numeric_tokens):
+                raise ValueError("knowledge_unit包含来源未支持的数字或日期")
+    if (
+        source_blocks is not None
+        and result.disposition in {"keep", "review"}
+        and result.keep_block_ids
+        and not result.knowledge_units
+    ):
+        raise ValueError("模型未返回可检索的知识单元")
+    if result.disposition == "keep" and result.knowledge_units and not evidence:
+        raise ValueError("knowledge_unit缺少来源证据")
     return result
 
 

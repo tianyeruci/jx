@@ -171,15 +171,24 @@ def test_function_and_interface_index_is_current_and_routed():
 def test_static_route_index_matches_test_configured_fastapi_app():
     from ai_management.main import app
 
+    def _iter_http_routes(routes):
+        for route in routes:
+            included_router = getattr(route, "original_router", None)
+            if included_router is not None:
+                yield from _iter_http_routes(included_router.routes)
+                continue
+            if getattr(route, "path", None) is not None:
+                yield route
+
     indexed = {
         (route.method, route.path)
         for route in generate_project_index.collect_routes(ROOT)
     }
     actual = {
         (method, route.path)
-        for route in app.routes
+        for route in _iter_http_routes(app.routes)
         if route.path not in generate_project_index.FRAMEWORK_ROUTE_PATHS
-        for method in (route.methods or set())
+        for method in (getattr(route, "methods", set()) or set())
     }
     assert indexed == actual
 

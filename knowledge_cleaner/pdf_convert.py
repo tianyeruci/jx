@@ -980,52 +980,85 @@ def _text_layer_missing(pages: Sequence[PDFPageResult]) -> bool:
     return any(page.text_characters < 40 for page in nonblank)
 
 
-def _classify_pdf_type(pages: Sequence[PDFPageResult]) -> str:
-    """Classify the complete file, ignoring genuinely blank pages.
+def _boundary_low_text_pages(pages: Sequence[PDFPageResult]) -> list[int]:
+    """Return image-free low-text pages eligible for the boundary exception."""
 
-    ``text_characters`` is deliberately conservative (40 compact characters)
-    so a low-text page without a large image cannot be mistaken for a scan.
-    The lightweight pypdf probe records ``image_count`` for scan evidence.
-    Mixed and uncertain files are sent to review rather than concatenating
-    text-layer and OCR output in one knowledge document.
+    page_count = len(pages)
+    if page_count < 2:
+        return []
+    return [
+        page.page_number
+        for page in pages
+        if page.page_number in {1, page_count}
+        and page.image_count == 0
+        and 0 < page.text_characters < 40
+    ]
+
+
+def _classify_pdf_type(pages: Sequence[PDFPageResult]) -> str:
+    """Classify a PDF conservatively, with a bounded cover/trailer exception.
+
+    A multi-page text PDF may have an image-free first or last page with fewer
+    than 40 compact characters.  It is accepted only when every other page
+    has a usable text layer.  Low-text pages in the middle, low-text pages
+    containing images, and any text/image mixture remain review-only.
     """
 
-    nonblank: list[str] = []
-    blank_pages = [
-        page
-        for page in pages
-        if not page.markdown.strip() and not page.image_count
-    ]
-    for page in pages:
-        if not page.markdown.strip() and not page.image_count:
-            continue
-        if page.text_characters >= 40:
-            nonblank.append("text")
-        elif page.text_characters >= 10 and page.image_count > 0:
-            # A small embedded illustration/icon on an otherwise readable
-            # page must not turn a text PDF into a mixed document.  Pure
-            # image pages have no meaningful text layer and remain ``scan``.
-            nonblank.append("text")
-        elif page.image_count > 0 and page.text_characters == 0:
-            nonblank.append("scan")
-        else:
-            nonblank.append("uncertain")
-    if not nonblank:
-        # Keep the historical OCR route for an entirely blank pypdf probe:
-        # a PDF with no text or image resources is indistinguishable from a
-        # raster scan at this stage, and the OCR quality gate will still
-        # prevent publishing an empty result.  Synthetic/fake backends used
-        # by integrations are treated as uncertain instead of silently OCR'd.
-        return "scan" if all(page.backend == "pypdf" for page in blank_pages) else "review"
-    # A non-pypdf page result without an image signal is not enough evidence
-    # to classify a mixed file as text.  This preserves source compatibility
-    # for callers that construct page diagnostics themselves.
-    if any(page.backend != "pypdf" for page in blank_pages):
-        return "review"
-    if all(kind == "text" for kind in nonblank):
-        return "text"
-    if all(kind == "scan" for kind in nonblank):
+    if not pages:
+        # Preserve the legacy empty-probe route; conversion still blocks later
+        # if OCR cannot produce non-empty Markdown.
         return "scan"
+
+    kinds: list[str] = []
+    for page in pages:
+        if page.text_characters >= 40:
+            kinds.append("text")
+        elif page.image_count > 0 and page.text_characters == 0:
+            kinds.append("scan")
+        elif page.image_count > 0:
+            # A low-text page containing an image is ambiguous: it may be a
+            # scan, a rendered cover, or a genuinely mixed page.  Keep the
+            # strict review gate instead of treating it as text.
+            kinds.append("uncertain")
+        elif page.image_count == 0 and page.text_characters > 0:
+            # A short, image-free text layer can be a cover/trailer.  A truly
+            # blank page is kept distinct and remains review-only in a text
+            # document (while an all-blank pypdf file keeps the OCR route).
+            kinds.append("low")
+        else:
+            kinds.append("blank")
+
+    if all(kind == "scan" for kind in kinds):
+        return "scan"
+    if any(kind == "scan" for kind in kinds):
+        return "review"
+    if all(kind == "text" for kind in kinds):
+        return "text"
+
+    low_pages = [page for page, kind in zip(pages, kinds) if kind == "low"]
+    blank_pages = [page for page, kind in zip(pages, kinds) if kind == "blank"]
+    text_pages = [page for page, kind in zip(pages, kinds) if kind == "text"]
+    if "uncertain" in kinds:
+        return "review"
+    if not text_pages:
+        # Preserve the historical OCR route for an entirely blank pypdf probe:
+        # a PDF with no text or image resources is indistinguishable from a
+        # raster scan at this stage. Synthetic/fake backends remain uncertain.
+        if (
+            all(kind == "blank" for kind in kinds)
+            and all(page.backend == "pypdf" and page.image_count == 0 for page in pages)
+        ):
+            return "scan"
+        return "review"
+    if blank_pages:
+        return "review"
+
+    page_count = len(pages)
+    if all(
+        page.page_number in {1, page_count} and page.image_count == 0
+        for page in low_pages
+    ):
+        return "text"
     return "review"
 
 
@@ -1401,6 +1434,15 @@ def convert_pdf(
         )
 
     pdf_type = _classify_pdf_type(pypdf_pages)
+    boundary_low_text_pages = (
+        _boundary_low_text_pages(pypdf_pages) if pdf_type == "text" else []
+    )
+    if boundary_low_text_pages:
+        quality_flags.append("pdf_boundary_low_text")
+        review_reasons.append(
+            "PDF_BOUNDARY_LOW_TEXT_WARNING:已保留无图片的首页/末页低文字页:"
+            + ",".join(map(str, boundary_low_text_pages))
+        )
     if pdf_type == "review":
         pages = []
         backend_name = "pdf_type_review"

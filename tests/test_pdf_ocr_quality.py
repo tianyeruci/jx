@@ -27,16 +27,25 @@ class _DPIBackend:
         return self.outputs.pop(0)
 
 
-def _page(number: int, text: str, *, confidence: float | None = None, conflicts=None):
+def _page(
+    number: int,
+    text: str,
+    *,
+    confidence: float | None = None,
+    conflicts=None,
+    backend: str = "fake_ocr",
+    image_count: int = 0,
+):
     from knowledge_cleaner.pdf_convert import PDFPageResult
 
     return PDFPageResult(
         page_number=number,
         markdown=text,
-        backend="fake_ocr",
+        backend=backend,
         text_characters=len(text),
         confidence=confidence,
         key_fact_conflicts=list(conflicts or []),
+        image_count=image_count,
     )
 
 
@@ -143,6 +152,95 @@ def test_mixed_first_two_pages_require_type_review_before_ocr(tmp_path):
     assert result.backend == "pdf_type_review"
     assert "PDF_TYPE_REVIEW_REQUIRED" in result.review_reasons[0]
     assert backend.dpis == []
+
+
+def test_image_free_low_text_boundary_page_is_converted_with_warning(tmp_path, monkeypatch):
+    from knowledge_cleaner import pdf_convert
+
+    source = tmp_path / "boundary.pdf"
+    _blank_pdf(source, 3)
+    probe_pages = [
+        _page(1, "封面说明", backend="pypdf"),
+        _page(2, "正文内容 " * 10, backend="pypdf"),
+        _page(3, "尾页说明", backend="pypdf"),
+    ]
+    rendered_pages = [
+        _page(1, "封面说明", backend="pdfplumber"),
+        _page(2, "正文内容 " * 10, backend="pdfplumber"),
+        _page(3, "尾页说明", backend="pdfplumber"),
+    ]
+    monkeypatch.setattr(pdf_convert, "_extract_pypdf_pages", lambda _reader: probe_pages)
+    monkeypatch.setattr(pdf_convert, "_extract_pdfplumber_pages", lambda _path: rendered_pages)
+
+    result = pdf_convert.convert_pdf(source, enable_ocr=False)
+
+    assert result.backend == "pdfplumber"
+    assert "封面说明" in result.markdown
+    assert "pdf_boundary_low_text" in result.quality_flags
+    assert any(
+        reason.startswith("PDF_BOUNDARY_LOW_TEXT_WARNING")
+        and ":1,3" in reason
+        for reason in result.review_reasons
+    )
+    from ai_management.cleaning import _pdf_blocking_reasons
+
+    assert _pdf_blocking_reasons(result.review_reasons, result.markdown) == []
+
+
+def test_low_text_interior_page_still_requires_type_review(tmp_path, monkeypatch):
+    from knowledge_cleaner import pdf_convert
+
+    source = tmp_path / "interior-low-text.pdf"
+    _blank_pdf(source, 3)
+    probe_pages = [
+        _page(1, "正文起始 " * 10, backend="pypdf"),
+        _page(2, "目录", backend="pypdf"),
+        _page(3, "正文结束 " * 10, backend="pypdf"),
+    ]
+    monkeypatch.setattr(pdf_convert, "_extract_pypdf_pages", lambda _reader: probe_pages)
+
+    result = pdf_convert.convert_pdf(source, enable_ocr=False)
+
+    assert result.backend == "pdf_type_review"
+    assert result.markdown == ""
+    assert "PDF_TYPE_REVIEW_REQUIRED" in result.review_reasons[0]
+
+
+def test_low_text_only_pdf_does_not_fall_back_to_ocr(tmp_path, monkeypatch):
+    from knowledge_cleaner import pdf_convert
+
+    source = tmp_path / "low-text-only.pdf"
+    _blank_pdf(source, 2)
+    probe_pages = [
+        _page(1, "短文本", backend="pypdf"),
+        _page(2, "另一段短文本", backend="pypdf"),
+    ]
+    monkeypatch.setattr(pdf_convert, "_extract_pypdf_pages", lambda _reader: probe_pages)
+
+    result = pdf_convert.convert_pdf(source, enable_ocr=True)
+
+    assert result.backend == "pdf_type_review"
+    assert result.ocr_used is False
+    assert result.markdown == ""
+
+
+def test_low_text_boundary_page_with_image_still_requires_type_review(tmp_path, monkeypatch):
+    from knowledge_cleaner import pdf_convert
+
+    source = tmp_path / "boundary-image.pdf"
+    _blank_pdf(source, 3)
+    probe_pages = [
+        _page(1, "封面说明", backend="pypdf", image_count=1),
+        _page(2, "正文内容 " * 10, backend="pypdf"),
+        _page(3, "正文结束 " * 10, backend="pypdf"),
+    ]
+    monkeypatch.setattr(pdf_convert, "_extract_pypdf_pages", lambda _reader: probe_pages)
+
+    result = pdf_convert.convert_pdf(source, enable_ocr=False)
+
+    assert result.backend == "pdf_type_review"
+    assert result.markdown == ""
+    assert "PDF_TYPE_REVIEW_REQUIRED" in result.review_reasons[0]
 
 
 def test_settings_validate_ocr_page_timeout_linkage(monkeypatch):
