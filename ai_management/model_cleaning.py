@@ -229,11 +229,30 @@ keep_block_ids、drop_block_ids、topic、time_sensitive、confidence、knowledg
 business_relevance 是分类标签，不是相关度分数，也不是布尔值。返回格式示例：
 {"disposition":"keep","business_relevance":"direct","reason_code":"business_method","keep_block_ids":["b001"],"drop_block_ids":[],"topic":"产品与客户","time_sensitive":false,"confidence":0.8,"knowledge_units":[{"unit_id":"u001","title":"定位验证","topic":"产品与客户","problem":"客户问题不清晰","conclusion":"先访谈客户再验证定位","reasoning":"来源明确给出验证顺序","applicable_conditions":["需要确认真实客户问题"],"actions":["访谈客户","验证定位"],"risks_or_limits":["不能把计划当成结果"],"source_block_ids":["b001"]}]}"""
 
-_CONSULTATION_SYSTEM_PROMPT = """你是商业咨询案例结构化助手。请输出严格 JSON。
+_CONSULTATION_SYSTEM_PROMPT = """你是商业咨询案例 RAG 清洗器。请输出严格 JSON。
+本策略当前主契约是 consultation-rag-v1：把一份匿名化会议纪要按“背景与目标相同
+才属于同一案”的规则拆成 1~8 个可独立检索的问题案例。相同商业背景/目标下的多个
+领域建议仍保留在同一个 case；只有独立背景/目标才拆分。主契约 JSON 只能包含：
+{"schema_version":"consultation-rag-v1","cases":[{"primary_problem":"...",
+"problem_category":"...","case_stage":"...","relevant_background":[],
+"problem_signals":[],"retrieval_queries":[],"reference_advice":[],"evidence":[]}]}。
+problem_category 只能使用：流量与引流、私域与转化、产品设计与产品梯度、定位与方向、
+定价与销售、交付与用户筛选、内容与表达、社群与留存、执行与增长节奏、其他商业问题。
+case_stage 只能使用：从0到1探索、已有基础未闭环、初步验证待优化、已验证待放大、
+放大后的交付或效率优化、不明确。evidence 的 kind 只能是 background、problem、advice，
+quote 必须能在输入来源块中逐字回溯；每个案例至少有 background 和 problem 证据。
+relevant_background/problem_signals 只能写已发生事实，不能把建议、计划或预计结果当事实。
+retrieval_queries 必须是 3~6 条简体中文用户自然问法，不得输出英文或新增输入不存在的事实。
+模型失败、契约失败或证据校验失败由服务端走整份脱敏源文档兜底；隐私、空正文和明确排除不得自动兜底。
+
+以下字段与旧版 ConsultationCaseV2/sections 仅为历史回放兼容说明；除非任务明确要求旧版，
+不要混用旧结构与 consultation-rag-v1，也不要返回额外字段。
+
+你是商业咨询案例结构化助手。请输出严格 JSON。
 输入已经匿名化。文件名不可见。所有结论必须绑定来源块 ID，保持数字、日期、否定、
 人物归属和“陈述/判断/决定/计划/实际结果”的事实状态；不得补写结果或承诺。
 
-当前版本优先输出 schema_version=consulting_case_v2 的证据优先结构；不要只返回
+历史回放任务可输出 schema_version=consulting_case_v2 的证据优先结构；不要只返回
 schema_version，必须返回下方模板中的全部顶层字段（case_group_id 可为 null，数组可为空）：
 {"schema_version":"consulting_case_v2","case_id":"case_xxxx","case_group_id":null,
 "disposition":"keep_as_case|review_required|exclude","title":"...","source_date":"",

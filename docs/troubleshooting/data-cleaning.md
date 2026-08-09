@@ -539,3 +539,27 @@
 - 预防：几百份文档按 10~50 份批次执行，先 `--dry-run`，固定 `--concurrency 1~2`、重试和请求上限；每批核对 `run_report.json`、父块/Dify/metadata/hooks 守恒关系后再继续，不在 jx 测试中改服务配置、Dify、数据库或 Redis。
 - 证据：`文件清洗样本/咨询会议模型清洗/consultation_rag_cleaner.py`、`test_consultation_rag_cleaner.py`、`README_运行说明.md`；jx 隔离输出 `/opt/ai-management/tmp/consultation-rag-final-audit-20260809-v2/run_report.json`（仅保存测试结果，不写入服务数据）。
 - 最后验证：2026-08-09。
+
+## DATA-044：模型清洗失败后的独立会议分块兜底必须保持 force 与幂等续跑完整、确定且可恢复
+
+- 适用：上游模型清洗/模型调用失败后的无模型 `文件清洗样本/会议总结兜底方案/rag_meeting_chunker.py`，已上传完成的 Markdown 批次目录；本脚本不替代主模型清洗。
+- 触发：同一输出再次使用 `--force`，或已含 separator 的输入指定新的输出目录续跑。
+- 根因：旧实现只删除 separator 行，未删除脚本为 marker 生成的紧邻空行；幂等分支直接返回，导致新输出目录没有对应文件；直接覆盖写还可能在中断时留下截断结果。
+- 解决：删除 marker 及其生成的一个紧邻空行；跳过处理但向独立输出目录原样 materialize；Markdown、备份和报告使用同目录临时文件后 `os.replace` 发布。
+- 非解决：全局压缩原文空白、为追求长度强制重分块、删除原始输入，或把“跳过”报告当作输出文件已经存在。
+- 验证：2026-08-09 本地 unittest `7/7`；jx 4 份真实样本 force 连续三次输出 hash 一致，幂等重跑输出 4/4；3,000 份 synthetic 批次 `3,000/3,000` 成功，正文/marker/metadata/临时文件检查均通过。
+- 预防：把上传完成后的文件集视为一次输入快照；先 dry-run，再正式输出；若文件会在处理期间继续到达，由调用方提供稳定窗口或另行实现 watcher/settle 机制。不得把本脚本测试结果当作服务上传接口验收。
+- 证据：[脱敏验证报告](../../文件清洗样本/会议总结兜底方案/CODEX_VALIDATION_REPORT.md)、[本轮 issues](../../var/reports/20260809-meeting-chunker/issues.jsonl)。
+- 最后验证：2026-08-09。
+
+## DATA-045：咨询会议模型清洗的安全归一化与整份兜底边界
+
+- 适用：`personal_business_consultation` 的 `consultation-rag-v1` 模型清洗，以及 jx `general` 知识库的咨询会议总结样本。
+- 触发：千问返回旧版 `source_block_ids`、把建议句混入背景/问题数组，或在没有 advice 证据时填写 `reference_advice`；严格契约会将可用案例误判为契约失败。
+- 根因：模型输出存在兼容字段和语义越界的混合结果；若直接放宽校验会把未被来源支持的建议、未知来源引用或个人信息写入知识库。
+- 解决：来源块 ID 仅作为可选字段且必须属于已知来源；安全归一化只删除明确的建议性/未被 advice 证据支持的字段，不改写事实、不生成新案例；未知来源 ID、PII、证据原文不匹配、重复案例和缺少核心证据仍严格失败。模型/契约失败按“整份脱敏源文档”兜底，不伪造多案例。
+- 非解决：把所有异常都当作模型成功、无条件放宽 schema、按句子强行拆成多个案例、用名称或时间窗口清理远端文档，或将本地 Dify 分隔标记写入源 Markdown。
+- 验证：jx 最终样本批次 `019fe85b-31dc-7180-a1c9-9fcdfc0263ae` 为 4 个源文件成功、7 个成功文档（3 个同源案例子条目）、2 个源条目按契约兜底；父子块、Metadata 回读和正文无标记检查通过。相关本地测试 9 项通过，最终 release 报告为 `/opt/ai-management/var/reports/v2/20260810-consultation-rag-v1-safe-normalize-deploy`。
+- 预防：保持 v1 合同、验证器和归一化分层；每次模型策略变更同时跑契约/回归测试，并在 jx 复核源文档数、子案例数、父子关系、Metadata 和 marker 状态；不输出原始正文、文件名或密钥。
+- 证据：`knowledge_cleaner/consultation_rag.py`、`tests/test_consultation_rag_integration.py`、jx 批次与发布报告（仅保存脱敏计数和状态）。
+- 最后验证：2026-08-10。

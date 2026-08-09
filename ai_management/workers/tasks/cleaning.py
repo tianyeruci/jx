@@ -493,20 +493,36 @@ def _publish_document(
             row.metadata_json or {},
             row.chunking_json or {},
         )
+        chunking = _chunking_from_json(row.chunking_json)
+        publication_markdown = row.cleaned_markdown
+        if batch.strategy_code == "personal_business_consultation":
+            # Keep local cleaned Markdown marker-free.  Insert deterministic
+            # child boundaries only in the Dify request payload so source
+            # fallback/reprocessing never sees forged platform separators.
+            from knowledge_cleaner.consultation_rag import render_publication_markdown
+
+            publication_markdown = render_publication_markdown(
+                row.cleaned_markdown,
+                child_max_chars=max(300, min(800, chunking.child_max_tokens * 2)),
+            )
+            if not publication_markdown.strip():
+                raise ValueError("知识库发布正文为空，无法生成咨询案例子块")
         audit["publication_input"] = {
             "content_format": "markdown",
-            "content_bytes": len(row.cleaned_markdown.encode("utf-8")),
+            "content_bytes": len(publication_markdown.encode("utf-8")),
             "markdown_sha256": hashlib.sha256(
+                publication_markdown.encode("utf-8")
+            ).hexdigest(),
+            "local_markdown_sha256": hashlib.sha256(
                 row.cleaned_markdown.encode("utf-8")
             ).hexdigest(),
         }
         row.audit_json = audit
         session.commit()
 
-        chunking = _chunking_from_json(row.chunking_json)
         document_id, dify_batch_id = client.create_document(
             row.dify_document_name,
-            row.cleaned_markdown,
+            publication_markdown,
             doc_form=chunking.doc_form,
             process_mode=chunking.process_mode,
             parent_mode=chunking.parent_mode,

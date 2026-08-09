@@ -13,6 +13,16 @@
 - 清理后：Dify `general/course` 均为 `0`；本地清洗批次/文件/文档/模型任务/发布分片为 `0/0/0/0/0`，课程/路线为 `0/0`，清洗 Redis 键和精确课程快照 key 为 `0`，上传卷入口为 `0`；API ready、全部命名服务与测试页均正常。报告：`/opt/ai-management/var/reports/v2/20260809-073700-unexpected-knowledge-cleanup`。
 - 后续：任何仍需要临时公网 `/ai-service/` 的发布，必须先安装并启用该 guard；完整移除临时桥接或改为 HTTPS/私网访问仍需单独评估小程序联调依赖，不能在本次事故处置中擅自中断。
 
+## 0.54 2026-08-10 咨询会议 RAG 清洗实现、jx 发布与样本验收（当前最新）
+
+- 本地实现：`personal_business_consultation` 已接入共享 `consultation-rag-v1` 契约，按“背景与目标相同才成案”拆分；同源独立案例生成稳定 `case_id`，本地 Markdown 不保留 Dify 分隔标记，分隔标记只在发布请求阶段注入。Metadata 继续沿用现有投影，新增字段仅为适用的 `record_type=consulting_case`、`case_id` 和已映射的既有 `topic`，没有新增 Dify 自定义字段。
+- 模型边界：结构/证据/PII/来源块未知引用仍严格失败并走整份脱敏源文档兜底；对千问常见的“建议混入背景/问题”与“无 advice 证据却填写 reference_advice”只做安全删除，不改写事实、不生成新案例。模型失败、契约失败、证据失败仍不会被误报为模型成功。
+- 本地验证：咨询 RAG 新增与回归测试通过；相关清洗、模型、Dify、发布契约测试除既有冻结文档摘要断言外均通过。`test_miniapp_interface_document_is_frozen_for_internal_cleaning_changes` 仍因工作树已有摘要与冻结值不一致而失败，本轮未修改该无关文档；全量 `pytest` 仍按既有约 124 秒超时记录，未宣称全量通过。
+- jx 发布：最终 release `20260810-consultation-rag-v1-safe-normalize` 使用 wheel SHA-256 `37c7bd35254d4589955b05a3cd13a8f0429f97a35384c7d8744711180e6f7a51`；备份为 `/opt/ai-management/backups/20260810-consultation-rag-v1-safe-normalize-predeploy`，报告为 `/opt/ai-management/var/reports/v2/20260810-consultation-rag-v1-safe-normalize-deploy`。Core/UI/OCR 镜像统一切换，API live/ready、关键包导入和 OCR timer `enabled/active` 通过。
+- 样本验收：使用 `/opt/ai-management/tmp/模型/咨询会议总结/` 的 4 份 Markdown 覆盖重跑，最终批次 `019fe85b-31dc-7180-a1c9-9fcdfc0263ae` 为 `completed`，4 个源文件均成功、0 failed、0 review；生成 7 个成功远端文档（4 个源条目 + 3 个同源独立案例子条目），模型实际用量回读为 input `6333`、output `3587`。2 个源条目通过模型契约并生成案例子条目，2 个源条目因模型输出仍违反契约而按设计走整份源文档兜底；所有文档均完成索引、父子块和 Metadata 回读，正文未含 Dify 标记。
+- Dify 状态：本地商业顾问 DSL 已加入“案例问题 → `record_type=consulting_case` 检索 → 共享证据压缩 → 最终回答”的静态分支，YAML、节点引用和嵌入代码检查通过；Chrome 中的 Dify 工作区已确认登录并可访问 `/apps`，但当前浏览器扩展尚未允许本地文件 URL，DSL 文件选择器无法接收本地文件，正式导入/保存/发布及 `/parameters`、真实 SSE 验收仍待解除该浏览器权限后继续。不得猜测或读取管理员凭据。
+- 本轮踩坑：Windows stage 文本与二进制依赖必须分开处理；一次尝试对整个 stage 执行换行归一化，损坏了 wheel，离线构建报 `Invalid argument`。已重新上传原始依赖、重新备份并完成最终 release；长期规则见 `docs/troubleshooting/deployment.md` 的 DEPLOY-023。
+
 ## 0.52 2026-08-09 jx ai-management 应用日志已清理（历史）
 
 - 按项目“日志清空”的既定口径，仅删除 AI 管理数据库 `SystemEventLog`，不删除 Docker stdout/stderr、systemd/journal、Dify 日志或主机日志。
@@ -1657,3 +1667,17 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改前：0.52 仍把此前文档清理视为当前终态，未记录临时公网桥接实际暴露内部上传接口、周期请求重建数据及对应处置。
 - 修改后：新增 0.53，记录桥接暴露根因、调用方可观察边界、精确 `403` 防护、备份、v3 事故 manifest 精确清理、Dify/数据库/Redis/上传卷归零和服务复核；同步新增 DEPLOY-022、DATA-036、完整部署手册及脱敏报告。
 - 验证：07:30 的 3 次实际周期上传请求均返回 `403`；清理后 Dify `general/course=0`、本地清洗与课程/路线为 `0`、清洗 Redis/课程快照/上传卷入口为 `0`，API ready、测试页 HTTP `200`。未记录密钥、正文、真实用户 ID、原始文件名或精确远端文档 ID。
+
+### 文档修改记录（2026-08-10 咨询会议 RAG 清洗、jx 验收与发布）
+
+- 修改原因：用户要求将咨询会议总结的模型清洗接入 `personal_business_consultation`，在 jx 样本上验证并沉淀失败边界、Metadata 和部署踩坑。
+- 修改前：交接文档没有记录 `consultation-rag-v1` 合同、模型失败的整份兜底规则、最终 jx 样本批次、发布 wheel 及二进制 stage 事故。
+- 修改后：新增 0.54，记录实现与 Metadata 收窄原则、模型安全归一化与严格失败边界、本地/相关测试结果、最终 jx release/备份/报告、4 源文件→7 文档的样本验收、Dify 本地 DSL 分支状态和待登录发布事项；同步新增 DATA-045、DEPLOY-023。
+- 验证：最终 jx release ready、关键包导入、OCR timer 和样本批次回读均通过；Dify 正式导入/发布仍待管理会话登录后完成，未猜测或写入凭据。
+
+### 文档修改记录（2026-08-10 Chrome Dify 导入权限核验）
+
+- 修改原因：用户确认 Chrome 可直接访问 Dify `/apps`，要求继续完成正式导入/发布。
+- 修改前：0.54 将 Dify 未完成发布归因于浏览器未登录。
+- 修改后：确认 Chrome 工作区已登录；实际阻塞收窄为 ChatGPT Chrome 扩展未启用本地文件 URL 访问，文件上传事件无法触发，因此尚未上传 DSL，也未伪造或读取凭据。
+- 验证：Chrome `/apps` 页面可见 `jx's Workspace` 和现有应用；Dify 导入弹窗可打开，但本地文件选择器不可用。待用户按 Chrome 扩展提示开启权限后继续。

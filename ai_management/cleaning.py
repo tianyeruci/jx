@@ -671,7 +671,9 @@ class StandardDocumentStrategy:
 class PersonalBusinessConsultationStrategy:
     code = "personal_business_consultation"
     display_name = "个人商业咨询案例总结"
-    supported_extensions = {".docx", ".pdf"}
+    # Markdown is the canonical source produced by the PDF conversion/sample
+    # workflow; DOCX/PDF remain supported for existing uploads.
+    supported_extensions = {".md", ".markdown", ".docx", ".pdf"}
     sensitive = True
     knowledge_base_code = "general"
     dify_metadata_fields = frozenset({"record_type", "topic", "source_title", "case_id"})
@@ -759,6 +761,34 @@ class PersonalBusinessConsultationStrategy:
             needs_review = bool(
                 blocking_reasons or residual_pii or not markdown.strip()
             )
+        elif suffix in {".md", ".markdown"}:
+            conversion_audit = {}
+            table_audit: dict[str, Any] = {}
+            raw_markdown = _read_text_markdown(
+                file_path,
+                suffix,
+                table_audit=table_audit,
+            )
+            cleaned_markdown = _apply_markdown_table_cleaning(
+                raw_markdown,
+                audit=table_audit,
+            )
+            aliases = consultation_aliases(raw_markdown, original_filename)
+            markdown, redactions = anonymize_consultation(
+                cleaned_markdown,
+                extra_entities=aliases,
+            )
+            residual_pii = scan_residual_pii(markdown)
+            source_checksum = hashlib.sha256(file_path.read_bytes()).hexdigest()
+            document_id = f"case_{source_checksum[:16]}"
+            review_reasons = []
+            if not markdown.strip():
+                review_reasons.append("未生成可入库正文")
+            if residual_pii:
+                review_reasons.append(
+                    f"脱敏后仍检测到{len(residual_pii)}处潜在PII，禁止直接发布"
+                )
+            needs_review = bool(review_reasons)
         else:
             raise ValueError(f"个人商业咨询不支持 {suffix} 文件")
 
@@ -778,7 +808,6 @@ class PersonalBusinessConsultationStrategy:
                 title=f"匿名商业咨询案例 {document_id[:12]}",
                 metadata={
                     "record_type": "consulting_case",
-                    "topic": "产品与客户",
                     "source_title": f"匿名商业咨询案例 {document_id[:12]}",
                     "case_id": document_id[:16],
                 },

@@ -106,6 +106,7 @@
 - 非解决：联网安装依赖、把未执行写成 pytest 通过，或只看脚本退出码而不保存测试数量和失败项。
 - 验证：2026-08-09 钩子资料分块包手动回归 `36 passed`，500-case fuzz `failures=0`，真实目录验证 `files=5 failures=0`；详见[本轮报告](../../var/reports/20260809-lead-magnet-chunker/README.md)。
 - 预防：测试前先检查 runner 可用性，报告同时记录 pytest 状态、替代断言数量、fuzz 结果和真实目录结果。
+- 证据：`var/reports/20260809-lead-magnet-chunker/README.md`、`validate_chunker.py` 手动回归输出。
 - 最后验证：2026-08-09。
 
 ## TEST-011：目录分块回归必须验证条目、父边界、删除和幂等四项守恒

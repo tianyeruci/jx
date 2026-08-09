@@ -14,6 +14,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from knowledge_cleaner.chunking import prepare_chunks
+from knowledge_cleaner.consultation_rag import (
+    ConsultationRagResponse,
+    topic_for_problem_category,
+    validate_consultation_rag_response,
+)
+from knowledge_cleaner.consultation_rag import (
+    render_case_markdown as render_consultation_rag_case,
+)
 
 from ...config import get_settings
 from ...course_import import _course_text, _route_text
@@ -88,6 +96,8 @@ def _model_requires_source_fallback(
     if document.status in {"failed", "review_required"}:
         return True
     audit = document.audit_json or {}
+    if audit.get("source_markdown_fallback_blocked") is True:
+        return False
     model_result = audit.get("model_result") or {}
     disposition = str(model_result.get("disposition") or "").lower()
     return disposition in {"review", "review_required"} or bool(
@@ -317,6 +327,12 @@ def _safe_model_value_error_code(message: str) -> str:
         ("E2/E3必须包含observed_outcomes", "missing_observed_outcomes"),
         ("整体E2/E3必须至少包含一个已观察结果", "missing_overall_observed_result"),
         ("source_coverage必须完整覆盖输入来源块", "source_coverage"),
+        ("retrieval_queries必须为中文自然问法", "retrieval_query_language"),
+        ("缺少background或problem证据", "missing_case_evidence"),
+        ("reference_advice缺少advice证据", "unverified_advice"),
+        ("reference_advice不是可回溯原文", "unverified_advice"),
+        ("背景/问题表现包含建议或未来动作", "non_factual_case_field"),
+        ("问题高度重复，疑似过度拆分", "duplicate_cases"),
     )
     for marker, code in mappings:
         if marker in message:
@@ -427,6 +443,13 @@ def _model_contract_retry_hint(exc: Exception) -> str:
         return "不得改变来源中的肯定或否定事实状态；没有证据的章节不要输出。"
     if "数字或日期" in message:
         return "不得增加来源块未出现的数字、日期、比例或金额。"
+    if "背景/问题表现包含建议或未来动作" in message:
+        return (
+            "relevant_background 和 problem_signals 只能保留来源中已经发生的事实或明确的当前表现；"
+            "删除其中的建议、应该、计划、希望、未来动作和预计结果。若建议有原文依据，"
+            "只能逐字放入 reference_advice，并确保 evidence 中有 kind=advice 的对应原文；"
+            "不要新增案例、人物或事实。"
+        )
     if "人物归属" in message:
         return "不得增加或变更来源块中的人物归属。"
     if "课程目录模型未返回课程描述" in message:
@@ -1187,6 +1210,137 @@ def _apply_model_payload(
                 raise ValueError("模型返回多个知识单元，但当前任务没有可写入会话")
             document.audit_json = audit
     elif strategy_code == "personal_business_consultation":
+        if str(payload.get("schema_version") or "") == "consultation-rag-v1":
+            # The sample cleaner's evidence-bound case contract is the current
+            # production path.  Validate and render every case before mutating
+            # the document so one bad case falls back atomically to the whole
+            # de-identified meeting.
+            source_text = "\n\n".join(request.blocks.values())
+            sensitive_tokens = tuple(
+                str(value)
+                for value in audit.get("forbidden_public_names") or []
+                if str(value).strip()
+            )
+            response: ConsultationRagResponse = validate_consultation_rag_response(
+                payload,
+                source_blocks=request.blocks,
+                sensitive_tokens=sensitive_tokens,
+            )
+            audit["model_result"] = response.model_dump(mode="json")
+            if len(response.cases) < 1:
+                raise ValueError("咨询案例模型未返回可发布案例")
+            rendered_cases: list[tuple[str, str, str, dict[str, Any]]] = []
+            source_case_id = str((document.metadata_json or {}).get("case_id") or "")
+            if not source_case_id.startswith("case_"):
+                source_case_id = f"case_{document.content_sha256[:16]}"
+            for case_index, case in enumerate(response.cases, start=1):
+                case_id = f"{source_case_id}_c{case_index:02d}"
+                rendered = sanitize_for_knowledge(
+                    render_consultation_rag_case(case_id, case)
+                )
+                from knowledge_cleaner.pdf_convert import scan_residual_pii
+
+                residual = scan_residual_pii(rendered)
+                if residual or any(value in rendered for value in sensitive_tokens):
+                    raise ValueError("咨询模型输出仍含潜在PII或受保护身份")
+                topic = topic_for_problem_category(case.problem_category)
+                rendered_cases.append(
+                    (
+                        case_id,
+                        rendered,
+                        topic,
+                        {
+                            "case_id": case_id,
+                            "case_group_id": source_case_id,
+                            "problem_category": case.problem_category,
+                            "case_stage": case.case_stage,
+                            "has_reference_advice": bool(case.reference_advice),
+                        },
+                    )
+                )
+
+            def apply_case(
+                target: CleaningDocument,
+                case_id: str,
+                rendered: str,
+                topic: str,
+                case_audit: dict[str, Any],
+            ) -> None:
+                metadata = dict(target.metadata_json or {})
+                metadata["record_type"] = "consulting_case"
+                metadata["case_id"] = case_id
+                if topic:
+                    metadata["topic"] = topic
+                else:
+                    metadata.pop("topic", None)
+                target.title = f"匿名商业案例 {case_id[-5:]}"
+                target.cleaned_markdown = rendered
+                target.metadata_json = metadata
+                target.audit_json = {
+                    **audit,
+                    "model_result": {
+                        "schema_version": response.schema_version,
+                        "case": case_audit,
+                    },
+                    "consultation_rag": {
+                        "case_group_id": source_case_id,
+                        "case_count": len(rendered_cases),
+                        "source_chars": len(source_text),
+                    },
+                }
+                target.status = "pending"
+                target.stage = "pending"
+                target.error_code = None
+                target.error_message = None
+                target.retryable = True
+                from .cleaning import _content_sha
+
+                target.content_sha256 = _content_sha(
+                    target.cleaned_markdown,
+                    target.metadata_json,
+                    target.chunking_json or {},
+                )
+
+            first_case_id, first_rendered, first_topic, first_audit = rendered_cases[0]
+            apply_case(document, first_case_id, first_rendered, first_topic, first_audit)
+            if session is not None and len(rendered_cases) > 1:
+                for case_index, (case_id, rendered, topic, case_audit) in enumerate(
+                    rendered_cases[1:], start=2
+                ):
+                    child_name_path = Path(document.dify_document_name or "consulting_case.md")
+                    child_dify_name = (
+                        f"{child_name_path.stem}__{case_index:02d}"
+                        f"{child_name_path.suffix or '.md'}"
+                    )[:300]
+                    child = CleaningDocument(
+                        file_id=document.file_id,
+                        sequence=document.sequence * 1000 + case_index,
+                        title=f"匿名商业案例 {case_id[-5:]}",
+                        dify_document_name=child_dify_name,
+                        document_key=f"{document.document_key}:case:{case_index}",
+                        status="pending",
+                        stage="pending",
+                        content_sha256="",
+                        metadata_json=dict(document.metadata_json or {}),
+                        chunking_json=dict(document.chunking_json or {}),
+                        audit_json=dict(audit),
+                        warnings_json=list(document.warnings_json or []),
+                        cleaned_markdown=rendered,
+                        retryable=True,
+                    )
+                    session.add(child)
+                    session.flush()
+                    apply_case(child, case_id, rendered, topic, case_audit)
+            elif len(rendered_cases) > 1:
+                raise ValueError("模型返回多个咨询案例，但当前任务没有可写入会话")
+            # A semantic review is a human gate, not a source fallback.  The
+            # source fallback flag is consumed by the outer worker only for
+            # technical/contract failures.
+            document.audit_json = {
+                **(document.audit_json or {}),
+                "source_markdown_fallback_blocked": False,
+            }
+            return
         # v2 is opt-in by an explicit schema marker so historical model tasks
         # remain replayable under the existing sections contract.
         if str(payload.get("schema_version") or "") == "consulting_case_v2":
@@ -1874,6 +2028,7 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                     audit["model_attempts"] = 1
                     document.audit_json = audit
                     session.commit()
+                    payload: dict[str, Any] | None = None
                     try:
                         request = _request(document, batch.strategy_code)
                         payload, item_usage = _realtime_chat(
@@ -1947,27 +2102,80 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                                 source_metadata=source_metadata,
                                 source_chunking=source_chunking,
                             )
-                    except Exception as exc:
-                        _mark_contract_failure(
-                            document,
-                            exc,
-                            final=True,
-                            auto_fail=(
-                                batch.strategy_code == "course_route_catalog"
-                                and settings.course_catalog_auto_publish
-                            ),
-                            review_on_final=(
-                                batch.strategy_code == "course_route_catalog"
-                                and not settings.course_catalog_auto_publish
-                            ),
-                        )
-                        _apply_source_markdown_fallback(
-                            document,
-                            batch.strategy_code,
-                            source_markdown=source_markdown,
-                            source_metadata=source_metadata,
-                            source_chunking=source_chunking,
-                        )
+                    except Exception as original_exc:
+                        contract_exc = original_exc
+                        repaired = False
+                        if (
+                            batch.strategy_code == "personal_business_consultation"
+                            and isinstance(payload, dict)
+                            and str(payload.get("schema_version") or "")
+                            == "consultation-rag-v1"
+                        ):
+                            # The standalone cleaner allows one bounded
+                            # semantic repair before taking the conservative
+                            # whole-source fallback.  Keep the hint structural
+                            # and never echo the failed model payload.
+                            try:
+                                audit = dict(document.audit_json or {})
+                                audit["model_attempts"] = 2
+                                audit["model_repair_attempted"] = True
+                                document.audit_json = audit
+                                request = _request(document, batch.strategy_code)
+                                payload, item_usage = _realtime_chat(
+                                    client,
+                                    request,
+                                    model=task.model,
+                                    repair_hint=(
+                                        "只修复 consultation-rag-v1 的 JSON/证据契约；"
+                                        "每个案例至少保留 background 与 problem 的可回溯原文证据，"
+                                        "retrieval_queries 必须为 3~6 条简体中文问法；"
+                                        "不要改变事实、不要新增案例或人物。\n"
+                                        + _model_contract_retry_hint(contract_exc)
+                                    ),
+                                )
+                                _apply_model_payload(
+                                    document,
+                                    batch.strategy_code,
+                                    request,
+                                    payload,
+                                    session=session,
+                                )
+                                _finalize_model_document(
+                                    document, strategy_code=batch.strategy_code
+                                )
+                                _apply_source_markdown_fallback(
+                                    document,
+                                    batch.strategy_code,
+                                    source_markdown=source_markdown,
+                                    source_metadata=source_metadata,
+                                    source_chunking=source_chunking,
+                                )
+                                usage["input_tokens"] += item_usage["input_tokens"]
+                                usage["output_tokens"] += item_usage["output_tokens"]
+                                repaired = True
+                            except Exception as repair_exc:
+                                contract_exc = repair_exc
+                        if not repaired:
+                            _mark_contract_failure(
+                                document,
+                                contract_exc,
+                                final=True,
+                                auto_fail=(
+                                    batch.strategy_code == "course_route_catalog"
+                                    and settings.course_catalog_auto_publish
+                                ),
+                                review_on_final=(
+                                    batch.strategy_code == "course_route_catalog"
+                                    and not settings.course_catalog_auto_publish
+                                ),
+                            )
+                            _apply_source_markdown_fallback(
+                                document,
+                                batch.strategy_code,
+                                source_markdown=source_markdown,
+                                source_metadata=source_metadata,
+                                source_chunking=source_chunking,
+                            )
                     _count_model_result(counts, document)
                     session.commit()
             task.result_counts = counts

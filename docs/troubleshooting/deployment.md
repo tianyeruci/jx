@@ -252,3 +252,15 @@
 - 预防：临时公网反代必须采用路径白名单或显式 deny 内部管理写入端点；每次发布后检查 Nginx 生效配置，并将该 guard 脚本随完整 release 安装。
 - 证据：`scripts/configure_dify_nginx_ai_service_guard.py`、`var/reports/jx-unexpected-knowledge-20260809/issues.jsonl`、jx 报告 `/opt/ai-management/var/reports/v2/20260809-073700-unexpected-knowledge-cleanup`。
 - 最后验证：2026-08-09。
+
+## DEPLOY-023：Windows 发布 stage 的文本换行归一化不得处理二进制 wheel
+
+- 适用：从 Windows 工作树上传 jx 完整 release 的 Bash/配置文本和 Python wheel 依赖。
+- 触发：远端 Core/UI/OCR 构建阶段在已完成脚本语法检查后报 `OSError: [Errno 22] Invalid argument`，而发布前未发生服务切换。
+- 根因：对整个 stage 递归执行 `sed`/换行归一化会把二进制 wheel 当文本改写，破坏 zip 结构；文本 CRLF 与二进制内容必须分开处理。
+- 解决：仅对明确的 Bash、YAML、JSON、SQL 等文本文件做 LF 归一化，并保留原始 wheel；失败后重新上传原始依赖 wheel、重新执行发布前备份和完整构建门禁，再切换服务。
+- 非解决：对整个 stage 使用 `find ... | xargs sed -i`、忽略构建错误后继续切换、在运行容器中临时安装依赖，或跳过 wheel SHA-256/包内容校验。
+- 验证：最终 release `20260810-consultation-rag-v1-safe-normalize` 使用 wheel SHA-256 `37c7bd35254d4589955b05a3cd13a8f0429f97a35384c7d8744711180e6f7a51` 完成 Core/UI/OCR 构建、迁移、ready、包导入和 OCR timer 检查；备份 `/opt/ai-management/backups/20260810-consultation-rag-v1-safe-normalize-predeploy`，报告 `/opt/ai-management/var/reports/v2/20260810-consultation-rag-v1-safe-normalize-deploy`。
+- 预防：发布脚本维护文本文件白名单；上传后对文本执行 `bash -n`/解析检查，对 wheel 执行 SHA-256 与 zip 内容检查，禁止跨类型批处理。
+- 证据：最终 jx 发布报告及本轮脱敏部署问题记录。
+- 最后验证：2026-08-10。

@@ -80,8 +80,11 @@ workflow:
             - role: system
               text: |-
                 只输出一个严格JSON对象，不使用Markdown。把用户问题拆成可独立检索的子问题：
-                {"general_query":"","course_query":"","question_type":"general|course|mixed"}
-                通用商业知识填general_query；课程、课程路线、课程适合谁、课程内容填course_query。普通问题只填general_query，明确课程问题只填course_query，混合问题两个都填。不要编造信息。
+                {"general_query":"","course_query":"","case_query":"","question_type":"general|course|case|mixed"}
+                通用商业知识填general_query；课程、课程路线、课程适合谁、课程内容填course_query；
+                用户明确询问相似案例、类似案例、同类案例、可参考案例、类似经验或以前是否遇到过时填case_query。
+                普通问题只填general_query，明确课程问题只填course_query，明确相似案例问题只填case_query，
+                同时包含通用商业问题和课程需求为mixed。不要仅因出现“问题/经验”就误判为case，不要编造信息。
             - role: user
               text: "{{#sys.query#}}"
       - id: query_split_normalize
@@ -99,6 +102,7 @@ workflow:
           outputs:
             general_query: {type: string, children: null}
             course_query: {type: string, children: null}
+            case_query: {type: string, children: null}
             question_type: {type: string, children: null}
             fallback_used: {type: string, children: null}
           code: |-
@@ -109,18 +113,21 @@ workflow:
                     value = json.loads(split_json)
                     general = str(value.get("general_query") or "").strip()
                     course = str(value.get("course_query") or "").strip()
+                    case = str(value.get("case_query") or "").strip()
                     kind = str(value.get("question_type") or "").strip()
-                    if kind not in {"general", "course", "mixed"}:
+                    if kind not in {"general", "course", "case", "mixed"}:
                         raise ValueError("invalid question_type")
                     if kind == "general" and not general:
                         raise ValueError("empty general query")
                     if kind == "course" and not course:
                         raise ValueError("empty course query")
+                    if kind == "case" and not case:
+                        raise ValueError("empty case query")
                     if kind == "mixed" and (not general or not course):
                         raise ValueError("empty mixed query")
-                    return {"general_query": general, "course_query": course, "question_type": kind, "fallback_used": "false"}
+                    return {"general_query": general, "course_query": course, "case_query": case, "question_type": kind, "fallback_used": "false"}
                 except Exception:
-                    return {"general_query": original_query, "course_query": original_query, "question_type": "mixed", "fallback_used": "true"}
+                    return {"general_query": original_query, "course_query": original_query, "case_query": original_query, "question_type": "mixed", "fallback_used": "true"}
       - id: question_classifier
         type: custom
         position: {x: 860, y: 240}
@@ -132,8 +139,9 @@ workflow:
           classes:
             - {id: general, name: 通用问题}
             - {id: course, name: 课程问题}
+            - {id: case, name: 相似案例问题}
             - {id: mixed, name: 混合问题}
-          instructions: "通用商业知识为general；明确查课程、课程路线或课程内容为course；同时包含通用商业问题和课程需求为mixed。"
+          instructions: "通用商业知识为general；明确查课程、课程路线或课程内容为course；明确查相似/类似案例或经验为case；同时包含通用商业问题和课程需求为mixed。只有问题明确要求相似案例时才路由case。"
           model:
             provider: langgenius/tongyi/tongyi
             name: qwen-plus
@@ -153,6 +161,28 @@ workflow:
           retrieval_mode: multiple
           multiple_retrieval_config:
             top_k: 5
+            score_threshold: 0.3
+            reranking_enable: false
+            reranking_mode: reranking_model
+            reranking_model: {provider: "", model: ""}
+      - id: case_knowledge
+        type: custom
+        position: {x: 320, y: 360}
+        positionAbsolute: {x: 320, y: 360}
+        data:
+          type: knowledge-retrieval
+          title: 相似咨询案例检索
+          desc: 仅检索 record_type=consulting_case 的咨询会议总结，服务于相似案例/类似经验问题。
+          query_variable_selector: [query_split_normalize, case_query]
+          dataset_ids: []
+          metadata_filtering_mode: manual
+          metadata_filtering_conditions:
+            logical_operator: and
+            conditions:
+              - {name: record_type, comparison_operator: is, value: consulting_case}
+          retrieval_mode: multiple
+          multiple_retrieval_config:
+            top_k: 6
             score_threshold: 0.3
             reranking_enable: false
             reranking_mode: reranking_model
@@ -314,6 +344,40 @@ workflow:
                 {{#course_knowledge.result#}}
 
                 不得基于课程模板虚构课程重点、课节、效果或专业见解。
+      - id: recommendation_decision_case
+        type: custom
+        position: {x: 960, y: 360}
+        positionAbsolute: {x: 960, y: 360}
+        data:
+          type: llm
+          title: 相似案例回答决策
+          desc: 仅基于咨询会议总结检索结果组织案例回答，不把建议写成已发生结果。
+          model:
+            provider: langgenius/tongyi/tongyi
+            name: qwen-plus
+            mode: chat
+            completion_params: {temperature: 0.1}
+          context: {enabled: false, variable_selector: []}
+          prompt_template:
+            - role: system
+              text: |-
+                你是商业顾问相似案例回答决策器。只输出JSON对象，不使用Markdown代码围栏：
+                {"intent":"case_qa|clarification","answer_plan":"","missing_information":[]}
+                只根据“相似咨询案例检索”结果回答；不得编造未检索到的客户、数字、结果或建议。
+                清楚区分案例中的已发生事实、顾问建议、行动计划和未验证结果；没有相关案例时如实说明。
+            - role: user
+              text: |-
+                当前问题：
+                {{#sys.query#}}
+
+                相似咨询案例检索：
+                {{#case_knowledge.result#}}
+
+                会话摘要：
+                {{#start.conversation_summary#}}
+
+                最近对话：
+                {{#start.recent_history_text#}}
       - id: recommendation_decision_mixed
         type: custom
         position: {x: 1580, y: 240}
@@ -434,6 +498,35 @@ workflow:
                 课程资料：{{#course_knowledge.result#}}
                 历史摘要：{{#start.conversation_summary#}}
                 最近历史：{{#start.recent_history_text#}}
+      - id: final_answer_case
+        type: custom
+        position: {x: 1280, y: 360}
+        positionAbsolute: {x: 1280, y: 360}
+        data:
+          type: llm
+          title: 相似案例最终回答
+          desc: 只引用相似咨询案例检索结果，区分事实、建议、计划和结果状态。
+          model:
+            provider: langgenius/tongyi/tongyi
+            name: qwen-plus
+            mode: chat
+            completion_params: {temperature: 0.3}
+          context: {enabled: false, variable_selector: []}
+          prompt_template:
+            - role: system
+              text: |-
+                你是谨慎、务实的商业顾问。回答用户的“相似案例/类似经验”问题时，只使用检索到的咨询会议总结。
+                先说明是否存在相似案例，再按“背景、核心问题、当时处理思路、实际结果（若有）”组织回答。
+                必须区分客户事实、顾问建议、行动计划和已观察结果；建议或计划不得写成已经发生的结果。
+                没有相关案例时明确说没有足够证据，不得编造人物、数字、行业、结果或课程信息。
+                公开回答不得展示真实姓名、昵称、原文件名或内部JSON。
+            - role: user
+              text: |-
+                当前问题：{{#sys.query#}}
+                回答决策：{{#recommendation_decision_case.text#}}
+                相似咨询案例资料：{{#case_knowledge.result#}}
+                历史摘要：{{#start.conversation_summary#}}
+                最近历史：{{#start.recent_history_text#}}
       - id: final_answer_mixed
         type: custom
         position: {x: 1900, y: 240}
@@ -488,6 +581,15 @@ workflow:
           title: 课程问题回答
           answer: "{{#final_answer_course.text#}}"
           variables: []
+      - id: answer_case
+        type: custom
+        position: {x: 1600, y: 360}
+        positionAbsolute: {x: 1600, y: 360}
+        data:
+          type: answer
+          title: 相似案例回答
+          answer: "{{#final_answer_case.text#}}"
+          variables: []
       - id: answer_mixed
         type: custom
         position: {x: 2220, y: 240}
@@ -533,6 +635,13 @@ workflow:
         targetHandle: target
         type: custom
         data: {sourceType: question-classifier, targetType: knowledge-retrieval}
+      - id: classifier-case
+        source: question_classifier
+        target: case_knowledge
+        sourceHandle: case
+        targetHandle: target
+        type: custom
+        data: {sourceType: question-classifier, targetType: knowledge-retrieval}
       - id: classifier-mixed-general
         source: question_classifier
         target: general_knowledge_mixed
@@ -561,6 +670,13 @@ workflow:
         targetHandle: target
         type: custom
         data: {sourceType: knowledge-retrieval, targetType: llm}
+      - id: case-decision
+        source: case_knowledge
+        target: recommendation_decision_case
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: knowledge-retrieval, targetType: llm}
       - id: mixed-decision
         source: course_knowledge_mixed
         target: recommendation_decision_mixed
@@ -578,6 +694,20 @@ workflow:
       - id: final-output-general
         source: final_answer_general
         target: answer_general
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: llm, targetType: answer}
+      - id: decision-answer-case
+        source: recommendation_decision_case
+        target: final_answer_case
+        sourceHandle: source
+        targetHandle: target
+        type: custom
+        data: {sourceType: llm, targetType: llm}
+      - id: final-output-case
+        source: final_answer_case
+        target: answer_case
         sourceHandle: source
         targetHandle: target
         type: custom
