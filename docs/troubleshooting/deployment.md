@@ -204,3 +204,51 @@
 - 预防：每个 release ID 尽量只使用一次；必须重试时保留同一备份、重新运行资源门禁并检查报告目录时间与内容，不能只看退出码。
 - 证据：`scripts/jx_deploy_release.sh`、`tests/test_cleaning_release_contract.py`、jx 备份 `/opt/ai-management/backups/20260807-1345-route-activefix-predeploy`。
 - 最后验证：2026-08-07。
+
+## DEPLOY-019：Windows 上传的 Linux 发布脚本必须先做换行归一化
+
+- 适用：从 Windows 工作树通过 SSH/SCP 向 Linux jx 传输 Bash 发布脚本或其它文本 stage 文件。
+- 触发：远端执行脚本在 `set -o pipefail` 等位置报 `invalid option name`，但服务尚未切换。
+- 根因：CRLF 的回车符被 Linux Bash 当成脚本语法的一部分。
+- 解决：文本文件上传到远端 stage 后统一执行 `tr -d '\\r'`，再执行 `bash -n`；通过语法检查后才安装和启动发布脚本。
+- 非解决：忽略首个 Bash 错误、直接重试同一 CRLF 文件、手工删除锁或跳过发布前备份。
+- 验证：jx release `20260809-125124-full-e06470c` 使用归一化流程完成 Core/UI/OCR 发布，API ready、测试页 HTTP 200，未生成回滚标记。
+- 预防：发布脚本必须保留 LF 校验门禁；PowerShell 向 SSH 发送多行 Bash 时使用 `tr -d '\\r' | bash -s`。
+- 证据：`var/reports/jx-deploy-20260809/issues.jsonl`、jx 报告 `/opt/ai-management/var/reports/v2/20260809-123747-full-e06470c-deploy` 与 `/opt/ai-management/var/reports/v2/20260809-125124-full-e06470c-deploy`。
+- 最后验证：2026-08-09。
+
+## DEPLOY-020：完整 release 必须验证 wheel 的运行时模块闭包
+
+- 适用：完整 wheel 发布包含当前工作树新增模块、运维验收脚本或延迟导入的 Python 包。
+- 触发：API ready 和容器启动均正常，但完整清洗验收在运行时因缺少包内模块而 `ModuleNotFoundError` 退出。
+- 根因：从干净 HEAD 归档构建时，工作树中未纳入归档的运行时模块未进入 wheel；健康检查不会主动导入所有延迟路径。
+- 解决：按本次权威源代码集构建 wheel；发布前用 wheel 内容检查确认关键模块存在，发布后在 API 容器中执行关键模块 import 烟测；不在运行容器内临时安装模块。
+- 非解决：只看 API ready、只核对镜像 tag、在容器内临时 `pip install` 或跳过完整验收。
+- 验证：jx release `20260809-125124-full-e06470c` 的 `acceptance_budget_import=ok`，完整清洗验收成功启动并生成安全报告。
+- 预防：将 wheel 文件列表/关键 import 作为完整发布门禁；源码归档、wheel 和验收脚本必须来自同一 release source set。
+- 证据：`var/reports/jx-deploy-20260809/issues.jsonl`、jx 报告 `/opt/ai-management/var/reports/v2/20260809-123747-full-e06470c-baseline` 与 `/opt/ai-management/var/reports/v2/20260809-125124-full-e06470c-baseline`。
+- 最后验证：2026-08-09。
+
+## DEPLOY-021：部署后的数据收尾必须按测试是否写入分类
+
+- 适用：jx 完整发布后的 Dify 契约、业务 SSE、完整清洗验收、测试上传和课程/路线测试导入。
+- 触发：发布后知识库出现测试文档，或把所有发布都误当成需要清空知识库。
+- 根因：无写入验证与写入型验收没有被区分；完整清洗验收会新增 Dify 文档和本地清洗状态，但只生成 cleanup manifest，不自动完成删除。另有直接 Dify API 上传时，远端文档可能没有本地 `CleaningBatch` 关联。
+- 解决：默认使用无写入契约和会话 cleanup；仅在已授权的写入型测试后冻结写入者，使用精确 manifest 执行清理，并做 Dify Dataset inventory、本地数据库、Redis、上传目录和写入日志的联合复核。正式知识库、正式课程和已授权保留数据不作为部署收尾删除。
+- 非解决：每次发布后清空所有 Dataset、只看本地批次/旧 manifest、按名称或日期批量删除、整库清 Redis，或直接修改 Dify PostgreSQL。
+- 验证：2026-08-09 jx 完整验收后的 Dify 残留经 Dataset inventory 发现后，以 v3 精确 manifest 清理；`general/course/business-course-test/business-general-test` 文档均为 `0`，本地清洗表、清洗 Redis 键和上传目录均为 `0`，API ready、测试页 HTTP `200`。
+- 预防：发布计划、报告和交接必须标明测试是否写入 Dify；写入型验收必须把“manifest 已生成”“精确清理已执行”“Dataset inventory 已归零/符合保留范围”作为三个独立检查点。
+- 证据：`scripts/jx_full_cleaning_baseline.sh`、`scripts/jx_prebaseline_clean.sh`、`scripts/jx_release_data.py`、`docs/troubleshooting/data-cleaning.md` 的 DATA-033～DATA-035、jx 报告 `/opt/ai-management/var/reports/v2/20260809-143906-general-document-cleanup`。
+- 最后验证：2026-08-09。
+
+## DEPLOY-022：临时公网 AI 网关不得透传内部知识库上传接口
+
+- 适用：jx 上为小程序联调临时开放的 Nginx `/ai-service/` 反向代理，以及任何把应用内部路径整体暴露到公网的过渡网关。
+- 触发：管理员未操作上传，但 `general`/`course` Dataset、`CleaningBatch`、课程或路线在规律时间点再次出现；Nginx 可见 `POST /ai-service/internal/v1/admin/knowledge-bases/*/upload-batches`。
+- 根因：临时桥接按 `/ai-service/` 通用前缀重写并反代到 API，错误地包含了仅应在内网/管理端使用的 `internal/v1/admin` 知识库上传路径。周期调用者可经该桥接创建真实清洗批次；这不是 Dify、Redis 或数据库从备份自动恢复。
+- 解决：使用 `scripts/configure_dify_nginx_ai_service_guard.py --mode enable --location /opt/dify/docker/nginx/conf.d/ai-management-api-temp.location` 在通用桥接前写入精确拒绝规则，随后执行 `docker exec docker-nginx-1 nginx -t` 和热加载。只拒绝 `general/course` 的 `upload-batches` 及其子路径，保留其它联调路径；若准备彻底移除临时桥接或切换 HTTPS/私网，须单独评估调用方依赖。
+- 非解决：把所有 `/ai-service/` 路径一并关闭而不评估联调影响、只停止 Worker、把重现误判为缓存回滚、直接编辑 Dify 数据库、按名称/时间批量删文档，或开放 API `8000` 公网端口。
+- 验证：2026-08-09 jx 实测下一轮半小时的 3 次上传重试均为 `403`；Nginx 语法检查/热加载通过，测试页保持 HTTP `200`。调用方具体进程未能从 Docker 网关转发地址和空请求头可靠还原，因此文档只记录已验证的网关暴露根因。
+- 预防：临时公网反代必须采用路径白名单或显式 deny 内部管理写入端点；每次发布后检查 Nginx 生效配置，并将该 guard 脚本随完整 release 安装。
+- 证据：`scripts/configure_dify_nginx_ai_service_guard.py`、`var/reports/jx-unexpected-knowledge-20260809/issues.jsonl`、jx 报告 `/opt/ai-management/var/reports/v2/20260809-073700-unexpected-knowledge-cleanup`。
+- 最后验证：2026-08-09。

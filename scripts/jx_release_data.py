@@ -778,6 +778,7 @@ _MANIFEST_SCHEMA_VERSION = 3
 _MANIFEST_KIND = "acceptance_cleanup_manifest"
 _AUTOMATED_MANIFEST_SCOPE = "automated_cleaning_acceptance"
 _TEST_UI_MANIFEST_SCOPE = "manual_test_ui_acceptance"
+_INCIDENT_MANIFEST_SCOPE = "manual_incident_cleanup"
 _TEST_UI_CLEANUP_RUN_METADATA_KEY = "_test_ui_cleanup_run_id"
 _TARGET_KEYS = (
     "cleaning_batch_ids",
@@ -794,6 +795,8 @@ def _manifest_run_id_valid(scope: str, run_id: str) -> bool:
         return bool(re.fullmatch(r"cleaning-[a-f0-9]{32}", run_id))
     if scope == _TEST_UI_MANIFEST_SCOPE:
         return bool(re.fullmatch(r"cleaning-ui-[a-f0-9]{32}", run_id))
+    if scope == _INCIDENT_MANIFEST_SCOPE:
+        return bool(re.fullmatch(r"cleaning-incident-[a-f0-9]{32}", run_id))
     return False
 
 
@@ -849,7 +852,12 @@ def _load_v3_manifest(path: Path) -> dict[str, Any]:
     if (
         payload.get("schema_version") != _MANIFEST_SCHEMA_VERSION
         or payload.get("kind") != _MANIFEST_KIND
-        or scope not in {_AUTOMATED_MANIFEST_SCOPE, _TEST_UI_MANIFEST_SCOPE}
+        or scope
+        not in {
+            _AUTOMATED_MANIFEST_SCOPE,
+            _TEST_UI_MANIFEST_SCOPE,
+            _INCIDENT_MANIFEST_SCOPE,
+        }
     ):
         raise RuntimeError("clean requires an acceptance cleanup manifest v3")
     integrity = payload.get("integrity") or {}
@@ -998,6 +1006,18 @@ def _test_ui_catalog_targets(documents: list[CleaningDocument]) -> dict[str, set
     return targets
 
 
+def _current_catalog_targets(session) -> dict[str, set[str]]:
+    return {
+        "course_ids": set(str(value) for value in session.scalars(select(Course.course_id))),
+        "route_ids": set(str(value) for value in session.scalars(select(LearningRoute.route_id))),
+        "direction_codes": (
+            set(str(value) for value in session.scalars(select(CourseDirection.code)))
+            if CourseDirection is not None
+            else set()
+        ),
+    }
+
+
 def _capture_test_ui_manifest(
     *,
     output: Path,
@@ -1060,15 +1080,7 @@ def _capture_test_ui_manifest(
             else []
         )
         catalog_targets = _test_ui_catalog_targets(documents)
-        current_catalog = {
-            "course_ids": set(str(value) for value in session.scalars(select(Course.course_id))),
-            "route_ids": set(str(value) for value in session.scalars(select(LearningRoute.route_id))),
-            "direction_codes": (
-                set(str(value) for value in session.scalars(select(CourseDirection.code)))
-                if CourseDirection is not None
-                else set()
-            ),
-        }
+        current_catalog = _current_catalog_targets(session)
 
     if catalog_targets["course_ids"] or catalog_targets["route_ids"]:
         if catalog_baseline is None:
@@ -1127,6 +1139,134 @@ def _capture_test_ui_manifest(
     return {
         "schema_version": _MANIFEST_SCHEMA_VERSION,
         "scope": _TEST_UI_MANIFEST_SCOPE,
+        "manifest_fingerprint": (signed_payload.get("integrity") or {}).get("manifest_sha256", ""),
+        "target_counts": {
+            "dify": {code: len(values) for code, values in dify_documents.items()},
+            "cleaning_batches": len(batch_ids),
+            "courses": len(catalog_targets["course_ids"]),
+            "routes": len(catalog_targets["route_ids"]),
+            "directions": len(catalog_targets["direction_codes"]),
+        },
+    }
+
+
+def _capture_incident_manifest(
+    *,
+    output: Path,
+    run_id: str,
+    batch_ids: list[str],
+) -> dict[str, Any]:
+    """Create a short-lived manifest for a proven unintended upload incident.
+
+    Unlike a test-UI cleanup, these batches have no pre-upload UI tag.  To
+    retain a strict delete boundary, every current course/route/direction must
+    be attributable to the exact batches supplied by the operator.  General
+    documents remain limited to their exact local document/shard Dify IDs.
+    """
+
+    if not _manifest_run_id_valid(_INCIDENT_MANIFEST_SCOPE, run_id):
+        raise RuntimeError("incident cleanup run_id is invalid")
+    batch_ids = _unique_strings(batch_ids, field="batch_id")
+    if not batch_ids:
+        raise RuntimeError("at least one exact incident batch_id is required")
+    for batch_id in batch_ids:
+        try:
+            uuid.UUID(batch_id)
+        except ValueError as error:
+            raise RuntimeError("incident cleanup batch_id is invalid") from error
+
+    settings = get_settings()
+    if DifyPublicationShard is None:
+        raise RuntimeError("incident cleanup capture requires the current release models")
+    with SessionLocal() as session:
+        batches = {
+            str(batch.id): batch
+            for batch in session.scalars(
+                select(CleaningBatch).where(CleaningBatch.id.in_(batch_ids))
+            )
+        }
+        if set(batches) != set(batch_ids):
+            raise RuntimeError("incident cleanup batch IDs do not all exist")
+        if any(batch.status != "completed" for batch in batches.values()):
+            raise RuntimeError("incident cleanup batch is not terminal; wait for completion")
+
+        files = list(
+            session.scalars(select(CleaningFile).where(CleaningFile.batch_id.in_(batch_ids)))
+        )
+        file_ids = [str(row.id) for row in files]
+        documents = list(
+            session.scalars(
+                select(CleaningDocument).where(CleaningDocument.file_id.in_(file_ids))
+            )
+            if file_ids
+            else []
+        )
+        shards = list(
+            session.scalars(
+                select(DifyPublicationShard).where(DifyPublicationShard.file_id.in_(file_ids))
+            )
+            if file_ids
+            else []
+        )
+        catalog_targets = _test_ui_catalog_targets(documents)
+        current_catalog = _current_catalog_targets(session)
+        for key in ("course_ids", "route_ids"):
+            if current_catalog[key] != catalog_targets[key]:
+                raise RuntimeError(
+                    "incident cleanup refuses a catalog that is not fully owned by the exact batches"
+                )
+        if current_catalog["direction_codes"] - catalog_targets["direction_codes"]:
+            raise RuntimeError(
+                "incident cleanup refuses directions not owned by the exact batches"
+            )
+        # Cleaning-document `direction` is a catalog field, while the optional
+        # CourseDirection table uses a separate code namespace.  Delete only
+        # rows that actually exist in that table after proving none are outside
+        # the exact batches' declared directions.
+        catalog_targets["direction_codes"] = current_catalog["direction_codes"]
+
+    dify_documents = {"general": set(), "course": set()}
+    file_batch_ids = {str(row.id): str(row.batch_id) for row in files}
+    for row in documents:
+        if row.dify_document_id:
+            dify_documents[batches[file_batch_ids[str(row.file_id)]].knowledge_base_code].add(
+                str(row.dify_document_id)
+            )
+    for row in shards:
+        if row.dify_document_id:
+            dify_documents[batches[file_batch_ids[str(row.file_id)]].knowledge_base_code].add(
+                str(row.dify_document_id)
+            )
+
+    payload = {
+        "schema_version": _MANIFEST_SCHEMA_VERSION,
+        "kind": _MANIFEST_KIND,
+        "run_id": run_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "build_version": settings.build_version,
+        "batch_build_versions": sorted({str(batch.build_version) for batch in batches.values()}),
+        "scope": _INCIDENT_MANIFEST_SCOPE,
+        "targets": {
+            "dify_documents": {code: sorted(values) for code, values in dify_documents.items()},
+            "cleaning_batch_ids": batch_ids,
+            "course_ids": sorted(catalog_targets["course_ids"]),
+            "route_ids": sorted(catalog_targets["route_ids"]),
+            "direction_codes": sorted(catalog_targets["direction_codes"]),
+            "redis_keys": [
+                key
+                for batch_id in batch_ids
+                for key in (
+                    f"ai:cleaning:batch:{batch_id}",
+                    f"ai:cleaning:batch:{batch_id}:files",
+                )
+            ],
+            "chat_user_ids": [],
+        },
+    }
+    signed_payload = _write_v3_manifest(output, payload)
+    return {
+        "schema_version": _MANIFEST_SCHEMA_VERSION,
+        "scope": _INCIDENT_MANIFEST_SCOPE,
         "manifest_fingerprint": (signed_payload.get("integrity") or {}).get("manifest_sha256", ""),
         "target_counts": {
             "dify": {code: len(values) for code, values in dify_documents.items()},
@@ -1434,6 +1574,10 @@ def build_parser() -> argparse.ArgumentParser:
     capture_manifest.add_argument("--batch-id", action="append", required=True)
     capture_manifest.add_argument("--catalog-baseline", type=Path)
     capture_manifest.add_argument("--output", type=Path, required=True)
+    capture_incident = subparsers.add_parser("capture-incident-manifest")
+    capture_incident.add_argument("--run-id", required=True)
+    capture_incident.add_argument("--batch-id", action="append", required=True)
+    capture_incident.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -1449,6 +1593,12 @@ def main() -> int:
         payload = _capture_test_ui_catalog_baseline(
             output=args.output,
             run_id=args.run_id,
+        )
+    elif args.command == "capture-incident-manifest":
+        payload = _capture_incident_manifest(
+            output=args.output,
+            run_id=args.run_id,
+            batch_ids=args.batch_id,
         )
     else:
         payload = _capture_test_ui_manifest(

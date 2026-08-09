@@ -235,6 +235,34 @@ def test_manual_test_ui_manifest_requires_its_own_scope_and_run_id(tmp_path):
     assert loaded["run_id"] == payload["run_id"]
 
 
+def test_manual_incident_manifest_requires_its_own_scope_and_run_id(tmp_path):
+    payload = {
+        "schema_version": 3,
+        "kind": "acceptance_cleanup_manifest",
+        "run_id": "cleaning-incident-" + "a" * 32,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "build_version": "test-build",
+        "scope": "manual_incident_cleanup",
+        "targets": {
+            "dify_documents": {"general": [], "course": []},
+            "cleaning_batch_ids": [],
+            "course_ids": [],
+            "route_ids": [],
+            "direction_codes": [],
+            "redis_keys": [],
+            "chat_user_ids": [],
+        },
+    }
+    payload["integrity"] = {
+        "manifest_sha256": RELEASE_DATA._canonical_fingerprint(payload)
+    }
+
+    loaded = RELEASE_DATA._load_v3_manifest(_write_manifest(tmp_path, payload))
+
+    assert loaded["scope"] == "manual_incident_cleanup"
+    assert loaded["run_id"] == payload["run_id"]
+
+
 def test_manual_test_ui_capture_has_no_name_or_time_window_delete_fallback():
     source = SOURCE[
         SOURCE.index("def _capture_test_ui_manifest") : SOURCE.index(
@@ -265,6 +293,20 @@ def test_manual_test_ui_capture_allows_exact_tagged_batches_after_a_release():
         )
     ]
     assert "catalog baseline build version does not match" not in baseline_loader
+
+
+def test_incident_capture_refuses_catalog_data_not_owned_by_exact_batches():
+    source = SOURCE[
+        SOURCE.index("def _capture_incident_manifest") : SOURCE.index(
+            "def _validate_database_targets"
+        )
+    ]
+
+    assert "batch_ids = _unique_strings" in source
+    assert "current_catalog[key] != catalog_targets[key]" in source
+    assert 'current_catalog["direction_codes"] - catalog_targets["direction_codes"]' in source
+    assert "original_filename" not in source
+    assert "created_at <" not in source
 
 
 def test_backup_and_cleanup_mount_the_current_release_data_script():

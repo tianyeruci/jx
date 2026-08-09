@@ -37,6 +37,8 @@ X-Admin-Token: <管理员令牌>
 
 - 小程序前端不能持有 `X-Internal-Token`、`X-Admin-Token`、Dify Key、Dataset ID。
 
+- 临时公网 `/ai-service/` 只可用于小程序后端的受控业务调用；第 4.10.2 节“创建知识库上传批次”及其 `/upload-batches/...` 状态、重试和复核子路径不得经该桥接访问，jx 网关会返回 `403`。AI 管理页使用 Docker 内部 API 或私网管理通道，不依赖该公网桥接。
+
 ### 1\.2 统一错误结构
 
 ```JSON

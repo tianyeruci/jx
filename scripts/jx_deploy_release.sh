@@ -204,6 +204,7 @@ for file in \
   jx_reset_course_route_catalog.py \
   jx_reset_all_document_data.sh \
   jx_reset_all_document_data.py \
+  configure_dify_nginx_ai_service_guard.py \
   jx_resource_guard.sh \
   jx_release_data.py \
   jx_acceptance_budget.py \

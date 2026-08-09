@@ -1,10 +1,90 @@
 # AI 管理服务当前状态与后续测试交接
 
-> 更新时间：2026-08-07
+> 更新时间：2026-08-09
 > 用途：保存最新线上事实、回滚点、数据状态和开放事项。新任务先读 `AGENTS.md` 与 `docs/README.md`，再按功能域读取本文顶部最新状态。  
 > 本文不是需求或设计基线；权威顺序以 `docs/V2决策记录.md` 和 `docs/README.md` 为准。第 1～8 节为历史过程记录，不再作为当前执行指令。
 
-## 0.44 2026-08-07 jx 发布、目录批次与页面全链路复测结果（当前最新）
+## 0.53 2026-08-09 jx 知识库意外重现的根因、阻断与精确清理（当前最新）
+
+- 根因已确认：为小程序联调临时开放的 Nginx `/ai-service/` 通用反向代理把 `/internal/v1/admin/knowledge-bases/{course,general}/upload-batches` 一并暴露。Nginx 记录到固定半小时的三次上传请求；07:00 的一次成功调用创建了 3 个本地批次，并写入课程知识库 22 篇、通用知识库 4 篇。该现象不是 Dify、Redis 或数据库从备份自动恢复。
+- 调用方的具体进程未能从现存证据可靠归属：Nginx 仅保留 Docker 网关转发地址且请求没有用户代理，主机 cron、systemd unit/timer 与现有容器名称检索均未命中。该限制已记录，不能把调用方猜测为某个业务服务。
+- 已通过 `scripts/configure_dify_nginx_ai_service_guard.py` 在临时桥接前加入精确 `403` 规则，只拒绝两个内部知识库上传入口，保留其它 `/ai-service/` 联调路径。Nginx 配置检查和热加载通过；07:30 的三次周期重试均返回 `403`，测试页仍为 HTTP `200`。
+- 清理前已备份 Dify/AI 数据库、Redis RDB、上传卷和配置至 `/opt/ai-management/backups/20260809-073700-unexpected-knowledge-cleanup` 并通过校验。使用新增 `manual_incident_cleanup` v3 manifest，仅覆盖确认的 3 个批次、26 个 Dify 文档、21 门课程、1 条路线、精确 Redis 键和对应上传目录；没有按名称、时间窗口或 Dataset 总数删除，也没有直接修改 Dify 数据库。
+- 清理后：Dify `general/course` 均为 `0`；本地清洗批次/文件/文档/模型任务/发布分片为 `0/0/0/0/0`，课程/路线为 `0/0`，清洗 Redis 键和精确课程快照 key 为 `0`，上传卷入口为 `0`；API ready、全部命名服务与测试页均正常。报告：`/opt/ai-management/var/reports/v2/20260809-073700-unexpected-knowledge-cleanup`。
+- 后续：任何仍需要临时公网 `/ai-service/` 的发布，必须先安装并启用该 guard；完整移除临时桥接或改为 HTTPS/私网访问仍需单独评估小程序联调依赖，不能在本次事故处置中擅自中断。
+
+## 0.52 2026-08-09 jx ai-management 应用日志已清理（历史）
+
+- 按项目“日志清空”的既定口径，仅删除 AI 管理数据库 `SystemEventLog`，不删除 Docker stdout/stderr、systemd/journal、Dify 日志或主机日志。
+- 清理前日志数为 `130`，事务删除后为 `0`；清理前备份为 `/opt/ai-management/backups/20260809-clear-system-event-logs-pre`。
+- 操作期间短暂停止 8 个 ai-management 写入服务，删除后已恢复；最终 API `/health/ready` 为 `ready`，数据库、Redis、Dify 配置和连通性均为 `true`，8 个命名 ai-management 容器均运行。
+- 本次只清日志表，没有使用全量文档归零脚本，没有删除 `general/course` 文档、课程、Redis 业务缓存、Dify 数据或持久卷。
+
+## 0.51 2026-08-09 jx 测试文档、课程域和本次 release 残留已清理（历史）
+
+- 核心问题已定位：前几次清理只依据本地 `CleaningBatch`/旧 manifest 关联关系，未先盘点 Dify Dataset 全量文档。复核时 `general` 有 `263` 篇文档，其中 `237` 篇没有对应本地 `CleaningDocument`/发布分片记录，属于直接调用 Dify 上传接口产生的孤立测试文档；因此本地批次归零并不代表 Dify 知识库归零。重启期间还曾有外部验收客户端通过 `shequn-admin` 请求短暂重建批次，最终清理前已冻结写入并在观察窗口确认无新写入。
+- `business-course-test`、`business-general-test`、配置的 `course` 和 `general` Dataset 均已通过只读盘点后按精确文档目标清理，最终文档数均为 `0`。Dataset 配置本身保留，删除的是测试文档，不是知识库配置或 Dataset 容器。
+- 最终使用完整 `general` Dataset 文档 ID 集合加上全部 general 本地批次/文件/清洗文档/模型任务/发布分片/Redis/上传目录的 v3 精确 manifest，通过现有清理链路完成删除；报告为 `/opt/ai-management/var/reports/v2/20260809-143906-general-document-cleanup`。课程域备份为 `/opt/ai-management/backups/20260809-143417-course-document-data-reset`，未直接修改 Dify 业务数据库。
+- 最终核对：AI 数据库清洗批次/文件/文档/模型任务/发布分片为 `0/0/0/0/0`，课程和路线为 `0/0`，清洗 Redis 键为 `0`，精确课程快照 key 为 `0`，批次上传目录为空；无关的外部删除任务、会话/配置和审计日志未纳入本次文档测试数据清理范围。
+- 服务已恢复并稳定：API `/health/ready` 为 `ready`，测试页 HTTP `200`，OCR timer 为 `enabled/active`，Celery active 任务为空；清理后观察窗口内没有新的 `upload-batches`/Dify 文档上传日志。
+- 后续规则：不是每次代码部署都要清空知识库。默认无写入契约、健康检查和业务 SSE 测试不产生 Dify 文档，只清理各自的测试会话；只有完整清洗验收、测试上传或课程/路线测试导入等写入型测试才必须按精确范围收尾。正式知识库、正式课程和已授权保留数据默认不清理。
+
+## 0.50 2026-08-09 jx 完整清洗验收测试文档来源与清理边界（历史过程，结论已由 0.51 更新）
+
+- 本次用户看到的新增知识库文档不是部署备份恢复，而是完整清洗验收主动上传的测试样本。发布前备份发生在验收上传之前，备份中的 Dify dump 只是恢复材料；普通重启、AI 容器重建和代码 release 切换不会自动把备份内容重新写入 Dify。
+- `full_cleaning_acceptance.py` 会向 general 知识库上传测试样本，并生成 `/opt/ai-management/var/private-cleanup-manifests/20260809-125124-full-e06470c-baseline/acceptance-cleanup-manifest.json`。本次 manifest 的 general 目标为 `71` 篇；清理前 general 为 `341` 篇，清理后为 `270` 篇，71 个精确目标全部不再存在。course manifest 目标为 `0`，当前 course 知识库共 `22` 篇，未按本次 manifest 删除 course 文档。
+- 根因是验收脚本只生成 manifest，不自动执行 `jx_release_data.py plan-clean/clean`；本次部署完成后遗漏了显式清理阶段。随后已使用同一 manifest 完成精确清理：删除 Dify general 文档 `71` 篇、清洗批次 `19` 个、测试会话 `1` 个，并按精确目标清理 Redis/上传目录。未来只有重新运行完整清洗验收或显式恢复 Dify dump 时才会新增/恢复文档，普通重启/重构不会新增。
+- 清理报告为 `/opt/ai-management/var/reports/v2/20260809-125124-full-e06470c-cleanup`；API ready、测试页 HTTP `200`、OCR timer `enabled/active` 均复核通过。脱敏问题记录见 [`var/reports/jx-deploy-20260809/issues.jsonl`](var/reports/jx-deploy-20260809/issues.jsonl)，长期规则见 [`docs/troubleshooting/data-cleaning.md`](docs/troubleshooting/data-cleaning.md) 的 DATA-033。
+
+## 0.49 2026-08-09 jx 使用最新代码重新构建发布与回归结果（历史）
+
+- 发布基线：本地 `work` 分支 HEAD `e06470c05fbe3e08d789d7e37e2f7743670c01ea`；本次按当前权威工作树构建完整 wheel，release 为 `20260809-125124-full-e06470c`，wheel SHA-256 为 `32a7a6faf63e4569b79724b041336ec2cbe4b0c341f57abab70d58102ff52657`。未执行 Git commit/push。
+- 发布前已完成备份与校验：备份目录 `/opt/ai-management/backups/20260809-125124-full-e06470c-predeploy`，发布报告 `/opt/ai-management/var/reports/v2/20260809-125124-full-e06470c-deploy`。本次未发布 Dify DSL/App，未改对外 HTTP/SSE 契约，未做非清单范围的数据删除。
+- 当前运行态：Core、普通/实时/Batch 模型 Worker、发布 Worker、Scheduler 统一使用 `jx-now-ai-management:20260809-125124-full-e06470c`；测试 UI 使用同 release 的 UI 镜像；OCR 使用 `jx-now-ai-management-ocr:20260809-125124-full-e06470c`。API `/health/ready` 为 `ready`，数据库/Redis/Dify 均可达，Alembic 为 `j6a7b8c9d0e1 (head)`，测试页 HTTP `200`，`jx-ocr-autoscaler.timer` 为 `enabled/active`，发布后资源守卫通过。
+- 包内容门禁：首次用干净 HEAD 归档构建的 wheel 缺少工作树中的 `ai_management.acceptance_budget`，完整清洗验收立即报模块缺失；本次改用当前权威工作树构建并验证 wheel 内容、容器内 `acceptance_budget_import=ok` 后重新发布。该模块闭包检查已加入 `docs/troubleshooting/deployment.md` 的 DEPLOY-020。
+- 部署问题：第一次上传 Bash 文件因 CRLF 导致远端 `pipefail` 语法错误，未发生切换或数据副作用；随后对远端 stage 文本统一去除回车并 `bash -n` 后重试成功。该问题已加入 DEPLOY-019。脱敏问题记录见 [`var/reports/jx-deploy-20260809/issues.jsonl`](var/reports/jx-deploy-20260809/issues.jsonl)。
+- 远端完整清洗验收：报告 `/opt/ai-management/var/reports/v2/20260809-125124-full-e06470c-baseline`，退出码为 `1`；19 个 case 中 `12` 通过、`7` 未通过，3 个 Chat 检查通过，预算摘要为 `0.00/5.00`。失败集中在 Dify 文档命名/发布条目终态与数量校验、Batch submission 未确认，以及课程目录 synthetic runner 异常；不是 API 无法启动。精确清理 manifest 和安全摘要已生成，临时验收容器已移除。
+- 当前课程目录状态为 `Course=21、LearningRoute=1、CourseCollection=0、CourseCollectionMember=0`，不是完整目录基线；本轮没有擅自恢复或清理正式课程数据。完整目录验收需要另行提供并授权使用完整课程源样本。
+- 最新 release 的补充回归：Dify 无写入契约检查中商业 Chatflow 两轮 `message_end`、朋友圈/写作/摘要画像 Workflow 均成功；实时业务场景 4 组 SSE 均收到 `message_end`，停止接口返回 `200` 且会话已删除；清理复核无遗留测试会话。全量本地 `pytest tests -q` 在约 124 秒无输出后超时，未宣称全量通过；发布、课程/路线、文档、清洗与预算相关定向测试均通过。
+- 完整可执行流程、备份/发布/回滚门禁与避坑清单见 [`docs/jx完整代码重建部署与避坑手册.md`](docs/jx完整代码重建部署与避坑手册.md)。
+
+## 0.48 2026-08-09 jx 已有 Markdown 表格清洗隔离输出实测（历史）
+
+- 按 0.47 的入口结论执行：服务器实际 CLI 仍不支持 `--clean-tables`，本轮在现有 OCR 镜像 `jx-now-ai-management-ocr:20260809-125124-full-e06470c` 内调用共享 `knowledge_cleaner.markdown_table_cleaner.clean_markdown_tables()`；未重建服务、修改配置、写数据库/Redis/Dify 或调用 PDF 转换 CLI。
+- 输入目录 `/opt/ai-management/tmp/pdf-markdown-refine/output/` 保持原样，共 5 个 Markdown；结果隔离写入 `/opt/ai-management/tmp/pdf-markdown-refine/runs/20260809-130843-markdown-table-clean/output/`，报告为同级 `table-clean-report.json`，未覆盖输入文件。
+- 实测结果：5/5 输出非空，2 个文件内容变化；共识别 8 张表，`tables_converted=0`、`tables_demoted=8`、`rows_skipped=0`。8 张表均因 `empty_header` 无法可靠对齐，按安全策略降级为线性单元格文本；结果文件权限为 `0600`。
+- 验证：清洗结果二次运行幂等（5/5 通过）；当前隔离输出保留供人工复核，不应直接作为正式知识库发布结果。若要验证“表格转语义句”路径，需要另用脱敏且带规范表头的 GFM/HTML 表格样本。
+
+## 0.47 2026-08-09 jx Markdown 表格清洗服务器隔离验证（历史）
+
+- 当前只读核对：jx API、普通 Worker、Scheduler、发布/模型 Worker 和测试 UI 均为运行状态；API `health/ready` 返回 `ready`，测试页 HTTP 为 `200`。本轮未执行启动、重建、发布、数据库/Redis/Dify 写入或数据清理；服务何时由谁恢复不在本轮范围内。
+- 入口确认：服务器实际 `/opt/ai-management/tmp/pdf-markdown-refine/pdf_markdown_refine.py --help` 只有 PDF 转换参数和 `--force`，没有 `--clean-tables`。单独清洗 Markdown 应调用当前 OCR 镜像内的共享 `knowledge_cleaner.markdown_table_cleaner.clean_markdown_tables()`，不要把本地较新的 CLI 参数直接复制到服务器。
+- 合成样本：可靠 GFM 表格转换为语义句；空表头表格安全降级为线性单元格文本并记录内部 issue；代码围栏内表格保持原样。
+- 真实样本：服务器既有 Markdown 输出目录共 5 个文件，其中 2 个含表格、共 8 张；8 张均因 `empty_header` 降级，0 行被猜测转换，输出无残留 Markdown/HTML 表格，容器内测试通过。输入正文未回显，临时输出目录已自动删除。
+- 本地证据：`tmp/markdown_table_cleaner.py --self-test` 通过；`.venv` 下共享清洗、集成和 PDF CLI 定向用例全部通过。`tmp/markdown_table_cleaner.py` 是未跟踪的独立诊断脚本，服务器正式入口仍是共享清洗模块。
+- 边界：本轮只证明服务器当前共享实现可运行及现有样本的安全降级行为；现有真实样本没有可可靠识别的表头，因此不能据此证明复杂表格能转换为语义行。若要验证转换路径，应另用合成或脱敏的规范 GFM 表格输入。
+
+## 0.46 2026-08-09 jx 服务停止根因定位（历史）
+
+- 根因已定位：8 月 7 日 18:27～18:28 执行的是服务器专用 `jx_reset_course_document_data_test.sh`，不是仓库中会自动恢复服务的正式脚本。该测试脚本的设计就是“清理成功后保持服务停止”，要求关闭旧上传客户端后另行执行 `start`；本次未发现后续 `start` 或命名 AI 容器的启动事件。
+- 证据链：测试脚本在 18:27:38 被写入/更新；`/opt/ai-management/backups/20260807-182804-course-document-data-reset/course-document-data-reset/poststop/execution.safe.json` 于 18:28:22 记录 `status=completed`、课程 Dify 文档 `22`、清洗批次 `1`、课程 `21`、路线 `1` 已清理；18:28:23 的 postcheck 只证明数据计数归零。随后 8 个命名 AI 容器仍为 `Exited (0)`，API 的 `StartedAt` 没有进入新的启动周期。
+- 关键验证误区：该测试脚本的 `verify_reset` 使用 `docker compose run --rm` 创建一次性 API 容器做数据复核，即使命名 `api` 已停止也能生成 `0` 计数；它没有检查命名服务是否运行、`/health/ready` 或 Nginx 测试页。因此“数据清理成功”被误当成“服务恢复/任务完成”。
+- 故障链：归零脚本主动停止写入 Worker/UI，再停止 API → 数据备份和清理完成 → 脚本按设计不启动服务 → 没有后续 `start`、无 Compose/systemd 服务状态看门人 → Nginx 仍在但上游 `ai-management-test-ui:8501`/`ai-management-api:8000` 无容器监听 → `/ai-management-test/` 返回 `502`。`unless-stopped` 不会抵消显式 `docker compose stop`。
+- 排除项：API 是正常 `Shutting down`，不是代码崩溃；`OOMKilled=false`；主机内存、磁盘、Dify 容器和 Nginx 均正常。OCR autoscaler 的失败是 AI Compose 停止后的派生告警；Docker 缓存维护门禁失败也发生在 8 月 9 日，不是 8 月 7 日停服原因。
+- 防复发方案与分阶段验收见 [`var/reports/jx-availability-20260809/root-cause-and-remediation.md`](var/reports/jx-availability-20260809/root-cause-and-remediation.md)。本轮仍未在 jx 执行启动或修改；恢复服务需要单独授权。
+
+## 0.45 2026-08-09 jx 服务可用性、Git 与部署版本检查（历史）
+
+- 检查时间：服务器本地时间 `2026-08-09 11:53` 左右；本轮只读检查，未在 jx 执行启动、重建、清理或发布。
+- Git 分支：本地仓库当前分支是 `work`，`HEAD=e06470c05fbe3e08d789d7e37e2f7743670c01ea`，提交时间 `2026-08-08 04:07:09+08:00`，相对 `origin/main` 为 `ahead 7`；工作树存在大量未跟踪文件。jx `/opt/ai-management` 不是 Git 工作树，服务器没有可直接报告的 Git 分支，线上使用 release/镜像工件。
+- 部署版本：jx `.env` 的 `BUILD_VERSION`、Core/UI/OCR 镜像均为 `20260807-1455-route-collections`。该 release 早于本地 `work` 的 2026-08-08 HEAD，且服务器源码与本地 HEAD 的 `conversations.py`、`course_route_catalog.py`、`knowledge_cleaner/pdf_convert.py`、`pyproject.toml` SHA-256 均不一致，因此当前不是本地 Git HEAD 的最新代码。
+- 服务状态：主机 SSH 正常；根分区约 `229 GiB` 可用、`MemAvailable` 约 `26 GiB`。Dify 容器仍运行且健康；`ai-management` Compose 项目为 `exited(10)`，API、普通/模型/发布 Worker、Scheduler、UI、OCR 共 8 个容器均为 `Exited (0)`，`OOMKilled=false`，没有崩溃证据。
+- 访问故障：Nginx 仍运行并把测试页转发到 `ai-management-test-ui:8501`、AI API 转发到 `ai-management-api:8000`；公网和服务器本机访问 `/ai-management-test/` 均为 HTTP `502`，原因是上游 AI 容器已停止。API 最后一次日志先通过 `/health/live`、`/health/ready`，随后正常记录 `Shutting down`；不是健康检查失败导致的 502。
+- 停服线索：root 历史中存在全量文档归零/验收流程的显式 `docker compose ... stop`；8 月 7 日 13:40 的一次归零日志记录了成功恢复，但 18:28 左右这次停服没有找到对应的“恢复完成”证据。具体触发脚本当时尚未从现有证据确认，详见顶部 0.46。
+- 其它告警：8 月 9 日 Docker 缓存维护因私有缓存约 `22.97 GB` 超过 `20 GiB` 门槛而安全失败；OCR autoscaler 因 AI Compose 已停而连续失败。这两项不是本次 502 的根因，但说明不能只恢复 Nginx 或只看定时器。
+- 待授权恢复：应从 `/opt/ai-management` 按合并 Compose 明确启动 AI 服务，再依次核对 `docker compose ... ps -a`、容器内 `/health/ready`、测试页 HTTP 200 和关键日志；本次未执行该写入操作，当前线上仍是不可访问状态。脱敏证据见 [`var/reports/jx-availability-20260809/issues.jsonl`](var/reports/jx-availability-20260809/issues.jsonl)。
+
+## 0.44 2026-08-07 jx 发布、目录批次与页面全链路复测结果（历史）
 
 - 本轮实际处理的问题：恢复 `course_route_catalog` 原有逐文档增量清洗/同步，修复同名课程合集按全局关系串线、阶段展示缺少“课程合集 → 课程名称”、路线确认后不推进、路线展示不完整，以及课程卡后专家点评缺失时没有安全兜底的问题；同时保留原有 PDF 清洗边界，不把无正文 PDF 强行降级为可入库内容。
 - 本地完成：真实 Excel 解析 `105 课程 / 5 路线 / 33 合集 / 103 成员`；同名合集跨路线、连续块混入其它路线、阶段展示裁剪均有回归；全量 `pytest` 为 `379 passed`，Python 编译、DSL YAML 解析、功能索引写入/检查、`git diff --check` 均通过。
@@ -1481,3 +1561,99 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改后：补录文档契约 `11 passed`、全量 `pytest tests -q` `379` 项通过、现有弃用警告，以及 `health/live`、`health/ready`、同源容器和目录计数复核结果。
 - 验证：文档契约、索引检查和 `git diff --check` 通过；jx 当前 release `20260807-1345-route-activefix` 无回滚标记，页面验收页保持交接状态。
 - 边界：仅更新验收记录，不修改代码、数据库、Dify、对外接口或历史业务数据。
+
+### 文档修改记录（2026-08-09 jx 服务不可访问排查）
+
+- 修改原因：用户反馈前两天仍可访问、今天 `ai-management` 无法访问，要求核对 Git 分支、部署版本、服务器服务状态并记录排障经验。
+- 修改前：顶部最新状态仍停留在 2026-08-07 发布完成/页面可复核，未反映当前 AI Compose 已停止、Nginx 502 和本地 HEAD 与线上 release 的差异。
+- 修改后：新增 0.45 当前检查结果，记录本地 `work` 分支与 HEAD、jx release `20260807-1455-route-collections`、8 个 AI 容器 `Exited (0)`、API 正常 shutdown、Nginx 502、清理流程停服线索、未确认的具体触发命令和待授权恢复边界；新增脱敏开放问题报告，不把服务宣称为已恢复。
+
+### 文档修改记录（2026-08-09 jx 停服根因定位）
+
+- 修改原因：继续追踪 18:28 停服事件，确认用户反馈“前两天还能访问、今天不可访问”的完整链路和可复用防复发措施。
+- 修改前：0.45 只确认容器被正常停止，尚未确认具体脚本及为何数据清理报告成功后服务仍未恢复。
+- 修改后：新增 0.46，确认实际执行的是服务器专用 `jx_reset_course_document_data_test.sh`；该脚本成功路径明确保持服务停止，postcheck 使用一次性 `docker compose run` 只复核数据归零，不复核命名服务；本次没有后续 `start` 或命名容器启动证据，导致 Nginx 502。新增脱敏根因与分阶段整改报告；未修改 jx、未宣称服务已恢复。
+- 验证：服务器脚本内容、脚本更新时间、备份/执行/postcheck 脱敏摘要、Docker journal 和当前容器状态相互吻合；本地文档契约测试与 `git diff --check` 另行执行。
+
+### 文档修改记录（2026-08-09 Markdown 表格清洗服务器隔离验证）
+
+- 修改原因：用户要求确认之前的 Markdown 表格清洗脚本/共享实现能否在 jx 服务器上测试，并核对服务器 CLI 与本地版本是否一致。
+- 修改前：顶部最新状态仍记录 jx 停服，未记录服务已经恢复运行，也未记录服务器实际 PDF 脚本没有 `--clean-tables` 以及共享 Markdown 表格清洗验证结果。
+- 修改后：新增 0.47，记录只读健康证据、服务器入口差异、合成样本转换/降级/代码围栏验证、5 个真实 Markdown 的 8 张表全部按 `empty_header` 安全降级，以及本地定向回归结果；明确未执行服务启动、发布、清理或 Dify 写入。
+
+### 文档修改记录（2026-08-09 Markdown 表格清洗隔离输出实测）
+
+- 修改原因：按用户要求在 jx 服务器对指定 Markdown 目录执行已有表格清洗实现，并保留可复核结果。
+- 修改前：顶部 0.47 记录的是前一次隔离验证，写明当次临时输出已删除，未记录本次新建的保留式隔离输出和幂等校验。
+- 修改后：新增 0.48，记录本次共享清洗函数、实际 OCR 镜像、5 个输入、8 张表的 `empty_header` 安全降级、结果目录与报告位置；明确原目录未覆盖、输出权限为 `0600`、结果二次运行幂等。
+- 验证：服务器输出 5/5 非空，2 个文件变化，`tables_converted=0`、`tables_demoted=8`、`rows_skipped=0`；未修改服务、配置、数据库、Redis、Dify 或原始 Markdown。
+
+### 文档修改记录（2026-08-09 最新代码重建发布）
+
+- 修改原因：用户要求使用最新代码重新在 jx 部署一套、完成测试，并把部署问题与解决方案记录到本地。
+- 修改前：顶部最新状态为 Markdown 表格隔离验证，未记录本次完整 wheel 重建、jx release、发布失败重试、完整清洗验收结果和最新服务状态。
+- 修改后：新增 0.49，记录 release `20260809-125124-full-e06470c`、备份/报告路径、同源镜像、ready/UI/OCR/迁移/资源门禁、wheel 模块闭包问题、Windows CRLF 问题、远端验收统计、当前部分课程目录状态及补充回归边界；新增本地脱敏问题报告链接，并在 `docs/troubleshooting/deployment.md` 增加 DEPLOY-019/020。
+- 验证：API ready、Dify 无写入契约、实时业务 SSE、stop 接口、测试页和 OCR timer 均完成核验；完整清洗验收安全报告、退出码和精确清理 manifest 已保留。未执行 Git commit/push，未发布 Dify DSL/App，未做非清单范围清理。
+
+### 文档修改记录（2026-08-09 完成验收测试文档精确清理）
+
+- 修改原因：用户确认删除本次部署完整清洗验收产生的测试文档。
+- 修改前：0.50 记录 general manifest 的 71 个目标仍存在，尚未执行删除。
+- 修改后：按 manifest-only 流程完成删除 Dify general 文档 71 篇、清洗批次 19 个、测试会话 1 个及对应精确 Redis/上传状态；course manifest 目标为 0，未删除 course 文档。
+- 验证：清理报告 `/opt/ai-management/var/reports/v2/20260809-125124-full-e06470c-cleanup` 显示目标文档重叠数为 0；API ready、测试页 HTTP 200、OCR timer active，未扩大触碰正式目录。
+
+### 文档修改记录（2026-08-09 完整部署手册补充）
+
+- 修改原因：用户要求把整个代码重建部署流程、踩坑和注意事项整理成下次可直接复用的本地手册。
+- 修改前：0.49 已记录本次 release、验收结果和问题链接，但没有从源码检查、wheel 闭包、LF 传输、备份、发布、回滚到测试判定的完整操作顺序。
+- 修改后：新增 `docs/jx完整代码重建部署与避坑手册.md`，并在 `docs/README.md` 建立入口；手册包含命令模板、停止条件、数据边界、失败分类、回滚要求和本次实战路径。
+- 验证：文档契约、项目索引检查和 `git diff --check` 通过；未修改 jx、未执行 Git commit/push。
+
+### 文档修改记录（2026-08-09 完整清洗验收测试文档清理边界）
+
+- 修改原因：用户发现本次部署后知识库出现测试文档，要求确认来源、是否来自备份、重启/重构是否会重复出现以及删除边界。
+- 修改前：0.49 只记录完整清洗验收生成了 cleanup manifest，未记录该 manifest 尚未执行清理，也未核对目标 Dify 文档是否仍存在。
+- 修改后：新增 0.50，确认本次 general manifest 的 71 个精确 Dify 文档目标仍全部存在；明确它们来自验收上传而不是备份恢复，普通重启/重构不会重新生成；新增 DATA-033 和本地脱敏问题记录，保留删除需用户确认的边界。
+- 验证：只读对账完成，未删除任何 Dify 文档、数据库记录、Redis key 或课程数据；正式文档未按名称或模糊条件触碰。
+
+### 文档修改记录（2026-08-09 完成用户确认的精确清理）
+
+- 修改原因：用户确认删除本次部署完整清洗验收产生的测试文档。
+- 修改前：general manifest 的 71 个目标仍存在；顶部记录尚未执行删除。
+- 修改后：按 manifest-only 流程完成删除 Dify general 文档 71 篇、清洗批次 19 个、测试会话 1 个及对应精确 Redis/上传状态；course manifest 目标为 0，未删除 course 文档。
+- 验证：清理报告 `/opt/ai-management/var/reports/v2/20260809-125124-full-e06470c-cleanup` 显示目标文档重叠数为 0；API ready、测试页 HTTP 200、OCR timer active，未扩大触碰正式目录。
+
+### 文档修改记录（2026-08-09 用户反馈后完成全范围测试数据清理）
+
+- 修改原因：用户反馈知识库仍有测试文档，并明确要求同步清除文档对应的数据库和缓存。
+- 修改前：0.50 只记录旧 general manifest 的 71 篇清理结果；未记录独立 `business-course-test` Dataset、当前 release 后续 general 测试批次和课程快照缓存的对账结果。
+- 修改后：新增 0.51，记录独立测试 Dataset 的 110 篇文档清理、course 文档域 22 篇/3 批次/21 门课程/1 条路线清理、当前 release 6 个 general 批次及其 Dify/数据库/Redis 清理、空课程快照 key 的最终精确删除，以及最终 general 保留范围和服务状态；新增 DATA-034 与本地脱敏问题记录。
+- 验证：`business-course-test=0`、配置 `course=0`、当前 release 批次 `0`、课程快照 key `0`；general 保留 `264` 篇非目标文档，API ready、测试页 HTTP `200`；备份和清理报告路径已记录，未按名称或模糊条件删除剩余 general 数据。
+
+### 文档修改记录（2026-08-09 定位并清理 general 残留）
+
+- 修改原因：用户反馈知识库仍未清空，要求定位核心问题并完成文档、数据库和缓存清理。
+- 修改前：0.51 的阶段性结论仍把 general 的 263 篇文档视为未被本次精确范围证明的历史数据；未识别其中 237 篇实际没有本地清洗关联，前述清理结论不完整。
+- 修改后：记录根因——Dify 直接 API 上传绕过本地 `CleaningBatch` provenance；冻结写入后将完整 general Dataset 文档 ID 集合纳入 v3 精确 manifest，完成 Dify、清洗数据库、Redis 和上传目录清理，同时保留配置、会话和无关日志。
+- 验证：Dify `general/course/business-course-test/business-general-test` 均为 `0`；本地清洗批次/文件/文档/模型任务/发布分片为 `0/0/0/0/0`，清洗 Redis 键和课程快照 key 为 `0`，上传目录为空；API ready、测试页 HTTP `200`、OCR timer `enabled/active`、Celery active 为空；最终报告为 `/opt/ai-management/var/reports/v2/20260809-143906-general-document-cleanup`。
+
+### 文档修改记录（2026-08-09 明确写入型验收的清理规则）
+
+- 修改原因：用户询问本次实际操作及知识库文档是否需要在每次部署后清除。
+- 修改前：0.51 已记录本次清理结果和根因，但没有把“无写入验证”与“写入型验收”的常规收尾规则明确区分。
+- 修改后：明确默认部署验证不清理知识库；仅完整清洗验收、测试上传、课程/路线测试导入等写入型测试需要按精确 manifest 和 Dataset inventory 清理；正式和已授权保留数据默认保留。
+- 验证：规则与本次 Dify inventory、v3 精确清理报告及 `docs/jx完整代码重建部署与避坑手册.md`、`docs/troubleshooting/deployment.md` 的更新一致；未执行新的远端删除、发布或 Git 操作。
+
+### 文档修改记录（2026-08-09 清理 ai-management 应用日志）
+
+- 修改原因：用户要求清理 jx 服务器上的 ai-management 日志。
+- 修改前：顶部 0.51 只记录文档和课程测试数据清理，且写明无关审计日志未纳入范围；未记录本次应用日志清理结果。
+- 修改后：新增 0.52，明确“日志”仅指 `SystemEventLog`，记录 `130 → 0`、备份目录、服务恢复、ready/容器复核及 Docker/systemd/Dify 日志保留边界。
+- 验证：清理后 `SystemEventLog=0`，API `/health/ready` 为 `ready`，8 个 ai-management 容器运行；未删除文档、课程、Dify、Redis 业务数据或持久卷。
+
+### 文档修改记录（2026-08-09 意外知识库写入根因与修复）
+
+- 修改原因：用户在未手动上传后再次发现知识库数据，要求定位根因并处理，且要求沉淀完整避坑信息。
+- 修改前：0.52 仍把此前文档清理视为当前终态，未记录临时公网桥接实际暴露内部上传接口、周期请求重建数据及对应处置。
+- 修改后：新增 0.53，记录桥接暴露根因、调用方可观察边界、精确 `403` 防护、备份、v3 事故 manifest 精确清理、Dify/数据库/Redis/上传卷归零和服务复核；同步新增 DEPLOY-022、DATA-036、完整部署手册及脱敏报告。
+- 验证：07:30 的 3 次实际周期上传请求均返回 `403`；清理后 Dify `general/course=0`、本地清洗与课程/路线为 `0`、清洗 Redis/课程快照/上传卷入口为 `0`，API ready、测试页 HTTP `200`。未记录密钥、正文、真实用户 ID、原始文件名或精确远端文档 ID。
