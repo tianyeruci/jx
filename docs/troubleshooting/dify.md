@@ -145,3 +145,15 @@
 - 预防：Dify API 版本升级时先用隔离 Dataset 验证真实上限，再调整配置；发布失败必须保留脱敏异常阶段和精确资源 ID，并刷新文件/批次状态。
 - 证据：`knowledge_cleaner/dify.py`、`ai_management/workers/tasks/cleaning.py`、`ai_management/workers/tasks/model_cleaning.py`、`docker-compose.ai.yml`、`tests/test_batch_cleaner.py`、`tests/test_cleaning_release_contract.py`。
 - 最后验证：2026-08-06，本地 Dify 客户端、分片和发布队列回归通过；jx release `20260806-165915-full-23162b2` readiness、同源镜像和容器烟测通过。
+
+## DIFY-013：Chrome 中 Dify 隐藏文件控件不能触发 chooser 时，自动接管页面控件
+
+- 适用：已登录的 Chrome Dify 工作区，通过导入 DSL 弹窗自动上传本地 `.yml/.yaml`。
+- 触发：`/apps` 可以正常访问、工作区和导入弹窗均可见，但对按钮或隐藏文件控件调用高层 `filechooser` 等待一直超时；这不是登录失效，也不是“必须人工上传”。
+- 根因：Dify 导入弹窗使用 `input[type=file][style="display:none"]`；当前 Chrome 自动化封装会拒绝原始 `DOM.setFileInputFiles`，而隐藏控件不会产生可观察的 chooser 事件。
+- 解决：仅在目标标签页取得 CDP 能力，用 `DOM.getDocument`/`DOM.querySelector` 确认文件控件后，通过页面级 `Runtime.evaluate` 临时设置 `display:block`、固定位置和较高层级；随后仍使用标准 `playwright.waitForEvent('filechooser')`、`click()`、`chooser.setFiles(<本地 DSL>)` 完成上传。导入完成后不保留页面改动，不读取或输出任何凭据。
+- 非解决：反复刷新或猜测未登录、要求用户手工上传、修改 Chrome 扩展权限、直接调用被封装层阻断的 `DOM.setFileInputFiles`，或把密钥写入日志。
+- 验证：已自动导入 `商业顾问（当前使用版本）.yml`，创建隔离应用 `eaa840e6-ec85-47e4-89a5-5cf0678f7ac3`；编辑器显示“最新发布/已发布”，案例检索节点存在且绑定 `record_type=consulting_case`。
+- 预防：浏览器自动化运行手册优先检查页面是否已登录和隐藏控件结构；遇到同类问题按本条使用标签页级 CDP 临时显示 + 标准 chooser，不把页面权限问题误报为账号权限问题。
+- 证据：Chrome Dify 编辑器与 `/develop` 页面；本地 `dify/商业顾问（当前使用版本）.yml`；jx 真实 Chat API/SSE 验收记录见当前状态交接文档 0.54。
+- 最后验证：2026-08-10（Chrome 登录态、Dify 导入发布、jx 测试环境）。

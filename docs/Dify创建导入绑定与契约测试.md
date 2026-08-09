@@ -8,6 +8,12 @@
 - 远端只读契约检查已验证四个应用的参数/调用路径；两个知识库检索结果为 0，不能据此宣称 RAG 召回通过。候选 DSL 导入/发布需要受控 Dify 管理员会话或 Enterprise API，并应通过 HTTPS/安全隧道完成；缺少这些条件时不得使用 HTTP 管理接口、猜测凭据或直接改数据库。
 - 商业顾问轻量语义评测仍有未通过案例；个人商业咨询模型契约和课程目录结构复核也必须保持复核门禁，不能为了提高通过率放宽 schema 或自动批准。
 
+## 本轮 2026-08-10 发布与自动导入补充
+
+- Chrome 已登录 Dify 工作区；导入弹窗使用隐藏 `input[type=file]` 时，自动化不应要求用户手工上传或修改扩展权限。按 `docs/troubleshooting/dify.md` 的 DIFY-013，通过目标标签页级 CDP 临时显示控件，再使用标准 filechooser 自动上传。
+- `dify/商业顾问（当前使用版本）.yml` 已导入为隔离应用 `eaa840e6-ec85-47e4-89a5-5cf0678f7ac3` 并发布；旧应用保留作回滚。发布后必须重新创建/核对 App Key，并按 `docs/troubleshooting/deployment.md` DEPLOY-013 备份 `.env`、强制重建读取配置的 jx 核心服务。
+- 本次 `/parameters` 与 Dify Chat API 真实调用均返回 `200`；测试 Dataset 没有案例文档，`retriever_resources` 为 `0`，因此这只能证明分支、鉴权和 API 链路可用，不能把空召回宣称为案例 RAG 质量通过。待正式案例文档发布后，必须追加有召回证据的真实 SSE 验收。
+
 ## 当前功能修改索引（2026-08-05）
 
 以下结论以当前使用的商业顾问 DSL `dify/商业顾问（当前使用版本）.yml`、两个 Workflow DSL 和 jx-now 适配代码为准。

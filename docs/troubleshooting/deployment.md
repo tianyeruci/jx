@@ -152,7 +152,7 @@
 - 根因：Compose 的 `env_file` 值在容器创建时写入容器配置；普通 restart 不会重新读取 `.env`。
 - 解决：先备份 `.env`，再执行 `docker compose -f docker-compose.ai.yml up -d --no-deps --force-recreate api worker scheduler`，最后检查 `/health/ready` 与一次真实 Chatflow 调用。
 - 非解决：只执行 `docker compose restart`、在运行容器内临时修改环境、打印完整 `.env` 或执行 `docker compose down -v`。
-- 验证：历史 jx Key 轮换记录中，备份 `.env` 后重建 `api`、`worker`、`scheduler`，容器配置哈希、Dify `/parameters`、AI 服务 `ready` 和服务状态均通过；Key 明文未写入报告。[当前状态记录](../AI管理服务当前状态与后续测试交接.md:1015)
+- 验证：历史 jx Key 轮换记录中，备份 `.env` 后重建 `api`、`worker`、`scheduler`，容器配置哈希、Dify `/parameters`、AI 服务 `ready` 和服务状态均通过；2026-08-10 将商业顾问切换到隔离发布应用后再次通过 `health/ready=dify_reachable` 与真实 SSE `message_end.status=completed`，测试会话按精确用户标识清理；Key 明文未写入报告。[当前状态记录](../AI管理服务当前状态与后续测试交接.md)
 - 预防：把配置变更与代码发布分开记录；Chatflow App Key 只需重建核心三服务，基地址或知识库配置变化则按实际消费者扩大范围；始终只检查键名、哈希或健康结果，不输出密钥值。
 - 证据：`scripts/jx_quick_deploy.sh`、`tests/test_quick_deploy_contract.py`、[当前状态记录](../AI管理服务当前状态与后续测试交接.md:1015)。
 - 最后验证：2026-08-05。

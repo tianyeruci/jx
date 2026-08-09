@@ -20,7 +20,8 @@
 - 本地验证：咨询 RAG 新增与回归测试通过；相关清洗、模型、Dify、发布契约测试除既有冻结文档摘要断言外均通过。`test_miniapp_interface_document_is_frozen_for_internal_cleaning_changes` 仍因工作树已有摘要与冻结值不一致而失败，本轮未修改该无关文档；全量 `pytest` 仍按既有约 124 秒超时记录，未宣称全量通过。
 - jx 发布：最终 release `20260810-consultation-rag-v1-safe-normalize` 使用 wheel SHA-256 `37c7bd35254d4589955b05a3cd13a8f0429f97a35384c7d8744711180e6f7a51`；备份为 `/opt/ai-management/backups/20260810-consultation-rag-v1-safe-normalize-predeploy`，报告为 `/opt/ai-management/var/reports/v2/20260810-consultation-rag-v1-safe-normalize-deploy`。Core/UI/OCR 镜像统一切换，API live/ready、关键包导入和 OCR timer `enabled/active` 通过。
 - 样本验收：使用 `/opt/ai-management/tmp/模型/咨询会议总结/` 的 4 份 Markdown 覆盖重跑，最终批次 `019fe85b-31dc-7180-a1c9-9fcdfc0263ae` 为 `completed`，4 个源文件均成功、0 failed、0 review；生成 7 个成功远端文档（4 个源条目 + 3 个同源独立案例子条目），模型实际用量回读为 input `6333`、output `3587`。2 个源条目通过模型契约并生成案例子条目，2 个源条目因模型输出仍违反契约而按设计走整份源文档兜底；所有文档均完成索引、父子块和 Metadata 回读，正文未含 Dify 标记。
-- Dify 状态：本地商业顾问 DSL 已加入“案例问题 → `record_type=consulting_case` 检索 → 共享证据压缩 → 最终回答”的静态分支，YAML、节点引用和嵌入代码检查通过；Chrome 中的 Dify 工作区已确认登录并可访问 `/apps`，但当前浏览器扩展尚未允许本地文件 URL，DSL 文件选择器无法接收本地文件，正式导入/保存/发布及 `/parameters`、真实 SSE 验收仍待解除该浏览器权限后继续。不得猜测或读取管理员凭据。
+- Dify 状态：本地商业顾问 DSL 已加入“案例问题 → `record_type=consulting_case` 检索 → 共享证据压缩 → 最终回答”的静态分支，YAML、节点引用和嵌入代码检查通过。Chrome 已确认登录并可访问 `/apps`；Dify 导入弹窗的隐藏 `input[type=file]` 不触发高层 filechooser，已通过标签页级 CDP 临时显示该控件，再用标准 filechooser 自动上传（无需人工上传、无需开启本地文件 URL 权限）。正式导入创建隔离应用 `eaa840e6-ec85-47e4-89a5-5cf0678f7ac3` 并显示“最新发布/已发布”；`/parameters` 返回 `200`，真实 Dify Chat API 返回 `200` 且带 `retriever_resources` 元数据（本次测试 Dataset 为空，召回数为 `0`）。旧商业顾问应用保留作回滚，不删除。
+- jx 应用绑定：已将 jx `.env` 的 `DIFY_BUSINESS_APP_API_KEY` 切换到上述新发布应用（旧 `.env` 备份 `/opt/ai-management/backups/20260810-055542-consultation-dify-key-predeploy/env.backup`，只记录指纹不记录密钥），按 DEPLOY-013 强制重建 `api/worker/scheduler`。重建后 `health/ready=ready`、Dify 可达；真实“相似案例/类似经验”请求收到 `200`、SSE `message_end.status=completed`，测试会话已按精确用户标识删除。
 - 本轮踩坑：Windows stage 文本与二进制依赖必须分开处理；一次尝试对整个 stage 执行换行归一化，损坏了 wheel，离线构建报 `Invalid argument`。已重新上传原始依赖、重新备份并完成最终 release；长期规则见 `docs/troubleshooting/deployment.md` 的 DEPLOY-023。
 
 ## 0.52 2026-08-09 jx ai-management 应用日志已清理（历史）
@@ -1680,4 +1681,18 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改原因：用户确认 Chrome 可直接访问 Dify `/apps`，要求继续完成正式导入/发布。
 - 修改前：0.54 将 Dify 未完成发布归因于浏览器未登录。
 - 修改后：确认 Chrome 工作区已登录；实际阻塞收窄为 ChatGPT Chrome 扩展未启用本地文件 URL 访问，文件上传事件无法触发，因此尚未上传 DSL，也未伪造或读取凭据。
-- 验证：Chrome `/apps` 页面可见 `jx's Workspace` 和现有应用；Dify 导入弹窗可打开，但本地文件选择器不可用。待用户按 Chrome 扩展提示开启权限后继续。
+- 验证：当时 Chrome `/apps` 页面可见 `jx's Workspace` 和现有应用；Dify 导入弹窗可打开，但隐藏文件控件未触发高层 chooser。该历史阻塞已在随后记录中通过页面级 CDP 临时显示控件解决，不需要用户开启扩展权限或手工上传。
+
+### 文档修改记录（2026-08-10 Chrome 隐藏文件控件自动导入与 Dify 发布）
+
+- 修改原因：用户明确要求不要人工上传，且指出 Chrome 已登录可正常访问；需要纠正先前把文件控件问题误判为登录/扩展权限问题，并沉淀可复用的自动化解决方式。
+- 修改前：上一条记录把 Dify 未导入归因于本地文件 URL 权限，未记录隐藏 `input[type=file]` 的页面结构，也未完成正式发布。
+- 修改后：确认登录态正常；使用标签页级 CDP 临时显示 Dify 隐藏文件控件，再通过标准 chooser 自动上传 DSL；隔离应用 `eaa840e6-ec85-47e4-89a5-5cf0678f7ac3` 已显示“最新发布/已发布”，并补充 `docs/troubleshooting/dify.md` 的 DIFY-013。未读取或写入 Chrome 扩展权限，未输出密钥。
+- 验证：Dify `/parameters` 返回 `200`；真实 Chat API 返回 `200` 且带 `retriever_resources` 元数据（本次测试 Dataset 为空，召回数为 `0`）；案例检索节点的 `record_type=consulting_case` 绑定已在编辑器复核。
+
+### 文档修改记录（2026-08-10 jx 切换新 Dify 应用并完成真实 SSE）
+
+- 修改原因：正式导入会创建新隔离应用，必须让 jx 测试环境实际使用新发布版本并验证服务端调用，而不是只验证 Dify 编辑器状态。
+- 修改前：jx `.env` 仍指向旧商业顾问应用，只有本地静态检查和 Dify 页面发布证据；无法证明 jx 已使用新分支。
+- 修改后：备份 `.env` 到 `/opt/ai-management/backups/20260810-055542-consultation-dify-key-predeploy/env.backup`，只替换 `DIFY_BUSINESS_APP_API_KEY`，按 DEPLOY-013 强制重建 `api/worker/scheduler`；旧应用保留回滚，未删除或修改其它环境。
+- 验证：jx `health/ready=ready` 且 `dify_reachable=true`；真实“相似案例/类似经验”请求返回 HTTP `200`，SSE 事件含 `message_end` 且 `status=completed`，测试会话删除返回 `200`。密钥只在进程内使用，文档仅保留备份路径和脱敏指纹。

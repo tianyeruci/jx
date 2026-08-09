@@ -641,11 +641,37 @@ workflow:
     - data:
         isInIteration: false
         isInLoop: false
+        sourceType: if-else
+        targetType: knowledge-retrieval
+      id: classifier-case
+      selected: false
+      source: question_classifier
+      sourceHandle: case
+      target: case_knowledge
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
         sourceType: knowledge-retrieval
         targetType: code
       id: general_knowledge-source-general_evidence_compact-target
       selected: false
       source: general_knowledge
+      sourceHandle: source
+      target: general_evidence_compact
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: knowledge-retrieval
+        targetType: code
+      id: case_knowledge-source-general_evidence_compact-target
+      selected: false
+      source: case_knowledge
       sourceHandle: source
       target: general_evidence_compact
       targetHandle: target
@@ -918,7 +944,7 @@ workflow:
 
             输出结构：
 
-            {"question_type":"general|course|mixed","general_query":"","course_query":"","reason":""}
+            {"question_type":"general|course|case|mixed","general_query":"","course_query":"","case_query":"","reason":""}
 
 
             分类边界：
@@ -927,14 +953,18 @@ workflow:
 
             2. course：课程查询、课程适合谁、课程内容、选课、学习顺序、学习路线、路线进度等学习诉求。
 
-            3. mixed：既要解决具体商业问题，又明确要求课程或学习路线建议。
+            3. case：明确询问相似案例、类似案例、同类案例、可参考案例或类似经验。
+
+            4. mixed：既要解决具体商业问题，又明确要求课程或学习路线建议。
 
 
             检索查询规则：
 
             - 结合上下文消解“这个、刚才那个、前面的路线”等指代，但不得补造用户未提供的事实。
 
-            - general 只填写 general_query；course 只填写 course_query；mixed 两项都填写。
+            - general 只填写 general_query；course 只填写 course_query；case 只填写 case_query；mixed 填写 general_query 和 course_query。
+
+            - 只有用户明确寻找相似/类似案例或经验时才使用 case，不要因为普通问题中出现“经验”就误判。
 
             - 查询应简洁、独立、保留关键实体、目标和限制条件。
 
@@ -971,10 +1001,13 @@ workflow:
       type: custom
       width: 242
     - data:
-        code: "import json\nimport re\n\ndef extract_object(text: str) -> str:\n    value = str(text or \"\").strip()\n    value = re.sub(r\"^```(?:json)?\\s*\", \"\", value, flags=re.I)\n    value = re.sub(r\"\\s*```$\", \"\", value)\n    start = value.find(\"{\")\n    if start < 0:\n        raise ValueError(\"json object not found\")\n    depth = 0\n    in_string = False\n    escaped = False\n    for index in range(start, len(value)):\n        ch = value[index]\n        if in_string:\n            if escaped:\n                escaped = False\n            elif ch == \"\\\\\":\n                escaped = True\n            elif ch == '\"':\n                in_string = False\n        else:\n            if ch == '\"':\n                in_string = True\n            elif ch == \"{\":\n                depth += 1\n            elif ch == \"}\":\n                depth -= 1\n                if depth == 0:\n                    return value[start:index + 1]\n    raise ValueError(\"incomplete json object\")\n\ndef main(split_json: str, original_query: str) -> dict:\n    original = str(original_query or \"\").strip()\n    try:\n        raw = extract_object(split_json)\n        raw = re.sub(r\",\\s*([}\\]])\", r\"\\1\", raw)\n        value = json.loads(raw)\n        general = str(value.get(\"general_query\") or \"\").strip()\n        course = str(value.get(\"course_query\") or \"\").strip()\n        kind = str(value.get(\"question_type\") or \"\").strip().lower()\n        if kind not in {\"general\", \"course\", \"mixed\"}:\n            raise ValueError(\"invalid question_type\")\n        if kind == \"general\":\n            general = general or original\n            course = \"\"\n        elif kind == \"course\":\n            course = course or original\n            general = \"\"\n        else:\n            general = general or original\n            course = course or original\n        return {\n            \"general_query\": general,\n            \"course_query\": course,\n            \"question_type\": kind,\n            \"fallback_used\": \"false\",\n            \"parse_error\": \"\",\n        }\n    except Exception as exc:\n        return {\n            \"general_query\": original,\n            \"course_query\": original,\n            \"question_type\": \"mixed\",\n            \"fallback_used\": \"true\",\n            \"parse_error\": str(exc)[:300],\n        }"
+        code: "import json\n\ndef main(split_json: str, original_query: str) -> dict:\n    original = str(original_query or '').strip()\n    try:\n        raw = str(split_json or '').strip()\n        if raw.startswith(chr(96) * 3):\n            raw = raw.strip(chr(96)).strip()\n            if raw.lower().startswith('json'):\n                raw = raw[4:].strip()\n        value = json.loads(raw)\n        kind = str(value.get('question_type') or '').strip().lower()\n        if kind not in {'general', 'course', 'case', 'mixed'}:\n            raise ValueError('invalid question_type')\n        general = str(value.get('general_query') or '').strip()\n        course = str(value.get('course_query') or '').strip()\n        case = str(value.get('case_query') or '').strip()\n        if kind == 'general':\n            general, course, case = general or original, '', ''\n        elif kind == 'course':\n            general, course, case = '', course or original, ''\n        elif kind == 'case':\n            general, course, case = '', '', case or original\n        else:\n            general, course, case = general or original, course or original, ''\n        return {'general_query': general, 'course_query': course, 'case_query': case, 'question_type': kind, 'fallback_used': 'false', 'parse_error': ''}\n    except Exception as exc:\n        return {'general_query': original, 'course_query': original, 'case_query': original, 'question_type': 'mixed', 'fallback_used': 'true', 'parse_error': str(exc)[:300]}"
         code_language: python3
         desc: 宽容解析 JSON；失败时回退为双库检索，避免空回答。
         outputs:
+          case_query:
+            children: null
+            type: string
           course_query:
             children: null
             type: string
@@ -1038,6 +1071,17 @@ workflow:
             - query_split_normalize
             - question_type
           id: course
+          logical_operator: and
+        - case_id: case
+          conditions:
+          - comparison_operator: is
+            id: route-case
+            value: case
+            varType: string
+            variable_selector:
+            - query_split_normalize
+            - question_type
+          id: case
           logical_operator: and
         - case_id: mixed
           conditions:
@@ -1139,6 +1183,44 @@ workflow:
     - data:
         dataset_ids:
         - t3B9ySAgZd+vFN4NRXoTPm6aPffE3mT1ttHd1VIa8R328rrRWlfQWEl6/BWhXBkK
+        desc: 相似案例、类似案例和类似经验专用检索；只读取 record_type=consulting_case 的咨询会议总结。
+        metadata_filtering_conditions:
+          conditions:
+          - comparison_operator: is
+            name: record_type
+            value: consulting_case
+          logical_operator: and
+        metadata_filtering_mode: manual
+        multiple_retrieval_config:
+          reranking_enable: true
+          reranking_mode: reranking_model
+          reranking_model:
+            model: qwen3-rerank
+            provider: langgenius/tongyi/tongyi
+          score_threshold: 0.3
+          top_k: 6
+        query_attachment_selector: []
+        query_variable_selector:
+        - query_split_normalize
+        - case_query
+        retrieval_mode: multiple
+        selected: false
+        title: 咨询会议案例检索
+        type: knowledge-retrieval
+      height: 150
+      id: case_knowledge
+      position:
+        x: 2434
+        y: 792
+      positionAbsolute:
+        x: 2434
+        y: 792
+      selected: false
+      type: custom
+      width: 242
+    - data:
+        dataset_ids:
+        - t3B9ySAgZd+vFN4NRXoTPm6aPffE3mT1ttHd1VIa8R328rrRWlfQWEl6/BWhXBkK
         desc: 混合问题的通用知识检索；主版本与课程检索并行，串行兼容版先执行本节点。
         multiple_retrieval_config:
           reranking_enable: true
@@ -1206,7 +1288,7 @@ workflow:
       type: custom
       width: 242
     - data:
-        code: "import json\n\ndef main(results) -> dict:\n    items = results if isinstance(results, list) else []\n    output = []\n    used = 0\n    limit = 14000\n    for index, item in enumerate(items[:10], 1):\n        if isinstance(item, dict):\n            selected = {}\n            standard_keys = {\"title\", \"content\", \"score\", \"metadata\", \"document_name\", \"segment_id\", \"status\"}\n            for key, field_value in item.items():\n                key_text = str(key)\n                lower_key = key_text.lower()\n                keep_id = lower_key == \"id\" or lower_key.endswith(\"_id\") or lower_key.endswith(\"id\")\n                if (key_text in standard_keys or keep_id) and field_value not in (None, \"\", [], {}):\n                    selected[key_text] = field_value\n            if not selected:\n                selected = item\n        else:\n            selected = item\n        line = f\"[{index}] \" + json.dumps(selected, ensure_ascii=False, default=str)\n        if used + len(line) > limit:\n            break\n        output.append(line)\n        used += len(line)\n    return {\n        \"evidence_text\": \"\\n\".join(output),\n        \"has_evidence\": \"true\" if output else \"false\",\n        \"evidence_count\": str(len(output)),\n    }"
+        code: "import json\n\ndef main(results, case_results=None) -> dict:\n    items = []\n    for source in (results, case_results):\n        if isinstance(source, list):\n            items.extend(source)\n    output = []\n    used = 0\n    limit = 14000\n    for index, item in enumerate(items[:10], 1):\n        if isinstance(item, dict):\n            selected = {}\n            standard_keys = {'title', 'content', 'score', 'metadata', 'document_name', 'segment_id', 'status'}\n            for key, field_value in item.items():\n                key_text = str(key)\n                lower_key = key_text.lower()\n                keep_id = lower_key == 'id' or lower_key.endswith('_id') or lower_key.endswith('id')\n                if (key_text in standard_keys or keep_id) and field_value not in (None, '', [], {}):\n                    selected[key_text] = field_value\n            if not selected:\n                selected = item\n        else:\n            selected = item\n        line = f'[{index}] ' + json.dumps(selected, ensure_ascii=False, default=str)\n        if used + len(line) > limit:\n            break\n        output.append(line)\n        used += len(line)\n    return {'evidence_text': '\\n'.join(output), 'has_evidence': 'true' if output else 'false', 'evidence_count': str(len(output))}"
         code_language: python3
         desc: 保留关键证据字段并限制文本规模，降低最终模型 Token 和噪声。
         outputs:
@@ -1227,6 +1309,10 @@ workflow:
           - general_knowledge
           - result
           variable: results
+        - value_selector:
+          - case_knowledge
+          - result
+          variable: case_results
       height: 96
       id: general_evidence_compact
       position:
@@ -1390,6 +1476,8 @@ workflow:
 
             - candidate_course_ids 必须为空，candidate_route_id 必须为空。
 
+            - 当类型为 case 时，只能依据咨询会议案例证据回答相似案例/类似经验；区分案例事实、采取过的做法与结果，不得把建议写成已发生事实；没有可验证案例证据时明确说明未检索到。
+
             - 优先直接回答核心问题；只有证据不足且一个问题能显著改善回答时才澄清。'
         - id: 3fc46ae3-fb79-4e33-a3e4-a07b2d0a52f0
           role: user
@@ -1425,6 +1513,8 @@ workflow:
             通用查询={{#query_split_normalize.general_query#}}
 
             课程查询={{#query_split_normalize.course_query#}}
+
+            案例查询={{#query_split_normalize.case_query#}}
 
 
             通用知识证据（是否命中={{#general_evidence_compact.has_evidence#}}）：
