@@ -276,3 +276,15 @@
 - 预防：远端验收脚本固定“容器写结果—拷出—安全解析—精确清理”的四步，报告同时记录执行位置和退出码；跨 shell 命令先做只读 echo/路径校验。
 - 证据：[2026-08-10 续测记录](../../var/reports/20260810-plan-continuation/README.md)、同目录 `issues.jsonl`。
 - 最后验证：2026-08-10。
+
+## DEPLOY-025：快速发布必须校验服务器共享包闭包，缺模块时改走完整 wheel
+
+- 适用：Windows 工作树向 jx 快速上传 `ai_management` 源码并重建核心镜像的发布。
+- 触发：发布脚本在切换前的全模块导入烟测报 `ModuleNotFoundError: knowledge_cleaner.markdown_table_cleaner`；旧服务仍健康，切换尚未发生。
+- 根因：服务器既有 `knowledge_cleaner` 源码目录落后于当前仓库，快速源码包只覆盖 `ai_management`，导致镜像内共享包闭包不完整；这不是新业务代码语法错误。
+- 解决：保持旧服务不切换并保留失败报告；从当前工作树构建完整 wheel，核对 wheel SHA-256 和关键模块内容，再以同一 wheel 构建核心/OCR 镜像并切换。Key/配置变更另按 DEPLOY-013 处理。
+- 非解决：只上传缺失的单个 `.py`、在运行容器内临时安装包、跳过全模块导入烟测、或忽略失败后继续切换。
+- 验证：release `20260810-route-gate-da35a0` 使用完整 wheel SHA-256 `DA35A0BA79A5C7B3F4EC6BCE25DB206DEE4C1F80E2A9EFD8396AC357ECE76467`；核心/OCR 导入烟测通过，API/Worker/Scheduler/OCR 同源切换，ready 和真实三轮 SSE 均通过。报告：`/opt/ai-management/var/reports/v2/20260810-route-gate-da35a0-deploy`。
+- 预防：快速路径预检服务器共享包与 wheel 闭包；涉及 `knowledge_cleaner`、共享脚本或构建元数据时自动转完整 wheel 发布，不以单目录源码 zip 代替。
+- 证据：jx 发布报告 `/opt/ai-management/var/reports/v2/20260810-route-gate-da35a0-deploy`，本地 wheel 构建记录及本轮脱敏部署终端记录。
+- 最后验证：2026-08-10。

@@ -4,6 +4,15 @@
 > 用途：保存最新线上事实、回滚点、数据状态和开放事项。新任务先读 `AGENTS.md` 与 `docs/README.md`，再按功能域读取本文顶部最新状态。  
 > 本文不是需求或设计基线；权威顺序以 `docs/V2决策记录.md` 和 `docs/README.md` 为准。第 1～8 节为历史过程记录，不再作为当前执行指令。
 
+## 0.56 2026-08-10 商业顾问路线门禁发布与真实 SSE 验收（当前最新）
+
+- Dify：当前 DSL 已导入并发布为隔离 Chatflow 应用 `cda3f459-c4eb-4a86-8d48-f0aa92d6695c`；Dify `/parameters` 返回 `200`，应用含 7 个 Start 输入变量。
+- jx 代码：release `20260810-route-gate-da35a0` 已切换。API、Worker、Scheduler、模型 Worker、发布 Worker 使用同一核心镜像；OCR 使用同 release OCR 镜像；测试 UI 保持未改动的旧 UI 镜像。发布前备份为 `/opt/ai-management/backups/20260810-route-gate-da35a0-predeploy`，报告为 `/opt/ai-management/var/reports/v2/20260810-route-gate-da35a0-deploy`。
+- 配置生效：发现 `.env` 与已运行容器的 Dify Key 指纹短暂不一致（`c419a4cb895c` vs `41ebdcfb44b2`）；按 DEPLOY-013 强制重建 `api/worker/scheduler` 后两者一致。密钥明文未写入报告或文档。
+- 运行态：API `/health/ready` 为 `ready`，database/Redis/Dify 均可达；Alembic 保持 `j6a7b8c9d0e1 (head)`；OCR Worker 运行，autoscaler 未被本次代码发布关闭。
+- 真实三轮 SSE（合成用户，会话已按精确会话 ID删除）通过：路线初问 `awaiting_route_confirmation`、`course_cards=0`；确认路线后 `awaiting_stage_confirmation`、`course_cards=0`；确认“入门阶段”后 `active`、按路线顺序返回 `5` 张当前+下一阶段课程卡，三轮 `message_end.status=completed`。脱敏结果见报告 `route-gate-e2e.json`。
+- 发布问题：快速部署首次在切换前导入烟测因服务器旧 `knowledge_cleaner` 源码缺少 `markdown_table_cleaner` 失败并自动回滚；改用完整 wheel（SHA-256 `DA35A0BA79A5C7B3F4EC6BCE25DB206DEE4C1F80E2A9EFD8396AC357ECE76467`）后构建、切换和验收通过。该问题已沉淀为 DEPLOY-025。
+
 ## 0.53 2026-08-09 jx 知识库意外重现的根因、阻断与精确清理（当前最新）
 
 - 根因已确认：为小程序联调临时开放的 Nginx `/ai-service/` 通用反向代理把 `/internal/v1/admin/knowledge-bases/{course,general}/upload-batches` 一并暴露。Nginx 记录到固定半小时的三次上传请求；07:00 的一次成功调用创建了 3 个本地批次，并写入课程知识库 22 篇、通用知识库 4 篇。该现象不是 Dify、Redis 或数据库从备份自动恢复。
@@ -1748,3 +1757,10 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改前：当前状态将私网 `:8000` 描述为已验证通道，未明确区分 jx 本机/API 容器验证与调用方端到端验证。
 - 修改后：明确当前为“目标通道”；jx `172.30.157.197:8000` 监听、Docker DNAT、`AI-MGMT-8000` 的 `172.17.28.83/32` 规则、回程路由均存在，但调用方测试期间该规则的 ACCEPT/DROP 计数均为 `0`。jx 可反向 ping `172.17.28.83`，因此服务、Dify、Token、jx 主机防火墙和基础 VPC 路由均不是此次超时点；待核查并放行阿里云 jx 入方向安全组 TCP `8000`（来源精确为 `172.17.28.83/32`），同时确认调用方实际出站源地址。
 - 验证：待上述云侧规则生效后，从调用方复测 TCP 连接和带双 Token 的只读 GET；成功标准为 jx `AI-MGMT-8000` ACCEPT 计数增加且接口 HTTP `200`。本次未改动 Dify Nginx、数据库、Redis、Token 或业务数据。
+
+### 文档修改记录（2026-08-10 商业顾问路线门禁发布）
+
+- 修改原因：完成当前 DSL、核心服务和 Dify App 的发布，并记录环境变量切换未即时进入运行容器的问题及真实路线链路验收。
+- 修改前：0.55 未记录本次路线门禁 release、隔离 Dify 应用、Key 指纹一致性、三轮 SSE 结果和快速发布共享包缺失问题。
+- 修改后：新增 0.56，记录备份/报告路径、同源镜像、ready 与 `/parameters`、路线初问→路线确认→阶段确认的课程卡门禁结果，以及 DEPLOY-025 长期排障条目。密钥明文、真实用户标识和原始回答均未写入。
+- 验证：本地相关 81 项测试全部通过；jx 三轮 SSE `passed=true`，首两轮 `course_cards=0`，第三轮 `5` 张卡且三轮 `message_end=completed`；运行容器与 `.env` Dify Key 指纹一致。
