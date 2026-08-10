@@ -1,6 +1,6 @@
 # AI 管理服务当前状态与后续测试交接
 
-> 更新时间：2026-08-09
+> 更新时间：2026-08-10
 > 用途：保存最新线上事实、回滚点、数据状态和开放事项。新任务先读 `AGENTS.md` 与 `docs/README.md`，再按功能域读取本文顶部最新状态。  
 > 本文不是需求或设计基线；权威顺序以 `docs/V2决策记录.md` 和 `docs/README.md` 为准。第 1～8 节为历史过程记录，不再作为当前执行指令。
 
@@ -23,6 +23,16 @@
 - Dify 状态：本地商业顾问 DSL 已加入“案例问题 → `record_type=consulting_case` 检索 → 共享证据压缩 → 最终回答”的静态分支，YAML、节点引用和嵌入代码检查通过。Chrome 已确认登录并可访问 `/apps`；Dify 导入弹窗的隐藏 `input[type=file]` 不触发高层 filechooser，已通过标签页级 CDP 临时显示该控件，再用标准 filechooser 自动上传（无需人工上传、无需开启本地文件 URL 权限）。正式导入创建隔离应用 `eaa840e6-ec85-47e4-89a5-5cf0678f7ac3` 并显示“最新发布/已发布”；`/parameters` 返回 `200`，真实 Dify Chat API 返回 `200` 且带 `retriever_resources` 元数据（本次测试 Dataset 为空，召回数为 `0`）。旧商业顾问应用保留作回滚，不删除。
 - jx 应用绑定：已将 jx `.env` 的 `DIFY_BUSINESS_APP_API_KEY` 切换到上述新发布应用（旧 `.env` 备份 `/opt/ai-management/backups/20260810-055542-consultation-dify-key-predeploy/env.backup`，只记录指纹不记录密钥），按 DEPLOY-013 强制重建 `api/worker/scheduler`。重建后 `health/ready=ready`、Dify 可达；真实“相似案例/类似经验”请求收到 `200`、SSE `message_end.status=completed`，测试会话已按精确用户标识删除。
 - 本轮踩坑：Windows stage 文本与二进制依赖必须分开处理；一次尝试对整个 stage 执行换行归一化，损坏了 wheel，离线构建报 `Invalid argument`。已重新上传原始依赖、重新备份并完成最终 release；长期规则见 `docs/troubleshooting/deployment.md` 的 DEPLOY-023。
+
+## 0.55 2026-08-10 原计划剩余门禁续测（当前最新）
+
+- 本地回归：使用仓库 `.venv`、仓库根目录 `PYTHONPATH` 和工作区隔离 `--basetemp`；当前收集 `397` 项，`396` 项通过，唯一失败是工作树已有的小程序接口冻结摘要与测试旧值不一致。该接口文档带 assume-unchanged 标记，未回滚、覆盖或改写。
+- 直接相关分组在排除该冻结摘要断言后 `67` 项通过；为使 EXIT trap 回归在受限 Windows/Git Bash 环境可复现，测试 harness 补齐了工作区 `PATH` 和模拟应用目录，生产脚本逻辑未改。
+- compileall、功能索引 `--check`、目标测试 Ruff、40 条黄金集解析和全部 Bash 脚本语法检查通过。黄金集本轮只完成本地结构校验，未把它冒充真实 Dify Recall/人工语义门禁。
+- jx RAG 续测已在通道恢复后完成，未改动正式 Dataset：黄金集检索 `33` 条，general `10/10` 命中、course `0/23` 命中，aggregate `hit@5=0.3030`、critical `hit@5=0.2500`，检索门禁未通过。续测前后配置 Dataset 盘点为 general `7`、course `110`；课程黄金集使用的 synthetic course/route ID 与当前课程目录不是同一数据基线，因此不能把该失败归因于本次代码，也没有清空或替换现有课程数据。临时通用 fixture 已精确删除，按名称匹配残留为 `0`。
+- jx Dify 无写入合约已通过：商业 Chatflow 两轮 SSE 均包含 `message_end`，朋友圈、日常写作、摘要画像 Workflow 均 `succeeded`；知识库只读探针无错误但两库各返回 `0` 条。商业顾问轻量 E2E `6` 例中 `2` 例通过，全部请求正常完成；失败项集中在当前课程/路线目录与黄金期望不一致，未知课程与虚构路线防护用例通过，测试会话按精确会话 ID 清理。
+- jx 续测后复核：最终 release `20260810-consultation-rag-v1-safe-normalize` 的 API `/health/ready` 为 `ready` 且 database/Redis/Dify 配置与连通性均为 `true`，关键包导入通过，测试页 HTTP `200`，`jx-ocr-autoscaler.timer` 已启用并有活动调度，7 个 ai-management 命名容器均运行。续测产生的容器/主机临时文件已按精确路径清理。
+- 原计划剩余的生产 Dataset 破坏性演练、Redis/PostgreSQL/Dify/Worker 真实恢复、小程序真实客户端、40 条人工评分、灰度和 HTTPS/证书切换，继续保持未完成；课程完整目录基线需另行提供并明确授权使用。脱敏续测报告为 [`var/reports/20260810-plan-continuation/README.md`](var/reports/20260810-plan-continuation/README.md)。
 
 ## 0.52 2026-08-09 jx ai-management 应用日志已清理（历史）
 
@@ -1696,3 +1706,17 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改前：jx `.env` 仍指向旧商业顾问应用，只有本地静态检查和 Dify 页面发布证据；无法证明 jx 已使用新分支。
 - 修改后：备份 `.env` 到 `/opt/ai-management/backups/20260810-055542-consultation-dify-key-predeploy/env.backup`，只替换 `DIFY_BUSINESS_APP_API_KEY`，按 DEPLOY-013 强制重建 `api/worker/scheduler`；旧应用保留回滚，未删除或修改其它环境。
 - 验证：jx `health/ready=ready` 且 `dify_reachable=true`；真实“相似案例/类似经验”请求返回 HTTP `200`，SSE 事件含 `message_end` 且 `status=completed`，测试会话删除返回 `200`。密钥只在进程内使用，文档仅保留备份路径和脱敏指纹。
+
+### 文档修改记录（2026-08-10 原计划剩余门禁续测）
+
+- 修改原因：继续此前已完成的咨询会议清洗、知识星球样本、Dify 发布和 jx SSE 验收，执行原计划剩余的本地回归与可安全执行门禁。
+- 修改前：交接文档只记录前序 jx/Dify 完成结果和更早的剩余生产门禁，未记录本轮本地 397 项收集结果、测试 harness 修复及当前环境无法建立 jx 通道的事实。
+- 修改后：新增 0.55，记录 `396 passed + 1` 个已有冻结摘要失败、直接相关 `67 passed`、静态门禁和黄金集本地解析；补充 jx RAG `general 10/10、course 0/23`、Dify 无写入合约、商业 E2E `2/6` 及课程目录基线不匹配结论，明确未执行破坏性恢复、灰度或正式数据替换。新增 `TEST-012`、`DATA-046`、`DEPLOY-024` 与脱敏续测报告。
+- 验证：`.venv` compileall、功能索引 `--check`、目标 Ruff、Git Bash `bash -n`、全量 pytest、jx `/health/ready`、关键包导入、Dify/SSE、业务 E2E 和精确临时文件清理均已运行；未修改小程序接口文档、正式 Dataset、课程目录或 jx 持久化数据。
+
+### 文档修改记录（2026-08-10 jx RAG 与商业 E2E 续测完成）
+
+- 修改原因：远端通道恢复，继续原计划中可安全执行的 jx RAG、Dify 合约和商业顾问轻量 E2E，并记录课程黄金集与当前目录基线差异。
+- 修改前：0.55 仅记录 jx 通道不可用，未有本轮远端检索命中、业务 E2E、合约状态和最终服务复核证据。
+- 修改后：补充 jx RAG 失败但可解释的分域指标、Dify 两轮 SSE/三个 Workflow 合约结果、E2E `2/6` 及正式课程数据保留边界；脱敏报告和问题记录同步更新。
+- 验证：jx 最终 release 保持 ready，临时 fixture 和测试会话均按精确范围收尾；未清空、替换或删除 general/course 正式数据。

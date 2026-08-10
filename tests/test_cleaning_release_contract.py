@@ -330,7 +330,9 @@ def test_local_cleaning_state_reset_exit_trap_keeps_restart_state_in_scope(tmp_p
     app_dir = (tmp_path / "app").as_posix()
     harness = f"""
 set -u
+export PATH="/usr/bin:/bin:$PATH"
 APP_DIR='{app_dir}'
+mkdir -p "$APP_DIR"
 RESET_TEMP_DIR="$APP_DIR/var/.cleaning-local-reset.regression"
 RESET_SERVICES_MAY_NEED_RESTART=1
 mkdir -p "$RESET_TEMP_DIR"

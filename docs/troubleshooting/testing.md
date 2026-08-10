@@ -132,3 +132,15 @@
 - 预防：破坏性操作统一使用表单提交并在提交分支内重新校验。
 - 证据：[Streamlit 1.41 form](https://docs.streamlit.io/1.41.0/develop/api-reference/execution-flow/st.form)。
 - 最后验证：2026-07-30。
+
+## TEST-012：受限 Windows 临时目录必须改用工作区隔离 basetemp
+
+- 适用：受管 Windows runner 中运行需要 `tmp_path` 的 pytest 分组或全量测试。
+- 触发：pytest 尚未执行测试断言，就在默认系统临时目录扫描阶段报 `WinError 5`/`PermissionError`。
+- 根因：runner 身份不能枚举系统临时目录的历史子目录；这不是测试夹具或业务代码失败。
+- 解决：从仓库根目录设置 `PYTHONPATH`，使用仓库内明确、仅供本轮使用的 `--basetemp`；不要删除系统临时目录或终止无关进程。
+- 非解决：把临时目录创建失败计入业务失败、删除整个系统 Temp，或并行复用同一 SQLite 测试目录。
+- 验证：2026-08-10，直接相关分组 `67 passed`；全量当前收集 `397` 项，除已有冻结接口摘要断言外其余通过。
+- 预防：长套件记录 `--basetemp`、当前收集数量和退出码；若只修复测试 harness，必须单独运行并记录对应回归。
+- 证据：[2026-08-10 续测记录](../../var/reports/20260810-plan-continuation/README.md)、`tests/test_cleaning_release_contract.py`。
+- 最后验证：2026-08-10。

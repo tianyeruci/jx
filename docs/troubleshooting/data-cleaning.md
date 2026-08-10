@@ -563,3 +563,15 @@
 - 预防：保持 v1 合同、验证器和归一化分层；每次模型策略变更同时跑契约/回归测试，并在 jx 复核源文档数、子案例数、父子关系、Metadata 和 marker 状态；不输出原始正文、文件名或密钥。
 - 证据：`knowledge_cleaner/consultation_rag.py`、`tests/test_consultation_rag_integration.py`、jx 批次与发布报告（仅保存脱敏计数和状态）。
 - 最后验证：2026-08-10。
+
+## DATA-046：课程/路线黄金集必须先核对当前目录基线
+
+- 适用：jx RAG 检索、商业顾问 SSE 和课程/路线 E2E 评测。
+- 触发：请求正常完成但课程卡片、路线 ID 或课程名称与黄金集不一致，检索指标显著低于预期。
+- 根因：黄金集使用的 synthetic course/route ID 与部署环境当前正式/保留课程目录不是同一数据基线；这类失败不能仅凭模型回答或 HTTP/SSE 状态归因于代码。
+- 解决：评测前只读盘点配置 Dataset 与本地课程/路线目录，记录数量和数据基线；将不一致标记为数据前置条件失败。正式目录不得按总数、名称或黄金集 ID 清空/替换，若必须切换到合成基线，应先提供精确 manifest、备份和明确授权。
+- 非解决：为了让黄金集通过而整库删除课程文档、重建正式路线、按名称批量删除 Dify 文档，或把 SSE `completed` 误报为课程语义门禁通过。
+- 验证：2026-08-10 jx RAG general `10/10`、course `0/23`；商业 E2E `2/6`，所有请求正常完成；配置 Dataset 盘点 general `7`、course `110`，临时 fixture 精确清理后残留 `0`。正式课程数据未改动。
+- 预防：在评测报告中分开记录“协议完成”“检索命中”“目录语义匹配”和“数据基线一致性”，先执行 inventory 再决定是否进入语义门禁。
+- 证据：[2026-08-10 续测记录](../../var/reports/20260810-plan-continuation/README.md)、同目录 `issues.jsonl`、`scripts/jx_rag_regression.py`、`scripts/evaluate_business_e2e.py`。
+- 最后验证：2026-08-10。
