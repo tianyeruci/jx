@@ -290,6 +290,87 @@ def test_route_cards_require_stage_confirmation_and_keep_route_order(service_db)
         assert active["learning_route"]["next_stage_id"] == "s2"
 
 
+def test_ambiguous_route_request_never_degrades_to_direct_course(service_db):
+    with service_db() as session:
+        session.add(_course("shared", name="系统学习课"))
+        session.add(_course("independent", name="视频剪辑独立课程"))
+        session.add_all(
+            [
+                LearningRoute(
+                    route_id="route_a",
+                    name="路线甲",
+                    direction="AI商业",
+                    target="系统学习",
+                    stages=[
+                        {
+                            "stage_id": "a1",
+                            "name": "入门阶段",
+                            "order": 1,
+                            "course_ids": ["shared"],
+                        }
+                    ],
+                ),
+                LearningRoute(
+                    route_id="route_b",
+                    name="路线乙",
+                    direction="AI商业",
+                    target="系统学习",
+                    stages=[
+                        {
+                            "stage_id": "b1",
+                            "name": "入门阶段",
+                            "order": 1,
+                            "course_ids": ["shared"],
+                        }
+                    ],
+                ),
+            ]
+        )
+        session.commit()
+        rebuild_snapshot(session)
+
+        query = "我想系统学习，应该从哪里开始？"
+        route_request = infer_recommendation_decision(
+            session,
+            query=query,
+            decision=RecommendationDecision(
+                intent="route_recommendation",
+                candidate_course_ids=["shared"],
+            ),
+        )
+        assert route_request is not None
+        assert route_request.intent == "clarification"
+        assert route_request.candidate_course_ids == []
+
+        direct_request = infer_recommendation_decision(
+            session,
+            query=query,
+            decision=RecommendationDecision(
+                intent="direct_course",
+                candidate_course_ids=["shared"],
+            ),
+        )
+        assert direct_request is not None
+        assert direct_request.intent == "direct_course"
+        assert direct_request.candidate_course_ids == ["shared"]
+
+        # A route-like request with no credible official-route match is allowed
+        # to fall back to the independently matched course.  The ambiguity gate
+        # above must not turn generic wording alone into a false route choice.
+        no_route_request = infer_recommendation_decision(
+            session,
+            query="视频剪辑怎么开始？",
+            decision=RecommendationDecision(
+                intent="route_recommendation",
+                candidate_course_ids=["independent"],
+            ),
+        )
+        assert no_route_request is not None
+        assert no_route_request.intent == "direct_course"
+        assert no_route_request.candidate_course_ids == ["independent"]
+        assert "未找到匹配的官方学习路线" in no_route_request.answer_plan
+
+
 def test_route_followup_guidance_is_state_specific_and_does_not_repeat_route():
     route = {
         "name": "AI商业学习路线",
@@ -501,6 +582,60 @@ def test_explicit_stage_confirmation_recovers_selected_route_when_dify_has_no_ro
         assert [item["course_id"] for item in recovered["course_cards"]] == ["c1", "c2"]
         assert recovered["learning_route"]["current_stage_id"] == "intro"
         assert recovered["learning_route"]["state"] == "active"
+
+
+def test_pending_stage_completion_advances_or_completes_from_explicit_stage_name(service_db):
+    with service_db() as session:
+        session.add_all([_course("c1"), _course("c2")])
+        session.add(
+            LearningRoute(
+                route_id="route_pending_completion",
+                name="完成确认路线",
+                direction="AI商业",
+                target="测试",
+                stages=[
+                    {"stage_id": "intro", "name": "入门", "order": 1, "course_ids": ["c1"]},
+                    {"stage_id": "advanced", "name": "进阶", "order": 2, "course_ids": ["c2"]},
+                ],
+            )
+        )
+        session.add_all(
+            [
+                LearningRouteProgress(
+                    user_hash="advance-user",
+                    route_id="route_pending_completion",
+                    status="pending_stage",
+                ),
+                LearningRouteProgress(
+                    user_hash="complete-user",
+                    route_id="route_pending_completion",
+                    status="pending_stage",
+                ),
+            ]
+        )
+        session.commit()
+        rebuild_snapshot(session)
+
+        advanced = validate_recommendation(
+            session,
+            RecommendationDecision(intent="general_qa"),
+            user_hash="advance-user",
+            query="我已经完成入门",
+        )
+        assert advanced["progress_applied"] is True
+        assert advanced["learning_route"]["state"] == "active"
+        assert advanced["learning_route"]["current_stage_id"] == "advanced"
+        assert [item["course_id"] for item in advanced["course_cards"]] == ["c2"]
+
+        completed = validate_recommendation(
+            session,
+            RecommendationDecision(intent="general_qa"),
+            user_hash="complete-user",
+            query="我已完成进阶",
+        )
+        assert completed["progress_applied"] is True
+        assert completed["learning_route"]["state"] == "completed"
+        assert completed["course_cards"] == []
 
 
 def test_active_route_with_general_qa_still_returns_public_route_names_and_cards(service_db):

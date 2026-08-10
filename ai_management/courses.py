@@ -17,6 +17,7 @@ from .config import get_settings
 from .course_route_catalog import _collection_header
 from .errors import ServiceError
 from .models import (
+    BusinessMessage,
     Course,
     CourseCollection,
     CourseCollectionMember,
@@ -61,6 +62,22 @@ CANONICAL_STAGE_ORDER = {
     "高手进阶": 3,
 }
 _STAGE_ALIASES = {"高手阶段": "高手进阶"}
+_SHORT_AFFIRMATIVE_REPLIES = {
+    "好",
+    "好的",
+    "好呀",
+    "可以",
+    "可以的",
+    "行",
+    "行的",
+    "确认",
+    "确定",
+    "是",
+    "是的",
+    "就这条",
+    "选这个",
+    "开始吧",
+}
 
 
 def _explicit_route_confirmation(query: str) -> bool:
@@ -113,11 +130,166 @@ def _explicit_stage_confirmation(query: str, stage: dict[str, Any]) -> bool:
     return bool((stage_id and stage_id in normalized) or any(item and item in normalized for item in aliases))
 
 
+def _explicit_stage_completion(query: str, stage: dict[str, Any]) -> bool:
+    """Return true for an unambiguous statement that a published stage is done."""
+
+    normalized = _normalize_text(query)
+    if not normalized or "吗" in query or "？" in query or "?" in query:
+        return False
+    if not any(
+        marker in normalized
+        for marker in ("已完成", "已经完成", "完成了", "我完成", "跳过", "略过")
+    ):
+        return False
+    stage_id = _normalize_text(str(stage.get("stage_id") or ""))
+    stage_name = _normalize_text(str(stage.get("name") or ""))
+    aliases = {
+        stage_name,
+        _normalize_text(_STAGE_ALIASES.get(str(stage.get("name") or ""), "")),
+    }
+    return bool(
+        (stage_id and stage_id in normalized)
+        or any(item and item in normalized for item in aliases)
+    )
+
+
+def _is_short_affirmative_reply(query: str) -> bool:
+    """Accept a terse yes only after the server proves its conversation context."""
+
+    normalized = _normalize_text(query)
+    if not normalized or "吗" in query or "？" in query or "?" in query:
+        return False
+    return normalized in _SHORT_AFFIRMATIVE_REPLIES
+
+
+def _is_short_stage_reply(query: str, stage: dict[str, Any]) -> bool:
+    """Recognize an exact stage-name reply, never infer a stage from a vague yes."""
+
+    normalized = _normalize_text(query)
+    if not normalized or "吗" in query or "？" in query or "?" in query:
+        return False
+    stage_id = _normalize_text(str(stage.get("stage_id") or ""))
+    stage_name = _normalize_text(str(stage.get("name") or ""))
+    aliases = {
+        stage_id,
+        stage_name,
+        _normalize_text(_STAGE_ALIASES.get(str(stage.get("name") or ""), "")),
+    }
+    return normalized in {item for item in aliases if item}
+
+
+def _stage_confirmation_hypothesis_text(stage_name: str) -> str:
+    """Return the exact single-stage hypothesis appended to a route reply."""
+
+    return f"我先按你从{stage_name}开始安排；如果符合，请回复“好的”确认。"
+
+
+def _previous_completed_assistant(
+    session: Session, *, conversation_id: str | None
+) -> BusinessMessage | None:
+    if not conversation_id:
+        return None
+    return session.scalar(
+        select(BusinessMessage)
+        .where(
+            BusinessMessage.conversation_id == conversation_id,
+            BusinessMessage.role == "assistant",
+            BusinessMessage.status == "completed",
+        )
+        .order_by(BusinessMessage.created_at.desc(), BusinessMessage.id.desc())
+    )
+
+
+def _context_route_from_message(
+    previous: BusinessMessage | None,
+    *,
+    state: str,
+    snapshot: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Resolve a validated route only from one server-persisted reply."""
+
+    recommendation = previous.recommendation if previous else None
+    learning_route = (
+        recommendation.get("learning_route")
+        if isinstance(recommendation, dict)
+        else None
+    )
+    if not isinstance(learning_route, dict) or learning_route.get("state") != state:
+        return None
+    route_id = str(learning_route.get("route_id") or "")
+    route = (snapshot.get("routes") or {}).get(route_id)
+    if not isinstance(route, dict):
+        return None
+    if not route.get("enabled") or route.get("review_status") != "approved":
+        return None
+    return route
+
+
+def _context_route_for_state(
+    session: Session,
+    *,
+    conversation_id: str | None,
+    state: str,
+    snapshot: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return the single official route the immediately previous reply asked about.
+
+    A short reply such as ``好的`` is meaningful only when it follows this
+    server-generated, validated route state in the same local conversation.
+    Never recover a route from a profile, an arbitrary old message, or a model
+    supplied identifier alone.
+    """
+
+    previous = _previous_completed_assistant(
+        session,
+        conversation_id=conversation_id,
+    )
+    return _context_route_from_message(previous, state=state, snapshot=snapshot)
+
+
+def _context_stage_hypothesis(
+    session: Session,
+    *,
+    conversation_id: str | None,
+    snapshot: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Return the one stage explicitly hypothesized in the previous reply.
+
+    A bare affirmative is never mapped across every stage.  It is accepted only
+    when the immediately preceding server reply used our deterministic
+    single-stage hypothesis text, so older open-ended stage prompts cannot be
+    silently reinterpreted as a first-stage selection.
+    """
+
+    previous = _previous_completed_assistant(
+        session,
+        conversation_id=conversation_id,
+    )
+    route = _context_route_from_message(
+        previous,
+        state="awaiting_stage_confirmation",
+        snapshot=snapshot,
+    )
+    if not route or previous is None:
+        return None
+    content = str(previous.content or "")
+    matches = [
+        stage
+        for stage in _sorted_route_stages(route)
+        if (stage_name := str(stage.get("name") or "").strip())
+        and _stage_confirmation_hypothesis_text(stage_name) in content
+    ]
+    if len(matches) != 1:
+        return None
+    return route, matches[0]
+
+
 def _progress_confirmation_decision(
     session: Session,
     *,
     user_hash: str,
     query: str,
+    conversation_id: str | None = None,
 ) -> RecommendationDecision | None:
     """Recover an explicit route-progress action without trusting an LLM.
 
@@ -159,6 +331,31 @@ def _progress_confirmation_decision(
                 },
             )
 
+    context_route = _context_route_for_state(
+        session,
+        conversation_id=conversation_id,
+        state="awaiting_route_confirmation",
+        snapshot=snapshot,
+    )
+    if context_route and _is_short_affirmative_reply(query):
+        route_id = str(context_route.get("route_id") or "")
+        progress = session.scalar(
+            select(LearningRouteProgress).where(
+                LearningRouteProgress.user_hash == user_hash,
+                LearningRouteProgress.route_id == route_id,
+            )
+        )
+        if progress is None:
+            return RecommendationDecision(
+                intent="route_recommendation",
+                candidate_route_id=route_id,
+                progress_action={
+                    "type": "confirm_route",
+                    "route_id": route_id,
+                    "evidence_quote": query,
+                },
+            )
+
     progresses = list(
         session.scalars(
             select(LearningRouteProgress).where(
@@ -167,32 +364,114 @@ def _progress_confirmation_decision(
             )
         )
     )
+    completion_matches: list[
+        tuple[LearningRouteProgress, dict[str, Any], dict[str, Any]]
+    ] = []
     matches: list[tuple[LearningRouteProgress, dict[str, Any], dict[str, Any]]] = []
     for progress in progresses:
         route = snapshot["routes"].get(progress.route_id)
         if not route:
             continue
         for stage in _sorted_route_stages(route):
+            if _explicit_stage_completion(query, stage):
+                completion_matches.append((progress, route, stage))
             if _explicit_stage_confirmation(query, stage):
                 matches.append((progress, route, stage))
 
-    if len(matches) != 1:
-        return None
-    progress, route, stage = matches[0]
-    if progress.status != "pending_stage":
-        # Selecting a stage is valid only before progress has begun.  An active
-        # learner must explicitly complete or skip the current stage instead.
-        return None
-    return RecommendationDecision(
-        intent="route_recommendation",
-        candidate_route_id=str(route["route_id"]),
-        progress_action={
-            "type": "confirm_current_stage",
-            "route_id": str(route["route_id"]),
-            "stage_id": str(stage["stage_id"]),
-            "evidence_quote": query,
-        },
+    # A learner may answer the stage question with a completed first (or later)
+    # stage.  The exact named stage is the user's confirmation; once it is the
+    # only pending-route match, advance from it instead of requiring a redundant
+    # "I am currently at ..." turn.
+    if len(completion_matches) == 1:
+        progress, route, stage = completion_matches[0]
+        if progress.status == "pending_stage":
+            return RecommendationDecision(
+                intent="route_recommendation",
+                candidate_route_id=str(route["route_id"]),
+                progress_action={
+                    "type": "confirm_stage_completed",
+                    "route_id": str(route["route_id"]),
+                    "stage_id": str(stage["stage_id"]),
+                    "evidence_quote": query,
+                },
+            )
+
+    if len(matches) == 1:
+        progress, route, stage = matches[0]
+        if progress.status == "pending_stage":
+            return RecommendationDecision(
+                intent="route_recommendation",
+                candidate_route_id=str(route["route_id"]),
+                progress_action={
+                    "type": "confirm_current_stage",
+                    "route_id": str(route["route_id"]),
+                    "stage_id": str(stage["stage_id"]),
+                    "evidence_quote": query,
+                },
+            )
+
+    context_route = _context_route_for_state(
+        session,
+        conversation_id=conversation_id,
+        state="awaiting_stage_confirmation",
+        snapshot=snapshot,
     )
+    if context_route:
+        route_id = str(context_route.get("route_id") or "")
+        progress = next(
+            (
+                item
+                for item in progresses
+                if item.route_id == route_id and item.status == "pending_stage"
+            ),
+            None,
+        )
+        stage_matches = [
+            stage
+            for stage in _sorted_route_stages(context_route)
+            if _is_short_stage_reply(query, stage)
+        ]
+        if progress is not None and len(stage_matches) == 1:
+            stage = stage_matches[0]
+            return RecommendationDecision(
+                intent="route_recommendation",
+                candidate_route_id=route_id,
+                progress_action={
+                    "type": "confirm_current_stage",
+                    "route_id": route_id,
+                    "stage_id": str(stage["stage_id"]),
+                    "evidence_quote": query,
+                },
+            )
+
+    context_hypothesis = _context_stage_hypothesis(
+        session,
+        conversation_id=conversation_id,
+        snapshot=snapshot,
+    )
+    if context_hypothesis and _is_short_affirmative_reply(query):
+        route, stage = context_hypothesis
+        route_id = str(route.get("route_id") or "")
+        progress = next(
+            (
+                item
+                for item in progresses
+                if item.route_id == route_id and item.status == "pending_stage"
+            ),
+            None,
+        )
+        if progress is not None:
+            return RecommendationDecision(
+                intent="route_recommendation",
+                candidate_route_id=route_id,
+                progress_action={
+                    "type": "confirm_current_stage",
+                    "route_id": route_id,
+                    "stage_id": str(stage["stage_id"]),
+                    "evidence_quote": query,
+                },
+            )
+    return None
 
 
 def _course_dict(course: Course) -> dict[str, Any]:
@@ -644,6 +923,10 @@ def infer_recommendation_decision(
         for course_id in (decision.candidate_course_ids if decision else [])
         if course_id in approved_courses
     ]
+    route_requested = route_like or bool(
+        decision and decision.intent == "route_recommendation"
+    )
+    explicit_direct_course = bool(decision and decision.intent == "direct_course")
 
     latest_ids = _latest_course_ids(query, approved_courses)
     if latest_ids:
@@ -706,15 +989,32 @@ def infer_recommendation_decision(
         if score > 0:
             route_scores.append((score, route_id))
     route_scores.sort(reverse=True)
+    route_score_threshold = 10 if route_like else 18
     if route_scores:
         best_score, best_route_id = route_scores[0]
         second_score = route_scores[1][0] if len(route_scores) > 1 else -1
-        if best_score >= (10 if route_like else 18) and best_score - second_score >= 4:
+        if best_score >= route_score_threshold and best_score - second_score >= 4:
             route = approved_routes[best_route_id]
             return RecommendationDecision(
                 intent="route_recommendation",
                 candidate_route_id=best_route_id,
             )
+
+    # A route-seeking question must never degrade into a direct-course card
+    # merely because the authoritative catalog has several plausible routes.
+    # The caller must ask the learner to choose a route first.  Keep an
+    # explicit direct-course decision intact: exact course lookup remains a
+    # separate user journey even if its wording also mentions a route.
+    if (
+        route_requested
+        and not explicit_direct_course
+        and route_scores
+        and route_scores[0][0] >= route_score_threshold
+    ):
+        return RecommendationDecision(
+            intent="clarification",
+            clarification_question="请先确认你希望学习的官方路线，我再继续确认当前阶段。",
+        )
 
     if not course_like and not candidate_course_ids:
         return None
@@ -787,6 +1087,7 @@ def validate_recommendation(
     *,
     user_hash: str,
     query: str,
+    conversation_id: str | None = None,
 ) -> dict[str, Any]:
     # A confirmed route is durable state in the authoritative database.  A
     # terse follow-up that explicitly names the learner's stage must not fail
@@ -797,6 +1098,7 @@ def validate_recommendation(
         session,
         user_hash=user_hash,
         query=query,
+        conversation_id=conversation_id,
     )
     if progress_decision is not None:
         decision = progress_decision
@@ -850,7 +1152,21 @@ def validate_recommendation(
     if route and evidence and evidence in query and action.get("route_id") == route.get("route_id"):
         stages = sorted(route.get("stages", []), key=lambda item: item.get("order", 0))
         action_type = str(action.get("type") or "")
-        if action_type == "confirm_route" and stages and _explicit_route_confirmation(query):
+        route_confirmed = _explicit_route_confirmation(query)
+        if not route_confirmed and _is_short_affirmative_reply(query):
+            context_route = _context_route_for_state(
+                session,
+                conversation_id=conversation_id,
+                state="awaiting_route_confirmation",
+                snapshot=snapshot,
+            )
+            route_confirmed = bool(
+                context_route
+                and str(context_route.get("route_id") or "")
+                == str(route.get("route_id") or "")
+            )
+
+        if action_type == "confirm_route" and stages and route_confirmed:
             if progress is None:
                 progress = LearningRouteProgress(
                     user_hash=user_hash,
@@ -870,32 +1186,72 @@ def validate_recommendation(
                 (item for item in stages if item.get("stage_id") == confirmed_stage_id),
                 None,
             )
-            if stage and _explicit_stage_confirmation(query, stage):
+            stage_confirmed = bool(stage and _explicit_stage_confirmation(query, stage))
+            if stage and not stage_confirmed and _is_short_stage_reply(query, stage):
+                context_route = _context_route_for_state(
+                    session,
+                    conversation_id=conversation_id,
+                    state="awaiting_stage_confirmation",
+                    snapshot=snapshot,
+                )
+                stage_confirmed = bool(
+                    context_route
+                    and str(context_route.get("route_id") or "")
+                    == str(route.get("route_id") or "")
+                )
+            if stage and not stage_confirmed and _is_short_affirmative_reply(query):
+                context_hypothesis = _context_stage_hypothesis(
+                    session,
+                    conversation_id=conversation_id,
+                    snapshot=snapshot,
+                )
+                stage_confirmed = bool(
+                    context_hypothesis
+                    and str(context_hypothesis[0].get("route_id") or "")
+                    == str(route.get("route_id") or "")
+                    and str(context_hypothesis[1].get("stage_id") or "")
+                    == confirmed_stage_id
+                )
+            if stage and stage_confirmed:
                 progress.current_stage_id = confirmed_stage_id
                 progress.status = "active"
                 progress.confirmed_at = datetime.now(timezone.utc)
                 progress_applied = True
         elif action_type == "confirm_stage_completed" and progress:
-            completion_confirmation = any(
-                marker in _normalize_text(query)
-                for marker in (
-                    "已完成",
-                    "已经完成",
-                    "完成了",
-                    "我完成",
-                    "跳过",
-                    "略过",
+            if progress.status == "pending_stage":
+                current_index = next(
+                    (
+                        index
+                        for index, stage in enumerate(stages)
+                        if stage.get("stage_id") == action.get("stage_id")
+                    ),
+                    -1,
                 )
-            ) and "吗" not in query and "？" not in query and "?" not in query
-            current_index = next(
-                (
-                    index
-                    for index, stage in enumerate(stages)
-                    if stage.get("stage_id") == progress.current_stage_id
-                    and stage.get("stage_id") == action.get("stage_id")
-                ),
-                -1,
-            )
+                current_stage = stages[current_index] if current_index >= 0 else None
+                completion_confirmation = bool(
+                    current_stage and _explicit_stage_completion(query, current_stage)
+                )
+            else:
+                completion_confirmation = any(
+                    marker in _normalize_text(query)
+                    for marker in (
+                        "已完成",
+                        "已经完成",
+                        "完成了",
+                        "我完成",
+                        "跳过",
+                        "略过",
+                    )
+                ) and "吗" not in query and "？" not in query and "?" not in query
+                current_index = next(
+                    (
+                        index
+                        for index, stage in enumerate(stages)
+                        if stage.get("stage_id") == progress.current_stage_id
+                        and stage.get("stage_id") == action.get("stage_id")
+                    ),
+                    -1,
+                )
             if completion_confirmation and current_index >= 0:
                 if current_index + 1 < len(stages):
                     progress.current_stage_id = stages[current_index + 1]["stage_id"]

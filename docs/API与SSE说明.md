@@ -115,13 +115,15 @@ GET /internal/v1/entry-config
 
 ## 课程与学习路线事件
 
-`learning_route` 表示服务端已校验过的官方路线。它可能处于 `awaiting_route_confirmation`、`awaiting_stage_confirmation`、`active` 或 `completed`；只有用户明确确认路线和当前阶段后，才允许出现该路线的 `course_cards`。
+`learning_route` 表示服务端已校验过的官方路线。它可能处于 `awaiting_route_confirmation`、`awaiting_stage_confirmation`、`active` 或 `completed`；只有用户明确确认路线和当前阶段后，才允许出现该路线的 `course_cards`。待路线或阶段确认时，`learning_route` 和正文可以展示阶段与课程名称供用户判断，但不得把这些名称表述为已推荐课程。
 
 `learning_route` 每次返回完整路线的全部阶段，阶段按目录顺序排列。每个 `stages[]` 同时保留机器字段 `course_ids`，并提供与其一一对应、同序的用户展示字段 `course_names`；另外提供 `course_collection_names`，以及按原始合集顺序组织的 `course_collections: [{"name": string, "course_names": string[]}]`。这两个合集字段只取当前阶段的课程 ID，跨路线/跨阶段的其它课程不会带入；没有可用课程集时返回空数组。合集按源表连续块、路线/阶段作用域隔离。上述字段由现有课程目录快照派生，不新增 Redis 键或数据库字段。
 
-`course_cards.items` 只包含启用且审核通过的课程。卡片中的 `redirect_url` 是唯一允许客户端打开的课程地址；不要从回答正文、Dify 文档或 `official_url` 推导链接。每轮最多 5 门，路线卡片严格按当前阶段、下一阶段顺序返回。
+`course_cards.items` 只包含启用且审核通过的课程。卡片中的 `redirect_url` 是唯一允许客户端打开的课程地址；不要从回答正文、Dify 文档或 `official_url` 推导链接。明确课程、课程集或最新课程查询可返回独立课程卡；激活路线的卡片严格按当前阶段、下一阶段顺序返回，每轮最多 5 门。多个官方路线候选均可匹配时，服务只返回澄清，不回退独立课程卡；确实没有官方路线证据时，可明确说明未匹配后转为独立课程路径。
 
 `course_recommendation_note` 是可选的“下一步建议”：服务端在本轮确实返回有效课程卡时只发送一条，内容为 1–2 句、最多 80 字的组合学习动作，不带“匹配理由：”或“专家建议：”前缀。模型建议会经过课程卡 ID 全量一致、链接和内部 ID 门禁；缺失或不合规时使用同样受限的服务端默认建议，确保有效课程卡后仍有一条安全点评。无课程卡、路线/阶段待确认或解析失败时不发送。该事件名和 `{"content":"..."}` payload 不变。小程序现有卡片标题“推荐理由”的改名不在本仓库。
+
+用户自身状态、意图、选择和学习进度按“当前轮明确表达 → 最近未摘要历史中的明确确认 → 会话摘要中的已确认内容 → 路线进度 JSON → 用户画像 JSON”取值；低优先级信息不得覆盖高优先级事实。明确选择新路线不会取消既有路线进度；拒绝、换一条或含糊答复不产生持久拒绝状态。
 
 ## AI 管理端文件清洗
 

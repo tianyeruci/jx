@@ -253,13 +253,15 @@ data: {"schema_version":"2.0","request_id":"req-001","sequence":6,"route_id":"ro
 
 课程/路线规则：
 
-- `learning_route.state=awaiting_route_confirmation` 或 `awaiting_stage_confirmation` 时，`course_cards` 必须为空；调用方应引导用户明确确认路线和当前阶段。
+- `learning_route.state=awaiting_route_confirmation` 或 `awaiting_stage_confirmation` 时，不得发送 `course_cards`；调用方应引导用户明确确认路线和当前阶段。此时可在路线说明中展示审核路线的阶段和课程名称供用户判断，但不得把它们表述为已推荐课程。
 - `learning_route.stages[].course_collection_names` 是按阶段内原始目录顺序去重后的课程集名称数组，不是课程名称；`course_collections` 进一步给出每个合集及其当前阶段课程名称，格式为 `[{"name":"课程合集","course_names":["课程名称"]}]`。合集按源表连续块、路线/阶段作用域隔离；没有课程集时两个字段均为空数组。
 - `learning_route.stages[].course_names` 与 `course_ids` 一一对应、保持相同顺序，用于用户展示；`course_ids` 仍是供客户端和服务端校验的机器字段。
 
 - 只有 `active` 路线才返回当前阶段及下一阶段的课程卡片，最多 5 门且保持路线顺序。
 
-- 没有官方匹配路线时，服务可返回独立课程；不得临时拼接成路线。
+- 仅明确查询课程、课程集或最新课程时可返回独立课程；路线型诉求有多个可信候选时应澄清，不得回退独立课程；确实没有官方路线证据时应先说明未匹配，再转为独立课程路径，不得临时拼接路线。
+- 多条官方路线均可能匹配时，调用方只接收澄清与路线信息，不接收课程卡。明确选择新路线不取消旧路线进度；拒绝、换一条或含糊答复不写持久拒绝状态。
+- 用户自身状态、意图、选择和学习进度按“当前轮明确表达 → 最近未摘要历史中的明确确认 → 会话摘要中的已确认内容 → 路线进度 JSON → 用户画像 JSON”取值；低优先级信息不得覆盖高优先级事实。
 
 - `course_recommendation_note` 是可选的“下一步建议”，仅在服务端已校验课程卡后出现；多门课程只发送一条 1–2 句、最多 80 字的组合建议，不带“匹配理由：”或“专家建议：”前缀。课程级 `expert_insight` 事件已停用，客户端不得等待或渲染它；小程序卡片标题改造不在本仓库。
 

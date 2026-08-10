@@ -10,6 +10,7 @@ from scripts.build_business_advisor_unified_dsl import build, validate
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "dify" / "商业顾问（当前使用版本）.yml"
 OUTPUT = ROOT / "dify" / "商业顾问_统一修复版_Dify-1.13.3.yml"
+GOLDEN_CASES = ROOT / "test_data" / "rag" / "business_dsl_optimization_cases.jsonl"
 
 DECISION_PARSER_IDS = (
     "recommendation_decision_general",
@@ -28,6 +29,26 @@ FINAL_ANSWER_NODE_IDS = {
     "course_retry_decision_parse": "course_retry_final_answer",
     "mixed_retry_decision_parse": "mixed_retry_final_answer",
 }
+
+ROUTE_GATE_PROMPT_NODE_IDS = (
+    "combined_response_course",
+    "course_format_retry",
+    "combined_response_mixed",
+    "mixed_format_retry",
+)
+
+ROUTE_GATE_REQUIRED_CLAUSES = (
+    "路线推荐状态机（强制门禁）",
+    "direct_course 仅适用于用户明确查询有审核证据的具体课程或课程合集",
+    "先展示该路线并等待用户确认",
+    "只有用户当前问题明确确认所在阶段后，才允许推荐课程",
+    "candidate_course_ids、expert_course_ids、expert_insight 必须为空",
+    "不得列举、比较、暗示报名或推荐任何具体课程或课程合集",
+    "多条路线均可能匹配且用户未在当前问题明确选定一条时",
+    "若证据表明没有任何审核路线可匹配，可以明确说明未找到官方路线后转为独立课程路径",
+    "当前用户本轮明确表达 > 最近未摘要历史中的明确确认 > 会话摘要中的已确认内容 > 路线进度 JSON > 用户画像 JSON",
+    "candidate_course_ids 只能逐字选择该已确认路线和已确认阶段的课程或阶段证据",
+)
 
 
 def _load(path: Path) -> dict:
@@ -87,6 +108,41 @@ def test_current_source_uses_next_step_contract_in_all_main_and_retry_paths() ->
         assert "expert_course_ids 必须与 candidate_course_ids 完全一致" in prompt
         assert "不得写入或重复 final_answer" in prompt
         assert "无课程候选、待路线或阶段确认、证据不足时两者必须为空" in prompt
+
+
+def test_course_and_mixed_main_retry_prompts_keep_route_stage_course_gate() -> None:
+    nodes = _nodes(_load(SOURCE))
+
+    for node_id in ROUTE_GATE_PROMPT_NODE_IDS:
+        system_prompts = [
+            template["text"]
+            for template in nodes[node_id]["prompt_template"]
+            if template.get("role") == "system" and isinstance(template.get("text"), str)
+        ]
+        assert len(system_prompts) == 1
+        prompt = system_prompts[0]
+        for clause in ROUTE_GATE_REQUIRED_CLAUSES:
+            assert clause in prompt, f"{node_id} 缺少路线推荐门禁：{clause}"
+
+
+def test_route_gate_golden_cases_cover_pending_and_direct_course_exception() -> None:
+    cases = {
+        case["id"]: case
+        for case in (
+            json.loads(line)
+            for line in GOLDEN_CASES.read_text(encoding="utf-8-sig").splitlines()
+            if line.strip()
+        )
+    }
+
+    assert cases["direct_course_without_route"]["expected_course_ids"] == ["course_ai_001"]
+    assert cases["direct_course_without_route"]["expected_route_id"] is None
+    assert cases["route_ai"]["expected_course_ids"] == []
+    assert cases["route_ai"]["expected_route_id"] == "route_ai_basic"
+    assert cases["route_confirmed_stage_pending"]["expected_course_ids"] == []
+    assert cases["route_confirmed_stage_pending"]["expected_route_id"] == "route_ai_basic"
+    assert cases["route_multiple_candidates"]["expected_course_ids"] == []
+    assert cases["route_multiple_candidates"]["expected_route_id"] is None
 
 
 def test_all_decision_parsers_keep_expert_ids_and_drop_answer_plan() -> None:

@@ -344,11 +344,18 @@ def collect_compose_services(root: Path = ROOT) -> list[tuple[str, str, str]]:
 
 def collect_dify_assets(root: Path = ROOT) -> list[tuple[str, str]]:
     assets: list[tuple[str, str]] = []
+    for relative_path in (
+        "dify/商业顾问（当前使用版本）.yml",
+        "dify/商业顾问_统一修复版_Dify-1.13.3.yml",
+    ):
+        source = root / relative_path
+        if source.is_file():
+            assets.append(("DSL", source.relative_to(root).as_posix()))
     for directory, kind in (("dify/dsl", "DSL"), ("dify/prompts", "Prompt")):
         for source in sorted((root / directory).glob("*")):
             if source.is_file():
                 assets.append((kind, source.relative_to(root).as_posix()))
-    return assets
+    return sorted(assets)
 
 
 def collect_operational_scripts(root: Path = ROOT) -> list[str]:

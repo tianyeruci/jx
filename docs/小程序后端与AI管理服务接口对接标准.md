@@ -208,11 +208,13 @@ event: learning_route
 data: {"schema_version":"2.0","request_id":"req-001","sequence":6,"route_id":"route_ai_basic","name":"AI入门路线","direction":"AI基础","target":"完成AI基础使用","stages":[{"stage_id":"stage_1","name":"入门","order":1,"course_ids":["course_ai_001"],"course_names":["AI工具入门"],"course_collection_names":["AI写作课"]}],"current_stage_id":null,"next_stage_id":null,"state":"awaiting_route_confirmation","progress_status":"pending_route","confirmation_required":true}
 ```
 课程/路线规则：
-- `learning_route.state=awaiting_route_confirmation` 或 `awaiting_stage_confirmation` 时，`course_cards` 必须为空；调用方应引导用户明确确认路线和当前阶段。
+- `learning_route.state=awaiting_route_confirmation` 或 `awaiting_stage_confirmation` 时，不得发送 `course_cards`；调用方应引导用户明确确认路线和当前阶段。此时可在路线说明中展示审核路线的阶段和课程名称供用户判断，但不得把它们表述为已推荐课程。
 - `learning_route.stages[].course_collection_names` 是按阶段内原始目录顺序去重后的课程集名称数组，不是课程名称；`course_collections` 进一步给出每个合集及其当前阶段课程名称，格式为 `[{"name":"课程合集","course_names":["课程名称"]}]`。合集按源表连续块、路线/阶段作用域隔离；没有课程集时两个字段均为空数组。
 - `learning_route.stages[].course_names` 与 `course_ids` 一一对应、保持同序，用于用户展示；`course_ids` 仍是机器字段。
 - 只有 `active` 路线才返回当前阶段及下一阶段的课程卡片，最多 5 门且保持路线顺序。
-- 没有官方匹配路线时，服务可返回独立课程；不得临时拼接成路线。
+- 仅明确查询课程、课程集或最新课程时可返回独立课程；路线型诉求有多个可信候选时应说明未匹配或澄清，不得回退独立课程；确实没有官方路线证据时应先说明未匹配，再转为独立课程路径，不得临时拼接路线。
+- 多条官方路线均可能匹配时，调用方只接收澄清与路线信息，不接收课程卡。明确选择新路线不取消旧路线进度；拒绝、换一条或含糊答复不写持久拒绝状态。
+- 用户自身状态、意图、选择和学习进度按“当前轮明确表达 → 最近未摘要历史中的明确确认 → 会话摘要中的已确认内容 → 路线进度 JSON → 用户画像 JSON”取值；低优先级信息不得覆盖高优先级事实。
 - `course_recommendation_note` 是可选的下一步建议，仅在服务端已校验课程卡且内部课程 ID 全量一致时出现；`content` 直接是 1–2 句、最多 80 字的组合学习动作，不含匹配理由或专家建议前缀。事件名和 `{"content":"..."}` 结构不变；小程序当前卡片标题“推荐理由”的改名不在本仓库。
 `message_end` 示例：
 ```text

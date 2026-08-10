@@ -299,8 +299,11 @@ data: {"schema_version":"2.0","request_id":"req-001","sequence":8,"code":"DIFY_U
 ~~~
 注意：
 - conversation_id 不能使用外部平台会话 ID。
-- state 为 awaiting_route_confirmation 或 awaiting_stage_confirmation 时，不应出现课程卡片。
-- course_cards 最多 5 门。
+- state 为 awaiting_route_confirmation 或 awaiting_stage_confirmation 时，不应出现课程卡片；`learning_route` 可提供审核路线的阶段和课程名称供用户判断，但这些名称不是已推荐课程。
+- 只有 active 路线才返回当前阶段及下一阶段的课程卡片，最多 5 门且保持路线顺序。
+- 明确课程、课程集或最新课程查询可返回独立课程卡；路线型诉求存在多个可信候选时只能说明未匹配或澄清，不得回退独立课程；确实没有官方路线证据时可先说明未匹配，再转为独立课程路径。
+- 明确选择新路线不取消既有路线进度；拒绝、换一条或含糊答复不写持久拒绝状态。
+- 用户状态、意图、选择和学习进度按当前轮明确表达、最近未摘要历史明确确认、会话摘要确认、路线进度、用户画像的顺序取值。
 - 当前不返回课程级 expert_insight 事件。
 - 同一会话有未完成生成时，接口可能返回 409 CONVERSATION_BUSY。
 ### 2.3 停止商业顾问生成

@@ -166,20 +166,19 @@ data: {"schema_version":"2.0","request_id":"req-001","sequence":4,"conversation_
 ~~~text
 event: learning_route
 data: {"schema_version":"2.0","request_id":"req-001","sequence":5,"route_id":"route_ai_basic","name":"AI入门路线","direction":"AI基础","target":"完成AI基础使用","stages":[{"stage_id":"stage_1","name":"入门","order":1,"course_ids":["course_ai_001"],"course_names":["AI工具入门"],"course_collection_names":["AI写作课"]}],"current_stage_id":null,"next_stage_id":null,"state":"awaiting_route_confirmation","progress_status":"pending_route","confirmation_required":true}
-
-event: course_cards
-data: {"schema_version":"2.0","request_id":"req-001","sequence":6,"items":[{"course_id":"course_ai_001","name":"AI工具入门","direction":"AI基础","description":"适合零基础用户","enabled":true,"review_status":"approved","redirect_url":"https://example.com/r/xxxxx"}]}
-
-event: course_recommendation_note
-data: {"schema_version":"2.0","request_id":"req-001","sequence":7,"content":"建议先完成这门课程的核心练习，完成后告诉我进度，我再安排下一步。"}
 ~~~
+
+该示例处于 `awaiting_route_confirmation`，因此不会发送 `course_cards` 或 `course_recommendation_note`。`stages[].course_names` 仅用于说明审核路线内容，不表示已推荐课程。
 
 注意：
 
-- awaiting_route_confirmation 或 awaiting_stage_confirmation 时，course_cards.items 必须为空。
+- awaiting_route_confirmation 或 awaiting_stage_confirmation 时，不得发送 course_cards。
 - 只有启用且审核通过的课程和路线可以返回卡片。
 - 当前阶段优先，其次下一阶段，最多 5 门且保持路线顺序。
-- 没有官方路线时可推荐独立课程，但不得临时拼接路线。
+- 明确课程、课程集或最新课程查询可推荐独立课程；路线型诉求有多个可信候选时只澄清，不回退独立课程；确实没有官方路线证据时先说明未匹配，再转为独立课程路径，也不得临时拼接路线。
+- 路线或阶段待确认时可展示审核路线的阶段和课程名称供用户判断，但不得把它们表述为已推荐课程。
+- 明确选择新路线不取消旧路线进度；拒绝、换一条或含糊答复不写持久拒绝状态。
+- 用户状态、意图、选择和学习进度按当前轮明确表达、最近未摘要历史明确确认、会话摘要确认、路线进度、用户画像的顺序取值。
 - `course_recommendation_note` 仅在课程卡通过服务端校验后发送一条“下一步建议”；多门课程合并为一条 1–2 句、最多 80 字的建议，不含匹配理由或专家建议前缀。当前不生成或渲染课程级 `expert_insight` 事件。
 - 同一会话生成中再次请求返回 409 CONVERSATION_BUSY。
 
@@ -803,7 +802,9 @@ POST /internal/v1/knowledge/cleaning-batches/{batch_id}/files/{file_id}/retry
 4. 验证停止生成、删除会话。
 5. 分别调用朋友圈和写作 SSE。
 6. 课程卡片使用原始 redirect_url 完成跳转。
-7. 未确认路线/阶段时课程卡片为 0；确认后最多 5 门且顺序正确。
+7. 未确认路线/阶段时不发送 `course_cards`；确认后仅当前阶段及下一阶段、最多 5 门且顺序正确。
+8. 明确课程、课程集或最新课程查询可返回独立课程卡；多条路线候选只返回澄清，不得降级为独立课程卡。
+9. 用相互冲突的当前轮、未摘要历史、会话摘要、路线进度和用户画像验证五级优先级；新路线选择不取消旧路线，拒绝、换一条或含糊答复不写持久拒绝状态。
 
 ### 6.2 AI 管理端
 
@@ -819,7 +820,7 @@ POST /internal/v1/knowledge/cleaning-batches/{batch_id}/files/{file_id}/retry
 
 - 请求头、路径、请求体、返回字段和 SSE 事件与当前代码一致。
 - SSE 按事件边界解析，sequence 单调递增。
-- 未确认路线或阶段时课程卡片数为 0。
+- 未确认路线或阶段时不发送 `course_cards`。
 - 当前阶段优先、下一阶段其次，总数不超过 5 门。
 - 停用或未审核课程/路线不被推荐。
 - 原始课程链接不进入清洗正文或普通知识文本。

@@ -15,6 +15,7 @@ from .cache import cache
 from .config import get_settings
 from .context import build_context, should_summarize
 from .courses import (
+    _stage_confirmation_hypothesis_text,
     create_redirect_token,
     get_snapshot,
     infer_recommendation_decision,
@@ -136,7 +137,10 @@ def _route_followup_guidance(route: dict[str, Any] | None) -> str:
     if state == "awaiting_stage_confirmation":
         first_stage = stages[0] if stages else {}
         stage_name = str(first_stage.get("name") or "当前阶段").strip()
-        return f"请告诉我你目前所在阶段，例如：我目前在：{stage_name}"
+        return (
+            f"{_stage_confirmation_hypothesis_text(stage_name)}"
+            f"如果不符合，请直接告诉我你目前所在阶段，例如：我目前在：{stage_name}"
+        )
     if state == "active":
         stage_name = str((current_stage or {}).get("name") or "当前阶段").strip()
         return f"请先完成{stage_name}的课程；完成后回复：我已完成：{stage_name}"
@@ -275,6 +279,7 @@ def _persist_business_result(
                 decision,
                 user_hash=user_hash,
                 query=query,
+                conversation_id=conversation_db.id,
             )
         if (
             final_status != "failed"
@@ -292,6 +297,7 @@ def _persist_business_result(
                     fallback_decision,
                     user_hash=user_hash,
                     query=query,
+                    conversation_id=conversation_db.id,
                 )
                 if fallback_recommendation.get("course_cards") or fallback_recommendation.get("learning_route"):
                     recommendation = fallback_recommendation

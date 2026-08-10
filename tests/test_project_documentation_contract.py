@@ -168,6 +168,12 @@ def test_function_and_interface_index_is_current_and_routed():
     assert "功能与接口索引.md" in readme
 
 
+def test_dify_asset_index_includes_current_business_advisor_sources():
+    assets = set(generate_project_index.collect_dify_assets(ROOT))
+    assert ("DSL", "dify/商业顾问（当前使用版本）.yml") in assets
+    assert ("DSL", "dify/商业顾问_统一修复版_Dify-1.13.3.yml") in assets
+
+
 def test_static_route_index_matches_test_configured_fastapi_app():
     from ai_management.main import app
 
