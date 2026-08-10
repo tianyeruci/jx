@@ -8,7 +8,7 @@
 
 - 根因已确认：为小程序联调临时开放的 Nginx `/ai-service/` 通用反向代理把 `/internal/v1/admin/knowledge-bases/{course,general}/upload-batches` 一并暴露。Nginx 记录到固定半小时的三次上传请求；07:00 的一次成功调用创建了 3 个本地批次，并写入课程知识库 22 篇、通用知识库 4 篇。该现象不是 Dify、Redis 或数据库从备份自动恢复。
 - 调用方的具体进程未能从现存证据可靠归属：Nginx 仅保留 Docker 网关转发地址且请求没有用户代理，主机 cron、systemd unit/timer 与现有容器名称检索均未命中。该限制已记录，不能把调用方猜测为某个业务服务。
-- 已通过 `scripts/configure_dify_nginx_ai_service_guard.py` 在临时桥接前加入精确 `403` 规则，只拒绝两个内部知识库上传入口，保留其它 `/ai-service/` 联调路径。Nginx 配置检查和热加载通过；07:30 的三次周期重试均返回 `403`，测试页仍为 HTTP `200`。
+- 知识库管理接口的目标通道为私网 `172.17.28.83 → 172.30.157.197:8000` 直连，路径为 `/internal/v1/...`，并继续使用内部和管理员双 Token。Dify Nginx 已恢复任务开始前对上传路径的 `403` 阻断规则；端口 `80` 不再是知识库管理通道。jx API 私网绑定、精确 `/32` 主机防火墙规则、回程路由、无文件 `422` 本机探针和 API ready 均已验证；但 2026-08-10 调用方实测 TCP `8000` 超时，且 jx 防火墙计数为 `0`，当前阻塞在实例外的阿里云安全组或调用方实际源地址，尚未完成端到端验证。
 - 清理前已备份 Dify/AI 数据库、Redis RDB、上传卷和配置至 `/opt/ai-management/backups/20260809-073700-unexpected-knowledge-cleanup` 并通过校验。使用新增 `manual_incident_cleanup` v3 manifest，仅覆盖确认的 3 个批次、26 个 Dify 文档、21 门课程、1 条路线、精确 Redis 键和对应上传目录；没有按名称、时间窗口或 Dataset 总数删除，也没有直接修改 Dify 数据库。
 - 清理后：Dify `general/course` 均为 `0`；本地清洗批次/文件/文档/模型任务/发布分片为 `0/0/0/0/0`，课程/路线为 `0/0`，清洗 Redis 键和精确课程快照 key 为 `0`，上传卷入口为 `0`；API ready、全部命名服务与测试页均正常。报告：`/opt/ai-management/var/reports/v2/20260809-073700-unexpected-knowledge-cleanup`。
 - 后续：任何仍需要临时公网 `/ai-service/` 的发布，必须先安装并启用该 guard；完整移除临时桥接或改为 HTTPS/私网访问仍需单独评估小程序联调依赖，不能在本次事故处置中擅自中断。
@@ -1720,3 +1720,31 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改前：0.55 仅记录 jx 通道不可用，未有本轮远端检索命中、业务 E2E、合约状态和最终服务复核证据。
 - 修改后：补充 jx RAG 失败但可解释的分域指标、Dify 两轮 SSE/三个 Workflow 合约结果、E2E `2/6` 及正式课程数据保留边界；脱敏报告和问题记录同步更新。
 - 验证：jx 最终 release 保持 ready，临时 fixture 和测试会话均按精确范围收尾；未清空、替换或删除 general/course 正式数据。
+
+### 文档修改记录（2026-08-10 知识库上传内网来源放行）
+
+- 修改原因：内网调用方 `172.17.28.83` 访问知识库上传接口被 Nginx 返回 `403`，用户要求定位并修复。
+- 修改前：临时 `/ai-service/` 桥接对 course/general 的 `upload-batches` 及其子路径使用硬编码 `return 403`；请求未进入 ai-management，虽已存在该来源到 TCP `8000` 的主机防火墙允许规则。
+- 修改后：恢复并安装受版本控制的 `scripts/configure_dify_nginx_ai_service_guard.py`；上传路径改为仅允许 `172.17.28.83/32`，随后代理至 ai-management。非该来源仍为 `403`，且转发后仍要求 `X-Internal-Token` 和 `X-Admin-Token`。
+- 验证：Nginx `nginx -t` 与热加载通过；非白名单本机探针为 HTTP `403`；主机精确来源规则仍存在；API `/health/ready` 为 `status=ready` 且数据库、Redis、Dify 可达，8 个 ai-management 服务均运行。配置与旧脚本备份位于 `/opt/ai-management/backups/20260810-1705-ai-service-upload-source-allowlist`。
+
+### 文档修改记录（2026-08-10 更正知识库上传 403 根因）
+
+- 修改原因：首次来源白名单修复后，4.10.2～4.10.8 仍返回 `403`；用户明确指出经内网端口 `80` 调用、而其他 ai-management 接口正常，要求重新定位真实根因。
+- 修改前：将调用方声明的 `172.17.28.83/32` 直接作为 Nginx 唯一允许来源，并把问题归因于此前硬编码 `return 403`；未验证 Nginx 在 Docker NAT 后实际记录的客户端地址，也未区分裸 `/internal/...` 与实际桥接路径。
+- 修改后：Nginx access log 证明实际成功/失败请求均为 `/ai-service/internal/v1/...`；裸 `/internal/...` 在端口 `80` 返回 Dify Web 的 `404`。4.10 上传组被专用 location 的 `deny all` 拦截，Nginx 可见来源为 `172.18.0.1/32`。guard 改为必须显式传入多个单主机来源，当前同时允许真实后端 `172.17.28.83/32` 和 NAT 来源 `172.18.0.1/32`；接口文档、部署手册和排障库同步更正。
+- 验证：Nginx `nginx -t` 与热加载通过；正确双 Token、无 `files` 的 `POST /ai-service/internal/v1/admin/knowledge-bases/general/upload-batches` 返回 `422`，并在 ai-management API 日志中记录，证明已越过网关且未产生上传写入；API `/health/ready=status=ready`。配置/脚本备份为 `/opt/ai-management/backups/20260810-0945-ai-service-nat-source-fix`。
+
+### 文档修改记录（2026-08-10 知识库管理切换私网 8000 直连）
+
+- 修改原因：用户确认调用方为内网 `172.17.28.83`、jx 为 `172.30.157.197`，要求不再修改 Dify 原始规则，改走 `8000` 并完成验证。
+- 修改前：4.10.2～4.10.8 经 Dify `:80/ai-service/` 桥接，受 Nginx 上传阻断和 Docker NAT 来源转换影响；本轮曾临时调整该桥接规则用于定位。
+- 修改后：Dify Nginx 上传 location 和 guard 脚本均恢复到本任务开始前的硬 `403` 阻断状态。当前正式调用路径为 `172.17.28.83 → 172.30.157.197:8000/internal/v1/...`；ai-management 仍加入本机 Dify `docker_default` 网络，但其外部调用入口保持宿主机私网 `:8000`，两者不冲突。
+- 验证：API 容器确认位于 `docker_default` 且 Dify Nginx 容器可访问其 `/health/live`；API 私网端口绑定为 `172.30.157.197:8000`；`AI-MGMT-8000` 精确允许 `172.17.28.83/32`，回程经 `eth0`；正确双 Token、无文件的直连上传探针返回 `422`，API ready。Dify Nginx `nginx -t`/热加载通过，备份为 `/opt/ai-management/backups/20260810-1000-direct-8000-switch`。
+
+### 文档修改记录（2026-08-10 私网 8000 端到端超时待处理）
+
+- 修改原因：调用方服务器实际执行 `curl http://172.30.157.197:8000/...` 后报 `curl (28)`、`HTTP_STATUS=000`，需要更正此前仅基于 jx 本机探针的结论。
+- 修改前：当前状态将私网 `:8000` 描述为已验证通道，未明确区分 jx 本机/API 容器验证与调用方端到端验证。
+- 修改后：明确当前为“目标通道”；jx `172.30.157.197:8000` 监听、Docker DNAT、`AI-MGMT-8000` 的 `172.17.28.83/32` 规则、回程路由均存在，但调用方测试期间该规则的 ACCEPT/DROP 计数均为 `0`。jx 可反向 ping `172.17.28.83`，因此服务、Dify、Token、jx 主机防火墙和基础 VPC 路由均不是此次超时点；待核查并放行阿里云 jx 入方向安全组 TCP `8000`（来源精确为 `172.17.28.83/32`），同时确认调用方实际出站源地址。
+- 验证：待上述云侧规则生效后，从调用方复测 TCP 连接和带双 Token 的只读 GET；成功标准为 jx `AI-MGMT-8000` ACCEPT 计数增加且接口 HTTP `200`。本次未改动 Dify Nginx、数据库、Redis、Token 或业务数据。

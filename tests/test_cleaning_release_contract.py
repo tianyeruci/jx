@@ -26,9 +26,9 @@ def test_bailian_batch_is_opt_in_when_no_environment_override(monkeypatch):
 def test_miniapp_interface_document_is_frozen_for_internal_cleaning_changes():
     path = ROOT / "docs/小程序后端与 AI 管理服务接口对接交互版本.md"
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    # The contract text documents the unchanged event/payload, next-step
-    # semantics, and the explicitly approved additive route collection view.
-    assert digest == "bc4c48bfc0eec16115a4255e639da6543a4727b8fd62dbc1c43c0d092e6142e8"
+    # The contract text freezes event/payload semantics and the approved
+    # private-port-8000 policy for knowledge-base management routes.
+    assert digest == "e403885875448fe6a92f5d2405cffba2c7812ef33045088a7f87661bc8f9b096"
 
 
 def test_remote_cleaning_acceptance_uses_anonymous_names_and_covers_new_flow():

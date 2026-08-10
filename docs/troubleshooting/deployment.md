@@ -241,17 +241,17 @@
 - 证据：`scripts/jx_full_cleaning_baseline.sh`、`scripts/jx_prebaseline_clean.sh`、`scripts/jx_release_data.py`、`docs/troubleshooting/data-cleaning.md` 的 DATA-033～DATA-035、jx 报告 `/opt/ai-management/var/reports/v2/20260809-143906-general-document-cleanup`。
 - 最后验证：2026-08-09。
 
-## DEPLOY-022：临时公网 AI 网关不得透传内部知识库上传接口
+## DEPLOY-022：知识库管理接口应走私网 `8000` 直连，而非 Dify 网关
 
-- 适用：jx 上为小程序联调临时开放的 Nginx `/ai-service/` 反向代理，以及任何把应用内部路径整体暴露到公网的过渡网关。
-- 触发：管理员未操作上传，但 `general`/`course` Dataset、`CleaningBatch`、课程或路线在规律时间点再次出现；Nginx 可见 `POST /ai-service/internal/v1/admin/knowledge-bases/*/upload-batches`。
-- 根因：临时桥接按 `/ai-service/` 通用前缀重写并反代到 API，错误地包含了仅应在内网/管理端使用的 `internal/v1/admin` 知识库上传路径。周期调用者可经该桥接创建真实清洗批次；这不是 Dify、Redis 或数据库从备份自动恢复。
-- 解决：使用 `scripts/configure_dify_nginx_ai_service_guard.py --mode enable --location /opt/dify/docker/nginx/conf.d/ai-management-api-temp.location` 在通用桥接前写入精确拒绝规则，随后执行 `docker exec docker-nginx-1 nginx -t` 和热加载。只拒绝 `general/course` 的 `upload-batches` 及其子路径，保留其它联调路径；若准备彻底移除临时桥接或切换 HTTPS/私网，须单独评估调用方依赖。
-- 非解决：把所有 `/ai-service/` 路径一并关闭而不评估联调影响、只停止 Worker、把重现误判为缓存回滚、直接编辑 Dify 数据库、按名称/时间批量删文档，或开放 API `8000` 公网端口。
-- 验证：2026-08-09 jx 实测下一轮半小时的 3 次上传重试均为 `403`；Nginx 语法检查/热加载通过，测试页保持 HTTP `200`。调用方具体进程未能从 Docker 网关转发地址和空请求头可靠还原，因此文档只记录已验证的网关暴露根因。
-- 预防：临时公网反代必须采用路径白名单或显式 deny 内部管理写入端点；每次发布后检查 Nginx 生效配置，并将该 guard 脚本随完整 release 安装。
-- 证据：`scripts/configure_dify_nginx_ai_service_guard.py`、`var/reports/jx-unexpected-knowledge-20260809/issues.jsonl`、jx 报告 `/opt/ai-management/var/reports/v2/20260809-073700-unexpected-knowledge-cleanup`。
-- 最后验证：2026-08-09。
+- 适用：jx 的知识库上传、状态、条目、重试和复核接口由另一台内网后端调用；当前调用方为 `172.17.28.83`，jx API 私网地址为 `172.30.157.197`。
+- 触发：4.10.2～4.10.8 经 `:80` 返回 `403`，而业务聊天和入口配置等接口正常。
+- 根因：Dify Nginx 的端口 `80` 不是 ai-management 的原生监听端口。裸 `/internal/...` 会进入 Dify Web 默认路由；`/ai-service/...` 虽可转发，但上传子路径由有意保留的 `403` 规则保护，且 Docker NAT 会改变 Nginx 可见来源。因此该路径不适合作为知识库管理接口的内网通道；这不是 ai-management 加入 Dify `docker_default` 网络导致的冲突，也不是知识库接口实现或 Token 校验冲突。
+- 解决：调用方 Base URL 固定为 `http://172.30.157.197:8000`，直接调用 `/internal/v1/admin/knowledge-bases/...`；jx 保持 API 仅绑定此私网地址、`AI-MGMT-8000` 仅允许 `172.17.28.83/32`、回程经 `eth0` 私网网关。保留 Dify Nginx 的上传 `403` 规则和 ai-management 双 Token。
+- 非解决：修改或删除 Dify Nginx 上传阻断规则、通过 `:80/ai-service/` 访问管理写入接口、放宽为 Docker/VPC 网段、取消 Token、开放 API `8000` 公网端口，或直接编辑 Dify 数据库。
+- 验证：2026-08-10 jx 上 `172.30.157.197:8000` 绑定存在，`AI-MGMT-8000` 的 `172.17.28.83/32` 允许规则与精确回程路由存在；带正确双 Token、无文件的上传 POST 返回 API `422`，API `/health/ready=status=ready`。Dify Nginx 已恢复任务开始前的上传 `403` 规则。
+- 预防：内部管理写入接口与临时 Dify 网关分离；发布或联调前从调用方验证 `:8000` 连接、双 Token 和无写入 `422` 探针，并复核阿里云安全组两端的精确 `/32` 规则。
+- 证据：`var/reports/20260810-ai-service-upload-source-allowlist/issues.jsonl`、jx 备份 `/opt/ai-management/backups/20260810-1000-direct-8000-switch`。
+- 最后验证：2026-08-10。
 
 ## DEPLOY-023：Windows 发布 stage 的文本换行归一化不得处理二进制 wheel
 
