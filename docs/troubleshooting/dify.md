@@ -157,3 +157,15 @@
 - 预防：浏览器自动化运行手册优先检查页面是否已登录和隐藏控件结构；遇到同类问题按本条使用标签页级 CDP 临时显示 + 标准 chooser，不把页面权限问题误报为账号权限问题。
 - 证据：Chrome Dify 编辑器与 `/develop` 页面；本地 `dify/商业顾问（当前使用版本）.yml`；jx 真实 Chat API/SSE 验收记录见当前状态交接文档 0.54。
 - 最后验证：2026-08-10（Chrome 登录态、Dify 导入发布、jx 测试环境）。
+
+## DIFY-014：Dify 缺失结构化决策时仍须先走服务端路线状态
+
+- 适用：商业顾问已确认学习路线后的简短续问，Dify 回答完成但未产出可解析的推荐决策。
+- 触发：SSE `message_end=completed`，却没有 `learning_route` 或 `course_cards`，尽管用户只有一条已持久化的激活路线。
+- 根因：持久化层过去只在 Dify 决策或目录推断成功时调用推荐校验，漏掉了服务端已有的路线状态。
+- 解决：在目录推断前以中性决策调用服务端路线状态校验；该校验只对路线相关措辞和唯一的 `pending_stage`/`active`/`completed` 进度生效，再由目录快照生成合规结果。
+- 非解决：让 Dify 自行猜测历史路线、对任何普通问答强制出卡，或在客户端补造课程卡。
+- 验证：jx release `20260811-0912-route-resume-fix` 的合成 SSE 返回精确当前阶段课程卡、其后唯一 `course_recommendation_note`，并以 `message_end.status=completed` 结束；测试会话和进度均精确删除。
+- 预防：路线续问回归必须覆盖“Dify decision 缺失 + 唯一持久化 active 路线”；Dify DSL 变更后继续核对该真实 SSE 分支。
+- 证据：`ai_management/conversations.py`、`docs/课程推荐与学习路线推荐全链路分析.md`、`/opt/ai-management/var/reports/v2/20260811-0912-route-resume-fix-deploy`。
+- 最后验证：2026-08-11。

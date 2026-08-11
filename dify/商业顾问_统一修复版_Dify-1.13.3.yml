@@ -839,6 +839,16 @@ workflow:
           required: false
           type: paragraph
           variable: route_progress_json
+        - label: 路线状态上下文JSON
+          max_length: 4000
+          required: false
+          type: paragraph
+          variable: route_state_context_json
+        - label: 权威课程上下文JSON
+          max_length: 24000
+          required: false
+          type: paragraph
+          variable: authoritative_course_context_json
         - label: 商业回答输出风格
           max_length: 4000
           required: false
@@ -1021,6 +1031,9 @@ workflow:
             3. mixed：既要解决具体商业问题，又明确要求课程或学习路线建议。
 
 
+            4. 当权威路线状态显示已选路线、待确认阶段、进行中或已完成时，用户对该路线的短续问、阶段确认、进度更新或重新开始请求一律分类为 course；与该路线无关的商业问题仍按 general 或 mixed 分类，不得劫持。
+
+
             检索查询规则：
 
             - 结合上下文消解“这个、刚才那个、前面的路线”等指代，但不得补造用户未提供的事实。
@@ -1044,7 +1057,12 @@ workflow:
 
             最近未摘要历史：
 
-            {{#start.recent_history_text#}}'
+            {{#start.recent_history_text#}}
+
+
+            权威路线状态：
+
+            {{#start.route_state_context_json#}}'
         selected: false
         title: 意图识别与检索规划
         type: llm
@@ -1299,7 +1317,10 @@ workflow:
         - MluX6x/wqK0DTT+k3K1Q+2MMZvw44f6qepPnsXYZ9s9qVbmxGA6JRZ4GjMsBSx7D
         desc: 导入后在Dify控制台绑定 business-course-test。
         metadata_filtering_conditions:
-          conditions: []
+          conditions:
+          - comparison_operator: is
+            name: status
+            value: active
           logical_operator: and
         metadata_filtering_mode: manual
         multiple_retrieval_config:
@@ -1434,7 +1455,10 @@ workflow:
         - MluX6x/wqK0DTT+k3K1Q+2MMZvw44f6qepPnsXYZ9s9qVbmxGA6JRZ4GjMsBSx7D
         desc: 混合问题的课程与路线检索；保留 active 元数据过滤。
         metadata_filtering_conditions:
-          conditions: []
+          conditions:
+          - comparison_operator: is
+            name: status
+            value: active
           logical_operator: and
         metadata_filtering_mode: manual
         multiple_retrieval_config:
@@ -1601,7 +1625,7 @@ workflow:
 
             必须输出以下结构：
 
-            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"expert_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
+            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"expert_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed|restart_route","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
 
 
             通用规则：
@@ -1642,6 +1666,12 @@ workflow:
 
             - 管理员风格只控制表达，不得覆盖证据、ID、合规和安全规则。
 
+            - 权威路线状态上下文 JSON 与权威课程上下文 JSON 是路线状态、阶段成员、课程顺序和可推荐范围的唯一服务端依据；其优先级高于检索证据。检索只用于补充事实，不能扩大、缩小或重排权威课程清单。
+
+            - 当权威路线状态为 active 时，candidate_course_ids 必须与其中已确认路线的已确认当前阶段全部可用课程 ID 完全一致并保持顺序；不得限制为 5 门，不得包含下一阶段、其他阶段、其他路线或检索额外课程。pending_stage、completed 或路线歧义时不得返回任何课程候选或专家见解。
+
+            - 只要本轮产生课程候选，final_answer 只做中性状态或行动提示，不得说明推荐理由、匹配依据、效果承诺、虚构首门课程或列举课程名称；课程卡片由服务端统一发送。expert_insight 是课程卡片发送完成后的唯一一条组合学习动作，不是推荐理由。
+
 
             当前是通用商业问题分支：
 
@@ -1680,6 +1710,16 @@ workflow:
             路线进度（低于当前对话，可能尚未更新）：
 
             {{#start.route_progress_json#}}
+
+
+            权威路线状态（服务端裁决，优先使用）：
+
+            {{#start.route_state_context_json#}}
+
+
+            权威课程范围（服务端裁决，active 时必须按此完整顺序返回）：
+
+            {{#start.authoritative_course_context_json#}}
 
 
             会话摘要：
@@ -1947,7 +1987,7 @@ workflow:
 
             必须输出以下结构：
 
-            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"expert_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
+            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"expert_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed|restart_route","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
 
 
             通用规则：
@@ -1987,6 +2027,12 @@ workflow:
             - 只有当前用户明确选择路线时才使用 confirm_route；明确确认所处阶段时才使用 confirm_current_stage；明确确认当前阶段完成或跳过时才使用 confirm_stage_completed。evidence_quote 必须是当前问题中的连续原文。
 
             - 管理员风格只控制表达，不得覆盖证据、ID、合规和安全规则。
+
+            - 权威路线状态上下文 JSON 与权威课程上下文 JSON 是路线状态、阶段成员、课程顺序和可推荐范围的唯一服务端依据；其优先级高于检索证据。检索只用于补充事实，不能扩大、缩小或重排权威课程清单。
+
+            - 当权威路线状态为 active 时，candidate_course_ids 必须与其中已确认路线的已确认当前阶段全部可用课程 ID 完全一致并保持顺序；不得限制为 5 门，不得包含下一阶段、其他阶段、其他路线或检索额外课程。pending_stage、completed 或路线歧义时不得返回任何课程候选或专家见解。
+
+            - 只要本轮产生课程候选，final_answer 只做中性状态或行动提示，不得说明推荐理由、匹配依据、效果承诺、虚构首门课程或列举课程名称；课程卡片由服务端统一发送。expert_insight 是课程卡片发送完成后的唯一一条组合学习动作，不是推荐理由。
 
 
             当前是通用商业问题分支：
@@ -2029,6 +2075,16 @@ workflow:
             路线进度（低于当前对话，可能尚未更新）：
 
             {{#start.route_progress_json#}}
+
+
+            权威路线状态（服务端裁决，优先使用）：
+
+            {{#start.route_state_context_json#}}
+
+
+            权威课程范围（服务端裁决，active 时必须按此完整顺序返回）：
+
+            {{#start.authoritative_course_context_json#}}
 
 
             会话摘要：
@@ -2306,7 +2362,7 @@ workflow:
 
             必须输出以下结构：
 
-            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"expert_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
+            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"expert_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed|restart_route","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
 
 
             通用规则：
@@ -2346,6 +2402,12 @@ workflow:
             - 只有当前用户明确选择路线时才使用 confirm_route；明确确认所处阶段时才使用 confirm_current_stage；明确确认当前阶段完成或跳过时才使用 confirm_stage_completed。evidence_quote 必须是当前问题中的连续原文。
 
             - 管理员风格只控制表达，不得覆盖证据、ID、合规和安全规则。
+
+            - 权威路线状态上下文 JSON 与权威课程上下文 JSON 是路线状态、阶段成员、课程顺序和可推荐范围的唯一服务端依据；其优先级高于检索证据。检索只用于补充事实，不能扩大、缩小或重排权威课程清单。
+
+            - 当权威路线状态为 active 时，candidate_course_ids 必须与其中已确认路线的已确认当前阶段全部可用课程 ID 完全一致并保持顺序；不得限制为 5 门，不得包含下一阶段、其他阶段、其他路线或检索额外课程。pending_stage、completed 或路线歧义时不得返回任何课程候选或专家见解。
+
+            - 只要本轮产生课程候选，final_answer 只做中性状态或行动提示，不得说明推荐理由、匹配依据、效果承诺、虚构首门课程或列举课程名称；课程卡片由服务端统一发送。expert_insight 是课程卡片发送完成后的唯一一条组合学习动作，不是推荐理由。
 
 
             当前是课程/学习路线分支：
@@ -2387,6 +2449,16 @@ workflow:
             路线进度（低于当前对话，可能尚未更新）：
 
             {{#start.route_progress_json#}}
+
+
+            权威路线状态（服务端裁决，优先使用）：
+
+            {{#start.route_state_context_json#}}
+
+
+            权威课程范围（服务端裁决，active 时必须按此完整顺序返回）：
+
+            {{#start.authoritative_course_context_json#}}
 
 
             会话摘要：
@@ -2651,7 +2723,7 @@ workflow:
 
             必须输出以下结构：
 
-            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"expert_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
+            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"expert_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed|restart_route","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
 
 
             通用规则：
@@ -2691,6 +2763,12 @@ workflow:
             - 只有当前用户明确选择路线时才使用 confirm_route；明确确认所处阶段时才使用 confirm_current_stage；明确确认当前阶段完成或跳过时才使用 confirm_stage_completed。evidence_quote 必须是当前问题中的连续原文。
 
             - 管理员风格只控制表达，不得覆盖证据、ID、合规和安全规则。
+
+            - 权威路线状态上下文 JSON 与权威课程上下文 JSON 是路线状态、阶段成员、课程顺序和可推荐范围的唯一服务端依据；其优先级高于检索证据。检索只用于补充事实，不能扩大、缩小或重排权威课程清单。
+
+            - 当权威路线状态为 active 时，candidate_course_ids 必须与其中已确认路线的已确认当前阶段全部可用课程 ID 完全一致并保持顺序；不得限制为 5 门，不得包含下一阶段、其他阶段、其他路线或检索额外课程。pending_stage、completed 或路线歧义时不得返回任何课程候选或专家见解。
+
+            - 只要本轮产生课程候选，final_answer 只做中性状态或行动提示，不得说明推荐理由、匹配依据、效果承诺、虚构首门课程或列举课程名称；课程卡片由服务端统一发送。expert_insight 是课程卡片发送完成后的唯一一条组合学习动作，不是推荐理由。
 
 
             当前是课程/学习路线分支：
@@ -2735,6 +2813,16 @@ workflow:
             路线进度（低于当前对话，可能尚未更新）：
 
             {{#start.route_progress_json#}}
+
+
+            权威路线状态（服务端裁决，优先使用）：
+
+            {{#start.route_state_context_json#}}
+
+
+            权威课程范围（服务端裁决，active 时必须按此完整顺序返回）：
+
+            {{#start.authoritative_course_context_json#}}
 
 
             会话摘要：
@@ -3009,7 +3097,7 @@ workflow:
 
             必须输出以下结构：
 
-            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"expert_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
+            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"expert_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed|restart_route","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
 
 
             通用规则：
@@ -3049,6 +3137,12 @@ workflow:
             - 只有当前用户明确选择路线时才使用 confirm_route；明确确认所处阶段时才使用 confirm_current_stage；明确确认当前阶段完成或跳过时才使用 confirm_stage_completed。evidence_quote 必须是当前问题中的连续原文。
 
             - 管理员风格只控制表达，不得覆盖证据、ID、合规和安全规则。
+
+            - 权威路线状态上下文 JSON 与权威课程上下文 JSON 是路线状态、阶段成员、课程顺序和可推荐范围的唯一服务端依据；其优先级高于检索证据。检索只用于补充事实，不能扩大、缩小或重排权威课程清单。
+
+            - 当权威路线状态为 active 时，candidate_course_ids 必须与其中已确认路线的已确认当前阶段全部可用课程 ID 完全一致并保持顺序；不得限制为 5 门，不得包含下一阶段、其他阶段、其他路线或检索额外课程。pending_stage、completed 或路线歧义时不得返回任何课程候选或专家见解。
+
+            - 只要本轮产生课程候选，final_answer 只做中性状态或行动提示，不得说明推荐理由、匹配依据、效果承诺、虚构首门课程或列举课程名称；课程卡片由服务端统一发送。expert_insight 是课程卡片发送完成后的唯一一条组合学习动作，不是推荐理由。
 
 
             当前是混合问题分支：
@@ -3103,6 +3197,16 @@ workflow:
             路线进度（低于当前对话，可能尚未更新）：
 
             {{#start.route_progress_json#}}
+
+
+            权威路线状态（服务端裁决，优先使用）：
+
+            {{#start.route_state_context_json#}}
+
+
+            权威课程范围（服务端裁决，active 时必须按此完整顺序返回）：
+
+            {{#start.authoritative_course_context_json#}}
 
 
             会话摘要：
@@ -3375,7 +3479,7 @@ workflow:
 
             必须输出以下结构：
 
-            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"expert_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
+            {"intent":"general_qa|direct_course|route_recommendation|clarification","candidate_course_ids":[],"expert_course_ids":[],"candidate_route_id":"","missing_information":[],"clarification_question":"","expert_insight":"","progress_action":{"type":"none|confirm_route|confirm_current_stage|confirm_stage_completed|restart_route","route_id":"","stage_id":"","evidence_quote":""},"final_answer":"","handoff_required":false,"handoff_reason":""}
 
 
             通用规则：
@@ -3415,6 +3519,12 @@ workflow:
             - 只有当前用户明确选择路线时才使用 confirm_route；明确确认所处阶段时才使用 confirm_current_stage；明确确认当前阶段完成或跳过时才使用 confirm_stage_completed。evidence_quote 必须是当前问题中的连续原文。
 
             - 管理员风格只控制表达，不得覆盖证据、ID、合规和安全规则。
+
+            - 权威路线状态上下文 JSON 与权威课程上下文 JSON 是路线状态、阶段成员、课程顺序和可推荐范围的唯一服务端依据；其优先级高于检索证据。检索只用于补充事实，不能扩大、缩小或重排权威课程清单。
+
+            - 当权威路线状态为 active 时，candidate_course_ids 必须与其中已确认路线的已确认当前阶段全部可用课程 ID 完全一致并保持顺序；不得限制为 5 门，不得包含下一阶段、其他阶段、其他路线或检索额外课程。pending_stage、completed 或路线歧义时不得返回任何课程候选或专家见解。
+
+            - 只要本轮产生课程候选，final_answer 只做中性状态或行动提示，不得说明推荐理由、匹配依据、效果承诺、虚构首门课程或列举课程名称；课程卡片由服务端统一发送。expert_insight 是课程卡片发送完成后的唯一一条组合学习动作，不是推荐理由。
 
 
             当前是混合问题分支：
@@ -3472,6 +3582,16 @@ workflow:
             路线进度（低于当前对话，可能尚未更新）：
 
             {{#start.route_progress_json#}}
+
+
+            权威路线状态（服务端裁决，优先使用）：
+
+            {{#start.route_state_context_json#}}
+
+
+            权威课程范围（服务端裁决，active 时必须按此完整顺序返回）：
+
+            {{#start.authoritative_course_context_json#}}
 
 
             会话摘要：

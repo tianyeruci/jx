@@ -22,7 +22,7 @@
 | --- | --- | --- |
 | 商业顾问打开页面的推荐问题 | Dify App 的 `suggested_questions` 参数，经 `entry.py` 的 `/parameters` 读取 | 当前固定为 3 条 AI 课程相关问题；入口接口按 Dify 当前已发布参数返回推荐问题，并缓存 300 秒。问题文案应在 Dify App 参数或 `dify/商业顾问（当前使用版本）.yml` 中修改，修改本地 DSL 后仍需保存、发布并重新核对 `/parameters`，不能只改本地文件后宣称线上已更新。 |
 | 商业顾问回答后的推荐问题 | Dify 的 `suggested_questions_after_answer.enabled` 开关和 Dify 消息上下文 | 当前 DSL 只打开了该开关；jx-now 没有把 Dify 的回答后推荐问题接口转发给小程序/测试页。因此要改变生成逻辑，应在 Dify App 的回答后推荐问题能力中修改并单独验收，不能只改 `suggested_questions`；如要让本项目展示，还需要新增受控 API/SSE 字段，这不在本次计划内。 |
-| 商业顾问下一步建议 | DSL 的 `combined_response_general/course/mixed` 与三条格式修复分支均输出 `expert_insight`、`expert_course_ids`，并由 `recommendation_decision_*` 解析透传；服务端 `ai_management/courses.py` 的 `validate_recommendation()` 与 `ai_management/conversations.py` | DSL 不再生成 `answer_plan` 或推荐理由。服务端只在已校验课程卡片存在时发送一条 `course_recommendation_note`；模型建议须通过 `expert_course_ids` 全量一致、链接和内部 ID 门禁，不合规时由服务端生成同长度约束的安全默认组合建议。无卡、待路线/阶段确认或解析失败不发送。事件名及 `{"content":"..."}` 结构不变；路线完整阶段、`course_names` 与 `course_collection_names` 由服务端补充；修改 DSL 后必须导入、保存、发布并执行真实 SSE 验收。小程序卡片标题改为“下一步建议”需在其独立源码中另行处理。 |
+| 商业顾问专家见解 | DSL 的 `combined_response_general/course/mixed` 与格式修复分支输出 `expert_insight`、`expert_course_ids`，并由 `recommendation_decision_*` 解析；服务端 `ai_management/courses.py` 的 `validate_recommendation()` 与 `ai_management/conversations.py` | DSL 不生成用户可见推荐理由。服务端只在已校验课程卡片存在且全部卡片完成后发送一条 `course_recommendation_note` 专家见解；模型见解须通过 `expert_course_ids` 全量一致、链接和内部 ID 门禁，不合规时由服务端生成同长度约束的安全默认见解。无卡、待路线/阶段确认或解析失败不发送。事件名及 `{"content":"..."}` 结构不变；路线完整阶段、`course_names` 与 `course_collection_names` 由服务端补充；修改 DSL 后必须导入、保存、发布并执行真实 SSE 验收。 |
 | 朋友圈顾问、日常写作界面引导语 | Dify App 的 `opening_statement` 参数，经 `entry.py` 的 `/parameters` 读取 | `dify/dsl/moments_advisor.yml` 和 `dify/dsl/writing_advisor.yml` 是 Workflow DSL，当前只定义 Start→LLM→End 图，没有可供 `entry-config` 读取的 `opening_statement`；用户看到的引导语应在对应 Dify App 的界面/参数设置中修改并发布。不要把引导语只写进 LLM Prompt，否则不会成为入口配置。 |
 | 朋友圈顾问、日常写作输出 | 两个 Workflow DSL 的 LLM Prompt | 朋友圈修改 `dify/dsl/moments_advisor.yml` 的 `llm` 节点；日常写作修改 `dify/dsl/writing_advisor.yml` 的 `llm` 节点。当前 Start→LLM→End 结构已经足够，不需要为界面引导语或商业顾问的分段回答增加节点；修改后需重新导入、保存、发布并分别验收。 |
 
@@ -58,7 +58,7 @@ Chatflow 的决策 JSON 可以继续使用 `course_id`、`route_id`、`stage_id`
 - 路线列表可展示正式课程名称供用户判断，但路线或阶段待确认时不得将其表述为已推荐课程；普通推荐的课程卡片仍由 `courses.py` 按已校验 ID 生成签名 `redirect_url`，结构化 `course_cards`、`learning_route`、停止和反馈字段保持兼容。
 - ID 无效或课程已下架时不生成课程卡片，用户文案使用不可用提示；不能根据 ID 猜测课程名称。
 - 处理范围覆盖流式回答、历史正文、标题、推荐说明、专家建议和引用资源中的可见字符串；引用资源的 `course_id`/`route_id`/`stage_id` 元数据字段保持结构但不作为用户文案展示。
-- 路线确认沿用现有机器字段和接口，不新增字段；路线初问和“我确认学习路线：路线名称”后的阶段确认状态均不发送 `course_cards`，用户明确确认阶段后才生成该路线当前阶段及下一阶段、最多 5 张课程卡片。明确课程、课程集或最新课程查询可走独立课程路径；多个可信路线均可能匹配时只澄清，不回退独立课程；确实没有官方路线证据时先说明未匹配，再转为独立课程路径。
+- 路线确认沿用现有机器字段和接口，不新增字段；路线初问和“我确认学习路线：路线名称”后的阶段确认状态均不发送 `course_cards`，用户明确确认阶段后才生成该路线已确认当前阶段的全部有效课程卡片，不得带入下一阶段。明确课程、课程集或最新课程查询可走独立课程路径且最多 5 门；多个可信路线均可能匹配时只澄清，不回退独立课程；确实没有官方路线证据时先说明未匹配，再转为独立课程路径。
 - 用户自身状态、意图、选择和学习进度按“当前轮明确表达 → 最近未摘要历史中的明确确认 → 会话摘要中的已确认内容 → 路线进度 JSON → 用户画像 JSON”取值。新路线选择不取消旧路线进度；拒绝、换一条或含糊答复不写持久拒绝状态。
 
 这部分保持现有接口字段，但改变了公开课程卡片的出现条件；修改后必须同步接口契约、Prompt、目录/DSL 契约测试，并在隔离 Dify 应用完成“路线初问 → 路线确认 → 阶段确认 → 课程卡片”的真实 SSE 验收。
@@ -200,7 +200,7 @@ Invoke-WebRequest `
 2. 使用同一逻辑会话再次调用，让服务在 `conversation_summary` 或 `recent_history_text` 中提供新的可辨识值B。
 3. 在 Dify 运行日志检查 Start 节点实际 inputs 是B，不是首轮A。
 4. 构造相互冲突的当前轮、最近未摘要历史、会话摘要、路线进度和用户画像值，逐级移除高优先级值，验证服务实际传入的 inputs 与输出决策严格遵循“当前轮明确表达 → 最近未摘要历史明确确认 → 会话摘要确认 → 路线进度 JSON → 用户画像”。
-5. 在隔离应用做至少三轮真实 SSE：路线初问的路线结构返回 `learning_route`（可展示阶段、课程名称）但不发送 `course_cards`；确认路线后仍不发送；明确确认阶段后才收到当前阶段及下一阶段、最多 5 门且按路线顺序的卡片。另测多路线候选只澄清、不回退独立课程，以及新路线选择不取消旧路线、拒绝/换一条/含糊答复不写持久拒绝状态。
+5. 在隔离应用做至少三轮真实 SSE：路线初问的路线结构返回 `learning_route`（可展示阶段、课程名称）但不发送 `course_cards`；确认路线后仍不发送；明确确认阶段后才收到当前阶段全部有效课程（构造超过 5 门），不得出现下一阶段卡片，随后只收到一条 `course_recommendation_note` 专家见解。另测多路线候选只澄清、不回退独立课程，以及新路线选择不取消旧路线、拒绝/换一条/含糊答复不写持久拒绝状态。
 6. 再跨自然日或临时修改测试日期，确认服务创建新的 Dify 会话段但本地仍可续聊。
 
 若普通 inputs 在目标部署确实没有更新，再实现会话变量查询/更新备用路径；不要为未复现问题增加双套逻辑。

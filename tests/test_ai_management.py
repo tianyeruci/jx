@@ -156,7 +156,10 @@ def test_business_chat_stream_and_history(service_db, monkeypatch):
             "recent_history_text",
             "profile_json",
             "route_progress_json",
+            "route_state_context_json",
+            "authoritative_course_context_json",
             "business_output_style",
+            "expert_insight_style",
         }
         yield {"event": "workflow_started", "task_id": "task-001"}
         yield {
@@ -563,7 +566,7 @@ def test_recommendation_filters_and_progress_requires_evidence(service_db):
             user_hash="hashed-user",
             query="我确认从入门阶段开始",
         )
-        assert [item["course_id"] for item in confirmed["course_cards"]] == ["course_1", "course_2"]
+        assert [item["course_id"] for item in confirmed["course_cards"]] == ["course_1"]
         assert progress.current_stage_id == "stage_1"
 
         advance = RecommendationDecision(
@@ -644,10 +647,7 @@ def test_contextual_short_confirmations_require_one_server_stage_hypothesis(serv
         assert stage_confirmed["progress_applied"] is True
         assert stage_confirmed["learning_route"]["state"] == "active"
         assert stage_confirmed["learning_route"]["current_stage_id"] == "stage_1"
-        assert [item["course_id"] for item in stage_confirmed["course_cards"]] == [
-            "course_1",
-            "course_2",
-        ]
+        assert [item["course_id"] for item in stage_confirmed["course_cards"]] == ["course_1"]
 
         ambiguous_conversation = BusinessConversation(
             user_hash="ambiguous-stage-user",
@@ -1405,7 +1405,7 @@ def test_admin_conversation_fields_use_user_id_and_latest_assistant(service_db):
     assert item["user_id"] == "admin-real-user"
     assert item["recommended_courses"] == [{"course_id": "new-course", "name": "新课程"}]
     assert item["professional_insight"] == "新见解"
-    assert item["recommendation_note"] == "新理由"
+    assert item["recommendation_note"] == ""
     assert item["token_usage"] == 42
     assert item["first_token_ms"] == 420
     assert item["total_ms"] == 4200
@@ -1415,6 +1415,8 @@ def test_admin_conversation_fields_use_user_id_and_latest_assistant(service_db):
     assert "user_hash" not in detail
     assert detail["user_id"] == "admin-real-user"
     assert detail["messages"][0]["professional_insight"] == "旧见解"
+    assert detail["messages"][0]["recommendation_note"] == ""
+    assert detail["messages"][0]["recommendation"]["recommendation_note"] == ""
     assert detail["messages"][1]["recommended_courses"] == [
         {"course_id": "new-course", "name": "新课程"}
     ]

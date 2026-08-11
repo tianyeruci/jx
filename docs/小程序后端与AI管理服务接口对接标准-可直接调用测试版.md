@@ -174,12 +174,12 @@ data: {"schema_version":"2.0","request_id":"req-001","sequence":5,"route_id":"ro
 
 - awaiting_route_confirmation 或 awaiting_stage_confirmation 时，不得发送 course_cards。
 - 只有启用且审核通过的课程和路线可以返回卡片。
-- 当前阶段优先，其次下一阶段，最多 5 门且保持路线顺序。
+- 激活路线仅返回已确认当前阶段的全部有效课程，保持阶段内顺序，不含下一阶段或其它阶段；明确课程、课程集或最新课程仍最多 5 门。
 - 明确课程、课程集或最新课程查询可推荐独立课程；路线型诉求有多个可信候选时只澄清，不回退独立课程；确实没有官方路线证据时先说明未匹配，再转为独立课程路径，也不得临时拼接路线。
 - 路线或阶段待确认时可展示审核路线的阶段和课程名称供用户判断，但不得把它们表述为已推荐课程。
 - 明确选择新路线不取消旧路线进度；拒绝、换一条或含糊答复不写持久拒绝状态。
 - 用户状态、意图、选择和学习进度按当前轮明确表达、最近未摘要历史明确确认、会话摘要确认、路线进度、用户画像的顺序取值。
-- `course_recommendation_note` 仅在课程卡通过服务端校验后发送一条“下一步建议”；多门课程合并为一条 1–2 句、最多 80 字的建议，不含匹配理由或专家建议前缀。当前不生成或渲染课程级 `expert_insight` 事件。
+- `course_recommendation_note` 仅在课程卡通过服务端校验、且全部卡片发送完成后发送一条“专家见解”；多门课程合并为一条 1–2 句、最多 80 字的学习动作，不含推荐/匹配理由或前缀。当前不生成或渲染课程级 `expert_insight` 事件。
 - 同一会话生成中再次请求返回 409 CONVERSATION_BUSY。
 
 ### 2.3 停止商业顾问生成（建议对接）
@@ -363,7 +363,7 @@ curl -s "$AI_SERVICE_BASE_URL/internal/v1/admin/conversations/conv_001" \
   -H "X-Internal-Token: $INTERNAL_TOKEN" -H "X-Admin-Token: $ADMIN_TOKEN"
 ~~~
 
-返回包含会话基本信息和 `messages[]`。顶层指标取最近一条助手消息；每条消息都包含 `recommended_courses`、`professional_insight`、`recommendation_note`、`token_usage`、`first_token_ms`、`total_ms`，并保留 `recommendation`、`retriever_resources`、`feedback`、`dify_message_id`、`dify_task_id`。推荐课程无值时为 `[]`，专业见解和推荐理由无值时为空字符串。
+返回包含会话基本信息和 `messages[]`。顶层指标取最近一条助手消息；每条消息都包含 `recommended_courses`、`professional_insight`、`recommendation_note`、`token_usage`、`first_token_ms`、`total_ms`，并保留 `recommendation`、`retriever_resources`、`feedback`、`dify_message_id`、`dify_task_id`。推荐课程无值时为 `[]`，专业见解无值时为空字符串，兼容 `recommendation_note` 恒为空字符串。
 
 最小返回示例：
 
@@ -802,7 +802,7 @@ POST /internal/v1/knowledge/cleaning-batches/{batch_id}/files/{file_id}/retry
 4. 验证停止生成、删除会话。
 5. 分别调用朋友圈和写作 SSE。
 6. 课程卡片使用原始 redirect_url 完成跳转。
-7. 未确认路线/阶段时不发送 `course_cards`；确认后仅当前阶段及下一阶段、最多 5 门且顺序正确。
+7. 未确认路线/阶段时不发送 `course_cards`；确认后仅当前阶段全部有效课程、无下一阶段卡片且顺序正确。
 8. 明确课程、课程集或最新课程查询可返回独立课程卡；多条路线候选只返回澄清，不得降级为独立课程卡。
 9. 用相互冲突的当前轮、未摘要历史、会话摘要、路线进度和用户画像验证五级优先级；新路线选择不取消旧路线，拒绝、换一条或含糊答复不写持久拒绝状态。
 

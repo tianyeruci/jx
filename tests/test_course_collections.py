@@ -263,3 +263,23 @@ def test_expert_insight_is_emitted_only_when_ids_match_cards(service_db):
         )
         assert no_cards["course_cards"] == []
         assert "expert_insight" not in no_cards
+
+
+def test_dify_direct_candidates_require_raw_retrieval_course_evidence(service_db):
+    with service_db() as session:
+        session.add_all(
+            [
+                Course(course_id="evidence-a", name="证据A", direction="AI", description="A", official_url="https://example.com/a"),
+                Course(course_id="evidence-b", name="证据B", direction="AI", description="B", official_url="https://example.com/b"),
+            ]
+        )
+        session.commit()
+        rebuild_snapshot(session)
+        result = validate_recommendation(
+            session,
+            RecommendationDecision(intent="direct_course", candidate_course_ids=["evidence-a", "evidence-b"]),
+            user_hash="u",
+            query="推荐课程",
+            retrieved_course_ids={"evidence-b"},
+        )
+        assert [item["course_id"] for item in result["course_cards"]] == ["evidence-b"]

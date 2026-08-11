@@ -201,13 +201,7 @@ def test_evidence_compaction_bounds_context_and_keeps_identifiers() -> None:
 
 def test_decision_parser_preserves_service_contract_and_rejects_empty_answer() -> None:
     parser = _nodes(_load(OPTIMIZED_DSL))["recommendation_decision_course"]
-    structured_answer = (
-        "【建议】\n"
-        "先确认课程与当前目标是否匹配。\n\n"
-        "【匹配依据】\n"
-        "- 当前目标是快速掌握基础工具。\n"
-        "- 课程证据覆盖入门场景。"
-    )
+    structured_answer = "已整理相关课程，请查看下方课程卡片。"
     valid = _execute_code_node(
         parser,
         raw_text=json.dumps(
@@ -235,7 +229,8 @@ def test_decision_parser_preserves_service_contract_and_rejects_empty_answer() -
     )
     assert valid["valid"] == "true"
     assert valid["final_text"] == structured_answer
-    assert "\n\n【匹配依据】\n-" in valid["final_text"]
+    assert "推荐理由" not in valid["final_text"]
+    assert "匹配依据" not in valid["final_text"]
     assert valid["candidate_course_ids_json"] == '["course_ai_001"]'
     assert valid["decision_json"]
 
@@ -289,8 +284,8 @@ def test_answer_and_format_retry_prompts_share_adaptive_layout_contract() -> Non
     )
     branch_rules = {
         "general": ("【结论】", "【关键判断】", "【建议行动】"),
-        "course": ("【建议】", "【匹配依据】", "【开始方式】"),
-        "mixed": ("【结论】", "【业务建议】", "【学习建议】"),
+        "course": ("中性状态或行动提示", "不得出现【推荐理由】、【匹配依据】"),
+        "mixed": ("【结论】", "【业务建议】", "不得写推荐理由、匹配依据"),
     }
 
     for branch, node_ids in branch_nodes.items():
@@ -304,6 +299,28 @@ def test_answer_and_format_retry_prompts_share_adaptive_layout_contract() -> Non
                 assert rule in system_prompt, f"{node_id} missing shared rule: {rule}"
             for label in branch_rules[branch]:
                 assert label in system_prompt, f"{node_id} missing label: {label}"
+
+
+def test_optimized_dsl_keeps_authoritative_current_stage_contract_without_extra_model_calls() -> None:
+    current = _load(CURRENT_DSL)
+    optimized = _load(OPTIMIZED_DSL)
+    current_nodes = _nodes(current)
+    optimized_nodes = _nodes(optimized)
+
+    assert optimized_nodes["start"]["variables"] == current_nodes["start"]["variables"]
+    assert sum(node["type"] == "llm" for node in optimized_nodes.values()) == 7
+    for node_id in (
+        "combined_response_course",
+        "course_format_retry",
+        "combined_response_mixed",
+        "mixed_format_retry",
+    ):
+        prompt = "\n".join(
+            str(item.get("text") or "") for item in optimized_nodes[node_id]["prompt_template"]
+        )
+        assert "authoritative_course_context_json" in prompt
+        assert "不得限制为 5 门，不得包含下一阶段、其他阶段、其他路线或检索额外课程" in prompt
+        assert "expert_insight 是课程卡片发送完成后的唯一一条组合学习动作" in prompt
 
 
 def test_layout_optimization_does_not_add_nodes_or_raise_answer_token_limits() -> None:

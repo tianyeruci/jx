@@ -45,6 +45,14 @@ def _recommendation_text(value: Any) -> str:
     return ""
 
 
+def _public_recommendation(value: Any) -> dict[str, Any]:
+    """Return the compatibility payload without legacy match reasons."""
+
+    recommendation = dict(_recommendation_payload(value))
+    recommendation["recommendation_note"] = ""
+    return recommendation
+
+
 def _message_audit_fields(message: BusinessMessage | None) -> dict[str, Any]:
     recommendation = _recommendation_payload(message.recommendation if message else None)
     courses = recommendation.get("course_cards")
@@ -53,7 +61,7 @@ def _message_audit_fields(message: BusinessMessage | None) -> dict[str, Any]:
     return {
         "recommended_courses": courses,
         "professional_insight": _recommendation_text(recommendation.get("expert_insight")),
-        "recommendation_note": _recommendation_text(recommendation.get("recommendation_note")),
+        "recommendation_note": "",
         "token_usage": int(message.token_usage or 0) if message else 0,
         "first_token_ms": message.first_token_ms if message else None,
         "total_ms": message.total_ms if message else None,
@@ -67,7 +75,7 @@ def _message_detail(message: BusinessMessage) -> dict[str, Any]:
         "content": message.content,
         "status": message.status,
         **_message_audit_fields(message),
-        "recommendation": message.recommendation,
+        "recommendation": _public_recommendation(message.recommendation),
         "retriever_resources": message.retriever_resources,
         "feedback": message.feedback,
         "dify_message_id": message.dify_message_id,

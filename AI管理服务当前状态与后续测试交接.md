@@ -1,10 +1,19 @@
 # AI 管理服务当前状态与后续测试交接
 
-> 更新时间：2026-08-10
+> 更新时间：2026-08-11
 > 用途：保存最新线上事实、回滚点、数据状态和开放事项。新任务先读 `AGENTS.md` 与 `docs/README.md`，再按功能域读取本文顶部最新状态。  
 > 本文不是需求或设计基线；权威顺序以 `docs/V2决策记录.md` 和 `docs/README.md` 为准。第 1～8 节为历史过程记录，不再作为当前执行指令。
 
-## 0.56 2026-08-10 商业顾问路线门禁发布与真实 SSE 验收（当前最新）
+## 0.57 2026-08-11 商业顾问精确阶段课程与专家见解发布（当前最新）
+
+- 产品行为：已落实 ADR-034/035。已激活学习路线仅返回其已确认“当前阶段”的全部启用且已审核课程，按阶段官方顺序去重；不再混入下一阶段或使用 5 门截断。直接课程、课程集合和最新课程推荐仍维持最多 5 门。跨会话续问按持久化路线状态处理：`pending_stage` 继续询问阶段，`active` 续接当前阶段，`completed` 提示明确重新开始；Dify 没有可解析决策时也先经过服务端唯一路线状态兜底。
+- Dify：当前 DSL 已导入并发布为隔离 Chatflow 应用 `4c157b1e-aa9d-49c2-99d2-a16ec9706886`，jx 已绑定该应用。Dify `/parameters` 回读的 9 个 Start 输入包含 `route_state_context_json` 与 `authoritative_course_context_json`；课程与混合课程检索均有 `status=active` Metadata 条件。旧应用 `cda3f459-c4eb-4a86-8d48-f0aa92d6695c` 保留作回滚，未删除。
+- jx 代码：最终 release `20260811-0912-route-resume-fix` 已切换，wheel SHA-256 为 `89bc4d244cc3330f5462f033ec73e8ad5e4bbf95f1552fa69b78af5bf26c31b5`；备份为 `/opt/ai-management/backups/20260811-0912-route-resume-fix`，报告为 `/opt/ai-management/var/reports/v2/20260811-0912-route-resume-fix-deploy`。前一版 `20260811-0846-route-exactstage` 仍可通过其备份回滚。
+- 接口兼容：既有 `course_cards.items[]`、`course_recommendation_note` 事件及其 `{content}` 形状保持不变；课程卡片完成后仅发送一次批次级专家见解。`recommendation_note` 只保留兼容字段，对新写入和历史对外读取一律为空，前台及管理端均不展示推荐理由。
+- 验证：本地相关回归、编译、文档索引和差异检查通过。jx `health/ready` 为 `ready`，数据库/Redis/Dify 均可达；真实合成用户 SSE 验证通过：精确当前阶段卡片、唯一且在卡片之后的专家见解、正文不含“推荐理由/匹配依据”，`message_end.status=completed`。2026-08-11 复核并精确删除了 3 条合成测试用户画像和 3 条关联审计事件；会话、消息、阶段进度、Redis、Dify 会话和外部删除任务均为 0，未影响正常数据。
+- 限制：完整 `pytest -q` 仍受工作区既有缺失 reset 脚本和受保护样本夹具阻塞；本次未伪造、补建或删除这些用户材料，相关定向回归已覆盖本次改动。
+
+## 0.56 2026-08-10 商业顾问路线门禁发布与真实 SSE 验收（历史）
 
 - Dify：当前 DSL 已导入并发布为隔离 Chatflow 应用 `cda3f459-c4eb-4a86-8d48-f0aa92d6695c`；Dify `/parameters` 返回 `200`，应用含 7 个 Start 输入变量。
 - jx 代码：release `20260810-route-gate-da35a0` 已切换。API、Worker、Scheduler、模型 Worker、发布 Worker 使用同一核心镜像；OCR 使用同 release OCR 镜像；测试 UI 保持未改动的旧 UI 镜像。发布前备份为 `/opt/ai-management/backups/20260810-route-gate-da35a0-predeploy`，报告为 `/opt/ai-management/var/reports/v2/20260810-route-gate-da35a0-deploy`。
@@ -1764,3 +1773,17 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改前：0.55 未记录本次路线门禁 release、隔离 Dify 应用、Key 指纹一致性、三轮 SSE 结果和快速发布共享包缺失问题。
 - 修改后：新增 0.56，记录备份/报告路径、同源镜像、ready 与 `/parameters`、路线初问→路线确认→阶段确认的课程卡门禁结果，以及 DEPLOY-025 长期排障条目。密钥明文、真实用户标识和原始回答均未写入。
 - 验证：本地相关 81 项测试全部通过；jx 三轮 SSE `passed=true`，首两轮 `course_cards=0`，第三轮 `5` 张卡且三轮 `message_end=completed`；运行容器与 `.env` Dify Key 指纹一致。
+
+### 文档修改记录（2026-08-11 商业顾问精确阶段课程、专家见解与发布）
+
+- 修改原因：用户要求修正已确认路线展示跨阶段/5 门截断、跨会话续问、无意义推荐理由和批次级专家见解，并授权发布 Dify、切换 jx 绑定及完成回归。
+- 修改前：激活路线会把当前阶段与下一阶段合并后再截断为 5 张；Dify 无可解析决策时，服务端已保存的路线续问可能不出卡；正文和历史路径仍可能保留推荐理由字段。
+- 修改后：新增 ADR-034/035 所定义的服务端权威阶段课程范围和状态兜底，Dify 使用权威上下文与 active Metadata 过滤；卡片后复用既有事件发送一条专家见解，旧推荐理由字段对外统一为空。当前 Dify 应用为 `4c157b1e-aa9d-49c2-99d2-a16ec9706886`，最终 jx release 为 `20260811-0912-route-resume-fix`。
+- 验证：发布前资源门禁、可恢复备份和 wheel SHA-256 核验通过；发布后 API ready、Dify 参数 9 项、真实 SSE 精确当前阶段卡片/卡后单条见解/中性正文均通过，合成测试会话和路线进度均为 0。密钥、真实用户标识、原始正文和受保护映射未写入本文。
+
+### 文档修改记录（2026-08-11 商业顾问发布合成测试数据复核与精确清理）
+
+- 修改原因：用户要求确认今早测试是否残留数据，并从全链路删除本次测试数据且不影响已有正常数据。
+- 修改前：已清理测试会话和路线进度，但未单独审计创建测试会话时自动落库的用户画像与操作审计事件。
+- 修改后：以测试脚本固定前缀 `release-route-check-` 为唯一归属依据，先做只读联合盘点，再删除 3 条测试用户画像和 3 条 `actor_hash` 相同的应用审计事件；未删除课程、路线、知识库文档、Dify 应用、正常会话或全局 Redis 键。
+- 验证：清理后本地测试前缀对应的 profiles/conversations/segments/messages/route progress/system events/external deletion tasks/Redis keys/Dify conversations 均为 `0`；API `/health/ready` 仍为 `ready`，database/Redis/Dify 均可达。

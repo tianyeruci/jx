@@ -47,7 +47,10 @@ ROUTE_GATE_REQUIRED_CLAUSES = (
     "多条路线均可能匹配且用户未在当前问题明确选定一条时",
     "若证据表明没有任何审核路线可匹配，可以明确说明未找到官方路线后转为独立课程路径",
     "当前用户本轮明确表达 > 最近未摘要历史中的明确确认 > 会话摘要中的已确认内容 > 路线进度 JSON > 用户画像 JSON",
-    "candidate_course_ids 只能逐字选择该已确认路线和已确认阶段的课程或阶段证据",
+    "权威路线状态上下文 JSON 与权威课程上下文 JSON",
+    "candidate_course_ids 必须与其中已确认路线的已确认当前阶段全部可用课程 ID 完全一致并保持顺序",
+    "不得限制为 5 门，不得包含下一阶段、其他阶段、其他路线或检索额外课程",
+    "final_answer 只做中性状态或行动提示，不得说明推荐理由、匹配依据",
 )
 
 
@@ -88,6 +91,26 @@ def test_current_source_exposes_three_ai_course_suggested_questions() -> None:
     ]
 
 
+def test_current_source_exposes_authoritative_route_inputs_and_active_filters() -> None:
+    nodes = _nodes(_load(SOURCE))
+    variables = {item["variable"] for item in nodes["start"]["variables"]}
+    assert {"route_state_context_json", "authoritative_course_context_json"} <= variables
+    for node_id in ("course_knowledge", "course_knowledge_mixed"):
+        assert nodes[node_id]["metadata_filtering_mode"] == "manual"
+        assert nodes[node_id]["metadata_filtering_conditions"] == {
+            "logical_operator": "and",
+            "conditions": [
+                {"name": "status", "comparison_operator": "is", "value": "active"}
+            ],
+        }
+
+    split_prompt = "\n".join(
+        str(template.get("text") or "") for template in nodes["question_split"]["prompt_template"]
+    )
+    assert "route_state_context_json" in split_prompt
+    assert "短续问、阶段确认、进度更新或重新开始请求一律分类为 course" in split_prompt
+
+
 def test_current_source_uses_next_step_contract_in_all_main_and_retry_paths() -> None:
     source = _load(SOURCE)
     nodes = _nodes(source)
@@ -123,6 +146,13 @@ def test_course_and_mixed_main_retry_prompts_keep_route_stage_course_gate() -> N
         prompt = system_prompts[0]
         for clause in ROUTE_GATE_REQUIRED_CLAUSES:
             assert clause in prompt, f"{node_id} 缺少路线推荐门禁：{clause}"
+        user_prompt = "\n".join(
+            str(template.get("text") or "")
+            for template in nodes[node_id]["prompt_template"]
+            if template.get("role") == "user"
+        )
+        assert "route_state_context_json" in user_prompt
+        assert "authoritative_course_context_json" in user_prompt
 
 
 def test_route_gate_golden_cases_cover_pending_and_direct_course_exception() -> None:

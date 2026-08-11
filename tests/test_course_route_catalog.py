@@ -237,7 +237,7 @@ def test_latest_catalog_query_uses_structured_fields_and_excludes_inactive(servi
 
 def test_route_cards_require_stage_confirmation_and_keep_route_order(service_db):
     with service_db() as session:
-        courses = [_course(f"c{index}") for index in range(1, 7)]
+        courses = [_course(f"c{index}") for index in range(1, 9)]
         session.add_all(courses)
         session.add(
             LearningRoute(
@@ -246,8 +246,8 @@ def test_route_cards_require_stage_confirmation_and_keep_route_order(service_db)
                 direction="AI商业",
                 target="测试",
                 stages=[
-                    {"stage_id": "s1", "name": "第一阶段", "order": 1, "course_ids": ["c1", "c2", "c3"]},
-                    {"stage_id": "s2", "name": "第二阶段", "order": 2, "course_ids": ["c4", "c5", "c6"]},
+                    {"stage_id": "s1", "name": "第一阶段", "order": 1, "course_ids": ["c1", "c2", "c3", "c4", "c5", "c6"]},
+                    {"stage_id": "s2", "name": "第二阶段", "order": 2, "course_ids": ["c7", "c8"]},
                 ],
             )
         )
@@ -271,7 +271,7 @@ def test_route_cards_require_stage_confirmation_and_keep_route_order(service_db)
         assert pending["learning_route"]["stages"][0]["course_names"] == [
             "c1",
             "c2",
-            "c3",
+            "c3", "c4", "c5", "c6",
         ]
         confirmed = RecommendationDecision(
             intent="route_recommendation",
@@ -284,7 +284,7 @@ def test_route_cards_require_stage_confirmation_and_keep_route_order(service_db)
             },
         )
         active = validate_recommendation(session, confirmed, user_hash="u", query="我确认目前在第一阶段")
-        assert [item["course_id"] for item in active["course_cards"]] == ["c1", "c2", "c3", "c4", "c5"]
+        assert [item["course_id"] for item in active["course_cards"]] == ["c1", "c2", "c3", "c4", "c5", "c6"]
         assert "expert_insight" not in active
         assert active["learning_route"]["current_stage_id"] == "s1"
         assert active["learning_route"]["next_stage_id"] == "s2"
@@ -579,7 +579,7 @@ def test_explicit_stage_confirmation_recovers_selected_route_when_dify_has_no_ro
             user_hash="u",
             query="我确认我目前在入门阶段",
         )
-        assert [item["course_id"] for item in recovered["course_cards"]] == ["c1", "c2"]
+        assert [item["course_id"] for item in recovered["course_cards"]] == ["c1"]
         assert recovered["learning_route"]["current_stage_id"] == "intro"
         assert recovered["learning_route"]["state"] == "active"
 
@@ -676,12 +676,64 @@ def test_active_route_with_general_qa_still_returns_public_route_names_and_cards
             query="我目前在：入门",
         )
 
-        assert [item["course_id"] for item in result["course_cards"]] == ["c1", "c2"]
+        assert [item["course_id"] for item in result["course_cards"]] == ["c1"]
         route = result["learning_route"]
         assert route["state"] == "active"
         assert route["current_stage_id"] == "intro"
         assert route["stages"][0]["course_names"] == ["c1"]
         assert route["stages"][1]["course_names"] == ["c2"]
+
+
+def test_route_revisit_is_user_level_and_completed_route_needs_explicit_restart(service_db):
+    with service_db() as session:
+        session.add_all([_course("c1"), _course("c2")])
+        session.add(
+            LearningRoute(
+                route_id="route_revisit",
+                name="续学路线",
+                direction="AI商业",
+                target="测试",
+                stages=[
+                    {"stage_id": "intro", "name": "入门", "order": 1, "course_ids": ["c1"]},
+                    {"stage_id": "advanced", "name": "进阶", "order": 2, "course_ids": ["c2"]},
+                ],
+            )
+        )
+        session.add(
+            LearningRouteProgress(
+                user_hash="revisit-user", route_id="route_revisit", current_stage_id="intro", status="active"
+            )
+        )
+        session.commit()
+        rebuild_snapshot(session)
+        resumed = validate_recommendation(
+            session, RecommendationDecision(intent="general_qa"), user_hash="revisit-user", query="我的学习路线学到哪里了"
+        )
+        assert resumed["learning_route"]["state"] == "active"
+        assert [item["course_id"] for item in resumed["course_cards"]] == ["c1"]
+        progress = session.scalar(select(LearningRouteProgress).where(LearningRouteProgress.user_hash == "revisit-user"))
+        assert progress is not None
+        advanced_stage = validate_recommendation(
+            session,
+            RecommendationDecision(intent="general_qa"),
+            user_hash="revisit-user",
+            query="我目前在进阶阶段",
+        )
+        assert advanced_stage["learning_route"]["current_stage_id"] == "advanced"
+        assert [item["course_id"] for item in advanced_stage["course_cards"]] == ["c2"]
+        progress.status = "completed"
+        progress.current_stage_id = "advanced"
+        session.flush()
+        completed = validate_recommendation(
+            session, RecommendationDecision(intent="general_qa"), user_hash="revisit-user", query="续学路线的学习进度"
+        )
+        assert completed["learning_route"]["state"] == "completed"
+        assert completed["course_cards"] == []
+        restarted = validate_recommendation(
+            session, RecommendationDecision(intent="general_qa"), user_hash="revisit-user", query="我要重新开始续学路线"
+        )
+        assert restarted["learning_route"]["state"] == "awaiting_stage_confirmation"
+        assert restarted["course_cards"] == []
 
 
 def test_explicit_route_confirmation_recovers_selected_route_when_dify_has_no_route(service_db):

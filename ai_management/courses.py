@@ -178,6 +178,30 @@ def _is_short_stage_reply(query: str, stage: dict[str, Any]) -> bool:
     return normalized in {item for item in aliases if item}
 
 
+def _is_route_related_query(query: str, snapshot: dict[str, Any]) -> bool:
+    """Keep persisted route state from hijacking unrelated business QA."""
+
+    normalized = _normalize_text(query)
+    if any(token in normalized for token in _ROUTE_HINTS + ("阶段", "进度", "完成", "重学", "重新开始")):
+        return True
+    return any(
+        (name := _normalize_text(str(route.get("name") or ""))) and name in normalized
+        for route in (snapshot.get("routes") or {}).values()
+        if isinstance(route, dict)
+    )
+
+
+def _explicit_route_restart(query: str, route: dict[str, Any]) -> bool:
+    normalized = _normalize_text(query)
+    if not normalized or "吗" in query or "？" in query or "?" in query:
+        return False
+    name = _normalize_text(str(route.get("name") or ""))
+    return bool(
+        name and name in normalized
+        and any(token in normalized for token in ("重新开始", "重学", "再学一遍", "重新学习"))
+    )
+
+
 def _stage_confirmation_hypothesis_text(stage_name: str) -> str:
     """Return the exact single-stage hypothesis appended to a route reply."""
 
@@ -384,7 +408,10 @@ def _progress_confirmation_decision(
     # "I am currently at ..." turn.
     if len(completion_matches) == 1:
         progress, route, stage = completion_matches[0]
-        if progress.status == "pending_stage":
+        if progress.status == "pending_stage" or (
+            progress.status == "active"
+            and str(progress.current_stage_id or "") == str(stage.get("stage_id") or "")
+        ):
             return RecommendationDecision(
                 intent="route_recommendation",
                 candidate_route_id=str(route["route_id"]),
@@ -398,7 +425,7 @@ def _progress_confirmation_decision(
 
     if len(matches) == 1:
         progress, route, stage = matches[0]
-        if progress.status == "pending_stage":
+        if progress.status in {"pending_stage", "active"}:
             return RecommendationDecision(
                 intent="route_recommendation",
                 candidate_route_id=str(route["route_id"]),
@@ -472,6 +499,66 @@ def _progress_confirmation_decision(
                 },
             )
     return None
+
+
+def _route_revisit_decision(
+    session: Session,
+    *,
+    user_hash: str,
+    query: str,
+    snapshot: dict[str, Any],
+) -> RecommendationDecision | None:
+    """Recover a selected route for a later route/progress question.
+
+    This is intentionally user-level (not conversation-level) but only runs
+    for route-related wording.  Exact route-name mentions win; otherwise a
+    single selected route is safe.  Multiple selected routes require the
+    normal clarification path instead of guessing.
+    """
+
+    if not _is_route_related_query(query, snapshot):
+        return None
+    progresses = [
+        item
+        for item in session.scalars(
+            select(LearningRouteProgress).where(
+                LearningRouteProgress.user_hash == user_hash,
+                LearningRouteProgress.status.in_(("pending_stage", "active", "completed")),
+            )
+        )
+        if (route := (snapshot.get("routes") or {}).get(item.route_id))
+        and route.get("enabled")
+        and route.get("review_status") == "approved"
+    ]
+    if not progresses:
+        return None
+    normalized = _normalize_text(query)
+    exact = [
+        item for item in progresses
+        if (name := _normalize_text(str((snapshot["routes"][item.route_id]).get("name") or "")))
+        and name in normalized
+    ]
+    if len(exact) == 1:
+        progress = exact[0]
+    elif len(progresses) == 1:
+        progress = progresses[0]
+    else:
+        return None
+    route = snapshot["routes"][progress.route_id]
+    # Internal no-op marker prevents the model-route inference gate from
+    # discarding a route that was selected from durable user progress.
+    action: dict[str, Any] = {"type": "resume_route", "route_id": progress.route_id}
+    if progress.status == "completed" and _explicit_route_restart(query, route):
+        action = {
+            "type": "restart_route",
+            "route_id": progress.route_id,
+            "evidence_quote": query,
+        }
+    return RecommendationDecision(
+        intent="route_recommendation",
+        candidate_route_id=progress.route_id,
+        progress_action=action,
+    )
 
 
 def _course_dict(course: Course) -> dict[str, Any]:
@@ -1088,6 +1175,7 @@ def validate_recommendation(
     user_hash: str,
     query: str,
     conversation_id: str | None = None,
+    retrieved_course_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     # A confirmed route is durable state in the authoritative database.  A
     # terse follow-up that explicitly names the learner's stage must not fail
@@ -1104,10 +1192,29 @@ def validate_recommendation(
         decision = progress_decision
 
     snapshot = get_snapshot(session)
+    if progress_decision is None and not str((decision.progress_action or {}).get("type") or ""):
+        revisit_decision = _route_revisit_decision(
+            session,
+            user_hash=user_hash,
+            query=query,
+            snapshot=snapshot,
+        )
+        if revisit_decision is not None:
+            decision = revisit_decision
     courses = snapshot["courses"]
     routes = snapshot["routes"]
     valid_course_records: dict[str, dict[str, Any]] = {}
     for course_id in dict.fromkeys(decision.candidate_course_ids):
+        # Candidate IDs made by the Dify direct-course branch are merely
+        # hypotheses.  When raw retriever metadata is available, require the
+        # course to have been retrieved.  Deterministic server fallbacks call
+        # this function without the evidence set and keep their own rules.
+        if (
+            retrieved_course_ids is not None
+            and decision.intent == "direct_course"
+            and course_id not in retrieved_course_ids
+        ):
+            continue
         course = courses.get(course_id)
         if not course or not course.get("enabled") or course.get("review_status") != "approved":
             continue
@@ -1175,11 +1282,18 @@ def validate_recommendation(
                     status="pending_stage",
                 )
                 session.add(progress)
-            else:
-                progress.current_stage_id = None
-                progress.status = "pending_stage"
+            # Reconfirming an existing route must never silently erase
+            # progress.  Explicit restart is the only reset operation.
+            elif progress.status == "completed":
+                pass
             progress.confirmed_at = datetime.now(timezone.utc)
             progress_applied = True
+        elif action_type == "restart_route" and progress and progress.status == "completed":
+            if _explicit_route_restart(query, route):
+                progress.current_stage_id = None
+                progress.status = "pending_stage"
+                progress.confirmed_at = datetime.now(timezone.utc)
+                progress_applied = True
         elif action_type == "confirm_current_stage" and progress:
             confirmed_stage_id = str(action.get("stage_id") or "")
             stage = next(
@@ -1284,11 +1398,13 @@ def validate_recommendation(
             )
             if current_index >= 0:
                 current_stage = stages[current_index]
+                # Course cards are actionable recommendations: only the
+                # learner's exact confirmed stage, in official stage order.
+                # next_stage_id remains route navigation metadata only.
                 allowed_course_ids.extend(current_stage.get("course_ids", []))
                 if current_index + 1 < len(stages):
                     next_stage = stages[current_index + 1]
                     next_stage_id = str(next_stage.get("stage_id") or "") or None
-                    allowed_course_ids.extend(next_stage.get("course_ids", []))
         # Do not issue any course card until both the route and the learner's
         # current stage have been explicitly confirmed.  The first stage is a
         # prompt for confirmation, not an implicit enrollment decision.
@@ -1325,7 +1441,13 @@ def validate_recommendation(
         )
 
     valid_courses: list[dict[str, Any]] = []
-    for course_id, course in list(valid_course_records.items())[:5]:
+    # Direct/latest/collection recommendations stay compact.  A confirmed
+    # active route is the explicit exception: return every eligible course in
+    # its current stage as one batch.
+    card_records = list(valid_course_records.items())
+    if not (route and str(route.get("state") or "") == "active"):
+        card_records = card_records[:5]
+    for course_id, course in card_records:
         card = {key: value for key, value in course.items() if key != "official_url"}
         token = create_redirect_token(course_id, user_hash)
         card["redirect_url"] = f"{get_settings().public_base_url.rstrip('/')}/r/{token}"

@@ -172,7 +172,7 @@ Content-Type: application/json
 | retriever_resources | 否 | 检索来源 |
 | learning_route | 否 | 学习路线 |
 | course_cards | 否 | 课程卡片 |
-| course_recommendation_note | 否 | 已校验课程的下一步建议 |
+| course_recommendation_note | 否 | 已校验课程卡片后的单条专家见解 |
 | message_end | 成功或正常停止时 | 请求结束 |
 | error | 失败时 | 流式错误；出现后不再返回 message_end |
 request_started 出参：
@@ -241,7 +241,7 @@ data: {"schema_version":"2.0","request_id":"req-001","sequence":5,"route_id":"ro
 course_cards 出参：
 | 字段 | 类型 | 一定返回 | 可空 | 说明 |
 | --- | --- | --- | --- | --- |
-| items | array<object> | 是 | 否 | 课程卡片，最多 5 个 |
+| items | array<object> | 是 | 否 | 课程卡片；独立课程路径最多 5 个，激活路线为当前阶段全部有效课程 |
 | items[].course_id | string | 是 | 否 | 课程 ID |
 | items[].name | string | 是 | 否 | 课程名称 |
 | items[].direction | string | 是 | 否 | 方向 |
@@ -300,7 +300,7 @@ data: {"schema_version":"2.0","request_id":"req-001","sequence":8,"code":"DIFY_U
 注意：
 - conversation_id 不能使用外部平台会话 ID。
 - state 为 awaiting_route_confirmation 或 awaiting_stage_confirmation 时，不应出现课程卡片；`learning_route` 可提供审核路线的阶段和课程名称供用户判断，但这些名称不是已推荐课程。
-- 只有 active 路线才返回当前阶段及下一阶段的课程卡片，最多 5 门且保持路线顺序。
+- 只有 active 路线才返回已确认当前阶段的全部有效课程卡片，按阶段内正式顺序；不返回下一阶段或其它阶段。独立课程路径最多 5 门。
 - 明确课程、课程集或最新课程查询可返回独立课程卡；路线型诉求存在多个可信候选时只能说明未匹配或澄清，不得回退独立课程；确实没有官方路线证据时可先说明未匹配，再转为独立课程路径。
 - 明确选择新路线不取消既有路线进度；拒绝、换一条或含糊答复不写持久拒绝状态。
 - 用户状态、意图、选择和学习进度按当前轮明确表达、最近未摘要历史明确确认、会话摘要确认、路线进度、用户画像的顺序取值。
@@ -591,7 +591,7 @@ Query 参数：
 | items[].first_token_ms | integer | 是 | 是 |
 | items[].total_ms | integer | 是 | 是 |
 | next_cursor | null | 是 | 是 |
-`recommended_courses`、`professional_insight`、`recommendation_note`、token 和耗时取最近一条助手消息；无课程返回 `[]`，无见解或推荐理由返回空字符串。管理接口不返回内部 `user_hash`。迁移前未保存原始用户 ID 的历史记录返回空 `user_id`，用户再次聊天后补齐。
+`recommended_courses`、`professional_insight`、token 和耗时取最近一条助手消息；无课程返回 `[]`，无见解返回空字符串，兼容 `recommendation_note` 恒为空字符串。管理接口不返回内部 `user_hash`。迁移前未保存原始用户 ID 的历史记录返回空 `user_id`，用户再次聊天后补齐。
 入参案例：
 ~~~http
 GET /internal/v1/admin/conversations?user_name=张三&limit=50

@@ -143,6 +143,33 @@ def test_consume_sse_renders_progress_and_final_answers_separately():
     assert final_placeholder.values == ["最终答案"]
 
 
+def test_course_recommendation_renders_every_server_validated_card_and_one_expert_insight(
+    monkeypatch,
+):
+    """The test UI must not reintroduce the old five-card display cap."""
+
+    writes: list[str] = []
+    infos: list[str] = []
+    monkeypatch.setattr(test_ui.st, "markdown", lambda value, **_: writes.append(str(value)))
+    monkeypatch.setattr(test_ui.st, "write", lambda value, **_: writes.append(str(value)))
+    monkeypatch.setattr(test_ui.st, "info", lambda value, **_: infos.append(str(value)))
+    monkeypatch.setattr(test_ui.st, "link_button", lambda *_args, **_kwargs: None, raising=False)
+
+    cards = [
+        {"name": f"当前阶段课程 {index}", "stage": "入门阶段"}
+        for index in range(1, 8)
+    ]
+    test_ui.render_course_recommendation(
+        {
+            "course_cards": {"items": cards},
+            "course_recommendation_note": {"content": "请按课程卡顺序学习，并结合本周目标完成一次练习。"},
+        }
+    )
+
+    assert any("7. **当前阶段课程 7**" in value for value in writes)
+    assert len(infos) == 1
+
+
 def test_cleaning_batch_view_state_is_strictly_scoped_to_knowledge_base_and_batch():
     state: dict[str, object] = {}
     first = test_ui.set_cleaning_batch_view_state(

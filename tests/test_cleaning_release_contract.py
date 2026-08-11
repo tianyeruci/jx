@@ -28,7 +28,7 @@ def test_miniapp_interface_document_is_frozen_for_internal_cleaning_changes():
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     # The contract text freezes event/payload semantics and the approved
     # private-port-8000 policy for knowledge-base management routes.
-    assert digest == "e403885875448fe6a92f5d2405cffba2c7812ef33045088a7f87661bc8f9b096"
+    assert digest == "39f7f190101ef8f4f7856563d8033af52c75a569ef139f59651d37982452d40a"
 
 
 def test_remote_cleaning_acceptance_uses_anonymous_names_and_covers_new_flow():

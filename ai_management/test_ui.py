@@ -254,7 +254,9 @@ def render_course_recommendation(result: Any, *, label: str = "课程推荐") ->
     cards = cards_payload.get("items") if isinstance(cards_payload, dict) else cards_payload
     if isinstance(cards, list) and cards:
         st.markdown(f"#### {label}")
-        for index, card in enumerate(cards[:5], start=1):
+        # 服务端已完成路线阶段、启用和审核门禁。激活路线可合法返回
+        # 超过五门的当前阶段全量课程，测试页不得再次截断。
+        for index, card in enumerate(cards, start=1):
             if not isinstance(card, dict):
                 continue
             name = str(card.get("name") or "未命名课程")
@@ -719,22 +721,7 @@ def course_tab(user_id: str) -> None:
                         "course_cards": {"items": recommendation.get("course_cards") or []},
                         "learning_route": recommendation.get("learning_route"),
                         "course_recommendation_note": {
-                            "content": "\n".join(
-                                value
-                                for value in (
-                                    (
-                                        f"匹配理由：{recommendation.get('recommendation_note')}"
-                                        if recommendation.get("recommendation_note")
-                                        else ""
-                                    ),
-                                    (
-                                        f"专家建议：{recommendation.get('expert_insight')}"
-                                        if recommendation.get("expert_insight")
-                                        else ""
-                                    ),
-                                )
-                                if value
-                            )
+                            "content": recommendation.get("expert_insight") or ""
                         },
                     }
                     render_course_recommendation(history_result, label="历史课程推荐")
@@ -1210,7 +1197,6 @@ def management_tab(default_user_id: str) -> None:
                         item.get("recommended_courses") or [], ensure_ascii=False
                     ),
                     "专业见解": item.get("professional_insight") or "",
-                    "推荐理由": item.get("recommendation_note") or "",
                     "Token 消耗": item.get("token_usage", 0),
                     "首 token(ms)": item.get("first_token_ms"),
                     "总耗时(ms)": item.get("total_ms"),
@@ -1250,8 +1236,6 @@ def management_tab(default_user_id: str) -> None:
                     st.write("推荐课程", detail["recommended_courses"])
                 if detail.get("professional_insight"):
                     st.write("专业见解", detail["professional_insight"])
-                if detail.get("recommendation_note"):
-                    st.write("推荐理由", detail["recommendation_note"])
                 for message in detail.get("messages") or []:
                     role = "用户" if message.get("role") == "user" else "助手"
                     created_at = message.get("created_at") or ""
@@ -1267,8 +1251,6 @@ def management_tab(default_user_id: str) -> None:
                             st.write("推荐课程", message["recommended_courses"])
                         if message.get("professional_insight"):
                             st.write("专业见解", message["professional_insight"])
-                        if message.get("recommendation_note"):
-                            st.write("推荐理由", message["recommendation_note"])
         elif isinstance(conversations_payload, dict) and conversations_payload:
             st.info("没有符合条件的会话。")
 

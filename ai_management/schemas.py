@@ -142,4 +142,7 @@ class RecommendationDecision(BaseModel):
     # HTTP/SSE event.
     final_answer: str = ""
     expert_insight: str = Field(default="", max_length=2000)
-    expert_course_ids: list[str] = Field(default_factory=list, max_length=5)
+    # A route stage can legitimately contain more than five courses.  The
+    # cardinality limit belongs to direct recommendations, not this internal
+    # integrity list which must exactly mirror the final card batch.
+    expert_course_ids: list[str] = Field(default_factory=list)
