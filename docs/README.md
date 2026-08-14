@@ -54,7 +54,7 @@
 | 功能域 | 需求/规范 | 主要源码 | 主要测试 | 修改后至少核对 |
 |---|---|---|---|---|
 | 应用入口、健康、鉴权 | [V2 需求](V2需求规格说明.md)、[API 与 SSE](API与SSE说明.md) | `ai_management/main.py`、`api/routers/health.py`、`security.py` | `test_ai_management.py`、`test_app_routing.py` | API/SSE、接口标准、测试指南 |
-| 商业会话、SSE、隐私 | [接口交互版本](小程序后端与%20AI%20管理服务接口对接交互版本.md)、[正式接口标准](小程序后端与AI管理服务接口对接标准.md) | `conversations.py`、`sse.py`、`privacy.py`、`stream_filter.py` | `test_ai_management.py`、`test_release_acceptance_contract.py` | 两份接口文档、Prompt、验收测试 |
+| 商业会话、SSE、隐私 | [课程/路线移除改造记录](商业顾问移除课程与学习路线改造记录.md)、[接口交互版本](小程序后端与%20AI%20管理服务接口对接交互版本.md)、[正式接口标准](小程序后端与AI管理服务接口对接标准.md) | `conversations.py`、`sse.py`、`context.py`、`privacy.py`、`stream_filter.py` | `test_ai_management.py`、DSL 契约测试 | 两份接口文档、ADR、Dify 验收测试 |
 | 朋友圈、写作、画像 | [V2 产品流程](V2产品流程与边界.md)、[Dify 绑定指南](Dify创建导入绑定与契约测试.md) | `dify.py`、`context.py`、`workers/tasks/summary.py` | `test_ai_management.py`、Dify 契约脚本 | DSL、Prompt、Dify 指南、契约证据 |
 | 课程、路线、点击 | [V2 需求](V2需求规格说明.md)、[日志与点击](日志与点击说明.md)、[课程与学习路线合并清洗策略规格计划](课程与学习路线合并清洗策略规格计划.md) | `courses.py`、`course_import.py`、`course_route_catalog.py`、`cleaning.py`、`api/routers/knowledge_admin.py`、`cli.py` | `test_course_route_catalog.py`、`test_model_cleaning_workflow.py`、`test_seed_data_contract.py` | 课程/路线规范、清洗策略、接口、测试样本、当前状态 |
 | 文档清洗、复核、重试、OCR | [清洗策略接入说明](清洗策略接入说明.md)、[清洗策略编写规范](../清洗策略接入与编写规范.md) | `cleaning.py`、`workers/tasks/cleaning.py`、`knowledge_cleaner/`、`docker-compose.ai.yml` | `test_batch_cleaner.py`、`test_pdf_ocr_quality.py`、`test_cleaning_release_contract.py` | 清洗规范、接口、验收/排坑、OCR 部署 |
@@ -72,6 +72,7 @@
 - [V2 产品流程与边界](V2产品流程与边界.md)：用户与管理员流程。
 - [V2 服务开发与数据设计](V2服务开发与数据设计.md)：模块和数据职责。
 - [课程推荐与学习路线推荐全链路分析](课程推荐与学习路线推荐全链路分析.md)：直接课程与路线阶段课程的权威链路、边界和验收重点。
+- [商业顾问移除课程与学习路线改造记录](商业顾问移除课程与学习路线改造记录.md)：ADR-036 的新聊天链路、接口影响、性能边界、验收与回滚。
 - [小程序后端与 AI 管理服务接口对接交互版本](小程序后端与%20AI%20管理服务接口对接交互版本.md)：目标交互语义和变更表。
 - [小程序后端与AI管理服务接口对接标准](小程序后端与AI管理服务接口对接标准.md)：正式接口标准。
 - [纯接口契约版](小程序后端与AI管理服务接口对接标准-纯接口契约版.md)：供实现/评审使用的派生契约。

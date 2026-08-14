@@ -3,8 +3,8 @@ from __future__ import annotations
 from ai_management.api.routers import knowledge_admin
 
 
-def test_admin_cleaning_strategy_choices_expose_current_set_and_hide_legacy(monkeypatch):
-    """The admin/test page uses the merged catalogue strategy only."""
+def test_admin_cleaning_strategy_choices_hide_all_course_route_strategies(monkeypatch):
+    """Discovery only exposes general cleaning; explicit legacy APIs remain separate."""
 
     monkeypatch.setattr(knowledge_admin, "_dataset_id", lambda _kb_code: "dataset")
 
@@ -24,8 +24,7 @@ def test_admin_cleaning_strategy_choices_expose_current_set_and_hide_legacy(monk
         "zsxq_post",
         "xiaobot_post",
         "lead_magnet",
-        "course_route_catalog",
     }
     assert required <= visible
-    assert "course_route_catalog" in course
-    assert {"course_information", "learning_route"}.isdisjoint(visible)
+    assert course == set()
+    assert {"course_information", "learning_route", "course_route_catalog"}.isdisjoint(visible)

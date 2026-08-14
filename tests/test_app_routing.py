@@ -91,7 +91,7 @@ def test_admin_routes_require_both_tokens(service_db) -> None:
     assert accepted.json() == {"courses": [], "routes": []}
 
 
-def test_cleaning_strategy_listing_uses_merged_course_route_entry(service_db) -> None:
+def test_cleaning_strategy_listing_hides_course_route_entries(service_db) -> None:
     headers = {
         "X-Internal-Token": "test-internal-token",
         "X-Admin-Token": "test-admin-token",
@@ -116,8 +116,8 @@ def test_cleaning_strategy_listing_uses_merged_course_route_entry(service_db) ->
         "xiaobot_post",
         "lead_magnet",
     } <= general_codes
-    assert "course_route_catalog" in course_codes
-    assert not {"course_information", "learning_route"} & (general_codes | course_codes)
+    assert course_codes == set()
+    assert not {"course_information", "learning_route", "course_route_catalog"} & (general_codes | course_codes)
 
 
 def test_catalog_document_disable_updates_authority_and_delete_is_blocked(service_db, monkeypatch) -> None:

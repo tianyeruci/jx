@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import time
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from collections.abc import Iterator
@@ -15,16 +14,13 @@ from .cache import cache
 from .config import get_settings
 from .context import build_context, should_summarize
 from .courses import (
-    _stage_confirmation_hypothesis_text,
     create_redirect_token,
     get_snapshot,
-    infer_recommendation_decision,
     public_catalog_names,
     public_name_fallbacks,
-    validate_recommendation,
 )
 from .db import SessionLocal
-from .dify import DifyAppClient, extract_json_object
+from .dify import DifyAppClient
 from .errors import ServiceError
 from .models import (
     BusinessConversation,
@@ -34,14 +30,14 @@ from .models import (
     ExternalDeletionTask,
 )
 from .privacy import load_public_redaction_rules
-from .schemas import RecommendationDecision
 from .security import dify_user
-from .services.observability import record_event
 from .services.style_settings import get_style_prompt
 from .sse import SSEEmitter
 from .stream_filter import (
     StreamingExactPrefixDeduper,
     StreamingPublicRedactor,
+    redact_internal_ids,
+    redact_internal_ids_in_value,
     publicize_internal_references,
     publicize_internal_references_in_value,
 )
@@ -51,150 +47,13 @@ logger = logging.getLogger(__name__)
 
 PUBLIC_REFERENCE_PRIVACY_INSTRUCTION = (
     "公开引用不得展示资料中的真实姓名、昵称、笔名、个人账号称呼或原文件名；"
-    "只能使用清洗后的“作者”“案例人物A”“匿名参与者”等稳定匿名称谓。"
-    "课程、路线、阶段只能使用已审核目录中的正式名称；最终回答、推荐说明和专家建议不得输出课程ID、路线ID、阶段ID、"
-    "course_、route_、stage_或内部标识占位词，也不得臆造目录中不存在的课程名称。"
+    "只能使用清洗后的“作者”“案例人物A”“匿名参与者”等稳定匿名称谓；"
+    "不得输出资料内部 ID、文件名、链接或内部标识占位词。"
 )
 
 PROGRESS_ANSWER_NODE_ID = "progress_answer"
 QUICK_ANSWER_NODE_ID = "quick_answer"
 ANSWER_NODE_PREFIX = "answer_"
-
-
-def _default_next_step_advice(
-    course_cards: list[dict[str, Any]],
-    *,
-    profile: dict[str, Any] | None = None,
-    query: str = "",
-) -> str:
-    """Return a short, deterministic composite note for validated cards.
-
-    The note is deliberately independent of model output.  This keeps the
-    user-facing expert card available when the model omitted the internal
-    expert fields or failed their privacy/ID consistency checks.
-    """
-
-    direction = str(course_cards[0].get("direction") or "当前目标").strip()
-    profile = profile if isinstance(profile, dict) else {}
-    profile_focus = next(
-        (
-            str(value).strip()
-            for value in profile.values()
-            if isinstance(value, str) and value.strip()
-        ),
-        "",
-    )
-    focus = profile_focus[:18] or direction[:18] or "当前目标"
-    if len(course_cards) > 1:
-        return f"围绕{focus}，按课程卡顺序完成并在每门课后做一次练习；完成后告诉我进度。"
-    return f"围绕{focus}，先完成本课并做一次练习；完成后告诉我进度。"
-
-
-def _validated_next_step_advice(
-    recommendation: dict[str, Any],
-    *,
-    snapshot: dict[str, Any],
-    catalog_names: dict[str, str],
-    fallbacks: dict[str, str] | None = None,
-    profile: dict[str, Any] | None = None,
-    query: str = "",
-) -> str:
-    """Normalize one combined expert note, falling back safely when needed."""
-
-    cards = recommendation.get("course_cards")
-    if not isinstance(cards, list) or not cards:
-        return ""
-    card_list = [card for card in cards if isinstance(card, dict)]
-    if not card_list:
-        return ""
-    raw = str(recommendation.get("expert_insight") or "").strip()
-    note = publicize_internal_references(
-        raw,
-        catalog_names,
-        fallbacks or {},
-    ).strip()
-    note = re.sub(r"^(?:专家建议|下一步建议|匹配理由)\s*[:：]?\s*", "", note).strip()
-    forbidden = {
-        str(card.get("course_id") or "").strip()
-        for card in card_list
-        if str(card.get("course_id") or "").strip()
-    }
-    forbidden.update(str(value).strip() for value in (snapshot.get("courses") or {}))
-    forbidden.update(str(value).strip() for value in (snapshot.get("routes") or {}))
-    forbidden.update(str(value).strip() for value in (snapshot.get("stages") or {}))
-    if (
-        not note
-        or len(note) > 80
-        or re.search(r"https?://|www\.", note, flags=re.IGNORECASE)
-        or any(value and value in note for value in forbidden)
-    ):
-        note = _default_next_step_advice(card_list, profile=profile, query=query)
-    return note[:80].rstrip()
-
-
-def _route_followup_guidance(route: dict[str, Any] | None) -> str:
-    """Build the next user action from the server-authoritative route state."""
-
-    if not isinstance(route, dict) or not route:
-        return ""
-    route_name = str(route.get("name") or "这条学习路线").strip()
-    state = str(route.get("state") or route.get("progress_status") or "").strip()
-    stages = [
-        stage
-        for stage in route.get("stages") or []
-        if isinstance(stage, dict)
-    ]
-    stages.sort(key=lambda item: (item.get("order", 0), str(item.get("stage_id") or "")))
-    current_stage_id = str(route.get("current_stage_id") or "")
-    current_stage = next(
-        (stage for stage in stages if str(stage.get("stage_id") or "") == current_stage_id),
-        None,
-    )
-    if state == "awaiting_route_confirmation":
-        return f"如果这条学习路线符合你的目标，请回复：我确认学习路线：{route_name}"
-    if state == "awaiting_stage_confirmation":
-        first_stage = stages[0] if stages else {}
-        stage_name = str(first_stage.get("name") or "当前阶段").strip()
-        return (
-            f"{_stage_confirmation_hypothesis_text(stage_name)}"
-            f"如果不符合，请直接告诉我你目前所在阶段，例如：我目前在：{stage_name}"
-        )
-    if state == "active":
-        stage_name = str((current_stage or {}).get("name") or "当前阶段").strip()
-        return f"请先完成{stage_name}的课程；完成后回复：我已完成：{stage_name}"
-    if state == "completed":
-        return f"你已完成{route_name}；告诉我新的学习目标，我会继续规划下一步。"
-    return ""
-
-
-def _recommendation_presentation(recommendation: dict[str, Any]) -> str:
-    """Server-owned copy for recommendation responses.
-
-    The workflow remains free to answer ordinary factual questions.  Once it
-    creates cards or route state, however, user-visible wording must not race
-    ahead of validation with invented course names, effects, or match reasons.
-    """
-
-    route = recommendation.get("learning_route")
-    cards = recommendation.get("course_cards")
-    if isinstance(route, dict):
-        name = str(route.get("name") or "这条学习路线").strip()
-        state = str(route.get("state") or "").strip()
-        stages = [item for item in route.get("stages") or [] if isinstance(item, dict)]
-        current_id = str(route.get("current_stage_id") or "")
-        stage = next((item for item in stages if str(item.get("stage_id") or "") == current_id), {})
-        stage_name = str(stage.get("name") or "当前阶段").strip()
-        if state == "awaiting_route_confirmation":
-            return f"已整理学习路线「{name}」，请确认是否选择这条路线。"
-        if state == "awaiting_stage_confirmation":
-            return f"你已选定「{name}」，请告诉我目前学习到哪个阶段。"
-        if state == "completed":
-            return f"你已完成「{name}」。如需重学，请明确说明“重新开始{name}”，或告诉我新的学习目标。"
-        if state == "active":
-            return f"你已选定「{name}」，当前记录为「{stage_name}」，以下是该阶段全部课程。完成后告诉我进度。"
-    if isinstance(cards, list) and cards:
-        return "已根据你的问题整理了相关课程，请查看下方课程卡片。"
-    return ""
 
 
 def _dify_node_id(item: dict[str, Any]) -> str:
@@ -215,64 +74,6 @@ def _answer_phase_for_node(node_id: str) -> str | None:
 def _business_client() -> DifyAppClient:
     settings = get_settings()
     return DifyAppClient(settings.dify_url, settings.dify_business_app_api_key)
-
-
-def _raw_retrieved_course_ids(resources: Any) -> set[str]:
-    """Read retrieval proof before public redaction removes internal IDs."""
-
-    found: set[str] = set()
-    for item in resources if isinstance(resources, list) else []:
-        if not isinstance(item, dict):
-            continue
-        metadata = item.get("metadata")
-        candidates = (item, metadata) if isinstance(metadata, dict) else (item,)
-        for source in candidates:
-            value = source.get("course_id")
-            if isinstance(value, str) and value.strip():
-                found.add(value.strip())
-            values = source.get("course_ids")
-            if isinstance(values, list):
-                found.update(str(value).strip() for value in values if str(value).strip())
-    return found
-
-
-def _decision_from_outputs(outputs: Any) -> RecommendationDecision | None:
-    if not isinstance(outputs, dict):
-        return None
-    candidates: list[Any] = [
-        outputs.get("recommendation_decision"),
-        outputs.get("decision_json"),
-        outputs.get("decision"),
-        # LLM nodes in Dify 1.13.x expose their structured JSON as ``text``.
-        # Keep this before the whole-output fallback, which would otherwise
-        # validate ``{"text": ...}`` as an empty decision.
-        outputs.get("text"),
-    ]
-    # Some DSLs expose decision fields directly as node outputs. Only accept
-    # the whole mapping when it actually contains decision fields; arbitrary
-    # node outputs such as ``{"answer": ...}`` or ``{"text": prose}``
-    # must not become a valid all-default decision and overwrite the real one.
-    if any(
-        key in outputs
-        for key in (
-            "intent",
-            "candidate_course_ids",
-            "candidate_route_id",
-            "expert_insight",
-            "expert_course_ids",
-            "final_answer",
-        )
-    ):
-        candidates.append(outputs)
-    for candidate in candidates:
-        value = extract_json_object(candidate)
-        if not value:
-            continue
-        try:
-            return RecommendationDecision.model_validate(value)
-        except Exception:
-            continue
-    return None
 
 
 def _store_segment(
@@ -311,10 +112,8 @@ def _store_segment(
 def _persist_business_result(
     *,
     prepared: dict[str, Any],
-    decision: RecommendationDecision | None,
     final_status: str,
     user_hash: str,
-    query: str,
     answer_parts: list[str],
     dify_task_id: str,
     dify_message_id: str,
@@ -322,13 +121,13 @@ def _persist_business_result(
     total_ms: int,
     usage_metadata: dict[str, Any],
     resources: list[dict[str, Any]],
-    retrieved_course_ids: set[str] | None,
     actual_dify_conversation_id: str,
     anonymous_user: str,
-) -> tuple[dict[str, Any], bool, str]:
-    recommendation: dict[str, Any] = {}
+) -> tuple[dict[str, Any], bool]:
+    # Keep the historic JSON shape readable, but new chats no longer create
+    # or update recommendation/route state.
+    recommendation: dict[str, Any] = {"recommendation_note": ""}
     enqueue_summary = False
-    route_guidance = ""
     with SessionLocal() as work_session:
         conversation_db = work_session.get(
             BusinessConversation,
@@ -341,95 +140,7 @@ def _persist_business_result(
         )
         if not conversation_db or not user_db or not assistant_db:
             raise RuntimeError("本地会话或消息在生成期间已不存在")
-        if decision and final_status != "failed":
-            recommendation = validate_recommendation(
-                work_session,
-                decision,
-                user_hash=user_hash,
-                query=query,
-                conversation_id=conversation_db.id,
-                retrieved_course_ids=retrieved_course_ids,
-            )
-        if (
-            final_status != "failed"
-            and not recommendation.get("course_cards")
-            and not recommendation.get("learning_route")
-        ):
-            # The workflow may legitimately return no parseable decision for
-            # a terse later-turn route question.  Give the server-owned,
-            # user-level progress resolver one neutral pass before trying
-            # catalog inference: it can only act for route-related wording
-            # and a unique persisted route, so it cannot hijack ordinary QA.
-            state_recommendation = validate_recommendation(
-                work_session,
-                RecommendationDecision(intent="general_qa"),
-                user_hash=user_hash,
-                query=query,
-                conversation_id=conversation_db.id,
-            )
-            if state_recommendation.get("course_cards") or state_recommendation.get("learning_route"):
-                recommendation = state_recommendation
-        if (
-            final_status != "failed"
-            and not recommendation.get("course_cards")
-            and not recommendation.get("learning_route")
-        ):
-            fallback_decision = infer_recommendation_decision(
-                work_session,
-                query=query,
-                decision=decision,
-            )
-            if fallback_decision is not None:
-                fallback_recommendation = validate_recommendation(
-                    work_session,
-                    fallback_decision,
-                    user_hash=user_hash,
-                    query=query,
-                    conversation_id=conversation_db.id,
-                )
-                if fallback_recommendation.get("course_cards") or fallback_recommendation.get("learning_route"):
-                    recommendation = fallback_recommendation
-        snapshot = get_snapshot(work_session)
-        names = public_catalog_names(snapshot)
-        fallbacks = public_name_fallbacks(
-            snapshot,
-            decision=decision,
-            recommendation=recommendation,
-        )
-        # The note is a single, server-gated composite card.  A missing or
-        # invalid model note must not make a valid course recommendation look
-        # incomplete to the user.
-        if final_status != "failed" and recommendation.get("course_cards"):
-            profile = work_session.get(BusinessProfile, user_hash)
-            recommendation["expert_insight"] = _validated_next_step_advice(
-                recommendation,
-                snapshot=snapshot,
-                catalog_names=names,
-                fallbacks=fallbacks,
-                profile=profile.confirmed if profile else {},
-                query=query,
-            )
-        route_guidance = _route_followup_guidance(
-            recommendation.get("learning_route")
-            if final_status != "failed"
-            else None
-        )
-        assistant_content = publicize_internal_references(
-            "".join(answer_parts),
-            names,
-            fallbacks,
-        )
-        presentation = _recommendation_presentation(recommendation)
-        if presentation:
-            assistant_content = presentation
-            route_guidance = ""
-        elif route_guidance and route_guidance not in assistant_content:
-            assistant_content = (
-                assistant_content.rstrip() + "\n\n" + route_guidance
-                if assistant_content.strip()
-                else route_guidance
-            )
-        assistant_db.content = assistant_content
+        assistant_db.content = redact_internal_ids("".join(answer_parts))
         assistant_db.status = final_status
         assistant_db.dify_task_id = dify_task_id or None
         assistant_db.dify_message_id = dify_message_id or None
@@ -437,16 +148,6 @@ def _persist_business_result(
         assistant_db.total_ms = total_ms
         assistant_db.token_usage = int(usage_metadata.get("total_tokens") or 0)
         assistant_db.retriever_resources = resources
-        for field in ("recommendation_note", "expert_insight"):
-            if field in recommendation:
-                recommendation[field] = publicize_internal_references(
-                    str(recommendation[field] or ""),
-                    names,
-                    fallbacks,
-                )
-        # Kept as an empty compatibility field only.  New responses never
-        # persist user-visible recommendation/match reasons.
-        recommendation["recommendation_note"] = ""
         assistant_db.recommendation = recommendation
         conversation_db.last_active_at = datetime.now(timezone.utc)
         if actual_dify_conversation_id:
@@ -465,11 +166,9 @@ def _persist_business_result(
                     conversation_db,
                     user_hash,
                 )
-            )
+        )
         work_session.commit()
-        if recommendation.get("progress_applied"):
-            cache.delete(f"ai:route-progress:{user_hash}")
-    return recommendation, enqueue_summary, route_guidance
+    return recommendation, enqueue_summary
 
 
 def prepare_business_chat(
@@ -495,8 +194,6 @@ def prepare_business_chat(
         )
     redaction_rules = load_public_redaction_rules(session)
     query = redaction_rules.sanitize_text(query)
-    snapshot = get_snapshot(session)
-    catalog_names = public_catalog_names(snapshot)
 
     if conversation_id:
         conversation = session.scalar(
@@ -552,7 +249,6 @@ def prepare_business_chat(
     session.flush()
     context = build_context(session, conversation, user_hash, exclude_message_id=user_message.id)
     configured_style = get_style_prompt(session, "business_answer").strip()
-    expert_insight_style = get_style_prompt(session, "business_expert_insight").strip()
     context.inputs.update(
         {
             "business_output_style": "\n\n".join(
@@ -563,7 +259,6 @@ def prepare_business_chat(
                 )
                 if value
             ),
-            "expert_insight_style": expert_insight_style,
         }
     )
     conversation.last_active_at = datetime.now(timezone.utc)
@@ -595,20 +290,13 @@ def prepare_business_chat(
         dify_message_id = ""
         actual_dify_conversation_id = prepared["dify_conversation_id"]
         resources: list[dict[str, Any]] = []
-        retrieved_course_ids: set[str] = set()
         usage_metadata: dict[str, Any] = {}
-        decision: RecommendationDecision | None = None
-        query_split_fallback = False
         final_status = "completed"
         error_to_emit: ServiceError | None = None
         enqueue_summary = False
-        route_guidance = ""
         final_answer_to_emit = ""
         task_announced = False
-        final_redactor = StreamingPublicRedactor(
-            redaction_rules.replacements,
-            catalog_names=catalog_names,
-        )
+        final_redactor = StreamingPublicRedactor(redaction_rules.replacements)
         final_prefix_deduper: StreamingExactPrefixDeduper | None = None
         answer_phase = "unknown"
         progress_finished = False
@@ -721,11 +409,13 @@ def prepare_business_chat(
                             # short text is not held by the streaming redactor
                             # tail and can reach the client immediately.
                             delta = publicize_internal_references(
-                                redaction_rules.sanitize_text(
-                                    raw_delta,
-                                    remove_urls=True,
+                                redact_internal_ids(
+                                    redaction_rules.sanitize_text(
+                                        raw_delta,
+                                        remove_urls=True,
+                                    )
                                 ),
-                                catalog_names,
+                                {},
                             )
                         else:
                             delta = final_redactor.feed(raw_delta)
@@ -740,10 +430,9 @@ def prepare_business_chat(
                                 yield emit("answer_delta", {"delta": delta})
                 # Dify 1.13.x emits ``node_finished`` for Chatflow node
                 # completion (older clients used ``workflow_node_finished``).
-                # Both forms carry the node outputs used for recommendation
-                # validation; accept either so course cards/routes are not
-                # silently lost when the deployed Dify version uses the
-                # canonical event name.
+                # Both forms are accepted because deployed Dify versions use
+                # different completion event names for the retained progress
+                # Answer node.
                 elif event_name in {"workflow_node_finished", "node_finished"}:
                     if node_id == PROGRESS_ANSWER_NODE_ID:
                         progress_finished = True
@@ -763,8 +452,10 @@ def prepare_business_chat(
                             if first_token_ms is None:
                                 first_token_ms = int((time.monotonic() - started) * 1000)
                             delta = publicize_internal_references(
-                                redaction_rules.sanitize_text(raw_progress, remove_urls=True),
-                                catalog_names,
+                                redact_internal_ids(
+                                    redaction_rules.sanitize_text(raw_progress, remove_urls=True)
+                                ),
+                                {},
                             )
                             if delta:
                                 progress_answer_parts.append(delta)
@@ -772,25 +463,13 @@ def prepare_business_chat(
                     elif node_phase == "final":
                         for event in switch_answer_phase("final"):
                             yield event
-                    data = item.get("data") or {}
-                    if str(data.get("node_id") or "") == "query_split_normalize":
-                        outputs = data.get("outputs") or {}
-                        query_split_fallback = str(outputs.get("fallback_used") or "").lower() == "true"
-                    parsed = _decision_from_outputs(data.get("outputs"))
-                    if parsed:
-                        decision = parsed
                 elif event_name == "message_end":
                     metadata = item.get("metadata") or {}
                     raw_resources = metadata.get("retriever_resources") or []
-                    retrieved_course_ids.update(_raw_retrieved_course_ids(raw_resources))
                     if isinstance(raw_resources, list):
                         resources = [
-                            publicize_internal_references_in_value(
-                                redaction_rules.sanitize_value(
-                                    value,
-                                    remove_urls=True,
-                                ),
-                                catalog_names,
+                            redact_internal_ids_in_value(
+                                redaction_rules.sanitize_value(value, remove_urls=True)
                             )
                             for value in raw_resources
                             if isinstance(value, dict)
@@ -805,15 +484,8 @@ def prepare_business_chat(
                         502,
                         True,
                     )
-            final_redactor.set_fallback_names(
-                public_name_fallbacks(snapshot, decision=decision)
-            )
             final_delta = final_redactor.finish()
-            final_delta = publicize_internal_references(
-                final_delta,
-                catalog_names,
-                public_name_fallbacks(snapshot, decision=decision),
-            )
+            final_delta = redact_internal_ids(final_delta)
             final_delta = final_deduper().feed(final_delta)
             final_delta += final_deduper().finish()
             if final_delta:
@@ -847,12 +519,10 @@ def prepare_business_chat(
             total_ms = int((time.monotonic() - started) * 1000)
             recommendation: dict[str, Any] = {}
             try:
-                recommendation, enqueue_summary, route_guidance = _persist_business_result(
+                recommendation, enqueue_summary = _persist_business_result(
                     prepared=prepared,
-                    decision=decision,
                     final_status=final_status,
                     user_hash=user_hash,
-                    query=query,
                     answer_parts=answer_parts,
                     dify_task_id=dify_task_id,
                     dify_message_id=dify_message_id,
@@ -860,11 +530,10 @@ def prepare_business_chat(
                     total_ms=total_ms,
                     usage_metadata=usage_metadata,
                     resources=resources,
-                    retrieved_course_ids=retrieved_course_ids,
                     actual_dify_conversation_id=actual_dify_conversation_id,
                     anonymous_user=anonymous_user,
                 )
-                final_answer_to_emit = _recommendation_presentation(recommendation) or "".join(answer_parts)
+                final_answer_to_emit = "".join(answer_parts)
                 # The threshold is only known after the final assistant result
                 # has been persisted.  Queue after that transaction commits so
                 # the worker never observes an incomplete conversation.
@@ -892,8 +561,7 @@ def prepare_business_chat(
                     "business_chat_completed request_id=%s user_hash=%s "
                     "local_conversation_id=%s dify_conversation_id=%s "
                     "dify_message_id=%s task_id=%s first_token_ms=%s total_ms=%s "
-                    "token_usage=%s retrieval_count=%s recommended_course_ids=%s "
-                    "recommended_route_id=%s status=%s",
+                    "token_usage=%s retrieval_count=%s status=%s",
                     request_id,
                     user_hash,
                     prepared["conversation_id"],
@@ -904,45 +572,14 @@ def prepare_business_chat(
                     total_ms,
                     usage_metadata.get("total_tokens"),
                     len(resources),
-                    [
-                        item.get("course_id")
-                        for item in recommendation.get("course_cards", [])
-                    ],
-                    (recommendation.get("learning_route") or {}).get("route_id"),
                     final_status,
                 )
-                if query_split_fallback:
-                    record_event(
-                        level="WARNING",
-                        category="workflow",
-                        component="business_chat",
-                        event_code="MIXED_QUERY_SPLIT_FALLBACK",
-                        status="fallback",
-                        message="问题结构化拆分失败，已使用双知识库回退检索",
-                        request_id=request_id,
-                        actor_hash=user_hash,
-                        resource_type="conversation",
-                        resource_id=prepared["conversation_id"],
-                    )
                 lock_context.__exit__(None, None, None)
 
         if final_answer_to_emit:
             yield emit("answer_delta", {"delta": final_answer_to_emit})
         if resources:
             yield emit("retriever_resources", {"resources": resources})
-        if recommendation.get("learning_route"):
-            yield emit("learning_route", recommendation["learning_route"])
-        if recommendation.get("course_cards"):
-            yield emit("course_cards", {"items": recommendation["course_cards"]})
-        course_cards = recommendation.get("course_cards")
-        expert_insight = str(recommendation.get("expert_insight") or "").strip()
-        if isinstance(course_cards, list) and course_cards and expert_insight:
-            # Exactly one combined note follows the complete card batch.
-            yield emit("course_recommendation_note", {"content": expert_insight})
-        if route_guidance:
-            # Route guidance stays on the existing answer channel; no new SSE
-            # event or payload is introduced.
-            yield emit("answer_delta", {"delta": route_guidance})
         if error_to_emit:
             yield emit(
                 "error",

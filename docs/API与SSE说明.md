@@ -1,6 +1,6 @@
 # API 与 SSE 说明
 
-商业顾问课程推荐修订：公开路由、请求字段、SSE 事件名和 JSON 结构保持不变；`learning_route` 继续提供完整路线概览，`course_recommendation_note` 仍是可选的 `{"content":"..."}`，但其语义为全部课程卡片后的单条专家见解。
+> 当前生效（2026-08-14，ADR-036）：商业顾问的新聊天不再推荐课程或学习路线。请求路径和字段不变，`entry-config` 中 `business_advisor.course_recommendation=false`；新 SSE 仅可能发送 `request_started`、`status`、`answer_delta`、`retriever_resources`、`message_end`、`error`。`learning_route`、`course_cards`、`course_recommendation_note` 不再从新聊天发送；下文旧课程事件细节仅用于历史消息和兼容接口说明。
 
 除课程签名跳转和健康检查外，内部接口均要求：
 
@@ -48,9 +48,6 @@ request_started
 status
 answer_delta
 retriever_resources
-course_cards
-learning_route
-course_recommendation_note
 message_end
 error
 ```
@@ -70,7 +67,7 @@ error
 
 收到 `progress_answer_started` 后的 `answer_delta` 属于即时提示；收到 `final_answer_started` 后的 `answer_delta` 属于最终答案。旧客户端可以继续按顺序追加所有 `answer_delta`，无需修改接口字段。当前测试页使用两个展示区，并且只把最终答案写入助手历史；即时提示不是持久化回答。
 
-课程卡片、路线和专家见解仍复用上述事件：`course_recommendation_note` 只会在全部 `course_cards` 之后出现；这不是新事件，旧客户端可继续按顺序追加或按结构化区块展示。
+客户端不得等待或渲染课程卡片、学习路线或课程推荐说明事件；这些事件名仅保留在历史文档和旧数据结构中，不属于新聊天的输出集合。
 
 在 Dify 1.13.3 中，固定 `progress_answer` 节点可能只在 `node_finished.data.outputs.answer` 返回正文，不发送 `message.answer`；AI 管理服务会在适配层把该输出规范化为一个或多个 `answer_delta`，调用方无需感知 Dify 原始事件差异。
 
@@ -113,7 +110,7 @@ GET /internal/v1/entry-config
 
 服务从 Dify 参数接口聚合开场白和推荐问题，并声明入口是否支持历史、反馈和课程。
 
-## 课程与学习路线事件
+## 历史课程与学习路线事件（新聊天不适用）
 
 `learning_route` 表示服务端已校验过的官方路线。它可能处于 `awaiting_route_confirmation`、`awaiting_stage_confirmation`、`active` 或 `completed`；只有用户明确确认路线和当前阶段后，才允许出现该路线的 `course_cards`。待路线或阶段确认时，`learning_route` 和正文可以展示阶段与课程名称供用户判断，但不得把这些名称表述为已推荐课程。
 

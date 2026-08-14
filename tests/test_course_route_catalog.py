@@ -9,7 +9,6 @@ from sqlalchemy import select
 
 from ai_management.cache import Cache
 from ai_management.cleaning import STRATEGY_REGISTRY
-from ai_management.conversations import _route_followup_guidance
 from ai_management.course_import import (
     _route_text,
     load_course_records_text,
@@ -369,27 +368,6 @@ def test_ambiguous_route_request_never_degrades_to_direct_course(service_db):
         assert no_route_request.intent == "direct_course"
         assert no_route_request.candidate_course_ids == ["independent"]
         assert "未找到匹配的官方学习路线" in no_route_request.answer_plan
-
-
-def test_route_followup_guidance_is_state_specific_and_does_not_repeat_route():
-    route = {
-        "name": "AI商业学习路线",
-        "stages": [
-            {"stage_id": "s1", "name": "入门阶段", "order": 1, "course_ids": ["c1"]},
-            {"stage_id": "s2", "name": "高手进阶", "order": 2, "course_ids": ["c2"]},
-        ],
-    }
-    assert "我确认学习路线：AI商业学习路线" in _route_followup_guidance(
-        {**route, "state": "awaiting_route_confirmation"}
-    )
-    assert "我目前在：入门阶段" in _route_followup_guidance(
-        {**route, "state": "awaiting_stage_confirmation"}
-    )
-    active = _route_followup_guidance(
-        {**route, "state": "active", "current_stage_id": "s2"}
-    )
-    assert "完成高手进阶" in active
-    assert "学习路线：" not in active
 
 
 def test_route_snapshot_uses_authoritative_stage_order_and_public_names(service_db):

@@ -128,6 +128,18 @@ def test_jx_release_scripts_manage_all_cleaning_workers_and_exact_upload_targets
     assert "find /data -mindepth 1 -delete" not in clean
 
 
+def test_formal_release_never_installs_the_legacy_business_advisor_dsl():
+    """Dify publishing is separate from a wheel release and must be explicit."""
+
+    deploy = _source("scripts/jx_deploy_release.sh")
+
+    assert '"$STAGE_DIR/business_advisor.yml"' not in deploy
+    assert '"dify/dsl/business_advisor.yml"' not in deploy
+    assert '"$STAGE_DIR/business-advisor-prompt.md"' not in deploy
+    assert '"dify/prompts/商业顾问提示词.md"' not in deploy
+    assert "A wheel release does not publish Dify assets." in deploy
+
+
 def test_ocr_runtime_is_separate_and_deployed_scale_to_zero():
     compose = _source("docker-compose.ai.yml")
     dockerfile = _source("Dockerfile.ocr-offline")

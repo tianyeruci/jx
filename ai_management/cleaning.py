@@ -2161,6 +2161,11 @@ def _preflight_local_duplicates(
 
 @router.get("/cleaning-strategies")
 def cleaning_strategies() -> list[dict[str, Any]]:
+    hidden_strategy_codes = {
+        "course_information",
+        "learning_route",
+        "course_route_catalog",
+    }
     return [
         {
             "code": item.code,
@@ -2169,6 +2174,7 @@ def cleaning_strategies() -> list[dict[str, Any]]:
             "knowledge_base_code": getattr(item, "knowledge_base_code", None),
         }
         for item in STRATEGY_REGISTRY.values()
+        if item.code not in hidden_strategy_codes
     ]
 
 

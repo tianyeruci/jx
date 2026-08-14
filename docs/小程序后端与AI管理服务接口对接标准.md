@@ -1,4 +1,6 @@
 # 小程序后端与 AI 管理服务接口对接标准
+
+> 当前生效（2026-08-14，ADR-036）：商业顾问不再执行课程推荐或学习路线处理。`POST /internal/v1/business/chat` 的入参和基础 SSE 协议不变，但 `entry-config` 的商业顾问能力为 `course_recommendation=false`，新流不会发送 `learning_route`、`course_cards`、`course_recommendation_note`。旧事件/字段段落仅适用于历史兼容读取。
 ## 1. 基本约定
 ### 1.1 鉴权
 除健康检查和课程跳转外，接口默认需要：

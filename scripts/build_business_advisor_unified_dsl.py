@@ -30,8 +30,8 @@ def build(source: dict[str, Any]) -> dict[str, Any]:
     generated = copy.deepcopy(source)
     generated["app"]["name"] = "商业顾问-统一修复候选"
     generated["app"]["description"] = (
-        "以当前使用版 DSL 为唯一行为基线，合入课程合集候选校验、下一步建议内部依据字段、"
-        "OCR/咨询案例联调所需的稳定输出契约；不改变 HTTP/SSE 外部接口。"
+        "以当前使用版 DSL 为唯一行为基线，保留通用商业与显式咨询案例检索及单次主回答；"
+        "不包含课程推荐、学习路线、课程卡片或相应的 HTTP/SSE 输出契约。"
     )
     return generated
 
@@ -55,12 +55,7 @@ def validate(source: dict[str, Any], generated: dict[str, Any]) -> None:
         raise ValueError("conversation variable contract changed")
     source_nodes = _nodes(source)
     generated_nodes = _nodes(generated)
-    for node_id in (
-        "general_knowledge",
-        "course_knowledge",
-        "general_knowledge_mixed",
-        "course_knowledge_mixed",
-    ):
+    for node_id in ("general_knowledge",):
         if generated_nodes[node_id].get("dataset_ids") != source_nodes[node_id].get(
             "dataset_ids"
         ):

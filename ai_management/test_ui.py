@@ -240,75 +240,6 @@ def render_result_diagnostics(result: Any, *, label: str = "诊断与原始结�
         st.json(payload)
 
 
-def render_course_recommendation(result: Any, *, label: str = "课程推荐") -> None:
-    """Render validated cards and one combined recommendation note.
-
-    The page never constructs a course URL. It only opens the signed
-    ``redirect_url`` returned by the service so click PV/UV accounting remains
-    server-controlled.
-    """
-
-    if not isinstance(result, dict):
-        return
-    cards_payload = result.get("course_cards") or {}
-    cards = cards_payload.get("items") if isinstance(cards_payload, dict) else cards_payload
-    if isinstance(cards, list) and cards:
-        st.markdown(f"#### {label}")
-        # 服务端已完成路线阶段、启用和审核门禁。激活路线可合法返回
-        # 超过五门的当前阶段全量课程，测试页不得再次截断。
-        for index, card in enumerate(cards, start=1):
-            if not isinstance(card, dict):
-                continue
-            name = str(card.get("name") or "未命名课程")
-            stage = str(card.get("stage") or "").strip()
-            series = str(card.get("series_name") or "").strip()
-            caption = " · ".join(value for value in (stage, series) if value)
-            st.write(f"{index}. **{name}**" + (f"（{caption}）" if caption else ""))
-            redirect_url = str(card.get("redirect_url") or "").strip()
-            if redirect_url:
-                link_button = getattr(st, "link_button", None)
-                if callable(link_button):
-                    link_button("打开课程", redirect_url, key=f"course_card_link_{index}")
-                else:
-                    st.markdown(f"[打开课程]({redirect_url})")
-    route = result.get("learning_route")
-    if isinstance(route, dict) and route:
-        state = route.get("state") or route.get("progress_status") or ""
-        route_name = str(route.get("name") or "未命名路线")
-        st.caption(f"学习路线：{route_name} · {state}")
-        stages = route.get("stages") or []
-        if isinstance(stages, list):
-            for stage_index, stage in enumerate(stages, start=1):
-                if not isinstance(stage, dict):
-                    continue
-                stage_name = str(stage.get("name") or f"阶段{stage_index}")
-                names = [
-                    str(value).strip()
-                    for value in (stage.get("course_names") or [])
-                    if str(value).strip()
-                ]
-                if not names:
-                    names = [
-                        str(value).strip()
-                        for value in (stage.get("course_ids") or [])
-                        if str(value).strip()
-                    ]
-                collections = [
-                    str(value).strip()
-                    for value in (stage.get("course_collection_names") or [])
-                    if str(value).strip()
-                ]
-                st.markdown(f"**{stage_index}. {stage_name}**")
-                if collections:
-                    st.caption("课程合集：" + "、".join(collections))
-                for course_index, course_name in enumerate(names, start=1):
-                    st.write(f"{stage_index}.{course_index} {course_name}")
-    note_payload = result.get("course_recommendation_note")
-    note = note_payload.get("content") if isinstance(note_payload, dict) else note_payload
-    if str(note or "").strip() and isinstance(cards, list) and cards:
-        st.info(str(note).strip())
-
-
 def delete_confirmation_valid(user_id: str, phrase: str) -> bool:
     """Require an exact, non-empty destructive-action confirmation phrase."""
     normalized_user_id = user_id.strip()
@@ -603,8 +534,7 @@ def business_tab(user_id: str) -> None:
         if result := st.session_state.get("last_business_result"):
             if result.get("task_id"):
                 st.caption(f"最近任务 ID：{result['task_id']}")
-            render_course_recommendation(result)
-            render_result_diagnostics(result, label="课程、引用和诊断")
+            render_result_diagnostics(result, label="引用和诊断")
             message_id = (
                 result.get("message_end", {}).get("message_id")
                 if isinstance(result.get("message_end"), dict)
@@ -677,95 +607,12 @@ def tool_tab(user_id: str, kind: str) -> None:
         )
 
 
-def course_tab(user_id: str) -> None:
-    st.subheader("课程与路线测试")
-    if "course_test_conversation_id" not in st.session_state:
-        st.session_state["course_test_conversation_id"] = ""
-    if st.button("读取当前已发布目录"):
-        st.json(api_json("GET", "/internal/v1/admin/catalog", admin=True))
-    st.caption("以下问题通过商业顾问真实链路执行；路线确认和阶段确认必须复用同一本地会话。")
-    questions = [
-        "AI工具入门课程主要解决什么问题？",
-        "我想从零学习公众号运营，有审核后的路线吗？",
-        "我确认选择刚才推荐的学习路线。",
-        "我确认我目前在入门阶段。",
-        "请推荐最新课程。",
-        "请推荐不存在的量子计算工程师认证课程。",
-        "请给我停用的旧版AI速成课报名链接。",
-    ]
-    selected = st.selectbox("典型问题", questions)
-    query = st.text_area("本轮问题", value=selected, key="course_test_query")
-    reuse_conversation = st.checkbox("复用上次课程测试会话", value=True)
-    if st.session_state["course_test_conversation_id"]:
-        st.caption(f"当前课程测试会话：{st.session_state['course_test_conversation_id']}")
-        if st.button("加载课程测试历史"):
-            try:
-                st.session_state["course_test_history"] = api_json(
-                    "GET",
-                    f"/internal/v1/business/conversations/{st.session_state['course_test_conversation_id']}/messages",
-                    user_id=user_id,
-                )
-            except httpx.HTTPError as exc:
-                st.error(str(exc))
-        history_payload = st.session_state.get("course_test_history")
-        history_items = history_payload.get("items") if isinstance(history_payload, dict) else []
-        if history_items:
-            with st.expander("历史课程卡片与专家建议", expanded=False):
-                for message in history_items:
-                    if not isinstance(message, dict) or message.get("role") != "assistant":
-                        continue
-                    recommendation = message.get("recommendation") or {}
-                    if not isinstance(recommendation, dict):
-                        continue
-                    history_result = {
-                        "course_cards": {"items": recommendation.get("course_cards") or []},
-                        "learning_route": recommendation.get("learning_route"),
-                        "course_recommendation_note": {
-                            "content": recommendation.get("expert_insight") or ""
-                        },
-                    }
-                    render_course_recommendation(history_result, label="历史课程推荐")
-    if st.button("新建课程测试会话"):
-        st.session_state["course_test_conversation_id"] = ""
-        st.session_state.pop("course_test_history", None)
-        st.rerun()
-    if st.button("执行课程推荐测试"):
-        st.caption("即时提示")
-        progress_output = st.empty()
-        st.caption("最终回答")
-        output = st.empty()
-        try:
-            result = stream_post(
-                "/internal/v1/business/chat",
-                {
-                    "query": query,
-                    "conversation_id": (
-                        st.session_state["course_test_conversation_id"]
-                        if reuse_conversation
-                        else None
-                    ),
-                },
-                user_id,
-                output,
-                progress_placeholder=progress_output,
-            )
-            message_end = result.get("message_end") or {}
-            if isinstance(message_end, dict) and message_end.get("conversation_id"):
-                st.session_state["course_test_conversation_id"] = str(
-                    message_end["conversation_id"]
-                )
-            render_course_recommendation(result)
-            render_result_diagnostics(result, label="课程推荐诊断")
-        except httpx.HTTPError as exc:
-            st.error(str(exc))
-
-
 def cleaning_tab() -> None:
     st.subheader("文件清洗管理")
     st.caption("此页直接调用 AI 管理服务的双 Token 管理接口，仅用于受控测试环境。")
     cleanup_run_id = test_ui_cleanup_run_id()
     st.caption(f"本轮精确清理标记：{cleanup_run_id}")
-    knowledge_base = st.selectbox("目标知识库", ["general", "course"])
+    knowledge_base = "general"
     previous_knowledge_base = st.session_state.get("cleaning_selected_knowledge_base")
     if previous_knowledge_base is not None and previous_knowledge_base != knowledge_base:
         # A batch belongs to exactly one knowledge base.  Never render a
@@ -1575,7 +1422,6 @@ def main() -> None:
             "商业顾问",
             "朋友圈顾问",
             "日常写作",
-            "课程测试",
             "文件清洗",
             "AI 管理接口",
             "点击统计",
@@ -1590,16 +1436,14 @@ def main() -> None:
     with tabs[2]:
         tool_tab(user_id, "writing")
     with tabs[3]:
-        course_tab(user_id)
-    with tabs[4]:
         cleaning_tab()
-    with tabs[5]:
+    with tabs[4]:
         management_tab(user_id)
-    with tabs[6]:
+    with tabs[5]:
         course_clicks_tab()
-    with tabs[7]:
+    with tabs[6]:
         logs_tab()
-    with tabs[8]:
+    with tabs[7]:
         diagnostics_tab()
 
 

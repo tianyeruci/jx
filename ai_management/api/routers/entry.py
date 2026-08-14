@@ -27,7 +27,7 @@ def entry_config() -> dict[str, Any]:
             "business_advisor",
             "商业顾问",
             settings.dify_business_app_api_key,
-            {"history": True, "feedback": True, "course_recommendation": True},
+            {"history": True, "feedback": True, "course_recommendation": False},
         ),
         (
             "moments_advisor",

@@ -244,16 +244,22 @@ def list_documents(
 @router.get("/{kb_code}/cleaning-strategies")
 def list_cleaning_strategies(kb_code: str) -> dict[str, list[dict[str, Any]]]:
     _dataset_id(kb_code)
-    # The two legacy course-only strategies remain accepted by the backend
-    # for compatibility, but the test/admin page must expose the merged
-    # course-route workflow as the sole current entry point.
-    hidden_legacy_codes = {"course_information", "learning_route"}
+    # Course uploads remain accepted when an existing integration calls their
+    # explicit upload endpoint, but strategy discovery no longer advertises
+    # any course/route cleaning flow.
+    if kb_code == "course":
+        return {"items": []}
+    hidden_strategy_codes = {
+        "course_information",
+        "learning_route",
+        "course_route_catalog",
+    }
     items = []
     for item in STRATEGY_REGISTRY.values():
         required = getattr(item, "knowledge_base_code", None)
         if required and required != kb_code:
             continue
-        if item.code in {"standard_document", "test_markdown", *hidden_legacy_codes}:
+        if item.code in {"standard_document", "test_markdown", *hidden_strategy_codes}:
             continue
         items.append(
             {

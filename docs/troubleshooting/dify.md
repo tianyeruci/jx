@@ -169,3 +169,15 @@
 - 预防：路线续问回归必须覆盖“Dify decision 缺失 + 唯一持久化 active 路线”；Dify DSL 变更后继续核对该真实 SSE 分支。
 - 证据：`ai_management/conversations.py`、`docs/课程推荐与学习路线推荐全链路分析.md`、`/opt/ai-management/var/reports/v2/20260811-0912-route-resume-fix-deploy`。
 - 最后验证：2026-08-11。
+
+## DIFY-015：Dify 1.13.3 的变量聚合器输出固定为 `output`
+
+- 适用：Dify 1.13.3 Chatflow 的 `variable-aggregator` 后接 Code、LLM 或 Answer 节点。
+- 触发：DSL YAML 可解析、节点连线也存在，但控制台发布检查清单提示“无效的变量。请选择一个已有的变量”。
+- 根因：该节点运行时只以 `output` 暴露首个可用变量；把输入检索节点的 `result` 误当作聚合器自身输出会产生无效引用。
+- 解决：后继选择器写为 `["<aggregator_node_id>", "output"]`，同时保留聚合输入项中的 `["<retrieval_node_id>", "result"]`。重新导入后先确认检查清单为零，再发布。
+- 非解决：跳过/强制发布、把聚合节点删掉导致两条互斥检索不能收敛，或仅修改测试而不修改受控 DSL。
+- 验证：2026-08-14 商业顾问 DSL 修复后，Dify 编辑器无发布阻断，发布接口返回成功；`/parameters`、jx `health/ready` 和真实 SSE `message_end.status=completed` 均通过。
+- 预防：DSL 测试必须同时断言聚合输入的 `result` 和聚合输出的 `output`；导入新 Dify 版本时仍需以控制台校验作为最终兼容门禁。
+- 证据：`dify/商业顾问（当前使用版本）.yml`、`tests/test_business_advisor_optimized_dsl.py`、[商业顾问改造记录](../商业顾问移除课程与学习路线改造记录.md)。
+- 最后验证：2026-08-14。

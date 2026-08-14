@@ -1,5 +1,7 @@
 # 小程序后端与 AI 管理服务接口对接
 
+> 当前生效（2026-08-14，ADR-036）：商业顾问聊天的请求路径和 body 不变，但 `entry-config` 返回 `course_recommendation:false`；新 SSE 不发送 `learning_route`、`course_cards` 或 `course_recommendation_note`。小程序后端应停止等待/展示这些新聊天事件，保留对历史消息字段的容错读取。本文后续课程/路线事件段落仅说明历史兼容结构。
+
 ## 1\. 基本约定
 
 ### 1\.1 鉴权
@@ -124,7 +126,7 @@ X-Internal-Token: <内部服务令牌>
       ],
       "history": true,
       "feedback": true,
-      "course_recommendation": true
+      "course_recommendation": false
     },
     {
       "code": "moments_advisor",

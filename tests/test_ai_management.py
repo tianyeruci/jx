@@ -25,11 +25,7 @@ from ai_management.cleaning import (
 )
 from ai_management.config import get_settings
 from ai_management.context import build_context, should_summarize
-from ai_management.conversations import (
-    _decision_from_outputs,
-    _route_followup_guidance,
-    list_conversation_messages,
-)
+from ai_management.conversations import list_conversation_messages
 from ai_management.course_import import catalog_summary, load_catalog
 from ai_management.courses import (
     create_redirect_token,
@@ -117,27 +113,6 @@ def test_hmac_identifiers_are_stable_and_anonymous():
     assert "user-001" not in dify_user("user-001")
 
 
-def test_dify_canonical_node_finished_output_is_parsed():
-    decision = _decision_from_outputs(
-        {
-            "text": json.dumps(
-                {
-                    "intent": "direct_course",
-                    "candidate_course_ids": ["course_ai_001"],
-                    "candidate_route_id": "",
-                }
-            )
-        }
-    )
-    assert decision is not None
-    assert decision.candidate_course_ids == ["course_ai_001"]
-
-
-def test_non_decision_node_output_does_not_override_recommendation():
-    assert _decision_from_outputs({"text": "普通回答正文"}) is None
-    assert _decision_from_outputs({"answer": "普通回答正文", "files": []}) is None
-
-
 def test_internal_auth_is_required(service_db):
     with TestClient(app) as client:
         response = client.get("/internal/v1/business/conversations")
@@ -151,31 +126,12 @@ def test_business_chat_stream_and_history(service_db, monkeypatch):
     def fake_stream(self, **kwargs):
         assert kwargs["conversation_id"] == ""
         assert set(kwargs["inputs"]) == {
-            "local_conversation_id",
             "conversation_summary",
             "recent_history_text",
             "profile_json",
-            "route_progress_json",
-            "route_state_context_json",
-            "authoritative_course_context_json",
             "business_output_style",
-            "expert_insight_style",
         }
         yield {"event": "workflow_started", "task_id": "task-001"}
-        yield {
-            "event": "workflow_node_finished",
-            "data": {
-                "outputs": {
-                    "recommendation_decision": json.dumps(
-                        {
-                            "intent": "general_qa",
-                            "candidate_course_ids": [],
-                            "candidate_route_id": "",
-                        }
-                    )
-                }
-            },
-        }
         yield {
             "event": "message",
             "answer": "这是测试回答，路线ID：route_ai_basic，阶段ID：stage_1，课程ID：course_ai_001。（内部标识已隐藏）",
@@ -245,6 +201,38 @@ def test_business_chat_stream_and_history(service_db, monkeypatch):
         profile = session.get(BusinessProfile, user_hash("user-001"))
         assert profile is not None
         assert profile.user_id == "user-001"
+
+
+def test_business_chat_does_not_load_course_catalog_or_route_progress(service_db, monkeypatch):
+    from ai_management import context, conversations
+    from ai_management.dify import DifyAppClient
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("new chat path must not access course or route state")
+
+    def fake_stream(self, **_kwargs):
+        yield {
+            "event": "message",
+            "answer": "这是不依赖课程或路线状态的商业回答。",
+            "task_id": "task-no-course-state",
+            "message_id": "dify-message-no-course-state",
+            "conversation_id": "dify-conversation-no-course-state",
+        }
+        yield {"event": "message_end", "metadata": {"usage": {"total_tokens": 1}}}
+
+    monkeypatch.setattr(conversations, "get_snapshot", forbidden)
+    assert not hasattr(context, "LearningRouteProgress")
+    monkeypatch.setattr(DifyAppClient, "stream_chat", fake_stream)
+    with TestClient(app) as client:
+        response = client.post(
+            "/internal/v1/business/chat",
+            headers=HEADERS,
+            json={"query": "请分析增长问题"},
+        )
+    assert response.status_code == 200
+    assert "课程或路线状态" in response.text
+    assert "event: course_cards" not in response.text
+    assert "event: learning_route" not in response.text
 
 
 def test_business_chat_stream_separates_progress_answer_from_final_history(
@@ -362,7 +350,7 @@ def test_business_chat_stream_separates_progress_answer_from_final_history(
         assert progress_text not in messages["items"][1]["content"]
 
 
-def test_business_chat_renders_catalog_names_in_stream_and_history(service_db, monkeypatch):
+def test_business_chat_never_exposes_course_route_data_in_stream_or_history(service_db, monkeypatch):
     from ai_management.dify import DifyAppClient
 
     with service_db() as session:
@@ -370,20 +358,6 @@ def test_business_chat_renders_catalog_names_in_stream_and_history(service_db, m
 
     def fake_stream(self, **kwargs):
         yield {"event": "workflow_started", "task_id": "task-catalog-001"}
-        yield {
-            "event": "workflow_node_finished",
-            "data": {
-                "outputs": {
-                    "recommendation_decision": json.dumps(
-                        {
-                            "intent": "general_qa",
-                            "candidate_course_ids": [],
-                            "candidate_route_id": "",
-                        }
-                    )
-                }
-            },
-        }
         yield {
             "event": "message",
             "answer": (
@@ -419,10 +393,9 @@ def test_business_chat_renders_catalog_names_in_stream_and_history(service_db, m
             body = "".join(response.iter_text())
 
         assert response.status_code == 200
-        assert "测试路线" in body
-        assert "入门" in body
-        assert "第一阶段课程" in body
-        assert "focus_directions" not in body
+        assert "event: course_cards" not in body
+        assert "event: learning_route" not in body
+        assert "event: course_recommendation_note" not in body
         assert "route_1" not in body
         assert "stage_1" not in body
         assert "course_1" not in body
@@ -435,7 +408,9 @@ def test_business_chat_renders_catalog_names_in_stream_and_history(service_db, m
             f"/internal/v1/business/conversations/{conversation_id}/messages",
             headers=HEADERS,
         ).json()
-        assert "第一阶段课程" in messages["items"][1]["content"]
+        assert "route_1" not in messages["items"][1]["content"]
+        assert "stage_1" not in messages["items"][1]["content"]
+        assert "course_1" not in messages["items"][1]["content"]
         assert messages["items"][1]["retriever_resources"][0]["metadata"] == {
             "course_id": ""
         }
@@ -588,109 +563,6 @@ def test_recommendation_filters_and_progress_requires_evidence(service_db):
         )
         assert advanced["progress_applied"] is True
         assert progress.current_stage_id == "stage_2"
-
-
-def test_contextual_short_confirmations_require_one_server_stage_hypothesis(service_db):
-    """Terse replies are valid only after the same conversation set their meaning."""
-
-    with service_db() as session:
-        _seed_catalog(session)
-        conversation = BusinessConversation(user_hash="context-user", title="上下文确认")
-        session.add(conversation)
-        session.flush()
-        session.add(
-            BusinessMessage(
-                conversation_id=conversation.id,
-                role="assistant",
-                content="请确认是否选择测试路线。",
-                status="completed",
-                recommendation={
-                    "learning_route": {
-                        "route_id": "route_1",
-                        "state": "awaiting_route_confirmation",
-                    }
-                },
-            )
-        )
-        session.flush()
-
-        route_confirmed = validate_recommendation(
-            session,
-            RecommendationDecision(intent="general_qa"),
-            user_hash="context-user",
-            query="好的",
-            conversation_id=conversation.id,
-        )
-        assert route_confirmed["progress_applied"] is True
-        assert route_confirmed["course_cards"] == []
-        assert route_confirmed["learning_route"]["state"] == "awaiting_stage_confirmation"
-
-        stage_offer = route_confirmed["learning_route"]
-        session.add(
-            BusinessMessage(
-                conversation_id=conversation.id,
-                role="assistant",
-                content=_route_followup_guidance(stage_offer),
-                status="completed",
-                recommendation={"learning_route": stage_offer},
-            )
-        )
-        session.flush()
-
-        stage_confirmed = validate_recommendation(
-            session,
-            RecommendationDecision(intent="general_qa"),
-            user_hash="context-user",
-            query="好的",
-            conversation_id=conversation.id,
-        )
-        assert stage_confirmed["progress_applied"] is True
-        assert stage_confirmed["learning_route"]["state"] == "active"
-        assert stage_confirmed["learning_route"]["current_stage_id"] == "stage_1"
-        assert [item["course_id"] for item in stage_confirmed["course_cards"]] == ["course_1"]
-
-        ambiguous_conversation = BusinessConversation(
-            user_hash="ambiguous-stage-user",
-            title="多阶段假设",
-        )
-        session.add(ambiguous_conversation)
-        session.add(
-            LearningRouteProgress(
-                user_hash="ambiguous-stage-user",
-                route_id="route_1",
-                current_stage_id=None,
-                status="pending_stage",
-            )
-        )
-        session.flush()
-        session.add(
-            BusinessMessage(
-                conversation_id=ambiguous_conversation.id,
-                role="assistant",
-                content=(
-                    "我先按你从入门开始安排；如果符合，请回复“好的”确认。"
-                    "我先按你从进阶开始安排；如果符合，请回复“好的”确认。"
-                ),
-                status="completed",
-                recommendation={
-                    "learning_route": {
-                        "route_id": "route_1",
-                        "state": "awaiting_stage_confirmation",
-                    }
-                },
-            )
-        )
-        session.flush()
-
-        ambiguous_stage = validate_recommendation(
-            session,
-            RecommendationDecision(intent="general_qa"),
-            user_hash="ambiguous-stage-user",
-            query="好的",
-            conversation_id=ambiguous_conversation.id,
-        )
-        assert ambiguous_stage["progress_applied"] is False
-        assert ambiguous_stage["course_cards"] == []
 
 
 def test_infer_recommendation_decision_picks_route_for_route_like_query(service_db):
@@ -2136,7 +2008,6 @@ def test_test_page_exposes_all_documented_management_entry_points():
         "/internal/v1/tools/{kind}/run",
         "/internal/v1/tools/{task_to_stop}/stop",
         "/internal/v1/admin/course-clicks",
-        "/internal/v1/admin/catalog",
         "/internal/v1/admin/conversations",
         "/internal/v1/admin/users/{quote(delete_user_id, safe='')}/ai-data",
         "/internal/v1/admin/settings/retention",

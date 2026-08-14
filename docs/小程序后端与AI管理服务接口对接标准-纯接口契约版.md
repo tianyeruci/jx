@@ -1,4 +1,6 @@
 # 小程序后端与 AI 管理服务接口对接标准（纯接口契约版）
+
+> 当前生效（2026-08-14，ADR-036）：商业顾问的新聊天不发送 `learning_route`、`course_cards`、`course_recommendation_note`，且 `entries[].course_recommendation` 对商业顾问为 `false`。下文相应事件样例只保留为历史消息兼容字段说明。
 版本：2026-07-29
 适用调用方：
 - 小程序后端
@@ -117,7 +119,7 @@ X-Internal-Token: <INTERNAL_TOKEN>
       "suggested_questions": ["我现在适合学什么？"],
       "history": true,
       "feedback": true,
-      "course_recommendation": true
+      "course_recommendation": false
     },
     {
       "code": "moments_advisor",

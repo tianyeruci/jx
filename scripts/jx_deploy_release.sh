@@ -216,10 +216,10 @@ do
   # preserve executable mode for all release helper entry points.
   install -m 0755 "$STAGE_DIR/$file" "scripts/$file"
 done
-install -m 0644 "$STAGE_DIR/business_advisor.yml" \
-  "dify/dsl/business_advisor.yml"
-install -m 0644 "$STAGE_DIR/business-advisor-prompt.md" \
-  "dify/prompts/商业顾问提示词.md"
+# A wheel release does not publish Dify assets.  In particular, do not stage
+# the historical DSL or prompt here: both still describe course and
+# learning-route behavior.  Import and publish the explicitly designated
+# current DSL through Dify, then verify /parameters and real SSE.
 
 bash "$RESOURCE_GUARD" check --phase=release
 bash "$RESOURCE_GUARD" run --phase=release-core-build -- \

@@ -1,8 +1,16 @@
 # AI 管理服务当前状态与后续测试交接
 
-> 更新时间：2026-08-11
+> 更新时间：2026-08-14
 > 用途：保存最新线上事实、回滚点、数据状态和开放事项。新任务先读 `AGENTS.md` 与 `docs/README.md`，再按功能域读取本文顶部最新状态。  
 > 本文不是需求或设计基线；权威顺序以 `docs/V2决策记录.md` 和 `docs/README.md` 为准。第 1～8 节为历史过程记录，不再作为当前执行指令。
+
+## 0.59 2026-08-14 商业顾问移除课程/路线发布完成（当前最新）
+
+- 当前线上行为已切换：新聊天不读取课程目录或学习路线状态，不发课程卡、路线或专家见解 SSE；DSL 保留一个主 LLM，以及“明确案例请求才检索咨询会议案例”的非课程边界。历史/管理接口仍为兼容旧消息调用目录快照，用户已明确旧数据自行清理。
+- jx 完整恢复基线为 `20260814-business-general-2`（数据库、Redis、上传卷、配置均已校验），同源 release 为 `business-general-20260814-1`。新 Dify 隔离应用已发布；旧应用与发布前配置仍保留回滚，未删除课程、路线、知识库或历史聊天数据。
+- 发布时控制台校验发现 Dify 1.13.3 `variable-aggregator` 的下游变量误写为 `result`；已改为实际输出名 `output`、补充 DSL 测试后重新导入发布。不得跳过该校验或强制发布。
+- 配置切换后已强制重建 API、Worker、模型 Worker、发布 Worker 和 Scheduler；随后发现按需 OCR Worker 仍停在旧的 exited 镜像，已通过资源门禁后按精确服务重建为本 release，OCR autoscaler timer 保持 active。`health/ready=ready`，数据库、Redis、Dify 均可达；Dify `/parameters` 实测只含 4 个新 Start 输入。
+- 真实合成商业咨询 SSE 返回 `message_end.status=completed`，只含请求、状态、回答和结束事件，无课程推荐、课程卡片或学习路线事件；测试会话已按精确 ID 删除。入口配置中 `business_advisor.course_recommendation=false`。
 
 ## 0.57 2026-08-11 商业顾问精确阶段课程与专家见解发布（当前最新）
 
@@ -1787,3 +1795,24 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改前：已清理测试会话和路线进度，但未单独审计创建测试会话时自动落库的用户画像与操作审计事件。
 - 修改后：以测试脚本固定前缀 `release-route-check-` 为唯一归属依据，先做只读联合盘点，再删除 3 条测试用户画像和 3 条 `actor_hash` 相同的应用审计事件；未删除课程、路线、知识库文档、Dify 应用、正常会话或全局 Redis 键。
 - 验证：清理后本地测试前缀对应的 profiles/conversations/segments/messages/route progress/system events/external deletion tasks/Redis keys/Dify conversations 均为 `0`；API `/health/ready` 仍为 `ready`，database/Redis/Dify 均可达。
+
+### 文档修改记录（2026-08-14 商业顾问移除课程/路线的安全发布准备）
+
+- 修改原因：用户要求移除新商业顾问聊天的课程推荐和学习路线处理，并在 jx/Dify 完成可验证发布；发布中发现服务端 4 个 Start 输入与旧线上 Dify 应用的 9 个输入不兼容。
+- 修改前：线上 0.57 服务与 Dify 应用共同保留课程目录、路线状态、课程卡片和专家见解处理。
+- 修改后：本地与服务器发布资产已收敛为无课程/路线的新聊天实现；为避免未发布 Dify 时造成线上协议断裂，服务运行态已回到发布前版本，Dify 停在新应用创建前，尚未切换 App Key 或删除数据。
+- 验证：备份中的数据库、Redis、上传卷和配置均已校验；新 release 构建/健康检查通过；恢复后 API `/health/ready=ready`、核心服务运行、OCR autoscaler `enabled/active`。待 Dify 发布后追加 `/parameters` 和真实 SSE 结果。
+
+### 文档修改记录（2026-08-14 商业顾问移除课程/路线最终发布）
+
+- 修改原因：完成此前“安全发布准备”中未完成的 Dify 新应用发布、App Key 切换、jx 服务重建和真实 SSE 验收。
+- 修改前：0.58 记录的线上运行态仍是旧的课程/路线 Dify 与服务端组合；精简 DSL 尚未发布，不能代表当前线上行为。
+- 修改后：新增 0.59，记录新隔离 Chatflow 发布、Dify 聚合变量 `result`→`output` 修复、完整备份 `20260814-business-general-2`、同源 release 切换、核心服务重建和运行时验收。旧 Dify 应用和数据均保留。
+- 验证：Dify `/parameters` 仅返回 4 个 Start 输入；API ready，数据库、Redis、Dify 可达；真实 SSE `completed` 且无课程/路线/课程卡事件，测试会话按精确 ID 删除；入口配置 `course_recommendation=false`。密钥、真实用户标识、回答正文和受保护映射均未写入本文。
+
+### 文档修改记录（2026-08-14 发布后 OCR 同源镜像补核验）
+
+- 修改原因：最终镜像盘点发现核心和测试页已是本 release，但按需 OCR Worker 仍是旧的 exited 镜像，不能以 API ready 替代 OCR 同源核验。
+- 修改前：0.59 只记录核心服务重建和 API 健康，未明确 OCR Worker 的实际镜像。
+- 修改后：资源门禁通过后只重建 `ai-ocr-worker`；其镜像已为 `business-general-20260814-1` 且运行，autoscaler timer 仍为 active。未删除容器、卷、数据或 Redis。
+- 验证：OCR、核心、测试页均使用 `business-general-20260814-1` 对应镜像；API ready，数据库、Redis、Dify 均可达。

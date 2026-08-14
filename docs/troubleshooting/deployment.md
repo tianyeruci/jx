@@ -92,10 +92,22 @@
 - 根因：OCR Worker 由按需 autoscaler 管理，完整发布期间会被暂停；发布脚本成功路径和独立 Compose 服务状态不能只靠 API ready 推断。
 - 解决：发布前执行资源门禁、数据库/Dify/上传备份和 wheel SHA 校验；成功切换后按精确服务名 `ai-ocr-worker` 强制重建，逐个核验 API、Worker、Scheduler、UI、OCR 镜像标签和运行状态。
 - 非解决：使用旧 wheel、只重启 API、执行 `--remove-orphans` 清理、修改 `BAILIAN_BATCH_ENABLED`，或只看进程存在。
-- 验证：最终发布报告和备份保留；资源门禁通过，核心/UI/OCR 同源最终 release，API readiness 为 `ready`，模块导入通过，`BAILIAN_BATCH_ENABLED=false` 保持不变。
+- 验证：最终发布报告和备份保留；资源门禁通过，核心/UI/OCR 同源最终 release，API readiness 为 `ready`，模块导入通过，`BAILIAN_BATCH_ENABLED=false` 保持不变。2026-08-14 的商业顾问 release 中，完整切换后仍发现按需 OCR 容器保留旧的 exited 镜像；资源门禁后用完整 Compose 对精确服务 `ai-ocr-worker` 执行 `up -d --no-deps --force-recreate`，镜像与核心 release 一致、timer active、API ready。
 - 预防：完整发布修改清洗策略时必须换 wheel；OCR 的恢复与核心健康检查分别记录，失败时依据备份回滚，不删除持久卷。
 - 证据：`scripts/jx_deploy_release.sh`、`scripts/jx_prebaseline_backup.sh`、jx `/opt/ai-management/var/reports/v2/` 对应最终发布目录。
-- 最后验证：2026-08-05。
+- 最后验证：2026-08-14。
+
+## DEPLOY-024：wheel 发布不得安装或暗示发布历史商业顾问 Dify 资产
+
+- 适用：含商业顾问代码的 jx 完整 wheel 发布；Dify 应用另行导入、发布。
+- 触发：发布脚本把 stage 中的历史 DSL 或 Prompt 安装至服务器 Dify 目录，使课程/学习路线资产看似可作为当前源。
+- 根因：wheel 发布脚本混入了并不会向 Dify 发布的 Dify 资产，其中商业顾问 DSL 和 Prompt 都是旧功能基线而非当前源。
+- 解决：移除商业顾问 Dify 资产安装；商业顾问只能从 `dify/商业顾问（当前使用版本）.yml` 经受控 Dify 导入、发布、`/parameters` 和真实 SSE 验收生效。
+- 非解决：仅给历史文件改名、把旧 DSL/Prompt 复制成当前文件、假定 wheel 发布会同步 Dify，或直接修改 Dify 数据库。
+- 验证：`bash -n scripts/jx_deploy_release.sh` 和 `tests/test_cleaning_release_contract.py::test_formal_release_never_installs_the_legacy_business_advisor_dsl` 通过；脚本中不再有商业顾问 Dify asset 的 stage/安装目标。
+- 预防：Dify DSL 的当前源和历史基线必须在文档中明确区分；每次 Dify 变更仍单独完成导入、发布和运行态验收。
+- 证据：[商业顾问改造记录](../商业顾问移除课程与学习路线改造记录.md)、`scripts/jx_deploy_release.sh`、`tests/test_cleaning_release_contract.py`。
+- 最后验证：2026-08-14（本地发布脚本契约；随下一次完整 release 复核远端脚本）。
 
 ## DEPLOY-009：按需 OCR 扩容器被可执行权限门禁阻断
 
