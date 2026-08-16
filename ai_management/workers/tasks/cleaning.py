@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from contextlib import ExitStack
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from knowledge_cleaner.dify import DifyKnowledgeClient
 
+from ...activity_cleaning import ActivityCleaningError
 from ...cache import cache
 from ...cleaning import (
     STRATEGY_REGISTRY,
@@ -189,15 +191,13 @@ def _content_sha(markdown: str, metadata: dict[str, Any], chunking: dict[str, An
     }
     payload = {
         "markdown": markdown,
-        "metadata": {
-            key: value
-            for key, value in metadata.items()
-            if key not in provenance_fields
-        },
+        "metadata": {key: value for key, value in metadata.items() if key not in provenance_fields},
         "chunking": chunking,
     }
     return hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
     ).hexdigest()
 
 
@@ -251,11 +251,7 @@ def _course_document_publish_order(documents: list[CleaningDocument]) -> list[st
     ordered_ids: list[str] = []
     while unresolved:
         ready = sorted(
-            (
-                course_id
-                for course_id in unresolved
-                if not (entries[course_id][1] & unresolved)
-            ),
+            (course_id for course_id in unresolved if not (entries[course_id][1] & unresolved)),
             key=lambda course_id: entries[course_id][0].sequence,
         )
         if not ready:
@@ -291,9 +287,7 @@ def _finish_batch(session, batch_id: str) -> None:
     batch-summary calculation; the query below is read-only for file rows.
     """
     batch = session.scalar(
-        select(CleaningBatch)
-        .where(CleaningBatch.id == batch_id)
-        .with_for_update()
+        select(CleaningBatch).where(CleaningBatch.id == batch_id).with_for_update()
     )
     if batch is None:
         return
@@ -464,6 +458,7 @@ def _publish_document(
     client: DifyKnowledgeClient | None = None
     created_remote_id = ""
     replaced_catalog_document_id = ""
+    replaced_activity_document_ids: list[str] = []
     try:
         client = _knowledge_client(batch)
         row.status = "processing"
@@ -472,7 +467,30 @@ def _publish_document(
         row.error_code = None
         row.error_message = None
         session.commit()
-        if row.dify_document_id:
+        if batch.strategy_code == "recent_activity":
+            event_id = str((row.metadata_json or {}).get("event_id") or "")
+            if event_id:
+                if row.dify_document_id:
+                    replaced_activity_document_ids.append(str(row.dify_document_id))
+                candidates = session.scalars(
+                    select(CleaningDocument)
+                    .join(CleaningFile, CleaningDocument.file_id == CleaningFile.id)
+                    .join(CleaningBatch, CleaningFile.batch_id == CleaningBatch.id)
+                    .where(
+                        CleaningBatch.strategy_code == "recent_activity",
+                        CleaningDocument.status == "succeeded",
+                        CleaningDocument.dify_document_id.is_not(None),
+                        CleaningDocument.id != row.id,
+                    )
+                ).all()
+                replaced_activity_document_ids.extend(
+                    [
+                        str(item.dify_document_id)
+                        for item in candidates
+                        if (item.metadata_json or {}).get("event_id") == event_id
+                    ]
+                )
+        if row.dify_document_id and batch.strategy_code != "recent_activity":
             if not _remove_or_disable_document(client, row.dify_document_id):
                 _queue_document_cleanup(row.dify_document_id, client.dataset_id)
             row.dify_document_id = None
@@ -510,9 +528,7 @@ def _publish_document(
         audit["publication_input"] = {
             "content_format": "markdown",
             "content_bytes": len(publication_markdown.encode("utf-8")),
-            "markdown_sha256": hashlib.sha256(
-                publication_markdown.encode("utf-8")
-            ).hexdigest(),
+            "markdown_sha256": hashlib.sha256(publication_markdown.encode("utf-8")).hexdigest(),
             "local_markdown_sha256": hashlib.sha256(
                 row.cleaned_markdown.encode("utf-8")
             ).hexdigest(),
@@ -563,8 +579,21 @@ def _publish_document(
             row.metadata_json or {},
             strategy=strategy,
         )
-        field_ids = client.ensure_metadata_names(sorted(remote_metadata))
-        client.set_document_metadata(document_id, remote_metadata, field_ids)
+        field_types = getattr(strategy, "dify_metadata_types", None)
+        if field_types:
+            field_ids = client.ensure_metadata_names(
+                sorted(remote_metadata),
+                field_types=field_types,
+            )
+            client.set_document_metadata(
+                document_id,
+                remote_metadata,
+                field_ids,
+                field_types=field_types,
+            )
+        else:
+            field_ids = client.ensure_metadata_names(sorted(remote_metadata))
+            client.set_document_metadata(document_id, remote_metadata, field_ids)
         client.verify_document_metadata(document_id, remote_metadata)
         if stage_only:
             row.status = "staged"
@@ -589,6 +618,10 @@ def _publish_document(
         if batch.strategy_code in {"course_information", "learning_route"}:
             bump_catalog_revision(session)
         session.commit()
+        if replaced_activity_document_ids:
+            for document_id in dict.fromkeys(replaced_activity_document_ids):
+                if not _remove_or_disable_document(client, document_id):
+                    _queue_document_cleanup(document_id, client.dataset_id)
         if batch.strategy_code in {"course_information", "learning_route"}:
             # DB is authoritative.  Rebuild the effective cache only after its
             # transaction succeeds; an old Dify copy is then safe to retire.
@@ -630,6 +663,7 @@ def _commit_source_publication(
     documents: list[CleaningDocument],
 ) -> None:
     replaced_document_ids: list[str] = []
+    replaced_activity_document_ids: list[str] = []
     try:
         if batch.strategy_code in {
             "course_information",
@@ -644,8 +678,7 @@ def _commit_source_publication(
                 if batch.strategy_code == "course_route_catalog":
                     effective_strategy = (
                         "course_information"
-                        if (document.audit_json or {}).get("catalog_kind")
-                        == "course"
+                        if (document.audit_json or {}).get("catalog_kind") == "course"
                         else "learning_route"
                     )
                 old_id = sync_cleaning_catalog_record(
@@ -664,6 +697,29 @@ def _commit_source_publication(
             document.retryable = False
             document.error_code = None
             document.error_message = None
+        if batch.strategy_code == "recent_activity":
+            current_document_ids = {document.id for document in documents}
+            event_ids = {
+                str((document.metadata_json or {}).get("event_id") or "") for document in documents
+            }
+            event_ids.discard("")
+            if event_ids:
+                candidates = session.scalars(
+                    select(CleaningDocument)
+                    .join(CleaningFile, CleaningDocument.file_id == CleaningFile.id)
+                    .join(CleaningBatch, CleaningFile.batch_id == CleaningBatch.id)
+                    .where(
+                        CleaningBatch.strategy_code == "recent_activity",
+                        CleaningDocument.status == "succeeded",
+                        CleaningDocument.dify_document_id.is_not(None),
+                        CleaningDocument.id.not_in(current_document_ids),
+                    )
+                ).all()
+                replaced_activity_document_ids.extend(
+                    str(item.dify_document_id)
+                    for item in candidates
+                    if (item.metadata_json or {}).get("event_id") in event_ids
+                )
         session.commit()
     except Exception:
         session.rollback()
@@ -689,6 +745,14 @@ def _commit_source_publication(
                         _queue_document_cleanup(document_id, client.dataset_id)
             finally:
                 client.close()
+    if replaced_activity_document_ids:
+        client = _knowledge_client(batch)
+        try:
+            for document_id in dict.fromkeys(replaced_activity_document_ids):
+                if not _remove_or_disable_document(client, document_id):
+                    _queue_document_cleanup(document_id, client.dataset_id)
+        finally:
+            client.close()
 
 
 def _compensate_source_publication(
@@ -706,9 +770,7 @@ def _compensate_source_publication(
         )
     )
     remote_ids = [
-        str(document.dify_document_id)
-        for document in documents
-        if document.dify_document_id
+        str(document.dify_document_id) for document in documents if document.dify_document_id
     ]
     if remote_ids:
         client = _knowledge_client(batch)
@@ -733,9 +795,7 @@ def _compensate_source_publication(
             document.status = "pending" if retry else "failed"
             document.stage = "retrying" if retry else "failed"
             document.error_code = "SOURCE_ATOMIC_ROLLBACK"
-            document.error_message = (
-                "同一源文件的任一子文档失败，已补偿全部远端写入"
-            )
+            document.error_message = "同一源文件的任一子文档失败，已补偿全部远端写入"
             document.retryable = retry
     file_row.status = "processing" if retry else "failed"
     file_row.outcome = "processing" if retry else "failed"
@@ -746,6 +806,38 @@ def _compensate_source_publication(
 
 
 def _publish_source_file(
+    session,
+    *,
+    file_row: CleaningFile,
+    batch: CleaningBatch,
+) -> bool:
+    if batch.strategy_code != "recent_activity":
+        return _publish_source_file_unlocked(session, file_row=file_row, batch=batch)
+
+    event_ids = {
+        str((metadata or {}).get("event_id") or "")
+        for metadata in session.scalars(
+            select(CleaningDocument.metadata_json).where(
+                CleaningDocument.file_id == file_row.id,
+                CleaningDocument.status.in_(("pending", "processing", "staged")),
+            )
+        )
+    }
+    event_ids.discard("")
+    with ExitStack() as locks:
+        for event_id in sorted(event_ids):
+            acquired = locks.enter_context(
+                cache.lock(
+                    f"ai:activity-publication:{batch.knowledge_base_code}:{event_id}",
+                    ttl=3600,
+                )
+            )
+            if not acquired:
+                raise RuntimeError("同名活动正在发布，请稍后重试")
+        return _publish_source_file_unlocked(session, file_row=file_row, batch=batch)
+
+
+def _publish_source_file_unlocked(
     session,
     *,
     file_row: CleaningFile,
@@ -766,16 +858,13 @@ def _publish_source_file(
     if batch.strategy_code == "course_information":
         by_id = {document.id: document for document in documents}
         documents = [
-            by_id[document_id]
-            for document_id in _course_document_publish_order(documents)
+            by_id[document_id] for document_id in _course_document_publish_order(documents)
         ]
     elif batch.strategy_code == "course_route_catalog":
         documents = sorted(
             documents,
             key=lambda item: (
-                0
-                if (item.audit_json or {}).get("catalog_kind") == "course"
-                else 1,
+                0 if (item.audit_json or {}).get("catalog_kind") == "course" else 1,
                 item.sequence,
             ),
         )
@@ -804,11 +893,7 @@ def _publish_source_file(
         )
         session.expire_all()
         current_documents = list(
-            session.scalars(
-                select(CleaningDocument).where(
-                    CleaningDocument.file_id == file_row.id
-                )
-            )
+            session.scalars(select(CleaningDocument).where(CleaningDocument.file_id == file_row.id))
         )
         retry = any(document.attempts < 2 for document in current_documents)
         _compensate_source_publication(
@@ -939,10 +1024,9 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     audit=document.audit,
                 )
                 document.warnings = user_visible_warnings(document.warnings or [])
-                review_policy = (
-                    (batch.common_metadata or {}).get("_cleaning_review_policy")
-                    or review_policy_snapshot(batch.strategy_code)
-                )
+                review_policy = (batch.common_metadata or {}).get(
+                    "_cleaning_review_policy"
+                ) or review_policy_snapshot(batch.strategy_code)
                 review_metadata = {
                     "_cleaning_review_policy": review_policy,
                 }
@@ -991,9 +1075,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     "_cleaning_review_policy": review_policy,
                 }
                 metadata = {
-                    key: value
-                    for key, value in metadata.items()
-                    if value not in (None, "", [], {})
+                    key: value for key, value in metadata.items() if value not in (None, "", [], {})
                 }
                 if (
                     document.disposition not in {"excluded", "review_required"}
@@ -1010,25 +1092,28 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 chunking = document.chunking or ChunkingConfig()
                 validate_chunking_boundaries(document.markdown, chunking)
                 status = document.disposition or "pending"
-                structure_review = (
-                    status == "review_required"
-                    and (
-                        bool((document.audit or {}).get("structure_conflicts"))
-                        or document.error_code in {
-                            "CATALOG_STRUCTURE_REVIEW_REQUIRED",
-                            "CATALOG_STRUCTURE_REVIEW_BLOCKED",
-                        }
-                    )
+                structure_review = status == "review_required" and (
+                    bool((document.audit or {}).get("structure_conflicts"))
+                    or document.error_code
+                    in {
+                        "CATALOG_STRUCTURE_REVIEW_REQUIRED",
+                        "CATALOG_STRUCTURE_REVIEW_BLOCKED",
+                    }
                 )
                 item = CleaningDocument(
                     file_id=row.id,
                     sequence=sequence,
                     title=document.title[:300],
-                    dify_document_name=dify_document_name(
-                        row.original_filename,
-                        row.source_sha256,
-                        sequence,
-                        split=len(cleaned_documents) > 1,
+                    dify_document_name=(
+                        f"event_{document.metadata['event_id']}.md"
+                        if batch.strategy_code == "recent_activity"
+                        and document.metadata.get("event_id")
+                        else dify_document_name(
+                            row.original_filename,
+                            row.source_sha256,
+                            sequence,
+                            split=len(cleaned_documents) > 1,
+                        )
                     ),
                     document_key=f"{row.id}:{sequence}:{row.source_sha256[:12]}",
                     status=status,
@@ -1045,9 +1130,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                                     "excluded"
                                     if status == "excluded"
                                     else (
-                                        "shard_pending"
-                                        if status == "shard_pending"
-                                        else "pending"
+                                        "shard_pending" if status == "shard_pending" else "pending"
                                     )
                                 )
                             )
@@ -1062,15 +1145,14 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     cleaned_markdown=document.markdown,
                     retryable=status == "failed",
                 )
-                item.content_sha256 = _content_sha(item.cleaned_markdown, item.metadata_json, item.chunking_json)
+                item.content_sha256 = _content_sha(
+                    item.cleaned_markdown, item.metadata_json, item.chunking_json
+                )
                 duplicate = session.scalar(
                     select(CleaningDocument)
                     .where(
-                        CleaningDocument.content_sha256
-                        == item.content_sha256,
-                        CleaningDocument.status.not_in(
-                            ("failed", "review_required", "excluded")
-                        ),
+                        CleaningDocument.content_sha256 == item.content_sha256,
+                        CleaningDocument.status.not_in(("failed", "review_required", "excluded")),
                     )
                     .limit(1)
                 )
@@ -1134,9 +1216,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     item.retryable = True
                 session.commit()
                 blocking_reviews = [
-                    item
-                    for item in blocking_reviews
-                    if item.status == "review_required"
+                    item for item in blocking_reviews if item.status == "review_required"
                 ]
                 pending_documents = list(
                     session.scalars(
@@ -1163,9 +1243,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     item.status = "review_required"
                     item.stage = "review"
                     item.error_code = "SOURCE_REVIEW_REQUIRED"
-                    item.error_message = (
-                        "同一源文件存在需复核子文档，整文件暂不发布"
-                    )
+                    item.error_message = "同一源文件存在需复核子文档，整文件暂不发布"
                     item.audit_json = {
                         **(item.audit_json or {}),
                         "source_atomic_original_disposition": "pending",
@@ -1206,9 +1284,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     )
                 )
                 for shard_id in pending_shard_ids:
-                    publish_dify_shard.apply_async(
-                        args=[shard_id], queue="ai_publication"
-                    )
+                    publish_dify_shard.apply_async(args=[shard_id], queue="ai_publication")
             awaiting_model_documents = list(
                 session.scalars(
                     select(CleaningDocument).where(
@@ -1246,6 +1322,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 "没有可入库文档",
                 "正文为空",
                 "未生成可入库正文",
+                "没有活动通过硬事实校验",
             )
         )
         failure_context: dict[str, Any] = {}
@@ -1262,6 +1339,8 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     "source_extension": row.extension,
                     "source_sha256_prefix": row.source_sha256[:12],
                 }
+                if isinstance(exc, ActivityCleaningError):
+                    failure_context["activity_audit"] = exc.audit
                 sensitive_values = (row.original_filename,)
                 retry = not content_missing and row.attempts < 2
                 terminal_failure = not retry
@@ -1369,9 +1448,7 @@ def process_cleaning_document(self, document_id: str) -> bool:
             row = session.scalar(
                 select(CleaningDocument)
                 .where(CleaningDocument.id == document_id)
-                .options(
-                    selectinload(CleaningDocument.file).selectinload(CleaningFile.batch)
-                )
+                .options(selectinload(CleaningDocument.file).selectinload(CleaningFile.batch))
             )
             if row is None or row.status not in {
                 "pending",

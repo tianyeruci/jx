@@ -110,7 +110,7 @@ X-Internal-Token: <内部服务令牌>
       ],
       "history": true,
       "feedback": true,
-      "course_recommendation": true
+      "course_recommendation": false
     },
     {
       "code": "moments_advisor",
@@ -147,7 +147,7 @@ X-User-Name: <用户展示名，可选>
 请求体：
 ```json
 {
-  "query": "我想从零学习AI工具，应该怎么开始？",
+  "query": "我的获客转化下降，应该先如何诊断？",
   "conversation_id": null
 }
 ```
@@ -162,9 +162,6 @@ X-User-Name: <用户展示名，可选>
 - `status`
 - `answer_delta`
 - `retriever_resources`
-- `learning_route`
-- `course_cards`
-- `course_recommendation_note`
 - `message_end`
 - `error`
 `request_started` 示例：
@@ -196,7 +193,11 @@ data: {"schema_version":"2.0","request_id":"req-001","sequence":6,"code":"final_
 event: answer_delta
 data: {"schema_version":"2.0","request_id":"req-001","sequence":4,"delta":"建议先从高频办公场景开始。"}
 ```
-`course_cards` 示例：
+#### 历史兼容字段（新聊天不产生）
+
+以下字段只可能存在于 ADR-036 前的历史消息中；当前 SSE 不产生、客户端不得渲染或据此恢复课程/路线交互。
+
+`course_cards` 历史示例：
 ```text
 event: course_cards
 data: {"schema_version":"2.0","request_id":"req-001","sequence":5,"items":[{"course_id":"course_ai_001","name":"AI工具入门","direction":"AI基础","description":"适合零基础用户","enabled":true,"review_status":"approved","redirect_url":"https://example.com/r/xxxxx"}]}
@@ -444,8 +445,8 @@ X-User-Id: <稳定用户ID>
 }
 ```
 说明：该接口成功返回时，字段以当前 Dify 返回为准，不建议前端对返回体做强绑定。
-### 3.12 课程点击统计接入
-商业顾问返回课程卡片时，会带：
+### 3.12 独立课程跳转与点击统计
+该能力只处理已存在的受控课程跳转链接，不由商业顾问新聊天产生课程卡片：
 ```json
 {
   "course_id": "course_ai_001",
@@ -1197,10 +1198,9 @@ GET /internal/v1/admin/logs/{log_id}
 
 本轮未改变既有接口路径、请求字段、SSE 事件名和公开响应结构。以下约束从本版本开始作为接口标准的一部分：
 
-- 商业顾问公开输出中的真实姓名、昵称、笔名、个人账号称呼、原文件名、Dify 管理名称，以及课程/路线/阶段的中文或英文内部标识必须被服务端过滤；范围包括 `answer_delta`、`retriever_resources`、会话标题和历史消息。过滤覆盖标签、完整或短 ID、`course_`/`route_`/`stage_` 裸标识、括号形式标识和跨 SSE 分片文本。
+- 商业顾问公开输出中的真实姓名、昵称、笔名、个人账号称呼、原文件名和 Dify 管理名称必须被服务端过滤；范围包括 `answer_delta`、`retriever_resources`、会话标题和历史消息。客户端不得自行拼接或还原受保护来源。
 - 姓名过滤必须覆盖跨 SSE 分片的情况。小程序后端仍按标准 SSE 事件解析，不自行拼接或还原受保护来源。
-- Chatflow 决策 JSON 中的候选 ID 不属于用户可见文本，不删除；`course_cards`、`learning_route` 等结构化机器字段及课程卡 `redirect_url`、路线进度字段保持原契约，供小程序后端继续校验、查询和展示。
-- 检索引用不得携带非受控 URL；课程卡中的 `redirect_url` 是服务端签名生成的受控字段，继续按原契约使用。
+- 新聊天没有课程/路线决策 JSON、课程卡片或路线进度字段；历史消息中的这些字段仅容错读取。检索引用不得携带非受控 URL。
 - 原文件名允许出现在管理员鉴权保护下的清洗详情中；不得进入公开回答、公开引用、测试安全摘要或普通运行日志。
 - 清洗状态 API 仍返回条目明细，但同一源文件的发布和失败重试是一个原子单元。任一应发布条目失败时，同源本轮 Dify 写入会被删除或停用，课程/路线目录不得部分提交。
 - 待复核条目会阻止同源其他条目发布；管理员完成复核后，重新执行的是整文件发布检查。

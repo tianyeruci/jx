@@ -1,5 +1,7 @@
 # 小程序后端与 AI 管理服务接口对接标准（可直接调用测试版）
 
+> 当前生效（2026-08-14，ADR-036）：商业顾问新聊天的 `course_recommendation=false`，SSE 只验证 `request_started`、`status`、`answer_delta`、`retriever_resources`、`message_end`、`error`；不得等待或渲染课程、学习路线或课程卡片事件。
+
 版本：2026-07-29
 
 本文供小程序后端和 AI 管理端开发、联调、测试使用，提供调用路径、请求头、请求体、返回结构、可复制示例和失败处理方式。
@@ -94,7 +96,7 @@ curl -N -X POST "$AI_SERVICE_BASE_URL/internal/v1/business/chat" \
   -H "X-Internal-Token: $INTERNAL_TOKEN" \
   -H "X-User-Id: $USER_ID" \
   -H "Content-Type: application/json" \
-  -d '{"query":"我想从零学习 AI 工具，应该怎么开始？","conversation_id":null}'
+  -d '{"query":"我的获客转化下降，应该先如何诊断？","conversation_id":null}'
 ~~~
 
 每个事件的 data 都是 JSON，并包含 schema_version、request_id、sequence。客户端按空行分隔 SSE 事件，不要按网络分片解析。收到 error 后，之前的 answer_delta 只能视为部分内容。
@@ -115,7 +117,7 @@ curl -s "$AI_SERVICE_BASE_URL/internal/v1/entry-config" \
 ~~~json
 {
   "entries": [
-    {"code":"business_advisor","name":"商业顾问","opening_statement":"你好，我来帮你分析问题。","suggested_questions":["我现在适合学什么？"],"history":true,"feedback":true,"course_recommendation":true},
+    {"code":"business_advisor","name":"商业顾问","opening_statement":"你好，我来帮你分析问题。","suggested_questions":["我的获客转化下降，应该先如何诊断？"],"history":true,"feedback":true,"course_recommendation":false},
     {"code":"moments_advisor","name":"朋友圈顾问","opening_statement":"","suggested_questions":[],"history":false,"feedback":false,"course_recommendation":false},
     {"code":"writing_advisor","name":"日常写作","opening_statement":"","suggested_questions":[],"history":false,"feedback":false,"course_recommendation":false}
   ]
@@ -132,7 +134,7 @@ Content-Type: application/json
 ~~~
 
 ~~~json
-{"query":"我想从零学习 AI 工具，应该怎么开始？","conversation_id":null}
+{"query":"我的获客转化下降，应该先如何诊断？","conversation_id":null}
 ~~~
 
 新会话不传 conversation_id 或传 null；续聊只能传本服务返回的本地 conversation_id，不能传 Dify conversation_id。
@@ -142,7 +144,7 @@ curl -N -X POST "$AI_SERVICE_BASE_URL/internal/v1/business/chat" \
   -H "X-Internal-Token: $INTERNAL_TOKEN" \
   -H "X-User-Id: $USER_ID" \
   -H "Content-Type: application/json" \
-  -d '{"query":"我想从零学习 AI 工具，应该怎么开始？","conversation_id":null}'
+  -d '{"query":"我的获客转化下降，应该先如何诊断？","conversation_id":null}'
 ~~~
 
 典型事件：
@@ -161,25 +163,7 @@ event: message_end
 data: {"schema_version":"2.0","request_id":"req-001","sequence":4,"conversation_id":"conv_001","message_id":"msg_001","task_id":"task_001","status":"completed","first_token_ms":620,"total_ms":4820,"token_usage":{"total_tokens":128}}
 ~~~
 
-路线和课程事件：
-
-~~~text
-event: learning_route
-data: {"schema_version":"2.0","request_id":"req-001","sequence":5,"route_id":"route_ai_basic","name":"AI入门路线","direction":"AI基础","target":"完成AI基础使用","stages":[{"stage_id":"stage_1","name":"入门","order":1,"course_ids":["course_ai_001"],"course_names":["AI工具入门"],"course_collection_names":["AI写作课"]}],"current_stage_id":null,"next_stage_id":null,"state":"awaiting_route_confirmation","progress_status":"pending_route","confirmation_required":true}
-~~~
-
-该示例处于 `awaiting_route_confirmation`，因此不会发送 `course_cards` 或 `course_recommendation_note`。`stages[].course_names` 仅用于说明审核路线内容，不表示已推荐课程。
-
-注意：
-
-- awaiting_route_confirmation 或 awaiting_stage_confirmation 时，不得发送 course_cards。
-- 只有启用且审核通过的课程和路线可以返回卡片。
-- 激活路线仅返回已确认当前阶段的全部有效课程，保持阶段内顺序，不含下一阶段或其它阶段；明确课程、课程集或最新课程仍最多 5 门。
-- 明确课程、课程集或最新课程查询可推荐独立课程；路线型诉求有多个可信候选时只澄清，不回退独立课程；确实没有官方路线证据时先说明未匹配，再转为独立课程路径，也不得临时拼接路线。
-- 路线或阶段待确认时可展示审核路线的阶段和课程名称供用户判断，但不得把它们表述为已推荐课程。
-- 明确选择新路线不取消旧路线进度；拒绝、换一条或含糊答复不写持久拒绝状态。
-- 用户状态、意图、选择和学习进度按当前轮明确表达、最近未摘要历史明确确认、会话摘要确认、路线进度、用户画像的顺序取值。
-- `course_recommendation_note` 仅在课程卡通过服务端校验、且全部卡片发送完成后发送一条“专家见解”；多门课程合并为一条 1–2 句、最多 80 字的学习动作，不含推荐/匹配理由或前缀。当前不生成或渲染课程级 `expert_insight` 事件。
+课程与路线事件不会出现在新聊天 SSE 中。测试时应断言未出现 `learning_route`、`course_cards`、`course_recommendation_note`，并只将历史消息中的旧字段作为容错读取。
 - 同一会话生成中再次请求返回 409 CONVERSATION_BUSY。
 
 ### 2.3 停止商业顾问生成（建议对接）
@@ -384,7 +368,7 @@ curl -s "$AI_SERVICE_BASE_URL/internal/v1/admin/course-clicks?course_id=course_a
 
 返回 items、page、limit、total、total_clicks、total_unique_users、course_totals。小程序不调用此接口。
 
-### 3.4 课程与学习路线目录（必须对接）
+### 3.4 历史课程与学习路线目录（按需管理，不由新聊天调用）
 
 ~~~http
 GET /internal/v1/admin/catalog
@@ -410,7 +394,7 @@ curl -s -X DELETE "$AI_SERVICE_BASE_URL/internal/v1/admin/users/test-user-001/ai
   -H "X-Internal-Token: $INTERNAL_TOKEN" -H "X-Admin-Token: $ADMIN_TOKEN"
 ~~~
 
-返回：{"deleted":true,"conversation_count":3,"external_deletions_queued":3}。删除会话、消息、画像和路线进度，不删除课程 PV/UV 汇总。
+返回：{"deleted":true,"conversation_count":3,"external_deletions_queued":3}。删除会话、消息和画像；历史路线进度按既有数据清理规则处理，不删除课程 PV/UV 汇总。
 
 ### 3.6 历史保留配置（必须对接）
 
@@ -504,7 +488,7 @@ GET /internal/v1/admin/knowledge-bases/{kb_code}/cleaning-strategies
 ~~~
 
 ~~~bash
-curl -s "$AI_SERVICE_BASE_URL/internal/v1/admin/knowledge-bases/course/cleaning-strategies" \
+curl -s "$AI_SERVICE_BASE_URL/internal/v1/admin/knowledge-bases/general/cleaning-strategies" \
   -H "X-Internal-Token: $INTERNAL_TOKEN" -H "X-Admin-Token: $ADMIN_TOKEN"
 ~~~
 
@@ -516,11 +500,8 @@ curl -s "$AI_SERVICE_BASE_URL/internal/v1/admin/knowledge-bases/course/cleaning-
 | xiaobot_post | 小报童文章 | general | .md、.markdown |
 | lead_magnet | 资料钩子 | general | .md、.markdown、.txt、.docx、.pdf |
 | book | 书籍/课程讲义 | general | .md、.markdown、.txt、.docx、.pdf |
-| course_route_catalog | 课程信息与学习路线（合并） | course | .xlsx |
-| course_information | 课程信息（兼容） | course | .md、.markdown、.txt、.docx |
-| learning_route | 学习路线（兼容） | course | .md、.markdown、.txt、.docx |
 
-本轮测试页必须验收个人商业咨询、公众号认知分享、知识星球、小报童、资料钩子和 `course_route_catalog` 六种指定策略；`book` 保持既有独立能力。`course_information`、`learning_route` 仅用于兼容历史批次/旧调用，不作为本轮页面测试路径。
+测试页与策略发现只返回 `general` 策略。`course_information`、`learning_route`、`course_route_catalog` 仅用于后端显式历史管理兼容，不作为页面测试路径，也不得用于商业顾问新数据。
 
 ### 4.2 创建上传批次（必须对接）
 
@@ -565,7 +546,7 @@ curl -s -X POST "$AI_SERVICE_BASE_URL/internal/v1/admin/knowledge-bases/course/u
 
 成功返回至少包含 batch_id、strategy_code、knowledge_base_code、upload_mode、status、progress、next_poll_after_seconds、all_succeeded、total、succeeded、failed、file_counts、item_counts、files。
 
-### 4.3 课程信息文件模板
+### 4.3 历史课程信息文件模板（不用于新聊天或测试页）
 
 文件必须包含一个或多个 YAML 数据块，每个数据块为 record_type: course：
 
@@ -599,7 +580,7 @@ stage_tags:
 
 必填：name、direction、description、official_url、stage。course_id 缺失时按方向和名称生成稳定 ID；source_platform 缺失默认“小鹅通”；series_name、published_at 可不填。前置课程只能填写明确存在的 course_id。
 
-### 4.4 学习路线文件模板
+### 4.4 历史学习路线文件模板（不用于新聊天或测试页）
 
 路线文件必须包含一个或多个 YAML 数据块，每个数据块为 record_type: route：
 
@@ -801,10 +782,9 @@ POST /internal/v1/knowledge/cleaning-batches/{batch_id}/files/{file_id}/retry
 3. 续聊并读取会话、消息列表。
 4. 验证停止生成、删除会话。
 5. 分别调用朋友圈和写作 SSE。
-6. 课程卡片使用原始 redirect_url 完成跳转。
-7. 未确认路线/阶段时不发送 `course_cards`；确认后仅当前阶段全部有效课程、无下一阶段卡片且顺序正确。
-8. 明确课程、课程集或最新课程查询可返回独立课程卡；多条路线候选只返回澄清，不得降级为独立课程卡。
-9. 用相互冲突的当前轮、未摘要历史、会话摘要、路线进度和用户画像验证五级优先级；新路线选择不取消旧路线，拒绝、换一条或含糊答复不写持久拒绝状态。
+6. 断言新聊天不出现 `learning_route`、`course_cards`、`course_recommendation_note`，且 `course_recommendation=false`。
+7. 用相互冲突的当前轮、未摘要历史、会话摘要和用户画像验证四级优先级；新聊天不得读取路线进度。
+8. 如单独测试历史课程跳转，使用已知受控 `redirect_url`；该测试与商业顾问聊天解耦。
 
 ### 6.2 AI 管理端
 
@@ -820,9 +800,8 @@ POST /internal/v1/knowledge/cleaning-batches/{batch_id}/files/{file_id}/retry
 
 - 请求头、路径、请求体、返回字段和 SSE 事件与当前代码一致。
 - SSE 按事件边界解析，sequence 单调递增。
-- 未确认路线或阶段时不发送 `course_cards`。
-- 当前阶段优先、下一阶段其次，总数不超过 5 门。
-- 停用或未审核课程/路线不被推荐。
+- 新聊天不发送 `learning_route`、`course_cards`、`course_recommendation_note`，且不读课程/路线依赖。
+- `entry-config.business_advisor.course_recommendation=false`。
 - 原始课程链接不进入清洗正文或普通知识文本。
 - business_expert_insight 不被新页面配置或渲染。
 - 新系统不调用历史 /internal/v1/knowledge/*。

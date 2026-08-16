@@ -12,7 +12,7 @@
 
 - 目标版本：Dify `1.13.3`。
 - 当前项目主要模式：
-  - `business_advisor`：`advanced-chat`，有状态、多知识库、推荐决策、SSE。
+  - `business_advisor`：`advanced-chat`，有状态、一个 `general` 知识库、静态 `record_type` 案例隔离、SSE。
   - `moments_advisor`、`writing_advisor`：偏无状态、单轮生成型 Workflow。
   - `summary_profile`：结构化结果输出型 Workflow。
 - 默认假设：
@@ -215,20 +215,18 @@ Question Classifier
 
 ```text
 Start
--> 输入规范化
--> 问题拆分/结构化
--> 分类器
-  ├─ 通用问题   -> 通用检索 -> 通用决策 -> 通用回答
-  ├─ 课程问题   -> 课程检索 -> 课程决策 -> 课程回答
-  └─ 混合问题   -> 混合通用检索 -> 混合课程检索 -> 混合决策 -> 混合回答
+-> `quick_route` / `case_route` 互斥分流
+  ├─ 普通商业问题 -> `general_knowledge` (`record_type is not consulting_case`)
+  └─ 明确咨询案例 -> `case_knowledge` (`record_type is consulting_case`)
+-> 结果聚合 -> 证据压缩 -> 唯一主 LLM -> Answer
 ```
 
 规则：
 
 - 每条分支只引用本分支必定存在的变量；
-- 推荐决策输出同一 JSON 契约，方便服务端统一解析；
-- 课程/路线 ID 只输出候选，不在 Dify 里直接拼正式卡片；
-- 最终课程卡片、正式链接、签名跳转仍由服务端生成；
+- 两个检索分支必须互斥，聚合器只读取当前工作流实际输出；
+- 不生成课程/路线推荐决策 JSON、课程卡片或课程专属 SSE；
+- `topic`、`industry`、`business_stage` 等 Metadata 不会自动变成过滤，当前唯一检索过滤字段为 `record_type`；
 - 需要引用来源时，优先让检索节点提供 `retriever_resources`。
 
 ### 4.2 朋友圈顾问 / 日常写作
@@ -361,8 +359,8 @@ Code 节点解析后才形成真实换行。主回答与格式修复 Prompt 必�
 
 对当前项目：
 
-- 通用库和课程库已分库，这是正确方向；
-- 不要再把所有知识混到一个库里靠 prompt 区分。
+- 商业顾问只绑定一个 `general` 库；普通知识与咨询案例通过静态 `record_type` 过滤分隔。
+- 不得把课程/路线资料混入 `general`，也不得只靠 Prompt 防止污染资料被召回。
 - 商业顾问现用链路已使用 `qwen3-rerank`，且本轮以准确率为硬门槛；在没有同一知识库、同一黄金集的召回 A/B 前，不因一般性性能建议移除 rerank。
 
 ### 5.3 生成侧优化

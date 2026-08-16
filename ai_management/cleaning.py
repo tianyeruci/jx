@@ -31,6 +31,7 @@ from knowledge_cleaner.sources import (
     parse_wechat_public_account,
 )
 
+from .activity_cleaning import ActivityCleaningStrategy
 from .cache import cache
 from .config import get_settings
 from .db import SessionLocal, get_session
@@ -1670,6 +1671,10 @@ STRATEGY_REGISTRY: dict[str, CleaningStrategy] = {
     )
 }
 
+# Keep the activity strategy feature-owned while exposing it through the
+# existing registry and upload/test-page discovery contract.
+STRATEGY_REGISTRY[ActivityCleaningStrategy.code] = ActivityCleaningStrategy()
+
 SYSTEM_METADATA_FIELDS = {
     "source_file_id",
     "source_filename",
@@ -1694,6 +1699,16 @@ SYSTEM_METADATA_FIELDS = {
     "source_title",
     "industry",
     "business_stage",
+    "event_id",
+    "event_status",
+    "source_status",
+    "event_type",
+    "delivery_mode",
+    "city",
+    "event_start_ts",
+    "event_end_ts",
+    "registration_deadline_ts",
+    "registration_url",
 }
 ALLOWED_COMMON_METADATA = {
     "document_type",
@@ -2104,6 +2119,10 @@ def _preflight_local_duplicates(
         }):
             session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": lock_key})
     submitted_ids = {row.id for row in rows}
+    activity_submission = any(
+        getattr(getattr(row, "batch", None), "strategy_code", "") == "recent_activity"
+        for row in rows
+    )
     source_hashes = {row.source_sha256 for row in rows}
     source_names = {
         row.source_name_key or normalized_filename_key(row.original_filename)
@@ -2134,6 +2153,7 @@ def _preflight_local_duplicates(
         file_row.source_name_key or normalized_filename_key(file_row.original_filename)
         for file_row, _batch in existing
         if file_row.id not in submitted_ids
+        and not (activity_submission and _batch.strategy_code == "recent_activity")
     }
     seen_batch_hashes: set[str] = set()
     seen_batch_names: set[str] = set()

@@ -116,12 +116,142 @@ workflow:
         isInIteration: false
         isInLoop: false
         sourceType: answer
-        targetType: if-else
-      id: progress-answer-to-case-route
+        targetType: code
+      id: progress-answer-to-activity-intent
       selected: false
       source: progress_answer
       sourceHandle: source
+      target: activity_intent
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: if-else
+      id: activity-intent-to-activity-route
+      selected: false
+      source: activity_intent
+      sourceHandle: source
+      target: activity_route
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: code
+      id: activity-route-true-to-activity-window
+      selected: false
+      source: activity_route
+      sourceHandle: 'true'
+      target: activity_window
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: if-else
+      id: activity-window-to-activity-status-route
+      selected: false
+      source: activity_window
+      sourceHandle: source
+      target: activity_status_route
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: knowledge-retrieval
+      id: activity-status-normal-to-activity-knowledge
+      selected: false
+      source: activity_status_route
+      sourceHandle: normal
+      target: activity_knowledge
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: knowledge-retrieval
+      id: activity-status-status-to-activity-status-knowledge
+      selected: false
+      source: activity_status_route
+      sourceHandle: status
+      target: activity_status_knowledge
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: if-else
+      id: activity-route-false-to-case-route
+      selected: false
+      source: activity_route
+      sourceHandle: 'false'
       target: case_route
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: knowledge-retrieval
+        targetType: variable-aggregator
+      id: activity-knowledge-to-activity-retrieval-aggregate
+      selected: false
+      source: activity_knowledge
+      sourceHandle: source
+      target: activity_retrieval_aggregate
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: knowledge-retrieval
+        targetType: variable-aggregator
+      id: activity-status-knowledge-to-activity-retrieval-aggregate
+      selected: false
+      source: activity_status_knowledge
+      sourceHandle: source
+      target: activity_retrieval_aggregate
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: variable-aggregator
+        targetType: code
+      id: activity-retrieval-aggregate-to-activity-results
+      selected: false
+      source: activity_retrieval_aggregate
+      sourceHandle: source
+      target: activity_results
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: answer
+      id: activity-results-to-activity-answer
+      selected: false
+      source: activity_results
+      sourceHandle: source
+      target: activity_answer
       targetHandle: target
       type: custom
       zIndex: 0
@@ -154,7 +284,7 @@ workflow:
     - data:
         isInIteration: false
         isInLoop: false
-        sourceType: knowledge-retrieval
+        sourceType: variable-aggregator
         targetType: code
       id: advisor-retrieval-aggregate-to-evidence-compact
       selected: false
@@ -277,10 +407,22 @@ workflow:
               if normalized in goodbyes:
                   return {"should_direct": "true", "direct_response": "好的，随时欢迎你再来咨询商业问题。"}
               case_terms = ("相关案例", "类似案例", "相似案例", "同类案例", "真实案例", "案例参考", "案例经验", "类似经验", "同类经验")
+              activity_entity = any(item in raw for item in ("活动", "会议"))
+              listing_terms = ("最近", "近期", "有哪些", "有什么", "可以参加", "本月", "接下来")
+              status_terms = ("延期", "改期", "取消")
+              analysis_terms = ("如何", "怎么", "策略", "方法", "影响", "挽回", "复盘", "提升", "提高", "优化", "建议", "分析", "转化")
+              is_analysis_request = any(item in raw for item in analysis_terms)
+              is_case_request = any(item in raw for item in case_terms)
+              is_activity_request = activity_entity and not is_analysis_request and not is_case_request and (
+                  any(item in raw for item in listing_terms)
+                  or any(item in raw for item in status_terms)
+                  or "报名" in raw
+              )
               return {
                   "should_direct": "false",
                   "direct_response": "",
-                  "is_case_request": "true" if any(item in raw for item in case_terms) else "false",
+                  "is_case_request": "true" if is_case_request else "false",
+                  "is_activity_request": "true" if is_activity_request else "false",
               }
         code_language: python3
         desc: 固定问候、礼貌用语和明确人工请求不调用模型；其余问题进入一次检索和一次主回答，只有明确案例请求才检索咨询会议案例。
@@ -292,6 +434,9 @@ workflow:
             children:
             type: string
           is_case_request:
+            children:
+            type: string
+          is_activity_request:
             children:
             type: string
         selected: false
@@ -313,6 +458,388 @@ workflow:
       selected: false
       sourcePosition: right
       targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        desc: 聚合正常活动或取消/延期活动检索结果，避免结果节点直接引用互斥分支的未执行输出。
+        output_type: array[object]
+        selected: false
+        title: 活动检索结果聚合
+        type: variable-aggregator
+        variables:
+        - - activity_knowledge
+          - result
+        - - activity_status_knowledge
+          - result
+      height: 131
+      id: activity_retrieval_aggregate
+      position:
+        x: 2580
+        y: 300
+      positionAbsolute:
+        x: 2580
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          def main(is_activity_request: str, query: str) -> dict:
+              return {"is_activity_request": "true" if is_activity_request == "true" else "false"}
+        code_language: python3
+        desc: 只把明确活动/会议意图送入活动检索，普通商业问题继续原有案例/通用分支。
+        outputs:
+          is_activity_request:
+            children:
+            type: string
+        selected: false
+        title: 活动意图识别
+        type: code
+        variables:
+        - value_selector:
+          - quick_intent
+          - is_activity_request
+          variable: is_activity_request
+        - value_selector:
+          - sys
+          - query
+          variable: query
+      height: 95
+      id: activity_intent
+      position:
+        x: 1320
+        y: 300
+      positionAbsolute:
+        x: 1320
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: explicit-activity-request
+            value: 'true'
+            varType: string
+            variable_selector:
+            - activity_intent
+            - is_activity_request
+          id: 'true'
+          logical_operator: and
+        desc: 明确活动意图才进入活动检索，否则保持普通/案例行为。
+        selected: false
+        title: 是否检索活动
+        type: if-else
+      height: 191
+      id: activity_route
+      position:
+        x: 1540
+        y: 300
+      positionAbsolute:
+        x: 1540
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          from datetime import datetime, timedelta, timezone
+
+          def main(query: str) -> dict:
+              now = datetime.now(timezone(timedelta(hours=8)))
+              query = str(query or "")
+              requested_status = "cancelled" if "取消" in query else ("postponed" if any(word in query for word in ("延期", "改期")) else "normal")
+              return {
+                  "start_ts": int(now.timestamp()),
+                  "end_ts": int((now + timedelta(days=30)).timestamp()),
+                  "requested_status": requested_status,
+              }
+        code_language: python3
+        desc: 生成中国时区的动态活动状态和三十天时间窗口，供 Knowledge Retrieval 先过滤。
+        outputs:
+          end_ts:
+            children:
+            type: number
+          requested_status:
+            children:
+            type: string
+          start_ts:
+            children:
+            type: number
+        selected: false
+        title: 活动动态筛选条件
+        type: code
+        variables:
+        - value_selector:
+          - sys
+          - query
+          variable: query
+      height: 95
+      id: activity_window
+      position:
+        x: 1800
+        y: 220
+      positionAbsolute:
+        x: 1800
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        cases:
+        - case_id: normal
+          conditions:
+          - comparison_operator: is
+            id: activity-normal
+            value: normal
+            varType: string
+            variable_selector:
+            - activity_window
+            - requested_status
+          id: normal
+          logical_operator: and
+        - case_id: status
+          conditions:
+          - comparison_operator: is not
+            id: activity-status
+            value: normal
+            varType: string
+            variable_selector:
+            - activity_window
+            - requested_status
+          id: status
+          logical_operator: and
+        desc: 正常活动使用动态时间区间；取消和延期只按状态筛选，保留延期未定活动。
+        selected: false
+        title: 活动状态路由
+        type: if-else
+      height: 191
+      id: activity_status_route
+      position:
+        x: 2060
+        y: 220
+      positionAbsolute:
+        x: 2060
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        dataset_ids:
+        - hs0Hyxg1MA28xHAG6dBkv6lVjZQP4KXYRTZU4WwQeu8C3HUI4H3dpyslaUiJ1FmP
+        desc: 活动检索由 Dify 动态 metadata 条件先过滤 event、状态和进行中/未来三十天区间，结果节点再去重排序。
+        metadata_filtering_mode: manual
+        metadata_filtering_conditions:
+          conditions:
+          - comparison_operator: is
+            name: record_type
+            value: event
+          - comparison_operator: is
+            name: event_status
+            value: '{{#activity_window.requested_status#}}'
+          - comparison_operator: ≥
+            name: event_end_ts
+            value: '{{#activity_window.start_ts#}}'
+          - comparison_operator: ≤
+            name: event_start_ts
+            value: '{{#activity_window.end_ts#}}'
+          logical_operator: and
+        multiple_retrieval_config:
+          reranking_enable: true
+          reranking_mode: reranking_model
+          reranking_model:
+            model: qwen3-rerank
+            provider: langgenius/tongyi/tongyi
+          score_threshold: 0.2
+          top_k: 20
+        query_attachment_selector: []
+        query_variable_selector:
+        - sys
+        - query
+        retrieval_mode: multiple
+        selected: false
+        title: 最近活动检索
+        type: knowledge-retrieval
+      height: 133
+      id: activity_knowledge
+      position:
+        x: 1800
+        y: 220
+      positionAbsolute:
+        x: 1800
+        y: 220
+      selected: false
+      type: custom
+      width: 242
+    - data:
+        dataset_ids:
+        - hs0Hyxg1MA28xHAG6dBkv6lVjZQP4KXYRTZU4WwQeu8C3HUI4H3dpyslaUiJ1FmP
+        desc: 取消和延期活动先由 Dify 动态 metadata 条件筛选状态；延期未定活动不伪造时间。
+        metadata_filtering_mode: manual
+        metadata_filtering_conditions:
+          conditions:
+          - comparison_operator: is
+            name: record_type
+            value: event
+          - comparison_operator: is
+            name: event_status
+            value: '{{#activity_window.requested_status#}}'
+          logical_operator: and
+        multiple_retrieval_config:
+          reranking_enable: true
+          reranking_mode: reranking_model
+          reranking_model:
+            model: qwen3-rerank
+            provider: langgenius/tongyi/tongyi
+          score_threshold: 0.2
+          top_k: 20
+        query_attachment_selector: []
+        query_variable_selector:
+        - sys
+        - query
+        retrieval_mode: multiple
+        selected: false
+        title: 取消延期活动检索
+        type: knowledge-retrieval
+      height: 133
+      id: activity_status_knowledge
+      position:
+        x: 2320
+        y: 400
+      positionAbsolute:
+        x: 2320
+        y: 400
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+          from datetime import datetime, timezone, timedelta
+
+          def number(value):
+              if isinstance(value, (int, float)) and not isinstance(value, bool): return float(value)
+              try: return float(str(value).strip())
+              except Exception: return None
+
+          def main(results, query: str, start_ts, end_ts, requested_status: str) -> dict:
+              start = number(start_ts) or 0
+              end = number(end_ts) or 0
+              requested_status = str(requested_status or "normal")
+              selected = {}
+              all_results = []
+              for batch in (results,):
+                  if isinstance(batch, list): all_results.extend(batch)
+              for item in all_results:
+                  metadata = item.get("metadata", {}) if isinstance(item, dict) else {}
+                  raw = metadata.get("doc_metadata", metadata)
+                  if isinstance(raw, str):
+                      try: raw = json.loads(raw)
+                      except Exception: raw = {}
+                  if isinstance(raw, list):
+                      raw = {entry.get("name"): entry.get("value") for entry in raw if isinstance(entry, dict) and entry.get("name")}
+                  if not isinstance(raw, dict) or raw.get("record_type") != "event": continue
+                  if raw.get("event_status") != requested_status: continue
+                  timestamp = number(raw.get("event_start_ts"))
+                  event_end = number(raw.get("event_end_ts")) or timestamp
+                  if requested_status == "normal" and (timestamp is None or event_end is None or event_end < start or timestamp > end): continue
+                  event_id = str(raw.get("event_id") or item.get("document_name") or "")
+                  selected[event_id] = (timestamp, raw, item)
+              ordered = sorted(selected.values(), key=lambda value: (value[0] is None, value[0] or 0))[:3]
+              status_text = {"normal": "正常", "cancelled": "取消", "postponed": "延期"}.get(requested_status, requested_status)
+              def display_time(timestamp, event_status):
+                  if event_status == "postponed" and timestamp is None:
+                      return "延期未定"
+                  if timestamp is None:
+                      return "时间未定"
+                  value = datetime.fromtimestamp(timestamp, timezone(timedelta(hours=8)))
+                  date_text = f"{value.year}年{value.month}月{value.day}日"
+                  return f"{date_text} {value:%H:%M}" if value.hour or value.minute else date_text
+              lines = []
+              for timestamp, metadata, item in ordered:
+                  title = metadata.get("source_title") or item.get("title") or item.get("document_name") or "活动"
+                  status = metadata.get("source_status") or metadata.get("event_status") or ""
+                  time_text = display_time(timestamp, metadata.get("event_status"))
+                  line = f"{title}（{status}，{time_text}，{metadata.get('delivery_mode', '')}，{metadata.get('city', '')}）"
+                  link = metadata.get("registration_url")
+                  if isinstance(link, str) and link.startswith(("http://", "https://")): line += f" 报名链接：{link}"
+                  lines.append(line)
+              return {"activity_text": "\n".join(lines) or f"当前没有符合条件的{status_text}活动。"}
+        code_language: python3
+        desc: 从 doc_metadata 读取动态筛选后的活动，按开始时间升序去重后最多3条；进行中活动按时间区间相交处理。
+        outputs:
+          activity_text:
+            children:
+            type: string
+        selected: false
+        title: 活动结果排序与去重
+        type: code
+        variables:
+        - value_selector:
+          - activity_retrieval_aggregate
+          - output
+          variable: results
+        - value_selector:
+          - sys
+          - query
+          variable: query
+        - value_selector:
+          - activity_window
+          - start_ts
+          variable: start_ts
+        - value_selector:
+          - activity_window
+          - end_ts
+          variable: end_ts
+        - value_selector:
+          - activity_window
+          - requested_status
+          variable: requested_status
+      height: 95
+      id: activity_results
+      position:
+        x: 2060
+        y: 220
+      positionAbsolute:
+        x: 2060
+        y: 220
+      sourcePosition: right
+      targetPosition: left
+      selected: false
+      type: custom
+      width: 242
+    - data:
+        answer: '{{#activity_results.activity_text#}}'
+        desc: 输出活动结果；没有报名链接时不补充链接。
+        selected: false
+        title: 活动回答
+        type: answer
+        variables: []
+      height: 130
+      id: activity_answer
+      position:
+        x: 2320
+        y: 220
+      positionAbsolute:
+        x: 2320
+        y: 220
+      sourcePosition: right
+      targetPosition: left
+      selected: false
       type: custom
       width: 242
     - data:
@@ -425,6 +952,9 @@ workflow:
           - comparison_operator: is not
             name: record_type
             value: consulting_case
+          - comparison_operator: is not
+            name: record_type
+            value: event
           logical_operator: and
         multiple_retrieval_config:
           reranking_enable: true

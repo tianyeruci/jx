@@ -5,7 +5,7 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable, Iterator, Mapping
 
 import httpx
 
@@ -294,15 +294,35 @@ class DifyKnowledgeClient:
             },
         )
 
-    def ensure_metadata_names(self, names: Iterable[str]) -> dict[str, str]:
+    def ensure_metadata_names(
+        self,
+        names: Iterable[str],
+        *,
+        field_types: Mapping[str, str] | None = None,
+    ) -> dict[str, str]:
         response = self._request("GET", f"datasets/{self.dataset_id}/metadata")
         existing = response.get("doc_metadata") or response.get("data") or []
-        result = {str(item.get("name")): str(item.get("id")) for item in existing if item.get("name")}
+        requested_types = {str(name): str(value) for name, value in (field_types or {}).items()}
+        result = {}
+        for item in existing:
+            name = str(item.get("name") or "")
+            if not name or not item.get("id"):
+                continue
+            expected = requested_types.get(name)
+            actual = str(item.get("type") or item.get("field_type") or "").lower()
+            if expected and actual and actual != expected.lower():
+                raise RuntimeError(
+                    f"Dify metadata字段类型冲突：{name}，已有={actual}，需要={expected}"
+                )
+            result[name] = str(item.get("id"))
         for name in names:
             if name in result:
                 continue
+            metadata_type = requested_types.get(name, "string")
             created = self._request(
-                "POST", f"datasets/{self.dataset_id}/metadata", json={"type": "string", "name": name}
+                "POST",
+                f"datasets/{self.dataset_id}/metadata",
+                json={"type": metadata_type, "name": name},
             )
             item = created.get("doc_metadata") or created.get("data") or created
             field_id = str(item.get("id") or "")
@@ -312,10 +332,24 @@ class DifyKnowledgeClient:
         return result
 
     def set_document_metadata(
-        self, document_id: str, values: dict[str, Any], field_ids: dict[str, str]
+        self,
+        document_id: str,
+        values: dict[str, Any],
+        field_ids: dict[str, str],
+        *,
+        field_types: Mapping[str, str] | None = None,
     ) -> None:
+        requested_types = {str(name): str(value).lower() for name, value in (field_types or {}).items()}
         metadata_list = [
-            {"id": field_ids[name], "name": name, "value": str(value)}
+            {
+                "id": field_ids[name],
+                "name": name,
+                "value": value
+                if requested_types.get(name) == "number"
+                and isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                else str(value),
+            }
             for name, value in values.items()
             if name in field_ids
         ]

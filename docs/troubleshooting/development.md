@@ -95,3 +95,15 @@
 - 预防：新增样本同时检查 H1 数量、粗体正文误判、标题跨行重复、段落合并和 OCR 页脚；同字号、无目录匹配且无明显间距的编号行保守按正文/列表处理。
 - 证据：[版式评审与落地建议](../执行计划合集/文字型 PDF 转 Markdown 评审与落地建议.md)、[脱敏问题记录](../../var/reports/20260804-pdf-markdown-refine/issues.jsonl)。
 - 最后验证：2026-08-05。
+
+## DEV-009：jx 百炼脚本只使用 BAILIAN_API_KEY
+
+- 适用：`Other/event_rag_cleaner` 在 jx 上执行 Qwen realtime。
+- 触发：运行 `Other/event_rag_cleaner` 的 Qwen 模式时未配置 `BAILIAN_API_KEY`。
+- 根因：当前脚本凭据契约只有 `BAILIAN_API_KEY`；`DASHSCOPE_API_KEY` 不再作为 fallback 或兼容入口。
+- 解决：通过进程环境或项目 dotenv 提供 `BAILIAN_API_KEY`；缺失时只提示 `BAILIAN_API_KEY`。仅设置 `DASHSCOPE_API_KEY` 时应在本地凭据检查阶段失败，不发起网络请求。
+- 非解决：把密钥值写入脚本、测试报告或日志，或把 `DASHSCOPE_API_KEY` 重新作为 fallback。
+- 验证：本地 `py_compile` 与完整 `pytest`；测试覆盖 BAILIAN_API_KEY 成功读取，以及仅有 DASHSCOPE_API_KEY 时缺少 BAILIAN_API_KEY 且不触网。
+- 预防：新增真实测试前只核对变量是否存在；测试报告只保留变量名、计数和脱敏摘要，不输出值。
+- 证据：[验证记录](../../Other/event_rag_cleaner/VALIDATION.md:5)。
+- 最后验证：2026-08-16。

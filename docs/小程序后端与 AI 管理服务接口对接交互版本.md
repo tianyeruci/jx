@@ -168,7 +168,7 @@ X-User-Name: <用户展示名，可选>
 
 ```JSON
 {
-  "query": "我想从零学习AI工具，应该怎么开始？",
+  "query": "我的获客转化下降，应该先如何诊断？",
   "conversation_id": null
 }
 ```
@@ -192,12 +192,6 @@ X-User-Name: <用户展示名，可选>
 - `answer_delta`
 
 - `retriever_resources`
-
-- `learning_route`
-
-- `course_cards`
-
-- `course_recommendation_note`
 
 - `message_end`
 
@@ -233,7 +227,11 @@ event: answer_delta
 data: {"schema_version":"2.0","request_id":"req-001","sequence":4,"delta":"建议先从高频办公场景开始。"}
 ```
 
-`course_cards` 示例：
+#### 历史兼容字段（新聊天不产生）
+
+以下字段只可能存在于 ADR-036 前的历史消息中；当前 SSE 不产生、客户端不得渲染或据此恢复课程/路线交互。
+
+`course_cards` 历史示例：
 
 ```Plain Text
 event: course_cards
@@ -579,9 +577,9 @@ X-User-Id: <稳定用户ID>
 
 说明：该接口成功返回时，字段以当前 Dify 返回为准，不建议前端对返回体做强绑定。
 
-### 2\.12 课程点击统计接入
+### 2\.12 独立课程跳转与点击统计
 
-商业顾问返回课程卡片时，会带：
+该能力只处理已存在的受控课程跳转链接，不由商业顾问新聊天产生课程卡片：
 
 ```JSON
 {
@@ -1481,8 +1479,7 @@ PDF/DOCX 在策略处理前按源文档顺序转换为 Markdown，尽量保留�
 - `answer_delta`、`retriever_resources`、消息历史和会话标题会统一隐藏清洗审计中登记的真实姓名、昵称、笔名、账号称呼、原文件名及 Dify 管理名称。
 - 跨多个 `answer_delta` 分片出现的姓名也必须被完整替换；调用方不能假设一个姓名一定落在同一 SSE 分片。
 - 商业顾问用户可见文本还必须过滤课程、路线、阶段的中文/英文标签及完整或短内部 ID、`course_`/`route_`/`stage_` 裸标识、括号形式标识和跨 SSE 分片标识；不得输出“内部标识已隐藏”等占位词。
-- Chatflow 决策 JSON 中的候选 ID 和 `course_cards`、`learning_route` 等结构化机器字段保持兼容，不因公开文本过滤而删除；课程卡 `redirect_url` 仍由服务端校验和签名生成。
-- 检索引用中的非受控 URL 会被移除；服务端生成的课程卡 `redirect_url` 不受影响。
+- 新聊天没有课程/路线决策 JSON、课程卡片或路线进度字段；历史消息中的这些字段仅容错读取。检索引用中的非受控 URL 会被移除。
 - 清洗条目仍可逐条查询和复核，但发布与失败重试以源文件为事务边界。任一待复核或失败条目会阻止同源其他条目完成发布。
 - 新生成的 Dify 管理名称为 `原文件名主体__001.原扩展名`、`__002`……。完整原文件名仅用于受保护的管理与审计，不得作为公开引用返回。
 - `personal_business_consultation` 当前同时接受 DOCX 和 PDF。隐私或版面门禁未通过时返回条目级 `review_required`，不会把文件伪装成清洗失败或强制发布。

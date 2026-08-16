@@ -172,9 +172,6 @@ Content-Type: application/json
 | status | 是 | 当前处理状态 |
 | answer_delta | 视结果 | 回答增量 |
 | retriever_resources | 否 | 检索来源 |
-| learning_route | 否 | 学习路线 |
-| course_cards | 否 | 课程卡片 |
-| course_recommendation_note | 否 | 已校验课程卡片后的单条专家见解 |
 | message_end | 成功或正常停止时 | 请求结束 |
 | error | 失败时 | 流式错误；出现后不再返回 message_end |
 request_started 出参：
@@ -216,7 +213,11 @@ retriever_resources 出参：
 event: retriever_resources
 data: {"schema_version":"2.0","request_id":"req-001","sequence":4,"resources":[]}
 ~~~
-learning_route 出参：
+#### 历史兼容字段（新聊天不产生）
+
+以下 `learning_route`、`course_cards` 与 `course_recommendation_note` 架构只用于容错读取 ADR-036 前的历史消息；不得实现为新聊天的事件处理器。
+
+learning_route 历史出参：
 | 字段 | 类型 | 一定返回 | 可空 | 说明 |
 | --- | --- | --- | --- | --- |
 | route_id | string | 是 | 否 | 路线 ID |
@@ -542,7 +543,7 @@ X-User-Id: user-001
 ~~~
 ### 2.12 课程跳转
 调用方：小程序或小程序后端  
-对接级别：通过 course_cards.redirect_url 使用
+对接级别：独立历史课程跳转能力；不由商业顾问新聊天提供
 ~~~http
 GET /r/{token}
 ~~~
@@ -560,7 +561,7 @@ GET /r/<SIGNED_TOKEN>
 ~~~
 注意：
 - 调用方不自行生成或解析 token。
-- 应直接打开 course_cards.items[].redirect_url。
+- 应直接打开受控来源已提供的 `redirect_url`；新聊天不会提供 `course_cards.items[]`。
 - 不存在单独的课程点击上报接口。
 ## 3. AI 管理端接口
 本章接口都需要 X-Internal-Token 和 X-Admin-Token。
@@ -928,7 +929,7 @@ X-Admin-Token: <ADMIN_TOKEN>
 ~~~
 出参案例：
 ~~~json
-{"items":[{"code":"course_information","display_name":"课程信息","supported_extensions":[".docx",".markdown",".md",".txt"],"knowledge_base_code":"course"},{"code":"learning_route","display_name":"学习路线","supported_extensions":[".docx",".markdown",".md",".txt"],"knowledge_base_code":"course"}]}
+{"items":[]}
 ~~~
 ### 3.13 创建上传批次
 ~~~http
@@ -1211,7 +1212,7 @@ Content-Type: application/json
 ~~~json
 {"deleted":true,"document_id":"doc-001"}
 ~~~
-注意：课程或学习路线目录文档不能通过此接口直接删除，可能返回 409。
+注意：历史课程或学习路线目录文档不能通过此接口直接删除，可能返回 409；它们不属于新商业顾问聊天资料。
 ## 4. 附录接口
 ### 4.1 存活检查
 业务页面无需对接，供运维使用。

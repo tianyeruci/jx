@@ -24,7 +24,6 @@ def _paths(document: dict) -> list[list[str]]:
     outgoing: dict[str, list[str]] = {}
     for edge in graph["edges"]:
         outgoing.setdefault(str(edge["source"]), []).append(str(edge["target"]))
-    nodes = _nodes(document)
 
     def visit(node_id: str, path: list[str]) -> list[list[str]]:
         assert node_id not in path, f"DSL graph contains a cycle at {node_id}"
@@ -43,7 +42,10 @@ def test_unified_dsl_is_generated_from_current_source_and_preserves_bindings() -
     validate(source, generated)
     assert generated == expected
     assert generated["app"]["mode"] == source["app"]["mode"] == "advanced-chat"
-    assert _nodes(generated)["general_knowledge"]["dataset_ids"] == _nodes(source)["general_knowledge"]["dataset_ids"]
+    assert (
+        _nodes(generated)["general_knowledge"]["dataset_ids"]
+        == _nodes(source)["general_knowledge"]["dataset_ids"]
+    )
 
 
 def test_current_source_has_only_the_four_supported_start_inputs() -> None:
@@ -61,11 +63,18 @@ def test_current_source_has_one_main_llm_and_no_course_or_recommendation_nodes()
     assert sum(node["type"] == "llm" for node in nodes.values()) == 1
     forbidden = ("course", "recommendation", "question_split", "format_retry")
     assert not [node_id for node_id in nodes if any(term in node_id for term in forbidden)]
-    assert {node_id for node_id, node in nodes.items() if node["type"] == "knowledge-retrieval"} == {
+    assert {
+        node_id for node_id, node in nodes.items() if node["type"] == "knowledge-retrieval"
+    } == {
+        "activity_knowledge",
+        "activity_status_knowledge",
         "general_knowledge",
         "case_knowledge",
     }
-    prompt = "\n".join(str(item.get("text") or "") for item in nodes["combined_response_general"]["prompt_template"])
+    prompt = "\n".join(
+        str(item.get("text") or "")
+        for item in nodes["combined_response_general"]["prompt_template"]
+    )
     assert "不再生成课程、路线或卡片决策 JSON" in nodes["combined_response_general"]["desc"]
     assert "不要推荐、比较、介绍或展示课程" in prompt
 
@@ -78,16 +87,81 @@ def test_all_normal_paths_use_one_llm_and_emit_the_retained_progress_answer() ->
     normal_paths = [path for path in paths if path[-1] == "answer_general"]
     assert normal_paths == [
         [
-            "start", "quick_intent", "quick_route", "progress_answer", "case_route",
-            "general_knowledge", "advisor_retrieval_aggregate", "general_evidence_compact",
-            "combined_response_general", "answer_general",
+            "start",
+            "quick_intent",
+            "quick_route",
+            "progress_answer",
+            "activity_intent",
+            "activity_route",
+            "case_route",
+            "general_knowledge",
+            "advisor_retrieval_aggregate",
+            "general_evidence_compact",
+            "combined_response_general",
+            "answer_general",
         ],
         [
-            "start", "quick_intent", "quick_route", "progress_answer", "case_route",
-            "case_knowledge", "advisor_retrieval_aggregate", "general_evidence_compact",
-            "combined_response_general", "answer_general",
+            "start",
+            "quick_intent",
+            "quick_route",
+            "progress_answer",
+            "activity_intent",
+            "activity_route",
+            "case_route",
+            "case_knowledge",
+            "advisor_retrieval_aggregate",
+            "general_evidence_compact",
+            "combined_response_general",
+            "answer_general",
+        ],
+    ]
+    assert [path for path in paths if path[-1] == "activity_answer"] == [
+        [
+            "start",
+            "quick_intent",
+            "quick_route",
+            "progress_answer",
+            "activity_intent",
+            "activity_route",
+            "activity_window",
+            "activity_status_route",
+            "activity_knowledge",
+            "activity_retrieval_aggregate",
+            "activity_results",
+            "activity_answer",
+        ],
+        [
+            "start",
+            "quick_intent",
+            "quick_route",
+            "progress_answer",
+            "activity_intent",
+            "activity_route",
+            "activity_window",
+            "activity_status_route",
+            "activity_status_knowledge",
+            "activity_retrieval_aggregate",
+            "activity_results",
+            "activity_answer",
         ],
     ]
     for path in normal_paths:
         assert "progress_answer" in path
         assert sum(nodes[node_id]["type"] == "llm" for node_id in path) == 1
+
+
+def test_activity_results_reads_only_aggregated_retrieval_output() -> None:
+    nodes = _nodes(_load(SOURCE))
+    result_node = nodes["activity_results"]
+    selectors = [item["value_selector"] for item in result_node["variables"]]
+    assert ["activity_retrieval_aggregate", "output"] in selectors
+    assert ["activity_knowledge", "result"] not in selectors
+    assert ["activity_status_knowledge", "result"] not in selectors
+
+
+def test_every_dsl_edge_declares_actual_source_and_target_types() -> None:
+    document = _load(SOURCE)
+    nodes = _nodes(document)
+    for edge in document["workflow"]["graph"]["edges"]:
+        assert edge["data"]["sourceType"] == nodes[edge["source"]]["type"]
+        assert edge["data"]["targetType"] == nodes[edge["target"]]["type"]

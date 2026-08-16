@@ -71,7 +71,7 @@ error
 
 在 Dify 1.13.3 中，固定 `progress_answer` 节点可能只在 `node_finished.data.outputs.answer` 返回正文，不发送 `message.answer`；AI 管理服务会在适配层把该输出规范化为一个或多个 `answer_delta`，调用方无需感知 Dify 原始事件差异。
 
-服务端会在用户可见文本出口过滤课程、路线和阶段内部标识，包括 `课程ID`、`路线ID`、`阶段ID`、`course_id`、`route_id`、`stage_id` 及对应的内部 ID 值；历史正文、推荐说明、专家建议和引用资源中的可见字符串同样适用。过滤不会删除 Chatflow 的内部决策字段，也不会改变 `course_cards`、`learning_route` 中供小程序处理课程链接和路线进度的结构化机器字段。
+服务端会在用户可见文本出口过滤受保护来源与内部标识；新聊天没有课程/路线决策字段、课程卡片或路线进度结构。历史正文中的旧课程字段仅容错读取，不能用于恢复聊天行为。
 
 `message_end` 包含本地会话/消息 ID、Dify message/task ID、状态、首 Token、总耗时和 Token 用量。若流中收到 `error`，不能把此前部分文本标记为完整回答。
 
@@ -132,7 +132,7 @@ POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/file
 POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/model-tasks/{task_id}/items/{item_id}/retry
 ```
 
-以上接口还要求 `X-Admin-Token`；`kb_code` 只能为 `general` 或 `course`。当前测试页的课程与路线资料统一使用 `course_route_catalog`（`.xlsx`）；`course_information`、`learning_route` 仍由后端兼容历史批次和旧调用，但不在页面展示或本轮页面验收。完整条目查询、复核、启停和删除接口以 [小程序后端与 AI 管理服务接口对接标准](小程序后端与AI管理服务接口对接标准.md) 为准。
+以上接口还要求 `X-Admin-Token`；`kb_code` 只能为 `general` 或 `course`。当前测试页只展示 `general` 策略；`course_information`、`learning_route`、`course_route_catalog` 仅由后端兼容历史批次和显式旧调用，不在页面展示或本轮页面验收。完整条目查询、复核、启停和删除接口以 [小程序后端与 AI 管理服务接口对接标准](小程序后端与AI管理服务接口对接标准.md) 为准。
 
 模型契约精确重试接口只接受已完成、唯一候选、`realtime` 模式且错误码为 `MODEL_CONTRACT_INVALID` 的条目；它只重新排队该条目，不开启 Bailian Batch、不绕过严格契约。其他状态返回 `409`，客户端应按错误码处理，不解析模型原始错误文字。
 
@@ -178,4 +178,4 @@ GET /internal/v1/admin/course-clicks
 GET /internal/v1/admin/catalog
 ```
 
-会话审计接口的 `user_id` 是管理人员可见的原始用户 ID，不返回内部 `user_hash`。列表使用最近一条助手消息的推荐课程、专业见解、token 消耗和首 token/总响应耗时；详情在每条消息上提供同一组结构化字段，并在顶层重复最近助手消息的汇总。推荐课程、专业见解没有值时返回空数组或空字符串；兼容字段 `recommendation_note` 始终返回空字符串，旧库原值不回填、不改写。
+会话审计接口的 `user_id` 是管理人员可见的原始用户 ID，不返回内部 `user_hash`。新聊天列表使用最近一条助手消息的回答、通用引用、token 消耗和首 token/总响应耗时；历史推荐字段仅容错读取。`recommendation_note` 始终返回空字符串，旧库原值不回填、不改写。

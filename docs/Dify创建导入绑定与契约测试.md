@@ -1,15 +1,14 @@
 # Dify 创建、导入、绑定与契约测试
 
-目标版本：Dify 1.13.3。以下步骤先用测试资料跑通，老板正式资料到位后只替换知识库内容和稳定课程数据。
+目标版本：Dify 1.13.3。以下步骤先用隔离、脱敏的 `general` 测试资料跑通；正式资料只按当前清洗策略和 Metadata 契约替换，不能把课程/路线目录当作商业顾问新聊天的数据来源。
 
-## 当前商业顾问生效状态（2026-08-14，优先于全文历史记录）
+## 当前商业顾问生效状态（2026-08-16，优先于全文历史记录）
 
-- 当前线上商业顾问已切换到本次新建并发布的隔离 Chatflow；旧应用仍保留，可与发布前 jx 配置快照配合回滚。本次没有删除 Dify 数据集、课程/路线数据或旧应用。
-- 当前应用的 Start 输入实测只有 `conversation_summary`、`recent_history_text`、`profile_json`、`business_output_style`；Dify 1.13.3 `/parameters` 和 jx `health/ready` 均通过。
-- 工作流保留固定直答、即时提示、一次主 LLM 和“明确案例请求才检索 `consulting_case`”的通用知识库边界；没有课程库、学习路线、课程卡片或推荐决策 JSON 分支。`quick_route`、`case_route` 只是流程节点 ID。
-- 发布前控制台发现 `variable-aggregator` 后继节点引用了不存在的 `result` 输出；Dify 1.13.3 的实际输出名为 `output`。已修正两个受控 DSL、增加回归断言并重新导入发布；不得以跳过控制台校验的方式绕过这类错误。
-- jx 真实商业顾问 SSE 已以 `message_end.status=completed` 结束，且未出现课程推荐、课程卡片或学习路线事件；测试会话已精确删除。通用 `retriever_resources` 仍保留，故通用知识库不得混入课程资料。
-- 仓库的 `scripts/jx_deploy_release.sh` 不再安装任何商业顾问 Dify DSL 或 Prompt；wheel 发布不会发布 Dify 应用。该脚本保护将在下一次完整 release 同步并复核；后续变更必须从 `dify/商业顾问（当前使用版本）.yml` 走受控 Dify 导入、发布、`/parameters` 和真实 SSE 验收，不能把服务器上的历史 DSL 或 Prompt 副本当作当前源。
+- jx 最近活动代码已随 `20260816-activity-59d963` release 部署并通过健康、清洗入库和 Metadata 回读；jx 已同步并实际生效新版 App Key，Dify 控制台中的当前绑定 Chatflow 已发布更新。旧应用和发布前配置仍保留，未删除知识库、课程/路线数据或历史聊天。
+- 新版 Chatflow 已增加活动意图、动态中国时区时间窗口、正常/取消/延期状态路由、活动 Metadata 检索、结果聚合排序去重和回答节点；普通商业、咨询案例和活动路径互斥。Dify 1.13.3 的动态变量、数值 Metadata 条件和 `doc_metadata` 读取已完成隔离/静态契约验证。
+- jx 当前 App Key 已生效：`.env` 与运行中 API 容器的脱敏指纹一致，`health/ready=200`、Dify `/parameters=200`，并已完成测试页真实 SSE 验收。密钥明文不写入报告或文档。
+- 线上复核曾发现当前 App 的意图代码落后于仓库 DSL，导致“会议真实案例”误入活动分支；已在当前 App 直接修正 `quick_intent` 并发布更新。发布后正常/取消/延期、普通业务负例和案例重叠负例均通过。
+- 仓库的 `scripts/jx_deploy_release.sh` 不安装商业顾问 Dify DSL 或 Prompt；wheel 发布不会自动发布或切换 Dify 应用。每次 Dify 变更必须从 `dify/商业顾问（当前使用版本）.yml` 走受控导入、发布、Key 映射、`/parameters` 和真实 SSE 验收。
 
 ## 2026-08-03 执行状态（历史）
 
@@ -17,12 +16,13 @@
 - 远端只读契约检查已验证四个应用的参数/调用路径；两个知识库检索结果为 0，不能据此宣称 RAG 召回通过。候选 DSL 导入/发布需要受控 Dify 管理员会话或 Enterprise API，并应通过 HTTPS/安全隧道完成；缺少这些条件时不得使用 HTTP 管理接口、猜测凭据或直接改数据库。
 - 商业顾问轻量语义评测仍有未通过案例；个人商业咨询模型契约和课程目录结构复核也必须保持复核门禁，不能为了提高通过率放宽 schema 或自动批准。
 
-## 当前商业顾问覆盖规则（2026-08-14，优先于下文历史说明）
+## 当前商业顾问覆盖规则（2026-08-16，优先于下文历史说明）
 
 - 新商业顾问聊天的当前源文件是 `dify/商业顾问（当前使用版本）.yml`：Start 只接收会话摘要、最近对话、用户画像和输出风格；只有一个 `combined_response_general` 主 LLM。
 - 课程推荐、学习路线、课程知识库检索、课程混合分支、推荐决策 JSON、格式重试和课程卡片输出均已移除。`quick_route`、`case_route` 只是流程分支 ID，不表示学习路线。
-- 保留“用户明确要求相关/类似/真实案例才检索 `consulting_case`”的非课程边界；普通商业检索与案例检索互斥，均绑定通用知识库，且不会访问课程库。
-- 2026-08-14 已完成 Dify 新应用导入和发布、jx App Key 切换、`/parameters` 与真实 SSE 验收；本节其余“待发布”描述均为历史过程，不再代表当前线上行为。
+- 保留“用户明确要求相关/类似/真实案例才检索 `consulting_case`”的非课程边界；新增“明确查询活动/会议时才检索 `record_type=event`”的活动边界。普通商业、案例和活动检索互斥，均绑定通用知识库，且不会访问课程库。
+- 活动正常分支使用动态 `event_end_ts ≥ start_ts`、`event_start_ts ≤ end_ts`；取消/延期分支只按 `event_status`，延期未定不把旧日期作为新日期。普通分支排除 `consulting_case` 和 `event`。
+- 2026-08-16 已完成新版 Dify 导入/发布更新、jx App Key 切换、`/parameters`、健康检查和测试页真实 SSE 验收；“控制台已发布”与“jx 已生效”仍必须分别记录，不能互相替代。
 
 ## 本轮 2026-08-10 发布与自动导入补充
 
@@ -30,25 +30,21 @@
 - `dify/商业顾问（当前使用版本）.yml` 已导入为隔离应用 `eaa840e6-ec85-47e4-89a5-5cf0678f7ac3` 并发布；旧应用保留作回滚。发布后必须重新创建/核对 App Key，并按 `docs/troubleshooting/deployment.md` DEPLOY-013 备份 `.env`、强制重建读取配置的 jx 核心服务。
 - 本次 `/parameters` 与 Dify Chat API 真实调用均返回 `200`；测试 Dataset 没有案例文档，`retriever_resources` 为 `0`，因此这只能证明分支、鉴权和 API 链路可用，不能把空召回宣称为案例 RAG 质量通过。待正式案例文档发布后，必须追加有召回证据的真实 SSE 验收。
 
-## 当前功能修改索引（2026-08-05）
+## 当前功能修改索引（2026-08-16，优先于历史记录）
 
 以下结论以当前使用的商业顾问 DSL `dify/商业顾问（当前使用版本）.yml`、两个 Workflow DSL 和 jx-now 适配代码为准。
 
 | 功能 | 当前来源 | 修改位置与注意事项 |
 | --- | --- | --- |
-| 商业顾问打开页面的推荐问题 | Dify App 的 `suggested_questions` 参数，经 `entry.py` 的 `/parameters` 读取 | 当前固定为 3 条 AI 课程相关问题；入口接口按 Dify 当前已发布参数返回推荐问题，并缓存 300 秒。问题文案应在 Dify App 参数或 `dify/商业顾问（当前使用版本）.yml` 中修改，修改本地 DSL 后仍需保存、发布并重新核对 `/parameters`，不能只改本地文件后宣称线上已更新。 |
+| 商业顾问打开页面的推荐问题 | Dify App 的 `suggested_questions` 参数，经 `entry.py` 的 `/parameters` 读取 | 推荐问题应聚焦经营咨询或咨询案例，不得引导课程推荐或学习路线。问题文案在 Dify App 参数或 `dify/商业顾问（当前使用版本）.yml` 修改；改本地 DSL 后仍须导入、保存、发布并重新核对 `/parameters`，不能只改本地文件后宣称线上已更新。 |
 | 商业顾问回答后的推荐问题 | Dify 的 `suggested_questions_after_answer.enabled` 开关和 Dify 消息上下文 | 当前 DSL 只打开了该开关；jx-now 没有把 Dify 的回答后推荐问题接口转发给小程序/测试页。因此要改变生成逻辑，应在 Dify App 的回答后推荐问题能力中修改并单独验收，不能只改 `suggested_questions`；如要让本项目展示，还需要新增受控 API/SSE 字段，这不在本次计划内。 |
-| 商业顾问专家见解 | DSL 的 `combined_response_general/course/mixed` 与格式修复分支输出 `expert_insight`、`expert_course_ids`，并由 `recommendation_decision_*` 解析；服务端 `ai_management/courses.py` 的 `validate_recommendation()` 与 `ai_management/conversations.py` | DSL 不生成用户可见推荐理由。服务端只在已校验课程卡片存在且全部卡片完成后发送一条 `course_recommendation_note` 专家见解；模型见解须通过 `expert_course_ids` 全量一致、链接和内部 ID 门禁，不合规时由服务端生成同长度约束的安全默认见解。无卡、待路线/阶段确认或解析失败不发送。事件名及 `{"content":"..."}` 结构不变；路线完整阶段、`course_names` 与 `course_collection_names` 由服务端补充；修改 DSL 后必须导入、保存、发布并执行真实 SSE 验收。 |
+| 商业顾问检索与回答 | `general_knowledge`、`case_knowledge`、活动检索节点、结果聚合、`combined_response_general` | 普通、案例和活动检索都绑定同一 `general` Dataset，三条路径互斥；普通检索排除 `consulting_case`/`event`，案例只取 `consulting_case`，活动只取 `event` 并按动态状态/时间条件过滤；聚合、证据压缩后只调用一个主 LLM。不得恢复课程检索、推荐决策 JSON、课程卡片或课程/路线 SSE。 |
 | 朋友圈顾问、日常写作界面引导语 | Dify App 的 `opening_statement` 参数，经 `entry.py` 的 `/parameters` 读取 | `dify/dsl/moments_advisor.yml` 和 `dify/dsl/writing_advisor.yml` 是 Workflow DSL，当前只定义 Start→LLM→End 图，没有可供 `entry-config` 读取的 `opening_statement`；用户看到的引导语应在对应 Dify App 的界面/参数设置中修改并发布。不要把引导语只写进 LLM Prompt，否则不会成为入口配置。 |
 | 朋友圈顾问、日常写作输出 | 两个 Workflow DSL 的 LLM Prompt | 朋友圈修改 `dify/dsl/moments_advisor.yml` 的 `llm` 节点；日常写作修改 `dify/dsl/writing_advisor.yml` 的 `llm` 节点。当前 Start→LLM→End 结构已经足够，不需要为界面引导语或商业顾问的分段回答增加节点；修改后需重新导入、保存、发布并分别验收。 |
 
 ### 商业顾问首屏固定问题配置
 
-当前仓库配置文件为 `dify/商业顾问（当前使用版本）.yml`，位置是 `workflow.features.suggested_questions`。固定问题聚焦 `AI高手提效课`，当前为：
-
-1. `我想系统学习AI工具，应该从哪里开始？`
-2. `有没有适合公众号运营入门的课程？`
-3. `我已经有一些基础，如何选择AI写作进阶课程？`
+当前仓库配置文件为 `dify/商业顾问（当前使用版本）.yml`，位置是 `workflow.features.suggested_questions`。固定问题必须聚焦商业经营诊断、行动建议或明确咨询案例，不能引导课程、课程集合或学习路线。
 
 在 Dify 控制台打开商业顾问 Chatflow 的应用设置，修改开场引导/推荐问题中的 `suggested_questions`，保存并发布。发布后依次核对 Dify `/parameters` 和 jx `/internal/v1/entry-config`；jx 入口配置缓存最长约 300 秒。这个配置只影响首次进入页面的推荐问题，不改变回答后的推荐问题能力。
 
@@ -65,37 +61,28 @@
 
 如果 Dify 版本或导出 DSL 改名了节点，适配层识别的节点规则位于 `ai_management/conversations.py` 顶部的 `PROGRESS_ANSWER_NODE_ID`、`QUICK_ANSWER_NODE_ID` 和 `ANSWER_NODE_PREFIX`。修改节点 ID 后必须补充 SSE 契约测试，并重新执行真实 Chatflow 验收；2026-08-05 已在 jx 发布并用真实合成请求、浏览器测试页验证“即时提示 → 最终答案”顺序。
 
-### 商业顾问课程/路线名称与内部标识边界
+### 商业顾问 Metadata 与引用边界
 
-Chatflow 的决策 JSON 可以继续使用 `course_id`、`route_id`、`stage_id` 做候选、校验和进度动作；这些字段不能为了改善文案而从决策结果删除。`ai-management` 在用户可见文本出口读取已审核课程目录快照，把课程、路线、阶段 ID 转成对应正式名称，并清理英文标签、裸标识和旧的“内部标识已隐藏”占位词。
+- Dify 只接收策略声明的业务 Metadata，外层附加 `cleaning_strategy`、`cleaning_spec_revision`、`content_format`；原文件名、文件/批次 ID、SHA、构建版本、人名映射和审计信息只留本地。
+- 普通/案例 DSL 的核心 Metadata 字段是 `record_type`。咨询案例必须回读为 `consulting_case`；活动文档必须回读为 `record_type=event`，并额外具备 `event_status`、`event_start_ts`、`event_end_ts` 等活动字段。
+- 活动分支在运行时动态传入 `event_status` 和中国时区时间戳；正常活动使用时间区间相交条件，取消/延期只按状态，结果 Code 从 `metadata.doc_metadata` 读取字段、按开始时间升序去重并限制 3 条。`topic`、`industry`、`business_stage` 等不会自动形成动态过滤。
+- `retriever_resources` 仍可能发送通用引用。因此发布前必须确认 `general` 中没有课程/路线资料，且公开标题和正文已通过脱敏边界。
 
-- 用户看到的是目录正式名称；错误名称与有效 ID 同时出现时，以目录名称为准。
-- 路线快照按“新手必看 → 入门阶段 → 高手进阶”排序，保留现有阶段 ID，避免影响已确认进度。
-- 路线列表可展示正式课程名称供用户判断，但路线或阶段待确认时不得将其表述为已推荐课程；普通推荐的课程卡片仍由 `courses.py` 按已校验 ID 生成签名 `redirect_url`，结构化 `course_cards`、`learning_route`、停止和反馈字段保持兼容。
-- ID 无效或课程已下架时不生成课程卡片，用户文案使用不可用提示；不能根据 ID 猜测课程名称。
-- 处理范围覆盖流式回答、历史正文、标题、推荐说明、专家建议和引用资源中的可见字符串；引用资源的 `course_id`/`route_id`/`stage_id` 元数据字段保持结构但不作为用户文案展示。
-- 路线确认沿用现有机器字段和接口，不新增字段；路线初问和“我确认学习路线：路线名称”后的阶段确认状态均不发送 `course_cards`，用户明确确认阶段后才生成该路线已确认当前阶段的全部有效课程卡片，不得带入下一阶段。明确课程、课程集或最新课程查询可走独立课程路径且最多 5 门；多个可信路线均可能匹配时只澄清，不回退独立课程；确实没有官方路线证据时先说明未匹配，再转为独立课程路径。
-- 用户自身状态、意图、选择和学习进度按“当前轮明确表达 → 最近未摘要历史中的明确确认 → 会话摘要中的已确认内容 → 路线进度 JSON → 用户画像 JSON”取值。新路线选择不取消旧路线进度；拒绝、换一条或含糊答复不写持久拒绝状态。
-
-这部分保持现有接口字段，但改变了公开课程卡片的出现条件；修改后必须同步接口契约、Prompt、目录/DSL 契约测试，并在隔离 Dify 应用完成“路线初问 → 路线确认 → 阶段确认 → 课程卡片”的真实 SSE 验收。
-
-## 1. 建两个知识库
+## 1. 建立商业顾问通用知识库
 
 在 Dify 控制台创建：
 
 1. `business-general-test`
-2. `business-course-test`
 
 两者使用同一种可用中文 Embedding 模型。首版选择高质量索引和普通向量检索；没有已经部署的 Rerank 模型时先不启用。
 
 在知识库 Service API 页面生成一个 API Key。该 Key 可能访问当前账号可见的多个知识库，因此只放在 AI 管理服务环境变量，不下发小程序。
 
-记录两个 Dataset ID：
+记录商业顾问使用的 Dataset ID：
 
 ```text
 DIFY_KNOWLEDGE_API_KEY=
 DIFY_GENERAL_DATASET_ID=
-DIFY_COURSE_DATASET_ID=
 ```
 
 ## 2. 先导入测试资料
@@ -106,16 +93,7 @@ DIFY_COURSE_DATASET_ID=
 test_data/knowledge/通用知识库测试资料.md
 ```
 
-课程库不要直接手工上传原 Markdown作为最终流程。先配置 API Key 和 Dataset ID，再运行：
-
-```powershell
-ai-course-import test_data/courses/测试课程与路线.md --dry-run
-ai-course-import test_data/courses/测试课程与路线.md --publish
-```
-
-CLI 使用 create-by-text，等待索引完成和非零分块，设置 Metadata，然后写本地课程事实和 Redis 快照。
-
-老板模板本身没有稳定 ID。首次测试或首次正式整理时可以省略 `course_id`、`route_id` 和 `stage_id`，导入器会根据方向与名称生成确定性 ID，路线中的 `course_ids` 也可以暂时填写唯一课程名称。dry-run 输出生成结果后，应把这些 ID 回填到后续维护的正式 Markdown；课程改名时仍沿用原 ID，不能依赖再次生成。
+测试资料通过 AI 管理服务选择 `general` 策略上传。Dify `create-by-text`、索引、父子块和 Metadata 回读均成功后才算入库；不要把课程/路线资料上传到该 Dataset。
 
 ## 3. 导入四个应用
 
@@ -123,7 +101,7 @@ CLI 使用 create-by-text，等待索引完成和非零分块，设置 Metadata�
 
 | 应用 | 文件 | 类型 |
 |---|---|---|
-| 商业顾问 | `dify/dsl/business_advisor.yml` | Chatflow / advanced-chat |
+| 商业顾问 | `dify/商业顾问（当前使用版本）.yml` | Chatflow / advanced-chat |
 | 朋友圈顾问 | `dify/dsl/moments_advisor.yml` | Workflow |
 | 日常写作 | `dify/dsl/writing_advisor.yml` | Workflow |
 | 摘要画像 | `dify/dsl/summary_profile.yml` | Workflow |
@@ -158,14 +136,13 @@ DSL 不包含模型 API Key。
 
 打开商业顾问画布：
 
-- “通用知识检索”绑定 `business-general-test`。
-- “混合问题通用知识检索”也绑定 `business-general-test`。
-- “课程路线检索”绑定 `business-course-test`。
-- 确认两个 LLM 节点没有开启 Memory。
+- `general_knowledge` 与 `case_knowledge` 都绑定 `business-general-test`。
+- 前者使用 `record_type is not consulting_case`；后者使用 `record_type is consulting_case`。两个分支互斥。
+- 确认唯一主 LLM `combined_response_general` 没有开启 Memory。
 - 开启引用与归属，让 API 的 `retriever_resources` 有内容。
 - 保存并发布。
 
-重要：`.env` 中 Dataset ID 只供 Service API 使用，不会自动改变 Chatflow 原生知识检索节点。更换知识库时必须同时改环境变量、重新绑定画布并发布。商业顾问含“通用 / 课程 / 混合”三条路径，三个检索节点都必须按上表完成绑定。
+重要：`.env` 中 Dataset ID 只供 Service API 使用，不会自动改变 Chatflow 原生知识检索节点。更换知识库时必须同时改环境变量、重新绑定画布并发布。不得绑定课程 Dataset、添加课程 Metadata 过滤或恢复课程/混合检索节点。
 
 ## 5. 创建四个 App Key
 
@@ -196,7 +173,7 @@ $headers = @{
   "X-User-Id" = "contract-user-001"
 }
 $body = @{
-  query = "AI工具入门课程主要解决什么问题？"
+  query = "我的获客转化下降，先应如何诊断？"
 } | ConvertTo-Json
 Invoke-WebRequest `
   -Method Post `
@@ -206,7 +183,7 @@ Invoke-WebRequest `
   -Body $body
 ```
 
-确认能看到 `request_started`、`answer_delta`、引用、课程卡片或 `message_end`。商业顾问必须分别用通用问题、课程问题和混合问题各测一次；每次都要有最终 `message_end`，且 Dify 运行记录中不能出现未定义变量。分类器未执行的分支不会生成空变量，因此决策和回答节点只能引用当前分支已经执行的检索节点输出。
+确认能看到 `request_started`、`status`、`answer_delta`、可选引用和 `message_end`，且不会出现课程/路线/课程卡片事件。至少分别验证一个普通商业问题和一个明确索要咨询案例的问题；每次均须有最终 `message_end`，Dify 运行记录不得出现未定义变量。两个互斥分支中，后续节点只能引用实际执行分支的检索输出。
 
 ## 7. 动态 inputs 契约
 
@@ -215,8 +192,8 @@ Invoke-WebRequest `
 1. 新建本地商业会话，首轮提供一个可辨识约束，例如“我的预算上限是A”。
 2. 使用同一逻辑会话再次调用，让服务在 `conversation_summary` 或 `recent_history_text` 中提供新的可辨识值B。
 3. 在 Dify 运行日志检查 Start 节点实际 inputs 是B，不是首轮A。
-4. 构造相互冲突的当前轮、最近未摘要历史、会话摘要、路线进度和用户画像值，逐级移除高优先级值，验证服务实际传入的 inputs 与输出决策严格遵循“当前轮明确表达 → 最近未摘要历史明确确认 → 会话摘要确认 → 路线进度 JSON → 用户画像”。
-5. 在隔离应用做至少三轮真实 SSE：路线初问的路线结构返回 `learning_route`（可展示阶段、课程名称）但不发送 `course_cards`；确认路线后仍不发送；明确确认阶段后才收到当前阶段全部有效课程（构造超过 5 门），不得出现下一阶段卡片，随后只收到一条 `course_recommendation_note` 专家见解。另测多路线候选只澄清、不回退独立课程，以及新路线选择不取消旧路线、拒绝/换一条/含糊答复不写持久拒绝状态。
+4. 构造相互冲突的当前轮、最近未摘要历史、会话摘要和用户画像值，逐级移除高优先级值，验证服务实际传入的 inputs 与输出严格遵循“当前轮明确表达 → 最近未摘要历史明确确认 → 会话摘要确认 → 用户画像”。
+5. 在隔离应用至少完成普通商业问题、明确咨询案例问题和无课程事件断言三轮真实 SSE：普通分支不得取 `consulting_case`，案例分支不得取非案例资料；所有流都不得出现 `learning_route`、`course_cards` 或 `course_recommendation_note`。
 6. 再跨自然日或临时修改测试日期，确认服务创建新的 Dify 会话段但本地仍可续聊。
 
 若普通 inputs 在目标部署确实没有更新，再实现会话变量查询/更新备用路径；不要为未复现问题增加双套逻辑。
@@ -250,11 +227,8 @@ Workflow：
 - 文档删除。
 - 中文和超长名称。
 
-## 9. 两个知识库是否足够
+## 9. 商业顾问知识库边界
 
-当前场景使用两个最合适：
+当前商业顾问只绑定一个 `general` Dataset。普通商业知识与咨询案例通过静态 `record_type` 过滤隔离；它们不是两个知识库。
 
-- 通用库内容规模和更新节奏较杂，回答一般商业问题。
-- 课程库是审核后的受控事实，承担课程 ID、路线和阶段检索。
-
-分开可以为课程设置更高召回和更严格的最终校验，也避免普通文章中的课程措辞被误当成正式目录。首版无需再按公众号、案例或 SOP 拆更多库；用 Metadata 区分即可。
+课程/路线数据即使仍因管理兼容而存在，也不属于本应用的 Dataset、检索节点、SSE 或验收目标。不能为了“提高课程召回”把它们放进 `general`，因为普通分支可能召回 `record_type` 不为 `consulting_case` 的污染资料。

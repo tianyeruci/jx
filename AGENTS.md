@@ -68,3 +68,47 @@
 - 一次性要求、版本号、测试数字、主机信息、长命令和故障流水不得加入本文件。
 - 复杂可复用流程优先做成 Skill 或脚本；可机械执行的规则优先交给测试、lint、schema、hook 或 CI。
 - 仅当某个子目录形成长期独立规则时才增加嵌套 `AGENTS.md`；当前不预先创建。
+
+<!-- codex-repo-governance:begin -->
+# Codex Repository Governance
+
+## Sources of truth
+- Current project status: `docs/PROJECT_STATUS.md` (generated).
+- Architecture baseline: `docs/architecture/PROFILE.md`.
+- Active feature requirements: `docs/features/<id>/SPEC.md`.
+- Active implementation contract: `docs/features/<id>/IMPLEMENTATION.md`.
+- Machine state/config: `.codex/governance/project.json`.
+- Local active-work state under `.codex/state/` is generated and must not be committed.
+
+## Workflow
+- Route substantive development through the user-level `dev-workflow` skill.
+- Preserve existing architecture unless an approved Implementation/Engineering Change authorizes structural migration.
+- For Standard/High feature/engineering work, use `gov approve-requirements` and `gov approve-implementation` only after the explicit human gates; `gov set-phase implementation` verifies their content fingerprints and refuses stale approval.
+- Before the Implementation Gate, do not edit production/project source. Requirements/architecture/governance documents and approved disposable prototypes are the only pre-implementation write targets.
+- Bug fixes use evidence-driven diagnosis and do not require a full feature-doc chain when expected behavior is already clear.
+
+## Functional module ownership
+- Standard/High Feature contracts register module path/glob ownership before implementation approval.
+- A shared implementation path may affect multiple active Features; all related current Feature docs must be synchronized before completion.
+- Module status is derived from implementation/Quality/completion; do not manually claim completion to bypass validation.
+- Retired Features remain historical and no longer participate in current path ownership.
+
+## Quality
+Use the canonical commands in `.codex/governance/project.json`.
+Before completion, run:
+- Windows: `powershell -NoProfile -ExecutionPolicy Bypass -File .codex/governance/gov.ps1 quality`
+- WSL/Linux: `python3 .codex/governance/gov.py quality`
+
+## Documentation
+- One current SPEC and IMPLEMENTATION file per feature; do not create versioned duplicates.
+- Implementation writes automatically mark the bound feature docs stale and regenerate `docs/PROJECT_STATUS.md`; do not hand-edit that generated file.
+- For Standard/High bound work, clear stale docs with `gov sync-docs --reason "..." --summary "..."` only after semantic docs match the code. The CLI appends the semantic before/after CHANGELOG entry and refuses a no-summary bypass.
+- Update SPEC/IMPLEMENTATION/Architecture Profile only when their actual semantics changed, because such edits intentionally invalidate the corresponding approval.
+- Create ops/incident/ADR docs only when triggered by a real need.
+
+## Safety
+- No silent production push/merge/deploy, irreversible migration, destructive resource change, permission/secret change, or unapproved production dependency.
+- Never commit secrets.
+- Use one write owner per checkout; use worktrees for parallel write tasks.
+- Common remote/production Bash actions are protected by repo hooks and require an exact recorded release approval after the user explicitly approves the command.
+<!-- codex-repo-governance:end -->

@@ -18,3 +18,9 @@ var/
 streamlit.err.log
 streamlit.out.log
 ~$*
+
+# Codex governance local/generated state
+.codex/state/
+.codex/governance/repo-facts.json
+.codex/governance/__pycache__/
+.codex/hooks/__pycache__/
