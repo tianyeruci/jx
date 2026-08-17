@@ -20,6 +20,7 @@ EXPECTED_ROUTES = {
     ("POST", "/internal/v1/business/messages/{message_id}/feedback"),
     ("POST", "/internal/v1/tools/moments/run"),
     ("POST", "/internal/v1/tools/writing/run"),
+    ("GET", "/internal/v1/tools/{kind}/examples"),
     ("POST", "/internal/v1/tools/{task_id}/stop"),
     ("GET", "/internal/v1/entry-config"),
     ("GET", "/r/{token}"),
@@ -32,16 +33,36 @@ EXPECTED_ROUTES = {
     ("PUT", "/internal/v1/admin/settings/retention"),
     ("GET", "/internal/v1/admin/style-settings"),
     ("PUT", "/internal/v1/admin/style-settings/{style_code}"),
+    ("GET", "/internal/v1/admin/tools/{kind}/examples"),
+    ("POST", "/internal/v1/admin/tools/{kind}/examples"),
+    ("PATCH", "/internal/v1/admin/tools/{kind}/examples/{example_id}"),
+    ("DELETE", "/internal/v1/admin/tools/{kind}/examples/{example_id}"),
+    ("POST", "/internal/v1/admin/tools/{kind}/examples/restore-defaults"),
     ("GET", "/internal/v1/admin/knowledge-bases"),
     ("GET", "/internal/v1/admin/knowledge-bases/{kb_code}/cleaning-strategies"),
     ("GET", "/internal/v1/admin/knowledge-bases/{kb_code}/documents"),
     ("POST", "/internal/v1/admin/knowledge-bases/{kb_code}/upload-batches"),
     ("GET", "/internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}"),
-    ("POST", "/internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/retry"),
-    ("GET", "/internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items"),
-    ("GET", "/internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}"),
-    ("POST", "/internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}/retry"),
-    ("POST", "/internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}/review-decisions"),
+    (
+        "POST",
+        "/internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/retry",
+    ),
+    (
+        "GET",
+        "/internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items",
+    ),
+    (
+        "GET",
+        "/internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}",
+    ),
+    (
+        "POST",
+        "/internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}/retry",
+    ),
+    (
+        "POST",
+        "/internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/files/{file_id}/items/{item_id}/review-decisions",
+    ),
     ("PATCH", "/internal/v1/admin/knowledge-bases/{kb_code}/documents/{document_id}/status"),
     ("DELETE", "/internal/v1/admin/knowledge-bases/{kb_code}/documents/{document_id}"),
     ("DELETE", "/internal/v1/admin/knowledge-bases/{kb_code}/sources/{file_id}"),
@@ -117,10 +138,14 @@ def test_cleaning_strategy_listing_hides_course_route_entries(service_db) -> Non
         "lead_magnet",
     } <= general_codes
     assert course_codes == set()
-    assert not {"course_information", "learning_route", "course_route_catalog"} & (general_codes | course_codes)
+    assert not {"course_information", "learning_route", "course_route_catalog"} & (
+        general_codes | course_codes
+    )
 
 
-def test_catalog_document_disable_updates_authority_and_delete_is_blocked(service_db, monkeypatch) -> None:
+def test_catalog_document_disable_updates_authority_and_delete_is_blocked(
+    service_db, monkeypatch
+) -> None:
     from ai_management.api.routers import knowledge_admin
     from ai_management.courses import get_snapshot
     from ai_management.db import SessionLocal
@@ -139,7 +164,9 @@ def test_catalog_document_disable_updates_authority_and_delete_is_blocked(servic
             pass
 
     client = FakeKnowledgeClient()
-    monkeypatch.setattr(knowledge_admin, "_documents", lambda _kb: [{"id": "course-doc", "name": "目录课程"}])
+    monkeypatch.setattr(
+        knowledge_admin, "_documents", lambda _kb: [{"id": "course-doc", "name": "目录课程"}]
+    )
     monkeypatch.setattr(knowledge_admin, "_client", lambda _kb: client)
     with service_db() as session:
         session.add(
@@ -169,7 +196,10 @@ def test_catalog_document_disable_updates_authority_and_delete_is_blocked(servic
             json={"confirm_name": "目录课程"},
         )
     assert disabled.status_code == 200
-    assert disabled.json()["catalog_record"] == {"record_type": "course", "record_id": "catalog-course"}
+    assert disabled.json()["catalog_record"] == {
+        "record_type": "course",
+        "record_id": "catalog-course",
+    }
     assert client.disabled == ["course-doc"]
     assert deleted.status_code == 409
     with SessionLocal() as session:

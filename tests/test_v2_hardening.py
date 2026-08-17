@@ -191,7 +191,10 @@ def test_admin_style_and_retention_settings_are_protected_and_persist(service_db
     assert denied.status_code == 401
     assert initial.status_code == 200
     assert {item["code"] for item in initial.json()["items"]} == {
-        "business_answer", "business_expert_insight", "moments", "writing"
+        "business_answer",
+        "business_expert_insight",
+        "moments",
+        "writing",
     }
     assert updated.json()["version"] == 2
     assert retention.json()["history_retention_days"] == 14
@@ -209,19 +212,43 @@ def test_admin_delete_user_ai_data_keeps_course_aggregates(service_db):
             [
                 conversation,
                 BusinessProfile(user_hash=subject_hash, confirmed={"business_goal": "test"}),
-                LearningRouteProgress(user_hash=subject_hash, route_id="route", status="active", current_stage_id="one"),
-                CourseClickDaily(course_id="course", click_date=business_today(), clicks=3, unique_users=2),
+                LearningRouteProgress(
+                    user_hash=subject_hash,
+                    route_id="route",
+                    status="active",
+                    current_stage_id="one",
+                ),
+                CourseClickDaily(
+                    course_id="course", click_date=business_today(), clicks=3, unique_users=2
+                ),
             ]
         )
         session.flush()
-        session.add(BusinessMessage(conversation_id=conversation.id, role="user", content="secret", status="completed"))
+        session.add(
+            BusinessMessage(
+                conversation_id=conversation.id, role="user", content="secret", status="completed"
+            )
+        )
         session.commit()
     headers = {"X-Internal-Token": "test-internal-token", "X-Admin-Token": "test-admin-token"}
     with TestClient(app) as client:
         response = client.delete(f"/internal/v1/admin/users/{raw_user_id}/ai-data", headers=headers)
     assert response.status_code == 200
     with service_db() as session:
-        assert session.scalar(select(BusinessConversation).where(BusinessConversation.user_hash == subject_hash)) is None
+        assert (
+            session.scalar(
+                select(BusinessConversation).where(BusinessConversation.user_hash == subject_hash)
+            )
+            is None
+        )
         assert session.get(BusinessProfile, subject_hash) is None
-        assert session.scalar(select(LearningRouteProgress).where(LearningRouteProgress.user_hash == subject_hash)) is None
-        assert session.scalar(select(CourseClickDaily).where(CourseClickDaily.course_id == "course")) is not None
+        assert (
+            session.scalar(
+                select(LearningRouteProgress).where(LearningRouteProgress.user_hash == subject_hash)
+            )
+            is None
+        )
+        assert (
+            session.scalar(select(CourseClickDaily).where(CourseClickDaily.course_id == "course"))
+            is not None
+        )

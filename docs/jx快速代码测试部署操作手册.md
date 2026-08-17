@@ -26,10 +26,27 @@
 D:\work\projectc\jx-now
 ```
 
-选中 `ai_management` 文件夹本身，右键压缩为 ZIP，并确保最终文件是：
+建议使用下面的 PowerShell/`uv` 命令生成 ZIP。不要直接使用 Windows `Compress-Archive` 或资源管理器压缩：某些服务器 Python 版本会将其条目解析为反斜杠路径，触发服务器 ZIP 安全校验。最终文件是：
 
 ```text
 D:\work\projectc\jx-now\ai_management.zip
+```
+
+```powershell
+Set-Location D:\work\projectc\jx-now
+@'
+from pathlib import Path
+import zipfile
+
+source = Path('ai_management')
+destination = Path('ai_management.zip')
+with zipfile.ZipFile(destination, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+    for path in sorted(source.rglob('*'), key=lambda item: item.as_posix()):
+        if path.is_dir() or '__pycache__' in path.parts or path.suffix in {'.pyc', '.pyo'}:
+            continue
+        archive.write(path, path.as_posix())
+print(destination)
+'@ | uv run python -
 ```
 
 ZIP 内正确结构：
@@ -60,6 +77,15 @@ if (-not (Test-Path -LiteralPath $zip)) { throw 'ai_management.zip 不存在' }
 $entries = tar -tf $zip
 $invalid = $entries | Where-Object { $_ -notmatch '^ai_management(/|$)' }
 if ($invalid) { throw 'ZIP 中存在 ai_management/ 之外的路径' }
+@'
+from pathlib import Path
+import zipfile
+
+with zipfile.ZipFile(Path('ai_management.zip')) as archive:
+    invalid = [name for name in archive.namelist() if not name or '\\' in name]
+if invalid:
+    raise SystemExit('ZIP 中存在反斜杠或空路径，必须重建')
+'@ | uv run python -
 $entries | Select-Object -First 20
 Get-FileHash -LiteralPath $zip -Algorithm SHA256
 ```

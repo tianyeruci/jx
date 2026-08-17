@@ -84,6 +84,7 @@ error
 ## 无状态工具
 
 ```http
+GET /internal/v1/tools/{kind}/examples
 POST /internal/v1/tools/moments/run
 POST /internal/v1/tools/writing/run
 POST /internal/v1/tools/{task_id}/stop
@@ -101,6 +102,8 @@ POST /internal/v1/tools/{task_id}/stop
 ```
 
 字段必须与对应 Workflow Start 节点一致。两个入口不创建本地商业历史、画像、课程事件或本地反馈。
+
+`GET /internal/v1/tools/{kind}/examples` 仅返回 `moments` 或 `writing` 当前启用的案例；案例的完整 `request` 直接复用对应 `/run` 的既有输入，不改变 Workflow DSL。管理员案例 CRUD/恢复接口位于 `/internal/v1/admin/tools/{kind}/examples`，沿用双 Token 管理鉴权。
 
 ## 入口配置
 

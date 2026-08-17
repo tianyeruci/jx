@@ -400,6 +400,12 @@ X-User-Id: <稳定用户ID>
 - `answer_delta`
 - `message_end`
 - `error`
+
+#### 案例目录
+```http
+GET /internal/v1/tools/moments/examples
+```
+请求头同上。返回当前启用的朋友圈案例；每项包含 `id`、`title`、`description`、完整 `request`、`enabled` 和 `sort_order`。用户点击案例后，应将完整 `request` 作为既有 `/run` 接口的 `inputs.request` 发送，其他输入字段按现有链路传递。
 ### 3.10 日常写作
 ```http
 POST /internal/v1/tools/writing/run
@@ -429,6 +435,12 @@ X-User-Id: <稳定用户ID>
 - `answer_delta`
 - `message_end`
 - `error`
+
+#### 案例目录
+```http
+GET /internal/v1/tools/writing/examples
+```
+请求头同上。返回当前启用的日常写作案例；每项包含 `id`、`title`、`description`、完整 `request`、`enabled` 和 `sort_order`。用户点击案例后，应将完整 `request` 作为既有 `/run` 接口的 `inputs.request` 发送，其他输入字段按现有链路传递。
 ### 3.11 停止工具生成
 ```http
 POST /internal/v1/tools/{task_id}/stop
@@ -753,6 +765,35 @@ PUT /internal/v1/admin/style-settings/{style_code}
   "updated_by": "system"
 }
 ```
+### 4.7.1 朋友圈与日常写作案例目录
+案例目录按工具 `kind` 隔离，保存在现有 `AdminSetting` JSON 配置中，不新增数据库表或迁移。
+#### 查询
+```http
+GET /internal/v1/admin/tools/{kind}/examples
+```
+其中 `kind` 为 `moments` 或 `writing`。管理员请求需同时携带内部服务令牌和管理员令牌。返回该工具的全部案例，包括已停用项。
+#### 新增
+```http
+POST /internal/v1/admin/tools/{kind}/examples
+```
+请求体：
+```json
+{
+  "id": "custom-case",
+  "title": "我的案例",
+  "description": "案例用途说明",
+  "request": "请根据以下领域、受众和目标生成内容……",
+  "enabled": true,
+  "sort_order": 100
+}
+```
+#### 修改、删除与恢复默认案例
+```http
+PATCH /internal/v1/admin/tools/{kind}/examples/{example_id}
+DELETE /internal/v1/admin/tools/{kind}/examples/{example_id}
+POST /internal/v1/admin/tools/{kind}/examples/restore-defaults
+```
+修改支持部分字段；恢复仅补回缺失的默认案例，不覆盖管理员已修改的案例。删除后不会自动回填；案例为空时不影响手动输入和既有 `/run` 接口。
 ### 4.8 知识库概览
 ```http
 GET /internal/v1/admin/knowledge-bases

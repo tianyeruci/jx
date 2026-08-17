@@ -15,9 +15,12 @@ API_BASE = os.getenv("AI_MANAGEMENT_BASE_URL", "http://ai-management-api:8000").
 INTERNAL_TOKEN = os.getenv("INTERNAL_API_TOKEN", "change-me")
 ADMIN_TOKEN = os.getenv("ADMIN_API_TOKEN", "change-me")
 DEFAULT_USER = os.getenv("TEST_USER_ID", "test-user-001")
-COURSE_CATALOG_AUTO_PUBLISH = os.getenv(
-    "COURSE_CATALOG_AUTO_PUBLISH", "true"
-).strip().lower() in {"1", "true", "yes", "on"}
+COURSE_CATALOG_AUTO_PUBLISH = os.getenv("COURSE_CATALOG_AUTO_PUBLISH", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 TEST_UI_CLEANUP_RUN_METADATA_KEY = "_test_ui_cleanup_run_id"
 CLEANING_BATCH_VIEW_STATE_KEY = "cleaning_batch_view_state"
 CLEANING_BATCH_INPUT_KEY = "cleaning_batch_id_input"
@@ -563,18 +566,44 @@ def business_tab(user_id: str) -> None:
             )
 
 
+def _tool_examples(user_id: str, kind: str) -> list[dict[str, Any]]:
+    try:
+        payload = api_json("GET", f"/internal/v1/tools/{kind}/examples", user_id=user_id)
+        return payload.get("items") or []
+    except httpx.HTTPError as exc:
+        st.warning(f"案例读取失败：{exc}")
+        return []
+
+
 def tool_tab(user_id: str, kind: str) -> None:
     labels = {"moments": "朋友圈顾问", "writing": "日常写作"}
     st.subheader(labels[kind])
     stop_key = f"{kind}_stop_id"
     if stop_key not in st.session_state:
         st.session_state[stop_key] = ""
+    examples = _tool_examples(user_id, kind)
+    selected_request = None
+    if examples:
+        st.markdown("#### 可直接使用的案例")
+        columns = st.columns(min(3, len(examples)))
+        for index, example in enumerate(examples):
+            with columns[index % len(columns)]:
+                st.markdown(f"**{example.get('title', '未命名')}**")
+                st.caption(str(example.get("description") or ""))
+                st.code(str(example.get("request") or ""), language="text")
+                if st.button("使用此案例", key=f"{kind}_example_{example.get('id')}"):
+                    selected_request = str(example.get("request") or "")
+        if selected_request is not None:
+            st.session_state[f"{kind}_input"] = selected_request
+    else:
+        st.caption("当前没有启用案例，仍可手动输入。")
     prompt = st.text_area(
         "输入",
         "请帮我写一段介绍本周学习收获的内容。",
         key=f"{kind}_input",
     )
-    if st.button("运行", key=f"{kind}_run"):
+    run_requested = selected_request is not None or st.button("运行", key=f"{kind}_run")
+    if run_requested:
         output = st.empty()
         started = time.perf_counter()
         try:
@@ -605,6 +634,119 @@ def tool_tab(user_id: str, kind: str) -> None:
                 user_id=user_id,
             )
         )
+
+
+def admin_tool_examples_panel() -> None:
+    st.markdown("#### 朋友圈与日常写作案例目录")
+    kind = st.selectbox("案例工具", ["moments", "writing"], key="admin_examples_kind")
+    payload = st.session_state.get(f"admin_examples_{kind}", {})
+    if st.button("读取案例目录", key=f"admin_examples_load_{kind}"):
+        try:
+            payload = api_json("GET", f"/internal/v1/admin/tools/{kind}/examples", admin=True)
+            st.session_state[f"admin_examples_{kind}"] = payload
+        except httpx.HTTPError as exc:
+            st.error(str(exc))
+    items = payload.get("items") or [] if isinstance(payload, dict) else []
+    if items:
+        st.dataframe(items, use_container_width=True, hide_index=True)
+        by_id = {str(item.get("id")): item for item in items if item.get("id")}
+        selected_id = st.selectbox(
+            "编辑或删除案例", list(by_id), key=f"admin_example_selected_{kind}"
+        )
+        selected = by_id[selected_id]
+        title = st.text_input(
+            "标题",
+            value=str(selected.get("title") or ""),
+            key=f"admin_example_title_{kind}_{selected_id}",
+        )
+        description = st.text_input(
+            "说明",
+            value=str(selected.get("description") or ""),
+            key=f"admin_example_description_{kind}_{selected_id}",
+        )
+        request_text = st.text_area(
+            "完整 request",
+            value=str(selected.get("request") or ""),
+            max_chars=12000,
+            key=f"admin_example_request_{kind}_{selected_id}",
+        )
+        enabled = st.checkbox(
+            "启用",
+            value=bool(selected.get("enabled")),
+            key=f"admin_example_enabled_{kind}_{selected_id}",
+        )
+        sort_order = st.number_input(
+            "排序值",
+            min_value=0,
+            value=int(selected.get("sort_order") or 0),
+            step=1,
+            key=f"admin_example_sort_{kind}_{selected_id}",
+        )
+        edit_col, delete_col = st.columns(2)
+        if edit_col.button("保存案例", key=f"admin_example_save_{kind}"):
+            try:
+                api_json(
+                    "PATCH",
+                    f"/internal/v1/admin/tools/{kind}/examples/{selected_id}",
+                    admin=True,
+                    json={
+                        "title": title,
+                        "description": description,
+                        "request": request_text,
+                        "enabled": enabled,
+                        "sort_order": int(sort_order),
+                    },
+                )
+                st.session_state.pop(f"admin_examples_{kind}", None)
+                st.rerun()
+            except httpx.HTTPError as exc:
+                st.error(str(exc))
+        if delete_col.button("删除案例", key=f"admin_example_delete_{kind}"):
+            try:
+                api_json(
+                    "DELETE", f"/internal/v1/admin/tools/{kind}/examples/{selected_id}", admin=True
+                )
+                st.session_state.pop(f"admin_examples_{kind}", None)
+                st.rerun()
+            except httpx.HTTPError as exc:
+                st.error(str(exc))
+    with st.expander("新增案例"):
+        new_id = st.text_input("案例 ID", key=f"admin_example_new_id_{kind}")
+        new_title = st.text_input("新案例标题", key=f"admin_example_new_title_{kind}")
+        new_description = st.text_input("新案例说明", key=f"admin_example_new_description_{kind}")
+        new_request = st.text_area(
+            "新案例完整 request", max_chars=12000, key=f"admin_example_new_request_{kind}"
+        )
+        new_sort = st.number_input(
+            "新案例排序值", min_value=0, step=1, key=f"admin_example_new_sort_{kind}"
+        )
+        if st.button("新增案例", key=f"admin_example_create_{kind}"):
+            try:
+                api_json(
+                    "POST",
+                    f"/internal/v1/admin/tools/{kind}/examples",
+                    admin=True,
+                    json={
+                        "id": new_id,
+                        "title": new_title,
+                        "description": new_description,
+                        "request": new_request,
+                        "enabled": True,
+                        "sort_order": int(new_sort),
+                    },
+                )
+                st.session_state.pop(f"admin_examples_{kind}", None)
+                st.rerun()
+            except httpx.HTTPError as exc:
+                st.error(str(exc))
+    if st.button("恢复缺失默认案例", key=f"admin_example_restore_{kind}"):
+        try:
+            st.session_state[f"admin_examples_{kind}"] = api_json(
+                "POST", f"/internal/v1/admin/tools/{kind}/examples/restore-defaults", admin=True
+            )
+            st.rerun()
+        except httpx.HTTPError as exc:
+            st.error(str(exc))
 
 
 def cleaning_tab() -> None:
@@ -737,10 +879,7 @@ def cleaning_tab() -> None:
     if view_state is not None:
         payload = view_state["payload"]
         render_cleaning_payload(payload)
-        if (
-            payload.get("strategy_code") == "course_route_catalog"
-            and COURSE_CATALOG_AUTO_PUBLISH
-        ):
+        if payload.get("strategy_code") == "course_route_catalog" and COURSE_CATALOG_AUTO_PUBLISH:
             if payload.get("all_succeeded"):
                 st.success("课程目录已完成自动校验并发布到知识库。")
             elif payload.get("failed"):
@@ -751,12 +890,9 @@ def cleaning_tab() -> None:
                 st.info("课程目录正在自动解析、模型补全或发布，请继续查询批次。")
         for model_task in payload.get("model_tasks") or []:
             st.caption(f"模型调用模式：{model_task_mode_label(model_task)}")
-            if (
-                model_task.get("status") == "awaiting_approval"
-                and not (
-                    payload.get("strategy_code") == "course_route_catalog"
-                    and COURSE_CATALOG_AUTO_PUBLISH
-                )
+            if model_task.get("status") == "awaiting_approval" and not (
+                payload.get("strategy_code") == "course_route_catalog"
+                and COURSE_CATALOG_AUTO_PUBLISH
             ):
                 st.warning("该批次将使用百炼 Batch。请核对候选数量、Token 与费用快照后批准。")
                 render_cleaning_payload(model_task)
@@ -792,7 +928,9 @@ def cleaning_tab() -> None:
             selected_file_id = labels[selected_label]
             selected_file = next(item for item in files if item["file_id"] == selected_file_id)
             st.markdown("#### 删除上传源文件（含全部知识库分片）")
-            st.warning("删除源文件会删除该上传产生的所有 Dify 分片；删除成功后才能使用同名文件重新上传。")
+            st.warning(
+                "删除源文件会删除该上传产生的所有 Dify 分片；删除成功后才能使用同名文件重新上传。"
+            )
             source_delete_confirm = st.text_input(
                 f"输入完整上传文件名以删除：{selected_file.get('original_filename') or ''}",
                 key=f"cleaning_source_delete_name_{selected_file_id}",
@@ -1169,6 +1307,8 @@ def management_tab(default_user_id: str) -> None:
                 )
                 render_result_diagnostics(result, label="输出风格更新结果")
                 st.session_state.pop("admin_style_settings", None)
+
+        admin_tool_examples_panel()
 
     with knowledge_tab:
         st.markdown("#### 知识库概览、文档列表、启停与删除")

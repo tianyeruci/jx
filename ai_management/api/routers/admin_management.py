@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from ...config import get_settings
 from ...db import get_session
 from ...errors import ServiceError
-from ...schemas import RetentionSettingsRequest, StyleSettingUpdateRequest
+from ...schemas import (
+    RetentionSettingsRequest,
+    StyleSettingUpdateRequest,
+    ToolExampleCreateRequest,
+    ToolExamplePatchRequest,
+)
 from ...security import require_admin_token, require_internal_token
 from ...services.admin_settings import get_history_retention_days, set_history_retention_days
 from ...services.observability import record_event
@@ -16,12 +23,60 @@ from ...services.style_settings import (
     style_prompt_fingerprint,
     update_style_setting,
 )
+from ...services.tool_examples import (
+    create_example,
+    delete_example,
+    list_examples,
+    restore_defaults,
+    update_example,
+)
 
 router = APIRouter(
     prefix="/internal/v1/admin",
     tags=["admin-management"],
     dependencies=[Depends(require_internal_token), Depends(require_admin_token)],
 )
+
+
+@router.get("/tools/{kind}/examples")
+def admin_list_tool_examples(
+    kind: str, session: Session = Depends(get_session)
+) -> dict[str, list[dict[str, object]]]:
+    return {"items": list_examples(session, kind, enabled_only=False)}
+
+
+@router.post("/tools/{kind}/examples")
+def admin_create_tool_example(
+    kind: str,
+    payload: ToolExampleCreateRequest,
+    session: Session = Depends(get_session),
+) -> dict[str, object]:
+    return create_example(session, kind, payload.model_dump())
+
+
+@router.patch("/tools/{kind}/examples/{example_id}")
+def admin_update_tool_example(
+    kind: str,
+    example_id: str,
+    payload: ToolExamplePatchRequest,
+    session: Session = Depends(get_session),
+) -> dict[str, object]:
+    return update_example(session, kind, example_id, payload.model_dump(exclude_unset=True))
+
+
+@router.delete("/tools/{kind}/examples/{example_id}")
+def admin_delete_tool_example(
+    kind: str, example_id: str, session: Session = Depends(get_session)
+) -> dict[str, bool]:
+    delete_example(session, kind, example_id)
+    return {"deleted": True}
+
+
+@router.post("/tools/{kind}/examples/restore-defaults")
+def admin_restore_tool_examples(
+    kind: str, session: Session = Depends(get_session)
+) -> dict[str, list[dict[str, Any]]]:
+    return {"items": restore_defaults(session, kind)}
 
 
 @router.get("/settings/retention")
@@ -60,7 +115,9 @@ def put_retention_settings(
 
 
 @router.get("/style-settings")
-def get_style_settings(session: Session = Depends(get_session)) -> dict[str, list[dict[str, object]]]:
+def get_style_settings(
+    session: Session = Depends(get_session),
+) -> dict[str, list[dict[str, object]]]:
     return {
         "items": [
             {

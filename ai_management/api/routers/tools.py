@@ -16,6 +16,7 @@ from ...errors import ServiceError
 from ...schemas import MomentsRunRequest, WritingRunRequest
 from ...security import dify_user, require_internal_token, require_user_id
 from ...services.style_settings import get_style_prompt
+from ...services.tool_examples import list_examples
 from ...sse import SSEEmitter
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,15 @@ router = APIRouter(
     tags=["tools"],
     dependencies=[Depends(require_internal_token)],
 )
+
+
+@router.get("/{kind}/examples")
+def get_tool_examples(
+    kind: str,
+    raw_user_id: str = Depends(require_user_id),
+    session: Session = Depends(get_session),
+) -> dict[str, list[dict[str, Any]]]:
+    return {"items": list_examples(session, kind, enabled_only=True)}
 
 
 def _workflow_stream(

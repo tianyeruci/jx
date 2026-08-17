@@ -40,7 +40,7 @@
 | 商业顾问回答后的推荐问题 | Dify 的 `suggested_questions_after_answer.enabled` 开关和 Dify 消息上下文 | 当前 DSL 只打开了该开关；jx-now 没有把 Dify 的回答后推荐问题接口转发给小程序/测试页。因此要改变生成逻辑，应在 Dify App 的回答后推荐问题能力中修改并单独验收，不能只改 `suggested_questions`；如要让本项目展示，还需要新增受控 API/SSE 字段，这不在本次计划内。 |
 | 商业顾问检索与回答 | `general_knowledge`、`case_knowledge`、活动检索节点、结果聚合、`combined_response_general` | 普通、案例和活动检索都绑定同一 `general` Dataset，三条路径互斥；普通检索排除 `consulting_case`/`event`，案例只取 `consulting_case`，活动只取 `event` 并按动态状态/时间条件过滤；聚合、证据压缩后只调用一个主 LLM。不得恢复课程检索、推荐决策 JSON、课程卡片或课程/路线 SSE。 |
 | 朋友圈顾问、日常写作界面引导语 | Dify App 的 `opening_statement` 参数，经 `entry.py` 的 `/parameters` 读取 | `dify/dsl/moments_advisor.yml` 和 `dify/dsl/writing_advisor.yml` 是 Workflow DSL，当前只定义 Start→LLM→End 图，没有可供 `entry-config` 读取的 `opening_statement`；用户看到的引导语应在对应 Dify App 的界面/参数设置中修改并发布。不要把引导语只写进 LLM Prompt，否则不会成为入口配置。 |
-| 朋友圈顾问、日常写作输出 | 两个 Workflow DSL 的 LLM Prompt | 朋友圈修改 `dify/dsl/moments_advisor.yml` 的 `llm` 节点；日常写作修改 `dify/dsl/writing_advisor.yml` 的 `llm` 节点。当前 Start→LLM→End 结构已经足够，不需要为界面引导语或商业顾问的分段回答增加节点；修改后需重新导入、保存、发布并分别验收。 |
+| 朋友圈顾问、日常写作输出 | 两个 Workflow DSL 的 LLM Prompt | 朋友圈修改 `dify/dsl/moments_advisor.yml` 的 `llm` 节点；日常写作修改 `dify/dsl/writing_advisor.yml` 的 `llm` 节点。当前 Start→LLM→End 结构已经足够，不需要为界面引导语或商业顾问的分段回答增加节点；修改 DSL 后需重新导入、保存、发布并分别验收。案例目录是 jx 运行时 `AdminSetting` 配置，完整 `request` 作为既有输入传入，不复制到 DSL；只增删改案例时不需要重新发布 Dify。 |
 
 ### 商业顾问首屏固定问题配置
 

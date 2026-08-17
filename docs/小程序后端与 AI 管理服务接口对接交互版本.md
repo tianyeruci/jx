@@ -473,6 +473,38 @@ X-User-Id: <稳定用户ID>
 
 ### 2\.9 朋友圈顾问
 
+#### 2\.9\.1 可点击案例目录
+
+```HTTP
+GET /internal/v1/tools/moments/examples
+```
+
+请求头：
+
+```HTTP
+X-Internal-Token: <内部服务令牌>
+X-User-Id: <稳定用户ID>
+```
+
+返回示例：
+
+```JSON
+{
+  "items": [
+    {
+      "id": "moments-life",
+      "title": "介绍生活",
+      "description": "把一段具体生活经历写成自然、有真实感的朋友圈内容。",
+      "request": "请围绕主题……领域是个人生活方式与日常记录，受众是熟悉我的朋友和同事……",
+      "enabled": true,
+      "sort_order": 0
+    }
+  ]
+}
+```
+
+说明：仅返回当前启用的案例，按 `sort_order` 升序返回。`request` 是可直接提交给下方 `/run` 接口的完整模拟提示词，领域/主题、受众、目标和约束等信息均可包含在其中。案例目录为空时仍返回 `200` 和空数组，前端应保留手动输入入口。
+
 ```HTTP
 POST /internal/v1/tools/moments/run
 ```
@@ -513,6 +545,14 @@ X-User-Id: <稳定用户ID>
 - `error`
 
 ### 2\.10 日常写作
+
+#### 2\.10\.1 可点击案例目录
+
+```HTTP
+GET /internal/v1/tools/writing/examples
+```
+
+请求头与返回结构同朋友圈顾问案例目录；`kind` 固定为 `writing`。默认案例包括“工作总结”“通知邮件”“改写润色”，点击案例后将返回的完整 `request` 放入输入区，并复用下方 `/run` 的既有 SSE 生成链路。
 
 ```HTTP
 POST /internal/v1/tools/writing/run
@@ -962,6 +1002,54 @@ PUT /internal/v1/admin/style-settings/{style_code}
   "updated_by": "system"
 }
 ```
+
+### 4\.7\.1 朋友圈与日常写作案例目录管理
+
+以下接口均要求同时提供 `X-Internal-Token` 和 `X-Admin-Token`。`kind` 只能是 `moments` 或 `writing`。
+
+#### 查询全部案例（含停用）
+
+```HTTP
+GET /internal/v1/admin/tools/{kind}/examples
+```
+
+返回：`{"items": [...]}`。案例字段为 `id`、`title`、`description`、`request`、`enabled`、`sort_order`；`request` 长度不超过 12000，案例 ID 在同一工具内唯一。
+
+#### 新增案例
+
+```HTTP
+POST /internal/v1/admin/tools/{kind}/examples
+```
+
+请求体：
+
+```JSON
+{
+  "id": "my-example",
+  "title": "我的案例",
+  "description": "案例用途说明",
+  "request": "请写一段完整提示词，领域是……，受众是……，目标是……",
+  "enabled": true,
+  "sort_order": 10
+}
+```
+
+#### 编辑或删除案例
+
+```HTTP
+PATCH /internal/v1/admin/tools/{kind}/examples/{example_id}
+DELETE /internal/v1/admin/tools/{kind}/examples/{example_id}
+```
+
+PATCH 只提交要修改的字段，不能修改 ID；DELETE 成功返回 `{"deleted": true}`。删除默认案例不会自动回填。
+
+#### 恢复缺失默认案例
+
+```HTTP
+POST /internal/v1/admin/tools/{kind}/examples/restore-defaults
+```
+
+该操作只补回缺失的内置默认案例并保留自定义案例及已有修改，不会重置整个目录。案例配置保存在现有管理配置 JSON 中，不需要数据库迁移，也不需要修改或重新发布 Dify DSL。
 
 ### 4\.8 知识库概览
 
@@ -1495,6 +1583,7 @@ PDF/DOCX 在策略处理前按源文档顺序转换为 Markdown，尽量保留�
 | 补齐咨询格式与门禁 | 仅 PDF；门禁异常表现为文件失败 | DOCX/PDF 双格式；可安全发布或进入 `review_required` | 真实 DOCX 成功、真实 PDF 复核，安全合成 DOCX/PDF 成功 |
 | 修正大 GB18030 文件误判 | 64 KiB 探测若截断双字节字符会报签名无效 | 使用增量解码器允许样本末尾保留不完整字符 | 29+84 篇公众号样本确定性通过 |
 | 让已发布 Dify 工作流立即执行隐私约束 | 只修改本地 DSL/提示词不会自动更新线上已发布工作流 | 服务端在现有 `business_output_style` 输入中追加公开引用隐私指令，输出端仍保留强制过滤 | 本地运行时输入测试通过；r3 远端接口 37/37、公开引用 3/3 |
+| 提供朋友圈与日常写作可理解的案例入口 | 测试 UI 只有自由输入，案例无法维护 | 增加用户案例读取、管理员 CRUD/恢复接口；点击案例将完整运行时 `request` 注入既有生成链路，DSL 保持不变 | `tests/test_tool_examples.py`、路由契约测试、jx 发布后 API/UI 验证 |
 
 本轮远端证据汇总见 [接口契约与清洗全链路验收记录-2026-07-30.md](接口契约与清洗全链路验收记录-2026-07-30.md)。
 

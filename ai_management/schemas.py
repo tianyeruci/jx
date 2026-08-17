@@ -77,6 +77,28 @@ class WritingRunRequest(BaseModel):
     inputs: WritingInputs
 
 
+class ToolExampleCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    title: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=500)
+    request: str = Field(min_length=1, max_length=12000)
+    enabled: bool = True
+    sort_order: int = Field(default=0, ge=0)
+
+
+class ToolExamplePatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str | None = Field(default=None, min_length=1, max_length=100)
+    title: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=500)
+    request: str | None = Field(default=None, min_length=1, max_length=12000)
+    enabled: bool | None = None
+    sort_order: int | None = Field(default=None, ge=0)
+
+
 class CourseRecord(BaseModel):
     course_id: str = Field(
         min_length=1,
@@ -130,7 +152,9 @@ class RouteRecord(BaseModel):
 
 
 class RecommendationDecision(BaseModel):
-    intent: Literal["general_qa", "direct_course", "route_recommendation", "clarification"] = "general_qa"
+    intent: Literal["general_qa", "direct_course", "route_recommendation", "clarification"] = (
+        "general_qa"
+    )
     candidate_course_ids: list[str] = Field(default_factory=list)
     candidate_route_id: str = ""
     missing_information: list[str] = Field(default_factory=list, max_length=2)

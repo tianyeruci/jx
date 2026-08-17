@@ -1,10 +1,27 @@
 # AI 管理服务当前状态与后续测试交接
 
-> 更新时间：2026-08-16
+> 更新时间：2026-08-17
 > 用途：保存最新线上事实、回滚点、数据状态和开放事项。新任务先读 `AGENTS.md` 与 `docs/README.md`，再按功能域读取本文顶部最新状态。  
 > 本文不是需求或设计基线；权威顺序以 `docs/V2决策记录.md` 和 `docs/README.md` 为准。第 1～8 节为历史过程记录，不再作为当前执行指令。
 
-## 0.62 2026-08-17 最近活动功能完成与新对话交接（当前最新）
+## 0.65 2026-08-17 朋友圈与日常写作案例目录 jx 发布交接（当前最新）
+
+- `tool-examples` 已发布到 jx：release `quick-20260817-081805-b051c4d3304f`，源指纹为 `b051c4d3304f...`；报告为 `/opt/ai-management/var/reports/v2/quick-20260817-081805-b051c4d3304f-quick-deploy`，发布前备份为 `/opt/ai-management/backups/quick-20260817-081805-b051c4d3304f-predeploy`。发布使用 `--keep-data`，没有清理数据库、Redis、上传文件或 Dify 数据。
+- 发布前发现 Windows `Compress-Archive` ZIP 在服务器 Python 3.12 安全校验中呈现反斜杠路径，已改为显式 POSIX ZIP 路径并通过远端 CRC/安全校验；随后发现服务器 `knowledge_cleaner/` 源码落后于现有 wheelhouse，已先备份 `/opt/ai-management/backups/quick-20260817-081332-knowledge-cleaner-before`，再从已验证 wheelhouse 对齐源码。第一次失败发布未切换运行容器，第二次发布通过。
+- 发布过程仅进程级设置 `JX_OCR_DEPLOYMENT_ENABLED=true` 以通过既有 OCR 安全门禁，没有把该开关写入服务器 `.env`；OCR 定时器发布后仍为 `enabled/active`。Core/UI/Worker/Scheduler 容器均运行本 release，API `health/ready=200`、测试页 `HTTP 200`。
+- jx 端回归通过：用户 `moments` 案例接口返回 3 个默认案例，管理员 `writing` 案例接口返回 3 个默认案例；临时自定义案例完成创建、修改、启用、删除，未保留烟测数据。DSL 文件未变更，不需要 Dify 导入或发布。
+- 本地 `ai_management.zip` 已重建为服务器兼容的 POSIX 路径包，SHA-256 为 `0F14670A45FC7ECCC1BC606D79BABA5078087A82353A8EA3DA937A3C2A7F3E6E`；canonical 全套测试的 6 项既有缺失脚本/样本失败仍保持原记录，未归因于本 Feature。本节及报告均不写入密钥、真实用户标识或受保护映射。
+
+## 0.64 2026-08-17 朋友圈与日常写作案例目录本地实现交接（历史）
+
+- 本地已完成 `tool-examples`：朋友圈顾问和日常写作各提供 3 个完整默认案例；用户读取、管理员 CRUD/恢复接口、Streamlit 卡片一键生成和管理维护 UI 已实现。
+- 案例按 `moments/writing` 写入现有 `AdminSetting` JSON；删除不自动回填，恢复接口只补缺失默认项并保留自定义项。Dify DSL 未修改，运行时案例不需要重新导入或发布 Dify。
+- 本地相关测试、路由契约、文档索引、feature-bound quality、format/lint/compile 已通过；Streamlit smoke 已验证两个工具的完整 request 展示、点击后复用既有 `/run`、以及空目录仍可手动输入。因本地未启动 Dify 网关，生成阶段记录了外部依赖 502；API/UI 进程已停止，测试案例已恢复默认。
+- canonical 全套测试仍有 6 项既有基线失败：2 个工作树缺失的清理脚本、4 个缺失的咨询样本文件。本轮未伪造或补建这些无关资料。
+- 发布归档已从当前源码重建：根目录 `ai_management.zip` 已通过 58/58 Python 文件逐文件匹配和解压导入检查，旧 ZIP 已保留在本地报告目录；尚未上传 jx，仍需完成最终 release gate。
+- jx 尚未部署本 Feature；该历史快照形成时仍待发布门禁、远端备份和精确命令确认。本文不写入密钥、App ID、会话 ID、真实用户标识、原始正文或受保护映射。
+
+## 0.62 2026-08-17 最近活动功能完成与新对话交接（历史）
 
 - 本任务已完成：`recent_activity` 已接入现有清洗/发布链路，jx 已部署 release `20260816-activity-59d963`，当前 feature `recent-activity` 的治理状态为 `done`，完成门禁 `ready=true`。
 - 当前 jx 已实际使用用户同步的商业顾问 App Key；运行中容器配置与服务器 `.env` 的脱敏指纹一致，`health/ready=200`、Dify `/parameters=200`，核心服务仍为同源 release。密钥明文、App ID、会话 ID、真实用户标识和原始样本不写入本文。
@@ -13,7 +30,7 @@
 - 本轮合成测试会话已精确清理：删除 `10` 个，剩余 `0`，删除失败 `0`；未删除正式数据、Dify Dataset、应用或持久卷。
 - 本地质量与治理检查已通过：完整 `gov quality`、活动/DSL 聚焦测试、DSL 构建检查、项目索引检查和差异检查均通过。后续对话若要继续开发，先读取 `AGENTS.md`、`docs/README.md` 和本文本节；当前没有未完成的最近活动发布或验收待办。
 
-## 0.63 2026-08-17 最近活动测试知识库数据精确清理补录（当前最新）
+## 0.63 2026-08-17 最近活动测试知识库数据精确清理补录（历史）
 
 - 用户反馈 0.62 只清理了会话，知识库中仍可看到前一日“最近活动”测试数据。本轮按测试页精确清理标记盘点到 `4` 个 `recent_activity` 测试批次、`9` 条本地逻辑文档和 `8` 个关联 Dify 文档 ID；其中 `4` 个 Dify ID 在执行前已不存在，仍存在的 `4` 个已删除。
 - 清理后复核：`CleaningBatch`/`CleaningFile`/`CleaningDocument`/`DifyPublicationShard` 的本轮目标均为 `0`；目标批次的 `8` 个精确 Redis 清洗键均不存在；对应上传目录已为空并移除；`health/ready=200`。
@@ -1892,3 +1909,17 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改前：0.62 只记录会话级精确清理，未记录知识库测试文档仍存在；本地清洗批次与 Dify 文档状态未做联合归零复核。
 - 修改后：新增 0.63；记录 4 个测试批次、9 条本地逻辑文档和 8 个精确 Dify ID 的盘点与清理结果，区分执行前已不存在的 4 个 ID 与实际删除的 4 个 ID，并记录数据库、Redis、上传目录、健康检查和备份恢复校验结论。
 - 验证：jx `health/ready=200`；本轮目标批次、文件、文档、分片、Dify ID 和精确 Redis 键均为 `0`；上传目录已移除；未删除正式 Dataset 文档、课程/路线、应用或持久卷。本文未写入密钥、App ID、会话 ID、真实用户标识、原始文件名或文档 ID。
+
+### 文档修改记录（2026-08-17 朋友圈与日常写作案例目录实现）
+
+- 修改原因：用户要求为朋友圈顾问和日常写作增加可点击案例、默认案例管理和接口文档，并在完成测试后部署 jx。
+- 修改前：工具测试页只有自由输入；没有案例目录 API、管理接口或可维护的默认案例配置。
+- 修改后：新增 kind 隔离的 `AdminSetting` 案例目录、用户读取与管理员 CRUD/恢复接口、Streamlit 案例查看/一键生成/维护 UI；同步接口交互版本、功能索引、Dify 运行时说明和 Feature 契约。DSL 未变更，当前未写入 jx 发布结果。
+- 验证：专项案例/路由/输入契约测试、文档索引检查、format/lint/compile 通过；canonical 全套测试的 6 项既有缺失脚本/样本失败已记录在 `var/reports/20260817-tool-examples/issues.jsonl`，未归因于本 Feature。
+
+### 文档修改记录（2026-08-17 朋友圈与日常写作案例目录 jx 发布）
+
+- 修改原因：用户授权继续处理发布问题，并要求测试完成后部署 jx、记录问题、同步相关文档。
+- 修改前：0.64 只记录本地实现和发布前状态；未记录 ZIP 路径兼容问题、服务器 wheelhouse/source 漂移、最终 release、回滚点和远端案例接口回归。
+- 修改后：新增 0.65 当前状态，记录两次发布尝试的失败/修复结果、最终 jx release、备份/报告路径、OCR 进程级门禁、服务健康、案例 API/CRUD 回归和 DSL 未变更结论；0.64 标记为历史。
+- 验证：最终 release 报告、容器状态、`health/ready=200`、测试页 `HTTP 200`、用户/管理员案例接口和临时 CRUD 烟测均通过；未写入密钥、真实用户标识或受保护映射。
