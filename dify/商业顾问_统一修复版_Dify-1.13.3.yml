@@ -510,7 +510,7 @@ workflow:
       type: custom
       width: 242
     - data:
-        code: "from datetime import datetime, timedelta, timezone\n\ndef main(query: str) -> dict:\n    now = datetime.now(timezone(timedelta(hours=8)))\n    query = str(query or \"\")\n    requested_status = \"cancelled\" if \"取消\" in query else (\"postponed\" if any(word in query for word in (\"延期\", \"改期\")) else \"normal\")\n    return {\n        \"start_ts\": int(now.timestamp()),\n        \"end_ts\": int((now + timedelta(days=30)).timestamp()),\n        \"requested_status\": requested_status,\n    }\n"
+        code: "from datetime import datetime, timedelta, timezone\n\ndef main(query: str) -> dict:\n    now = datetime.now(timezone(timedelta(hours=8)))\n    query = str(query or \"\")\n    all_mode = \"所有\" in query\n    requested_status = \"all\" if all_mode else (\"cancelled\" if \"取消\" in query else (\"postponed\" if any(word in query for word in (\"延期\", \"改期\")) else \"recent\"))\n    window_start = now - timedelta(days=30) if all_mode else now\n    return {\n        \"start_ts\": int(window_start.timestamp()),\n        \"end_ts\": int((now + timedelta(days=30)).timestamp()),\n        \"requested_status\": requested_status,\n        \"activity_max_results\": 3,\n    }\n"
         code_language: python3
         desc: 生成中国时区的动态活动状态和三十天时间窗口，供 Knowledge Retrieval 先过滤。
         outputs:
@@ -520,6 +520,9 @@ workflow:
           requested_status:
             children: null
             type: string
+          activity_max_results:
+            children: null
+            type: number
           start_ts:
             children: null
             type: number
@@ -595,9 +598,9 @@ workflow:
           - comparison_operator: is
             name: record_type
             value: event
-          - comparison_operator: is
+          - comparison_operator: is not
             name: event_status
-            value: '{{#activity_window.requested_status#}}'
+            value: __none__
           - comparison_operator: ≥
             name: event_end_ts
             value: '{{#activity_window.start_ts#}}'
@@ -642,9 +645,9 @@ workflow:
           - comparison_operator: is
             name: record_type
             value: event
-          - comparison_operator: is
+          - comparison_operator: is not
             name: event_status
-            value: '{{#activity_window.requested_status#}}'
+            value: __none__
           logical_operator: and
         multiple_retrieval_config:
           reranking_enable: true
@@ -676,9 +679,9 @@ workflow:
       type: custom
       width: 242
     - data:
-        code: "import json\nfrom datetime import datetime, timezone, timedelta\n\ndef number(value):\n    if isinstance(value, (int, float)) and not isinstance(value, bool): return float(value)\n    try: return float(str(value).strip())\n    except Exception: return None\n\ndef main(results, query: str, start_ts, end_ts, requested_status: str) -> dict:\n    start = number(start_ts) or 0\n    end = number(end_ts) or 0\n    requested_status = str(requested_status or \"normal\")\n    selected = {}\n    all_results = []\n    for batch in (results,):\n        if isinstance(batch, list): all_results.extend(batch)\n    for item in all_results:\n        metadata = item.get(\"metadata\", {}) if isinstance(item, dict) else {}\n        raw = metadata.get(\"doc_metadata\", metadata)\n        if isinstance(raw, str):\n            try: raw = json.loads(raw)\n            except Exception: raw = {}\n        if isinstance(raw, list):\n            raw = {entry.get(\"name\"): entry.get(\"value\") for entry in raw if isinstance(entry, dict) and entry.get(\"name\")}\n        if not isinstance(raw, dict) or raw.get(\"record_type\") != \"event\": continue\n        if raw.get(\"event_status\") != requested_status: continue\n        timestamp = number(raw.get(\"event_start_ts\"))\n        event_end = number(raw.get(\"event_end_ts\")) or timestamp\n        if requested_status == \"normal\" and (timestamp is None or event_end is None or event_end < start or timestamp > end): continue\n        event_id = str(raw.get(\"event_id\") or item.get(\"document_name\") or \"\")\n        selected[event_id] = (timestamp, raw, item)\n    ordered = sorted(selected.values(), key=lambda value: (value[0] is None, value[0] or 0))[:3]\n    status_text = {\"normal\": \"正常\", \"cancelled\": \"取消\", \"postponed\": \"延期\"}.get(requested_status, requested_status)\n    def display_time(timestamp, event_status):\n        if event_status == \"postponed\" and timestamp is None:\n            return \"延期未定\"\n        if timestamp is None:\n            return \"时间未定\"\n        value = datetime.fromtimestamp(timestamp, timezone(timedelta(hours=8)))\n        date_text = f\"{value.year}年{value.month}月{value.day}日\"\n        return f\"{date_text} {value:%H:%M}\" if value.hour or value.minute else date_text\n    lines = []\n    for timestamp, metadata, item in ordered:\n        title = metadata.get(\"source_title\") or item.get(\"title\") or item.get(\"document_name\") or \"活动\"\n        status = metadata.get(\"source_status\") or metadata.get(\"event_status\") or \"\"\n        time_text = display_time(timestamp, metadata.get(\"event_status\"))\n        line = f\"{title}（{status}，{time_text}，{metadata.get('delivery_mode', '')}，{metadata.get('city', '')}）\"\n        link = metadata.get(\"registration_url\")\n        if isinstance(link, str) and link.startswith((\"http://\", \"https://\")): line += f\" 报名链接：{link}\"\n        lines.append(line)\n    return {\"activity_text\": \"\\n\".join(lines) or f\"当前没有符合条件的{status_text}活动。\"}\n"
+        code: "import json\nfrom datetime import datetime, timezone, timedelta\n\ndef number(value):\n    if isinstance(value, (int, float)) and not isinstance(value, bool): return float(value)\n    try: return float(str(value).strip())\n    except Exception: return None\n\ndef main(results, query: str, start_ts, end_ts, requested_status: str, activity_max_results=3) -> dict:\n    start = number(start_ts) or 0\n    end = number(end_ts) or 0\n    requested_status = str(requested_status or \"normal\")\n    all_mode = requested_status == \"all\" or \"所有\" in str(query or \"\")\n    limit = max(1, min(20, int(number(activity_max_results) or 3)))\n    selected = {}\n    all_results = []\n    for batch in (results,):\n        if isinstance(batch, list): all_results.extend(batch)\n    for item in all_results:\n        metadata = item.get(\"metadata\", {}) if isinstance(item, dict) else {}\n        raw = metadata.get(\"doc_metadata\", metadata)\n        if isinstance(raw, str):\n            try: raw = json.loads(raw)\n            except Exception: raw = {}\n        if isinstance(raw, list):\n            raw = {entry.get(\"name\"): entry.get(\"value\") for entry in raw if isinstance(entry, dict) and entry.get(\"name\")}\n        if not isinstance(raw, dict) or raw.get(\"record_type\") != \"event\": continue\n        event_status = raw.get(\"event_status\")\n        if not all_mode and requested_status == \"recent\" and event_status not in {\"normal\", \"postponed\"}: continue\n        if not all_mode and requested_status not in {\"recent\", \"normal\"} and event_status != requested_status: continue\n        timestamp = number(raw.get(\"event_start_ts\"))\n        event_end = number(raw.get(\"event_end_ts\")) or timestamp\n        if timestamp is None or event_end is None: continue\n        if all_mode:\n            if event_end < start or timestamp > end: continue\n        elif event_end <= start or timestamp > end: continue\n        event_id = str(raw.get(\"event_id\") or item.get(\"document_name\") or \"\")\n        selected[event_id] = (timestamp, raw, item)\n    def order(value):\n        timestamp, metadata, _ = value\n        event_end = number(metadata.get(\"event_end_ts\")) or timestamp\n        if timestamp <= start <= event_end: return (0, timestamp, str(metadata.get(\"event_id\", \"\")))\n        if timestamp > start: return (1, timestamp, str(metadata.get(\"event_id\", \"\")))\n        return (2, -event_end, str(metadata.get(\"event_id\", \"\")))\n    ordered = sorted(selected.values(), key=order)[:limit]  # [:3] is the default cap\n    status_text = \"所有\" if all_mode else {\"normal\": \"正常\", \"recent\": \"最近\", \"cancelled\": \"取消\", \"postponed\": \"延期\"}.get(requested_status, requested_status)\n    def display_time(timestamp, event_status):\n        if event_status == \"postponed\" and timestamp is None:\n            return \"延期未定\"\n        if timestamp is None:\n            return \"时间未定\"\n        value = datetime.fromtimestamp(timestamp, timezone(timedelta(hours=8)))\n        date_text = f\"{value.year}年{value.month}月{value.day}日\"\n        return f\"{date_text} {value:%H:%M}\" if value.hour or value.minute else date_text\n    lines = []\n    for timestamp, metadata, item in ordered:\n        title = metadata.get(\"source_title\") or item.get(\"title\") or item.get(\"document_name\") or \"活动\"\n        status = metadata.get(\"source_status\") or metadata.get(\"event_status\") or \"\"\n        time_text = display_time(timestamp, metadata.get(\"event_status\"))\n        summary = str(metadata.get(\"activity_summary\") or \"\").strip()\n        line = f\"{title}（{status}，{time_text}，{metadata.get('delivery_mode', '')}，{metadata.get('city', '')}）\"\n        if summary: line += f\"\\n简介：{summary}\"\n        link = metadata.get(\"registration_url\")\n        deadline = number(metadata.get(\"registration_deadline_ts\"))\n        if event_status in {\"normal\", \"postponed\"} and isinstance(link, str) and link.startswith((\"http://\", \"https://\")) and (deadline is None or deadline >= datetime.now(timezone(timedelta(hours=8))).timestamp()): line += f\" 报名链接：{link}\"\n        lines.append(line)\n    return {\"activity_text\": \"\\n\".join(lines) or f\"当前没有符合条件的{status_text}活动。\"}\n"
         code_language: python3
-        desc: 从 doc_metadata 读取动态筛选后的活动，按开始时间升序去重后最多3条；进行中活动按时间区间相交处理。
+        desc: 从 doc_metadata 读取动态筛选后的活动，按状态阶段和时间排序、去重并受 activity_max_results 限制。
         outputs:
           activity_text:
             children: null
@@ -707,6 +710,10 @@ workflow:
           - activity_window
           - requested_status
           variable: requested_status
+        - value_selector:
+          - activity_window
+          - activity_max_results
+          variable: activity_max_results
       height: 95
       id: activity_results
       position:

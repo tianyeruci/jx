@@ -459,6 +459,8 @@ def _publish_document(
     created_remote_id = ""
     replaced_catalog_document_id = ""
     replaced_activity_document_ids: list[str] = []
+    previous_activity_document_id = ""
+    previous_activity_batch_id = ""
     try:
         client = _knowledge_client(batch)
         row.status = "processing"
@@ -471,6 +473,8 @@ def _publish_document(
             event_id = str((row.metadata_json or {}).get("event_id") or "")
             if event_id:
                 if row.dify_document_id:
+                    previous_activity_document_id = str(row.dify_document_id)
+                    previous_activity_batch_id = str(row.dify_batch_id or "")
                     replaced_activity_document_ids.append(str(row.dify_document_id))
                 candidates = session.scalars(
                     select(CleaningDocument)
@@ -640,6 +644,9 @@ def _publish_document(
         if client and created_remote_id:
             if not _remove_or_disable_document(client, created_remote_id):
                 _queue_document_cleanup(created_remote_id, client.dataset_id)
+        if batch.strategy_code == "recent_activity" and previous_activity_document_id:
+            row.dify_document_id = previous_activity_document_id
+            row.dify_batch_id = previous_activity_batch_id or None
         retry = row.attempts < 2
         row.status = "pending" if retry else "failed"
         row.stage = "retrying" if retry else "failed"
