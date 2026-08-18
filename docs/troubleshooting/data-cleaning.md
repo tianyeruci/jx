@@ -587,3 +587,15 @@
 - 预防：活动验收报告至少分列“本地批次终态”“Dify 文档/Metadata 回读”“Chatflow 检索结果”“精确清理状态”；不要把数据库存在记录当成 Dify 运行态证明。
 - 证据：jx `/opt/ai-management/var/reports/v2/20260816-activity-59d963-deploy` 及本轮脱敏测试记录。
 - 最后验证：2026-08-16。
+
+## DATA-048：recent_activity 同名活动更新必须新版本先发布、旧版本后清理
+
+- 适用：`recent_activity` 中活动名称不变但正文、报名信息或活动状态发生变化的重新上传。
+- 触发：更新后的活动文档发布失败或旧文档先被删除，导致知识库中活动整体消失；或者 Dify 名称无法从名称判断活动归属和内容版本。
+- 根因：稳定 `event_id` 表示同一逻辑活动，不能把它当作每次上传都新建或直接覆盖；远端 Dify 删除与本地数据库提交也不共享事务，清理失败必须可重试。
+- 解决：Dify 名称固定为“活动名称前缀 + 稳定 `event_id` + 内容版本摘要”；先完成新文档创建、Metadata 回读和本地成功提交，再删除旧文档。旧文档精确 ID 写入同一事务的 `ExternalDeletionTask`，删除失败保留任务由维护 Worker 重试；同一源文件重复 `event_id` 在发布前拒绝，避免一个源内产生不确定版本。
+- 非解决：按活动名称模糊删除、先删旧文档再上传新文档、直接改 Dify 业务数据库，或仅依赖本地 `CleaningDocument` 状态推断远端已经删除。
+- 验证：本地覆盖新建失败、旧文档删除失败、提交后进程中断、维护重试和重复 `event_id` 契约；2026-08-18 jx 合成同名活动 v1/v2 均完成，v2 状态更新为取消，Dify 仅保留新版本；精确清理后批次、本地文档、Dify 文档、Redis 键和上传目录均无残留。
+- 预防：每次活动更新保存稳定 `event_id`、新旧版本摘要和精确远端 ID；验收清理必须以批次/文件/文档关联或显式 manifest 为依据，不以活动名称作为删除授权。
+- 证据：`ai_management/workers/tasks/cleaning.py`、`tests/test_release_acceptance_contract.py`、`var/reports/recent-activity-impl/issues.jsonl`、jx release `quick-20260818-050347-ab578b3727b3`。
+- 最后验证：2026-08-18。

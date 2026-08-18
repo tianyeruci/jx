@@ -227,9 +227,12 @@ def test_contract_retry_prompt_is_structural_and_has_no_filename():
     ("strategy", "candidates", "tokens", "batch_enabled", "expected"),
     [
         ("personal_business_consultation", 500, 1_000_000, False, "realtime"),
+        ("personal_business_consultation", 100, 1, True, "batch"),
         ("zsxq_post", 99, 199_999, False, "realtime"),
-        ("zsxq_post", 100, 1, True, "realtime"),
-        ("wechat_public_account_cognition", 1, 200_001, True, "realtime"),
+        ("zsxq_post", 100, 1, True, "batch"),
+        ("wechat_public_account_cognition", 1, 200_001, True, "batch"),
+        ("xiaobot_post", 1, 200_000, True, "batch"),
+        ("xiaobot_post", 100, 1, True, "batch"),
     ],
 )
 def test_model_channel_planner(

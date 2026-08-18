@@ -1838,6 +1838,23 @@ def dify_document_name(
     return f"{stem}__{sequence:03d}{suffix}"
 
 
+def dify_activity_document_name(
+    activity_name: str,
+    event_id: str,
+    version: str,
+) -> str:
+    """Build a readable, collision-resistant name for an activity revision."""
+
+    if not event_id or not version:
+        raise ValueError("活动 Dify 文档名缺少 event_id 或版本摘要")
+    base = dify_document_name(f"{activity_name}.md", "", 1).removesuffix(".md")
+    safe_event_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(event_id))
+    safe_version = re.sub(r"[^A-Za-z0-9_-]", "_", str(version))
+    suffix = f"__{safe_event_id}__{safe_version[:16]}.md"
+    max_base = max(1, 300 - len(suffix))
+    return f"{base[:max_base]}{suffix}"
+
+
 def _serialize_item(item: CleaningDocument) -> dict[str, Any]:
     return {
         "item_id": item.id,

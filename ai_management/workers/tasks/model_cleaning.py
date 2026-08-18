@@ -23,6 +23,7 @@ from knowledge_cleaner.consultation_rag import (
     render_case_markdown as render_consultation_rag_case,
 )
 
+from ...cache import cache
 from ...config import get_settings
 from ...course_import import _course_text, _route_text
 from ...db import SessionLocal
@@ -1853,6 +1854,79 @@ def _fallback_failed_model_documents(
     return True, pending_ids, shard_ids
 
 
+def _handle_terminal_batch_result_error(
+    session,
+    task: ModelCleaningTask,
+    batch: CleaningBatch,
+    client: BailianClient,
+    file_ids: list[str],
+    exc: Exception,
+) -> tuple[list[str], list[str]]:
+    """Close a terminal Batch whose output cannot be parsed or reconciled."""
+
+    from .cleaning import _finish_batch, _refresh_file_state
+
+    pending_ids: list[str] = []
+    shard_ids: list[str] = []
+    fallback_applied, pending_ids, shard_ids = _fallback_failed_model_documents(
+        session,
+        batch.id,
+        reason_code="MODEL_BATCH_RESULT_INVALID",
+        reason_message="百炼 Batch 结果无法解析或未通过 custom_id 守恒校验",
+    )
+    if not fallback_applied:
+        touched_files: set[str] = set()
+        for document in _iter_documents_for_batch(session, batch.id):
+            _mark_contract_failure(
+                document,
+                exc,
+                final=True,
+            )
+            document.error_code = "MODEL_BATCH_RESULT_INVALID"
+            touched_files.add(str(document.file_id))
+        for file_id in touched_files:
+            _refresh_file_state(session, file_id, commit=False)
+        _finish_batch(session, batch.id)
+    else:
+        batch.status = "processing"
+
+    documents = list(
+        session.scalars(
+            select(CleaningDocument)
+            .join(CleaningFile)
+            .where(CleaningFile.batch_id == batch.id)
+        )
+    )
+    previous = dict(task.result_counts or {})
+    task.result_counts = {
+        **previous,
+        "candidate_count": task.candidate_count,
+        "succeeded": int(previous.get("succeeded") or 0),
+        "excluded": int(previous.get("excluded") or 0),
+        "review": int(previous.get("review") or 0),
+        "fallback": sum(
+            1
+            for document in documents
+            if (document.audit_json or {}).get("source_markdown_fallback", {}).get(
+                "applied"
+            )
+        ),
+        "failed": sum(1 for document in documents if document.status == "failed"),
+    }
+    _delete_provider_files(client, task, file_ids)
+    task.provider_batch_id = None
+    task.provider_batch_ids = []
+    task.provider_input_file_ids = []
+    task.provider_output_file_ids = []
+    task.provider_error_file_ids = []
+    task.status = "failed"
+    task.last_error = (
+        "百炼Batch结果解析失败，已停止轮询："
+        + safe_exception_message(exc, limit=1800)
+    )[:2000]
+    return pending_ids, shard_ids
+
+
 def _queue_publication_outputs(
     pending_document_ids: Iterable[str], shard_ids: Iterable[str]
 ) -> None:
@@ -2277,6 +2351,36 @@ def _write_batch_files(
     return paths
 
 
+def _recover_created_provider_batches(
+    task_id: str,
+    provider_batch_ids: list[str],
+    provider_input_file_ids: list[str],
+    reason: str,
+) -> bool:
+    """Persist remote IDs after a commit failure in the create window."""
+    if not provider_batch_ids:
+        return False
+    with SessionLocal() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        if task is None:
+            return False
+        batch = session.get(CleaningBatch, task.batch_id)
+        task.provider_batch_ids = list(provider_batch_ids)
+        task.provider_batch_id = provider_batch_ids[0]
+        task.provider_input_file_ids = list(provider_input_file_ids)
+        task.provider_output_file_ids = []
+        task.provider_error_file_ids = []
+        task.status = "batch_running"
+        task.last_error = reason[:2000]
+        if batch is not None:
+            batch.status = "model_batch_running"
+        for document in _iter_documents_for_batch(session, task.batch_id):
+            document.status = "model_processing"
+            document.stage = "model_batch_running"
+        session.commit()
+    return True
+
+
 @celery_app.task(
     name="ai_management.submit_batch_model_task",
     bind=True,
@@ -2285,6 +2389,8 @@ def _write_batch_files(
 )
 def submit_batch_model_task(self, task_id: str) -> bool:
     client: BailianClient | None = None
+    created_batch_ids: list[str] = []
+    created_input_ids: list[str] = []
     fallback_pending_ids: list[str] = []
     fallback_shard_ids: list[str] = []
     try:
@@ -2346,10 +2452,12 @@ def submit_batch_model_task(self, task_id: str) -> bool:
                 for path in paths:
                     input_id = client.upload_batch_path(str(path))
                     input_ids.append(input_id)
+                    created_input_ids.append(input_id)
                     task.provider_input_file_ids = list(input_ids)
                     session.commit()
                     batch_id = client.create_batch(input_id)
                     batch_ids.append(batch_id)
+                    created_batch_ids.append(batch_id)
                     task.provider_batch_ids = list(batch_ids)
                     task.provider_batch_id = batch_ids[0]
                     session.commit()
@@ -2368,6 +2476,22 @@ def submit_batch_model_task(self, task_id: str) -> bool:
         return True
     except Exception as exc:
         logger.exception("batch model submit failed")
+        if created_batch_ids:
+            try:
+                recovered = _recover_created_provider_batches(
+                    task_id,
+                    created_batch_ids,
+                    created_input_ids,
+                    "Batch 已在供应商创建，但本地提交失败；已恢复远端 ID 并继续轮询",
+                )
+            except Exception:
+                logger.exception("failed to recover provider batch IDs after commit failure")
+                recovered = False
+            if recovered:
+                poll_batch_model_task.apply_async(
+                    args=[task_id], queue="ai_model_batch", countdown=60
+                )
+                return False
         replan_batch_id = ""
         with SessionLocal() as session:
             task = session.get(ModelCleaningTask, task_id)
@@ -2503,22 +2627,81 @@ def _delete_provider_files(
     acks_late=True,
 )
 def poll_batch_model_task(self, task_id: str) -> bool:
+    lock_context = cache.lock(f"ai:model-cleaning-poll:{task_id}", ttl=600)
+    lock_state = lock_context.__enter__()
+    if not lock_state:
+        if getattr(lock_state, "available", True) is False:
+            reschedule = False
+            try:
+                with SessionLocal() as session:
+                    task = session.get(ModelCleaningTask, task_id)
+                    if task is not None and task.status == "batch_running" and task.provider_batch_ids:
+                        task.last_error = "Batch轮询锁后端不可用，已保留活动状态并重试"
+                        session.commit()
+                        reschedule = True
+            except Exception:
+                logger.exception("failed to persist unavailable batch poll lock")
+            if reschedule:
+                poll_batch_model_task.apply_async(
+                    args=[task_id], queue="ai_model_batch", countdown=60
+                )
+        lock_context.__exit__(None, None, None)
+        return False
     client: BailianClient | None = None
     fallback_pending_ids: list[str] = []
     fallback_shard_ids: list[str] = []
+    created_repair_batch_ids: list[str] = []
+    created_repair_input_ids: list[str] = []
     try:
         client = _client()
         with SessionLocal() as session:
             task = session.get(ModelCleaningTask, task_id)
             if task is None or task.status != "batch_running":
                 return False
+            if not task.provider_batch_ids:
+                task.status = "failed"
+                task.last_error = (
+                    "Batch轮询失败：batch_running 但没有 provider_batch_ids，"
+                    "无法恢复供应商任务"
+                )
+                task.result_counts = {
+                    **(task.result_counts or {}),
+                    "failure_code": "MODEL_BATCH_PROVIDER_IDS_MISSING",
+                }
+                if batch := session.get(CleaningBatch, task.batch_id):
+                    batch.status = "processing"
+                session.commit()
+                return False
             batch = session.get(CleaningBatch, task.batch_id)
-            statuses = [
-                client.get_batch(batch_id)
-                for batch_id in (task.provider_batch_ids or [])
-            ]
+            previous_terminal = (task.result_counts or {}).get(
+                "provider_terminal_batches", {}
+            )
+            if not isinstance(previous_terminal, dict):
+                previous_terminal = {}
+            active_batch_ids: list[str] = []
+            fetched_statuses: list[dict[str, Any]] = []
+            for provider_batch_id in task.provider_batch_ids:
+                status = client.get_batch(provider_batch_id)
+                status = {**status, "provider_batch_id": provider_batch_id}
+                if str(status.get("status") or "") in PROVIDER_TERMINAL:
+                    previous_terminal[provider_batch_id] = status
+                else:
+                    active_batch_ids.append(provider_batch_id)
+                    fetched_statuses.append(status)
+            statuses = [*previous_terminal.values(), *fetched_statuses]
+            if active_batch_ids:
+                task.provider_batch_ids = active_batch_ids
+                task.provider_batch_id = active_batch_ids[0]
+                task.result_counts = {
+                    **(task.result_counts or {}),
+                }
+                if previous_terminal:
+                    task.result_counts["provider_terminal_batches"] = previous_terminal
+            else:
+                task.provider_batch_ids = []
+                task.provider_batch_id = None
             state_values = {str(item.get("status") or "") for item in statuses}
-            if any(state not in PROVIDER_TERMINAL for state in state_values):
+            if active_batch_ids:
                 # A provider Batch can legitimately remain in progress for its
                 # whole completion window.  Persist only aggregate progress so
                 # the admin page distinguishes that state from a stalled local
@@ -2626,15 +2809,57 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                 batch.status = "model_validating"
             session.commit()
             results: dict[str, dict[str, Any]] = {}
-            for output_id in output_ids:
-                parsed = _parse_provider_output(
-                    client.get_file_content(output_id)
+            try:
+                for output_id in output_ids:
+                    parsed = _parse_provider_output(
+                        client.get_file_content(output_id)
+                    )
+                    overlap = set(results) & set(parsed)
+                    if overlap:
+                        raise ValueError(
+                            f"Batch跨文件custom_id重复：{sorted(overlap)[:3]}"
+                        )
+                    results.update(parsed)
+                expected_ids = {
+                    build_custom_id(
+                        _request(document, batch.strategy_code), task.prompt_version
+                    )
+                    for document in _iter_documents_for_batch(session, task.batch_id)
+                }
+                unknown_ids = set(results) - expected_ids
+                if unknown_ids:
+                    raise ValueError(
+                        "Batch结果包含不属于当前候选集的custom_id："
+                        f"{sorted(unknown_ids)[:3]}"
+                    )
+            except Exception as exc:
+                (
+                    fallback_pending_ids,
+                    fallback_shard_ids,
+                ) = _handle_terminal_batch_result_error(
+                    session,
+                    task,
+                    batch,
+                    client,
+                    [
+                        *(task.provider_input_file_ids or []),
+                        *output_ids,
+                        *error_ids,
+                    ],
+                    exc,
                 )
-                overlap = set(results) & set(parsed)
-                if overlap:
-                    raise ValueError(f"Batch跨文件custom_id重复：{sorted(overlap)[:3]}")
-                results.update(parsed)
-            counts = {"succeeded": 0, "excluded": 0, "review": 0}
+                session.commit()
+                _queue_publication_outputs(
+                    fallback_pending_ids, fallback_shard_ids
+                )
+                return True
+            counts = {
+                "succeeded": 0,
+                "excluded": 0,
+                "review": 0,
+                "fallback": 0,
+                "failed": 0,
+            }
             usage = dict(task.actual_usage or {})
             usage.setdefault("input_tokens", 0)
             usage.setdefault("output_tokens", 0)
@@ -2652,8 +2877,12 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                     continue
                 item = results.pop(custom_id, None)
                 if item is None:
+                    _mark_contract_failure(
+                        document,
+                        ValueError("Batch结果缺少当前条目"),
+                        final=False,
+                    )
                     document.error_code = "MODEL_BATCH_RESULT_MISSING"
-                    document.error_message = "Batch结果缺少当前条目"
                     retry_hints[document.id] = (
                         "请输出完整 JSON，并逐一归类输入 blocks 的全部 key。"
                     )
@@ -2681,40 +2910,33 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                     _finalize_model_document(
                         document, strategy_code=batch.strategy_code
                     )
-                    _apply_source_markdown_fallback(
+                    fallback_applied = _apply_source_markdown_fallback(
                         document,
                         batch.strategy_code,
                         source_markdown=source_markdown,
                         source_metadata=source_metadata,
                         source_chunking=source_chunking,
                     )
-                    counts[
-                        "excluded"
-                        if document.status == "excluded"
-                        else (
-                            "review"
-                            if document.status == "review_required"
-                            else "succeeded"
-                        )
-                    ] += 1
+                    if fallback_applied:
+                        counts["fallback"] += 1
+                    else:
+                        counts[
+                            "excluded"
+                            if document.status == "excluded"
+                            else (
+                                "review"
+                                if document.status == "review_required"
+                                else "succeeded"
+                            )
+                        ] += 1
                 except Exception as exc:
-                    document.error_code = "MODEL_CONTRACT_INVALID"
-                    document.error_message = _model_contract_error_message(exc)
+                    _mark_contract_failure(document, exc, final=False)
                     retry_hints[document.id] = _model_contract_retry_hint(exc)
                     retry_count += 1
-                    _apply_source_markdown_fallback(
-                        document,
-                        batch.strategy_code,
-                        source_markdown=source_markdown,
-                        source_metadata=source_metadata,
-                        source_chunking=source_chunking,
-                    )
                     if retry_count < 100:
                         small_retry_documents.append(document)
                     elif retry_count == 100:
                         small_retry_documents.clear()
-            if results:
-                raise ValueError("Batch结果包含不属于当前候选集的custom_id")
             task.actual_usage = usage
             retry_round = int((task.result_counts or {}).get("retry_round") or 0)
             if retry_count and retry_round < 1:
@@ -2748,7 +2970,7 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                             _finalize_model_document(
                                 document, strategy_code=batch.strategy_code
                             )
-                            _apply_source_markdown_fallback(
+                            fallback_applied = _apply_source_markdown_fallback(
                                 document,
                                 batch.strategy_code,
                                 source_markdown=source_markdown,
@@ -2759,6 +2981,18 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                             usage["output_tokens"] += item_usage[
                                 "output_tokens"
                             ]
+                            if fallback_applied:
+                                counts["fallback"] += 1
+                            else:
+                                counts[
+                                    "excluded"
+                                    if document.status == "excluded"
+                                    else (
+                                        "review"
+                                        if document.status == "review_required"
+                                        else "succeeded"
+                                    )
+                                ] += 1
                         except Exception as exc:
                             _mark_contract_failure(
                                 document,
@@ -2773,22 +3007,17 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                                     and not settings.course_catalog_auto_publish
                                 ),
                             )
-                            _apply_source_markdown_fallback(
+                            fallback_applied = _apply_source_markdown_fallback(
                                 document,
                                 batch.strategy_code,
                                 source_markdown=source_markdown,
                                 source_metadata=source_metadata,
                                 source_chunking=source_chunking,
                             )
-                        counts[
-                            "excluded"
-                            if document.status == "excluded"
-                            else (
-                                "review"
-                                if document.status == "review_required"
-                                else "succeeded"
-                            )
-                        ] += 1
+                            if fallback_applied:
+                                counts["fallback"] += 1
+                            else:
+                                counts["failed"] += 1
                     task.actual_usage = usage
                 else:
                     with tempfile.TemporaryDirectory(
@@ -2806,7 +3035,85 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                         for path in retry_paths:
                             input_id = client.upload_batch_path(str(path))
                             retry_input_ids.append(input_id)
-                            retry_batch_ids.append(client.create_batch(input_id))
+                            created_repair_input_ids.append(input_id)
+                            task.provider_input_file_ids = list(retry_input_ids)
+                            session.commit()
+                            retry_batch_id = client.create_batch(input_id)
+                            retry_batch_ids.append(retry_batch_id)
+                            created_repair_batch_ids.append(retry_batch_id)
+                            task.provider_batch_ids = list(retry_batch_ids)
+                            task.provider_batch_id = retry_batch_ids[0]
+                            session.commit()
+                    if not retry_batch_ids:
+                        retry_documents = list(
+                            session.scalars(
+                                select(CleaningDocument)
+                                .join(CleaningFile)
+                                .where(CleaningFile.batch_id == task.batch_id)
+                            )
+                        )
+                        for document in retry_documents:
+                            if document.status not in {
+                                "model_processing",
+                                "awaiting_model",
+                            }:
+                                continue
+                            _mark_contract_failure(
+                                document,
+                                ValueError("Batch修复没有可提交的候选请求"),
+                                final=True,
+                            )
+                            fallback_applied = _apply_source_markdown_fallback(
+                                document,
+                                batch.strategy_code,
+                                source_markdown=document.cleaned_markdown,
+                                source_metadata=dict(document.metadata_json or {}),
+                                source_chunking=dict(document.chunking_json or {}),
+                            )
+                            if fallback_applied:
+                                counts["fallback"] += 1
+                            else:
+                                counts["failed"] += 1
+                        task.status = "failed"
+                        task.result_counts = {
+                            **(task.result_counts or {}),
+                            "candidate_count": task.candidate_count,
+                            "succeeded": counts["succeeded"],
+                            "excluded": counts["excluded"],
+                            "review": counts["review"],
+                            "fallback": counts["fallback"],
+                            "failed": counts["failed"],
+                            "retry_pending": 0,
+                        }
+                        _delete_provider_files(client, task, old_file_ids)
+                        task.provider_input_file_ids = []
+                        task.provider_batch_ids = []
+                        task.provider_batch_id = None
+                        task.last_error = "Batch修复没有可提交的候选请求"
+                        from .cleaning import _refresh_file_state
+
+                        touched_files = {
+                            str(document.file_id)
+                            for document in retry_documents
+                        }
+                        for file_id in touched_files:
+                            _refresh_file_state(session, file_id, commit=False)
+                        if batch.strategy_code in POST_STRATEGIES:
+                            fallback_shard_ids = _plan_post_publication(
+                                session, task.batch_id
+                            )
+                        else:
+                            fallback_pending_ids = [
+                                str(document.id)
+                                for document in retry_documents
+                                if document.status == "pending"
+                            ]
+                        batch.status = "processing"
+                        session.commit()
+                        _queue_publication_outputs(
+                            fallback_pending_ids, fallback_shard_ids
+                        )
+                        return True
                     _delete_provider_files(client, task, old_file_ids)
                     task.provider_input_file_ids = retry_input_ids
                     task.provider_output_file_ids = []
@@ -2819,9 +3126,13 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                         **(task.result_counts or {}),
                         "retry_round": 1,
                         "retry_candidate_count": retry_count,
+                        "candidate_count": task.candidate_count,
                         "prior_succeeded": counts["succeeded"],
                         "prior_excluded": counts["excluded"],
                         "prior_review": counts["review"],
+                        "prior_fallback": counts["fallback"],
+                        "prior_failed": counts["failed"],
+                        "retry_pending": retry_count,
                     }
                     task.cleanup_status = "not_started"
                     task.status = "batch_running"
@@ -2852,23 +3163,32 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                             and not settings.course_catalog_auto_publish
                         ),
                     )
-                    _apply_source_markdown_fallback(
+                    fallback_applied = _apply_source_markdown_fallback(
                         document,
                         batch.strategy_code,
                         source_markdown=document.cleaned_markdown,
                         source_metadata=dict(document.metadata_json or {}),
                         source_chunking=dict(document.chunking_json or {}),
                     )
-                    counts["review"] += 1
+                    if fallback_applied:
+                        counts["fallback"] += 1
+                    else:
+                        counts["failed"] += 1
             previous = task.result_counts or {}
             task.result_counts = {
+                "candidate_count": task.candidate_count,
                 "succeeded": counts["succeeded"]
                 + int(previous.get("prior_succeeded") or 0),
                 "excluded": counts["excluded"]
                 + int(previous.get("prior_excluded") or 0),
                 "review": counts["review"]
                 + int(previous.get("prior_review") or 0),
+                "fallback": counts["fallback"]
+                + int(previous.get("prior_fallback") or 0),
+                "failed": counts["failed"]
+                + int(previous.get("prior_failed") or 0),
                 "retry_round": int(previous.get("retry_round") or 0),
+                "retry_pending": 0,
             }
             _delete_provider_files(
                 client,
@@ -2884,16 +3204,39 @@ def poll_batch_model_task(self, task_id: str) -> bool:
         return True
     except Exception as exc:
         logger.exception("batch model polling failed")
+        if created_repair_batch_ids:
+            try:
+                recovered = _recover_created_provider_batches(
+                    task_id,
+                    created_repair_batch_ids,
+                    created_repair_input_ids,
+                    "Batch 修复任务已在供应商创建，但本地提交失败；已恢复远端 ID 并继续轮询",
+                )
+            except Exception:
+                logger.exception("failed to recover repair provider batch IDs")
+                recovered = False
+            if recovered:
+                poll_batch_model_task.apply_async(
+                    args=[task_id], queue="ai_model_batch", countdown=60
+                )
+                return False
         # A provider/DB connection failure is not evidence that the remote
         # Batch reached a terminal state.  Keep the task observable and poll
         # again; only an explicit provider terminal status may atomically fail
         # an automatic course catalogue run.  Scheduling is deliberately done
         # outside the database context so a dropped connection cannot orphan
         # the remote Batch by preventing the next poll from being queued.
+        reschedule = True
         try:
             with SessionLocal() as session:
                 task = session.get(ModelCleaningTask, task_id)
-                if task is not None and task.status == "batch_running":
+                if (
+                    task is None
+                    or task.status != "batch_running"
+                    or not task.provider_batch_ids
+                ):
+                    reschedule = False
+                else:
                     task.last_error = (
                         "Batch轮询暂时失败："
                         + safe_exception_message(exc, limit=1900)
@@ -2901,13 +3244,15 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                     session.commit()
         except Exception:
             logger.exception("failed to persist transient batch polling error")
-        poll_batch_model_task.apply_async(
-            args=[task_id], queue="ai_model_batch", countdown=60
-        )
+        if reschedule:
+            poll_batch_model_task.apply_async(
+                args=[task_id], queue="ai_model_batch", countdown=60
+            )
         return False
     finally:
         if client:
             client.close()
+        lock_context.__exit__(None, None, None)
 
 
 @celery_app.task(

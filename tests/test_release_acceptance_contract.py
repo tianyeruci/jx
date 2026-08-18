@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +23,7 @@ from ai_management.models import (
     CleaningDocument,
     CleaningFile,
     Course,
+    ExternalDeletionTask,
 )
 
 INTERNAL_HEADERS = {
@@ -171,15 +173,55 @@ def test_dify_child_document_names_use_source_name_and_three_digit_sequence():
     assert len(first) <= 300
 
 
+def test_recent_activity_version_digest_ignores_source_and_build_provenance():
+    from ai_management.workers.tasks.cleaning import _activity_content_version_sha
+
+    metadata = {
+        "event_id": "evt_same_activity",
+        "event_status": "normal",
+        "source_title": "同名活动",
+        "activity_summary": "活动内容",
+        "source_file_id": "file-a",
+        "source_filename": "v1.md",
+        "source_extension": ".md",
+        "source_sha256": "a" * 64,
+        "upload_batch_id": "batch-a",
+        "cleaning_strategy": "recent_activity",
+        "cleaning_spec_revision": "old-revision",
+        "source_document_index": 1,
+        "build_version": "old-build",
+        "content_format": "markdown",
+        "_cleaning_review_policy": {"enabled": False},
+        "review_status": "approved",
+        "unrelated_common_metadata": "v1",
+    }
+    baseline = _activity_content_version_sha("# 活动\n\n正文", metadata, {})
+    unrelated_change = {
+        **metadata,
+        "source_file_id": "file-b",
+        "source_filename": "v2.md",
+        "source_sha256": "b" * 64,
+        "upload_batch_id": "batch-b",
+        "cleaning_spec_revision": "new-revision",
+        "build_version": "new-build",
+        "review_status": "rejected",
+        "unrelated_common_metadata": "v2",
+    }
+    assert _activity_content_version_sha("# 活动\n\n正文", unrelated_change, {}) == baseline
+    assert _activity_content_version_sha("# 活动\n\n正文更新", metadata, {}) != baseline
+    assert (
+        _activity_content_version_sha(
+            "# 活动\n\n正文", {**metadata, "event_status": "cancelled"}, {}
+        )
+        != baseline
+    )
+
+
 def test_text_signature_probe_accepts_gb18030_character_split_at_sample_boundary(
     tmp_path,
 ):
     source = tmp_path / "large-export.txt"
-    source.write_bytes(
-        b"A" * (64 * 1024 - 1)
-        + "中".encode("gb18030")
-        + b"\n"
-    )
+    source.write_bytes(b"A" * (64 * 1024 - 1) + "中".encode("gb18030") + b"\n")
     validate_uploaded_file(source, ".txt", "application/octet-stream")
 
 
@@ -364,6 +406,472 @@ class _FailSecondDocumentClient:
         return None
 
 
+class _ActivityPublicationClient:
+    dataset_id = "dataset-test"
+
+    def __init__(self, *, fail_create: bool = False, fail_delete: bool = False):
+        self.fail_create = fail_create
+        self.fail_delete = fail_delete
+        self.remote_documents: dict[str, str] = {}
+        self.deleted_documents: list[str] = []
+        self.sequence = 0
+
+    def create_document(self, name, _text, **_kwargs):
+        if self.fail_create:
+            raise RuntimeError("controlled activity create failure")
+        self.sequence += 1
+        document_id = f"new-activity-{self.sequence}"
+        self.remote_documents[document_id] = name
+        return document_id, f"batch-{self.sequence}"
+
+    def wait_for_indexing(self, *_args, **_kwargs):
+        return None
+
+    def verify_document_structure(self, *_args, **_kwargs):
+        return {"parent_count": 1, "child_count": 1}
+
+    def ensure_metadata_names(self, names, **_kwargs):
+        return {name: f"field-{name}" for name in names}
+
+    def set_document_metadata(self, *_args, **_kwargs):
+        return None
+
+    def verify_document_metadata(self, *_args, **_kwargs):
+        return None
+
+    def delete_document(self, document_id):
+        if self.fail_delete:
+            raise RuntimeError("controlled activity delete failure")
+        self.deleted_documents.append(document_id)
+        self.remote_documents.pop(document_id, None)
+
+    def disable_document(self, _document_id):
+        raise RuntimeError("controlled activity disable failure")
+
+    def close(self):
+        return None
+
+
+def _seed_activity_replacement(SessionLocal):
+    with SessionLocal() as session:
+        old_batch = CleaningBatch(
+            strategy_code="recent_activity",
+            knowledge_base_code="general",
+            status="completed",
+            build_version="old-build",
+        )
+        new_batch = CleaningBatch(
+            strategy_code="recent_activity",
+            knowledge_base_code="general",
+            status="processing",
+            build_version="new-build",
+        )
+        session.add_all([old_batch, new_batch])
+        session.flush()
+        old_file = CleaningFile(
+            batch_id=old_batch.id,
+            original_filename="旧活动.md",
+            storage_filename="old.md",
+            extension=".md",
+            source_sha256="1" * 64,
+            size_bytes=1,
+            status="succeeded",
+            stage="completed",
+            outcome="succeeded",
+        )
+        new_file = CleaningFile(
+            batch_id=new_batch.id,
+            original_filename="新活动.md",
+            storage_filename="new.md",
+            extension=".md",
+            source_sha256="2" * 64,
+            size_bytes=1,
+            status="processing",
+            stage="publishing",
+            outcome="processing",
+        )
+        session.add_all([old_file, new_file])
+        session.flush()
+        event_id = "evt_same_activity"
+        old_document = CleaningDocument(
+            file_id=old_file.id,
+            sequence=1,
+            title="同名活动",
+            dify_document_name="同名活动__old.md",
+            dify_document_id="old-activity-document",
+            dify_batch_id="old-dify-batch",
+            document_key="old:1",
+            status="succeeded",
+            stage="completed",
+            cleaned_markdown="# 同名活动\n\n旧内容",
+            metadata_json={"event_id": event_id, "source_title": "同名活动"},
+        )
+        new_document = CleaningDocument(
+            file_id=new_file.id,
+            sequence=1,
+            title="同名活动",
+            dify_document_name="同名活动__new.md",
+            document_key="new:1",
+            status="pending",
+            stage="pending",
+            cleaned_markdown="# 同名活动\n\n新内容",
+            metadata_json={"event_id": event_id, "source_title": "同名活动"},
+        )
+        session.add_all([old_document, new_document])
+        session.commit()
+        return new_batch.id, new_file.id
+
+
+def test_recent_activity_replacement_publishes_new_before_deleting_old(service_db, monkeypatch):
+    from ai_management.workers.tasks import cleaning as task_module
+
+    batch_id, file_id = _seed_activity_replacement(service_db)
+    client = _ActivityPublicationClient()
+    client.remote_documents["old-activity-document"] = "同名活动__old.md"
+    monkeypatch.setattr(task_module, "_knowledge_client", lambda _batch: client)
+
+    with service_db() as session:
+        batch = session.get(CleaningBatch, batch_id)
+        file_row = session.get(CleaningFile, file_id)
+        assert batch is not None and file_row is not None
+        assert task_module._publish_source_file(session, file_row=file_row, batch=batch) is True
+
+    assert "old-activity-document" in client.deleted_documents
+    assert "old-activity-document" not in client.remote_documents
+    assert list(client.remote_documents) == ["new-activity-1"]
+    with service_db() as session:
+        document = session.scalar(
+            select(CleaningDocument).where(CleaningDocument.file_id == file_id)
+        )
+        assert document is not None
+        assert document.status == "succeeded"
+        assert document.dify_document_id == "new-activity-1"
+        assert "_pending_activity_replacement_document_ids" not in document.audit_json
+
+
+def test_recent_activity_create_failure_keeps_old_document(service_db, monkeypatch):
+    from ai_management.workers.tasks import cleaning as task_module
+
+    batch_id, file_id = _seed_activity_replacement(service_db)
+    client = _ActivityPublicationClient(fail_create=True)
+    client.remote_documents["old-activity-document"] = "同名活动__old.md"
+    monkeypatch.setattr(task_module, "_knowledge_client", lambda _batch: client)
+
+    with pytest.raises((Retry, RuntimeError)):
+        with service_db() as session:
+            batch = session.get(CleaningBatch, batch_id)
+            file_row = session.get(CleaningFile, file_id)
+            assert batch is not None and file_row is not None
+            task_module._publish_source_file(session, file_row=file_row, batch=batch)
+
+    assert client.remote_documents == {"old-activity-document": "同名活动__old.md"}
+    with service_db() as session:
+        old_document = session.scalar(
+            select(CleaningDocument).where(
+                CleaningDocument.dify_document_id == "old-activity-document"
+            )
+        )
+        cleanup = list(
+            session.scalars(
+                select(ExternalDeletionTask).where(
+                    ExternalDeletionTask.external_id == "old-activity-document"
+                )
+            )
+        )
+        assert old_document is not None
+        assert old_document.status == "succeeded"
+        assert cleanup == []
+
+
+def test_recent_activity_old_delete_failure_keeps_new_and_queues_exact_cleanup(
+    service_db, monkeypatch
+):
+    from ai_management.workers.tasks import cleaning as task_module
+
+    batch_id, file_id = _seed_activity_replacement(service_db)
+    client = _ActivityPublicationClient(fail_delete=True)
+    client.remote_documents["old-activity-document"] = "同名活动__old.md"
+    monkeypatch.setattr(task_module, "_knowledge_client", lambda _batch: client)
+
+    with service_db() as session:
+        batch = session.get(CleaningBatch, batch_id)
+        file_row = session.get(CleaningFile, file_id)
+        assert batch is not None and file_row is not None
+        assert task_module._publish_source_file(session, file_row=file_row, batch=batch) is True
+
+    assert set(client.remote_documents) == {"old-activity-document", "new-activity-1"}
+    with service_db() as session:
+        document = session.scalar(
+            select(CleaningDocument).where(CleaningDocument.file_id == file_id)
+        )
+        cleanup = list(
+            session.scalars(
+                select(ExternalDeletionTask).where(
+                    ExternalDeletionTask.external_id == "old-activity-document"
+                )
+            )
+        )
+        assert document is not None and document.dify_document_id == "new-activity-1"
+        assert len(cleanup) == 1
+
+    from ai_management.workers.tasks import maintenance as maintenance_tasks
+
+    class DummyAppClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    class RetryingKnowledgeClient:
+        def __init__(self, *_args, **_kwargs):
+            self.dataset_id = client.dataset_id
+
+        def delete_document(self, document_id):
+            client.deleted_documents.append(document_id)
+            client.remote_documents.pop(document_id, None)
+
+        def disable_document(self, _document_id):
+            raise RuntimeError("unexpected disable fallback")
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(maintenance_tasks, "DifyAppClient", DummyAppClient)
+    monkeypatch.setattr(maintenance_tasks, "DifyKnowledgeClient", RetryingKnowledgeClient)
+    maintenance_tasks._retry_external_deletions()
+
+    assert set(client.remote_documents) == {"new-activity-1"}
+    with service_db() as session:
+        assert (
+            session.scalar(
+                select(ExternalDeletionTask).where(
+                    ExternalDeletionTask.external_id == "old-activity-document"
+                )
+            )
+            is None
+        )
+
+
+def test_recent_activity_cleanup_retry_failure_retains_task_and_backoff(service_db, monkeypatch):
+    from ai_management.workers.tasks import maintenance as maintenance_tasks
+
+    due_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    with service_db() as session:
+        session.add(
+            ExternalDeletionTask(
+                kind="dify_document",
+                external_id="old-activity-document",
+                payload={"dataset_id": "general-dataset"},
+                attempts=2,
+                next_attempt_at=due_at,
+            )
+        )
+        session.commit()
+
+    class DummyAppClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    class FailingKnowledgeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(maintenance_tasks, "DifyAppClient", DummyAppClient)
+    monkeypatch.setattr(maintenance_tasks, "DifyKnowledgeClient", FailingKnowledgeClient)
+    monkeypatch.setattr(
+        maintenance_tasks,
+        "_remove_or_disable_document",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("temporary Dify failure")),
+    )
+
+    maintenance_tasks._retry_external_deletions()
+
+    with service_db() as session:
+        task = session.scalar(
+            select(ExternalDeletionTask).where(
+                ExternalDeletionTask.external_id == "old-activity-document"
+            )
+        )
+        assert task is not None
+        assert task.attempts == 3
+        assert task.next_attempt_at > due_at.replace(tzinfo=None)
+        assert "temporary Dify failure" in str(task.last_error)
+
+
+def test_recent_activity_cleanup_outbox_survives_post_commit_crash(service_db, monkeypatch):
+    from ai_management.workers.tasks import cleaning as task_module
+
+    class CommitBoundaryCrash(BaseException):
+        pass
+
+    batch_id, file_id = _seed_activity_replacement(service_db)
+    client = _ActivityPublicationClient()
+    client.remote_documents["old-activity-document"] = "同名活动__old.md"
+    monkeypatch.setattr(task_module, "_knowledge_client", lambda _batch: client)
+    monkeypatch.setattr(
+        task_module,
+        "_remove_or_disable_document",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(CommitBoundaryCrash()),
+    )
+
+    with pytest.raises(CommitBoundaryCrash):
+        with service_db() as session:
+            batch = session.get(CleaningBatch, batch_id)
+            file_row = session.get(CleaningFile, file_id)
+            assert batch is not None and file_row is not None
+            task_module._publish_source_file(session, file_row=file_row, batch=batch)
+
+    with service_db() as session:
+        document = session.scalar(
+            select(CleaningDocument).where(CleaningDocument.file_id == file_id)
+        )
+        cleanup = list(
+            session.scalars(
+                select(ExternalDeletionTask).where(
+                    ExternalDeletionTask.external_id == "old-activity-document"
+                )
+            )
+        )
+        assert document is not None
+        assert document.status == "succeeded"
+        assert document.dify_document_id == "new-activity-1"
+        assert len(cleanup) == 1
+
+
+def test_recent_activity_rejects_duplicate_event_ids_in_one_source(service_db, monkeypatch):
+    from ai_management.workers.tasks import cleaning as task_module
+
+    batch_id, file_id = _seed_activity_replacement(service_db)
+    with service_db() as session:
+        session.add(
+            CleaningDocument(
+                file_id=file_id,
+                sequence=2,
+                title="同名活动",
+                dify_document_name="同名活动__second.md",
+                document_key="new:2",
+                status="pending",
+                stage="pending",
+                cleaned_markdown="# 同名活动\n\n第二个版本",
+                metadata_json={
+                    "event_id": "evt_same_activity",
+                    "source_title": "同名活动",
+                },
+            )
+        )
+        session.commit()
+    client = _ActivityPublicationClient()
+    monkeypatch.setattr(task_module, "_knowledge_client", lambda _batch: client)
+
+    with service_db() as session:
+        batch = session.get(CleaningBatch, batch_id)
+        file_row = session.get(CleaningFile, file_id)
+        assert batch is not None and file_row is not None
+        assert task_module._publish_source_file(session, file_row=file_row, batch=batch) is False
+
+    assert client.remote_documents == {}
+    with service_db() as session:
+        file_row = session.get(CleaningFile, file_id)
+        documents = list(
+            session.scalars(
+                select(CleaningDocument)
+                .where(CleaningDocument.file_id == file_id)
+                .order_by(CleaningDocument.sequence)
+            )
+        )
+        assert file_row is not None
+        assert file_row.status == "failed"
+        assert file_row.error_code == "DUPLICATE_ACTIVITY_EVENT_ID"
+        assert all(document.status == "failed" for document in documents)
+        assert all(document.error_code == "DUPLICATE_ACTIVITY_EVENT_ID" for document in documents)
+
+
+def test_recent_activity_duplicate_preflight_catches_identical_content_inputs():
+    from ai_management.workers.tasks.cleaning import _duplicate_activity_event_ids
+
+    assert _duplicate_activity_event_ids(
+        [
+            {"event_id": "evt_same_activity", "content_sha256": "same"},
+            {"event_id": "evt_same_activity", "content_sha256": "same"},
+        ]
+    ) == ["evt_same_activity"]
+
+
+def test_recent_activity_process_preflight_beats_identical_content_dedupe(
+    service_db, monkeypatch, tmp_path
+):
+    from ai_management.cleaning import CleanedDocument
+    from ai_management.config import get_settings
+    from ai_management.workers.tasks import cleaning as task_module
+
+    monkeypatch.setattr(get_settings(), "upload_root", tmp_path)
+
+    class DuplicateActivityStrategy:
+        supported_extensions = {".md"}
+
+        def clean(self, _path, _filename):
+            return [
+                CleanedDocument(
+                    markdown="# 同名活动\n\n同一内容",
+                    title="同名活动",
+                    metadata={"event_id": "evt_same_activity", "source_title": "同名活动"},
+                ),
+                CleanedDocument(
+                    markdown="# 同名活动\n\n同一内容",
+                    title="同名活动",
+                    metadata={"event_id": "evt_same_activity", "source_title": "同名活动"},
+                ),
+            ]
+
+    monkeypatch.setitem(
+        task_module.STRATEGY_REGISTRY, "recent_activity", DuplicateActivityStrategy()
+    )
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="recent_activity",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="pending",
+            build_version="duplicate-preflight-test",
+        )
+        session.add(batch)
+        session.flush()
+        row = CleaningFile(
+            batch_id=batch.id,
+            original_filename="duplicate-activity.md",
+            storage_filename="source.md",
+            extension=".md",
+            source_sha256="c" * 64,
+            size_bytes=32,
+            status="pending",
+            stage="upload",
+            outcome="pending",
+        )
+        session.add(row)
+        session.commit()
+        batch_id, file_id = str(batch.id), str(row.id)
+
+    source_dir = tmp_path / batch_id
+    source_dir.mkdir()
+    (source_dir / "source.md").write_text("synthetic", encoding="utf-8")
+    assert task_module.process_cleaning_file.run(file_id) is True
+
+    with service_db() as session:
+        row = session.get(CleaningFile, file_id)
+        batch = session.get(CleaningBatch, batch_id)
+        assert row is not None and batch is not None
+        assert row.status == "failed"
+        assert row.error_code == "DUPLICATE_ACTIVITY_EVENT_ID"
+        assert batch.status == "completed"
+        assert (
+            list(
+                session.scalars(select(CleaningDocument).where(CleaningDocument.file_id == file_id))
+            )
+            == []
+        )
+
+
 def _course_payload(course_id: str, name: str) -> dict[str, object]:
     return {
         "course_id": course_id,
@@ -433,9 +941,7 @@ def test_source_file_failure_compensates_all_dify_documents_and_catalog_rows(
                     "source_filename": source.original_filename,
                 },
                 chunking_json={"parent_mode": "paragraph"},
-                audit_json={
-                    "catalog_record": _course_payload(course_id, f"原子课程{sequence}")
-                },
+                audit_json={"catalog_record": _course_payload(course_id, f"原子课程{sequence}")},
             )
             session.add(item)
             documents.append(item)
@@ -460,9 +966,7 @@ def test_source_file_failure_compensates_all_dify_documents_and_catalog_rows(
         )
         catalog_rows = list(
             session.scalars(
-                select(Course).where(
-                    Course.course_id.in_(["atomic_course_1", "atomic_course_2"])
-                )
+                select(Course).where(Course.course_id.in_(["atomic_course_1", "atomic_course_2"]))
             )
         )
 

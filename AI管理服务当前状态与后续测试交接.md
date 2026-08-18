@@ -1,10 +1,18 @@
 # AI 管理服务当前状态与后续测试交接
 
-> 更新时间：2026-08-17
+> 更新时间：2026-08-18
 > 用途：保存最新线上事实、回滚点、数据状态和开放事项。新任务先读 `AGENTS.md` 与 `docs/README.md`，再按功能域读取本文顶部最新状态。  
 > 本文不是需求或设计基线；权威顺序以 `docs/V2决策记录.md` 和 `docs/README.md` 为准。第 1～8 节为历史过程记录，不再作为当前执行指令。
 
-## 0.65 2026-08-17 朋友圈与日常写作案例目录 jx 发布交接（当前最新）
+## 0.66 2026-08-18 最近活动同名更新安全替换发布与回归（当前最新）
+
+- `recent_activity` 已修正两项问题：Dify 名称使用活动名称作为可读前缀，并追加稳定 `event_id` 与内容版本摘要；同名活动内容/状态更新采用“新文档先发布、旧文档后删除”，旧文档删除失败由精确外部删除任务接续，不丢失新版本；同源重复 `event_id` 在发布前进入明确终态失败。
+- 本地验证通过：活动策略、发布契约、替换成功/失败、旧文档删除失败、提交后崩溃恢复、重复 `event_id`（含通用内容去重前置场景）、版本摘要 provenance 隔离和外部删除重试退避及 Dify/DSL 契约测试通过；最终 `gov quality` 通过，指纹为 `31954761677612922f1ae40259f7a2e91d695841f369a7d45a3bcf19a721947d`。DSL 未变更，不需要同步 Dify。
+- jx 已发布最终 release `quick-20260818-050347-ab578b3727b3`，源指纹为 `ab578b3727b30aa8b8a9f6a4922a2c985d67329ecfd45de028a5674d61b35598`；报告为 `/opt/ai-management/var/reports/v2/quick-20260818-050347-ab578b3727b3-quick-deploy`，发布前备份为 `/opt/ai-management/backups/quick-20260818-050347-ab578b3727b3-predeploy`。发布前 OCR 安全门禁曾阻止只读计划，随后仅以进程级 `JX_OCR_DEPLOYMENT_ENABLED=true` 完成计划与发布，未写入服务器 `.env`。
+- jx 合成回归通过：同一活动名称和稳定 `event_id` 的 v1/v2 两个批次均 `completed`；v2 将状态由正常改为取消，Dify 回读名称符合“活动名称前缀 + event_id + 版本摘要”，更新后旧版本不可见、新版本保留。精确清理后两个批次的本地记录、文件、文档、分片、外部删除任务、Redis 键和上传目录均无残留；课程/路线目标为 `0`，正式 general/course 数据未删除；`health/ready` 仍为 `ready` 且数据库、Redis、Dify 可达。
+- 当前仍按 ADR-036 执行边界：课程/学习路线不是新商业顾问聊天和测试页的验收对象，历史管理/显式兼容接口仍保留；本轮日志中出现课程/路线内容不能反推本功能已恢复或必须扩测，需先区分历史数据/旧接口调用与新链路。
+
+## 0.65 2026-08-17 朋友圈与日常写作案例目录 jx 发布交接（历史）
 
 - `tool-examples` 已发布到 jx：release `quick-20260817-081805-b051c4d3304f`，源指纹为 `b051c4d3304f...`；报告为 `/opt/ai-management/var/reports/v2/quick-20260817-081805-b051c4d3304f-quick-deploy`，发布前备份为 `/opt/ai-management/backups/quick-20260817-081805-b051c4d3304f-predeploy`。发布使用 `--keep-data`，没有清理数据库、Redis、上传文件或 Dify 数据。
 - 发布前发现 Windows `Compress-Archive` ZIP 在服务器 Python 3.12 安全校验中呈现反斜杠路径，已改为显式 POSIX ZIP 路径并通过远端 CRC/安全校验；随后发现服务器 `knowledge_cleaner/` 源码落后于现有 wheelhouse，已先备份 `/opt/ai-management/backups/quick-20260817-081332-knowledge-cleaner-before`，再从已验证 wheelhouse 对齐源码。第一次失败发布未切换运行容器，第二次发布通过。
@@ -1923,3 +1931,24 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改前：0.64 只记录本地实现和发布前状态；未记录 ZIP 路径兼容问题、服务器 wheelhouse/source 漂移、最终 release、回滚点和远端案例接口回归。
 - 修改后：新增 0.65 当前状态，记录两次发布尝试的失败/修复结果、最终 jx release、备份/报告路径、OCR 进程级门禁、服务健康、案例 API/CRUD 回归和 DSL 未变更结论；0.64 标记为历史。
 - 验证：最终 release 报告、容器状态、`health/ready=200`、测试页 `HTTP 200`、用户/管理员案例接口和临时 CRUD 烟测均通过；未写入密钥、真实用户标识或受保护映射。
+
+### 文档修改记录（2026-08-18 最近活动最终修正、发布与回归）
+
+- 修改原因：完成独立审查提出的版本摘要白名单和活动状态边界修正，并按用户要求完成本地质量门禁、jx 发布、同名活动更新回归和精确测试数据清理。
+- 修改前：版本摘要仍可能受未登记公共 Metadata 影响；交接文档中的质量指纹和 release 仍指向修正前发布；最终远端测试批次尚未记录清理结果。
+- 修改后：版本摘要仅使用活动业务 Metadata 白名单；最终质量指纹、jx release、报告和备份已同步；合成 v1/v2 验证新版本先发布、旧版本不可见，清理仅针对本轮两批次及其精确 Redis/上传目录，正式课程和路线保留。
+- 验证：目标批次、文件、文档、分片、外部删除任务和 Redis 键均为 0，空上传目录已移除；`health/ready` 的数据库、Redis、Dify 配置与可达性均为 `true`；DSL 未变更，无需同步 Dify。未写入密钥、真实用户标识、原始样本或受保护映射。
+
+### 文档修改记录（2026-08-18 千问 Batch 清洗验收按用户指令取消与精确清理）
+
+- 修改原因：用户要求停止当前异步 Batch 验收，恢复测试前默认配置，并清除本轮清洗生成的知识库、Redis、数据库数据。
+- 修改前：jx 为 `quick-20260818-113801-b974c5d8b95d`；测试临时开启 `BAILIAN_BATCH_ENABLED=true` 和阈值 `1`；本轮已创建 9 个 general 清洗批次，4 个供应商 Batch 仍在处理中，远端暂存样本副本存在。
+- 修改后：4 个活动供应商 Batch 已通过取消接口停止，9 个本轮 general 清洗批次、4 个 general Dify 文档和精确清洗 Redis 键已按签名 manifest 清除；临时样本副本和临时脚本已移除；`.env` 已从 `/opt/ai-management/backups/qwen-batch-cleaning-20260818-1145/env.backup` 恢复，`BAILIAN_BATCH_ENABLED=false`，临时阈值未保留。
+- 验证：清理后 general 清洗批次为 `0`、general Dify 文档为 `0`、`ai:cleaning:batch:*` Redis 键为 `0`；课程 `126`、路线 `5`、方向 `0` 保持不变；API `health/ready` 的数据库、Redis、Dify 配置和可达性均为 `true`。本轮 11 个样本未全部完成终态，不能将其记为完整验收；脱敏问题记录和备份证据保留在本地/服务器报告目录。DSL 未变更，无需同步 Dify。
+
+### 文档修改记录（2026-08-18 千问 Batch 独立复核结论）
+
+- 修改原因：用户取消本轮后，独立只读审查要求确认是否可以把当前实现和远端清理记为完整 GO。
+- 修改前：本轮清理和默认配置恢复已完成，但治理状态仍需独立审查；临时取消/manifest 脚本只为本轮操作服务。
+- 修改后：审查结论为 `NO-GO`，开放问题包括 `cancelling` 供应商状态终态语义、提交与取消竞态、临时取消脚本/manifest 的范围证明不足，以及部分生成状态仍显示 verified；这些问题已写入 `var/reports/20260818-qwen-batch-cleaning/issues.jsonl`，本次按用户停止指令不再修改代码。
+- 验证：本地最终质量门禁通过；远端 general/Redis/数据库清理和默认配置恢复仍已独立核验，但 11 样本完整 Batch 验收未完成，不能宣称本 Feature 完成或所有审查问题已修复。DSL 未变更。

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
 import httpx
+import pytest
 from openpyxl import load_workbook
 from sqlalchemy import select
 
@@ -109,13 +110,13 @@ def test_dify_metadata_projection_excludes_local_provenance_and_keeps_business_f
     }
 
 
-def test_content_model_plan_forces_realtime_for_large_batch(service_db, monkeypatch):
+def test_content_model_plan_uses_batch_when_enabled_and_threshold_is_met(
+    service_db, monkeypatch
+):
     from ai_management.workers.tasks import model_cleaning as worker
 
     monkeypatch.setattr(worker.settings, "cleaning_batch_candidate_threshold", 1)
     monkeypatch.setattr(worker.settings, "cleaning_batch_token_threshold", 999999)
-    # Content strategies use per-document realtime isolation even when the
-    # provider Batch switch is enabled.
     monkeypatch.setattr(worker.settings, "bailian_batch_enabled", True)
     monkeypatch.setattr(
         worker.process_realtime_model_task,
@@ -157,10 +158,10 @@ def test_content_model_plan_forces_realtime_for_large_batch(service_db, monkeypa
 
     with service_db() as session:
         task = session.get(ModelCleaningTask, task_id)
-        assert task.mode == "realtime"
-        assert task.status == "queued"
+        assert task.mode == "batch"
+        assert task.status == "awaiting_approval"
         assert task.candidate_count == 1
-        assert task.batch.status == "model_validating"
+        assert task.batch.status == "awaiting_model_approval"
 
 
 def test_model_daily_budget_stops_batch_and_queues_source_fallback(
@@ -1000,6 +1001,107 @@ def test_batch_submit_rejects_changed_candidate_after_approval(
         assert replanned == [replacement.id]
 
 
+def test_batch_submit_recovers_remote_id_when_local_commit_fails(
+    service_db, monkeypatch
+):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="awaiting_model_approval",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="提交崩溃窗口",
+            dify_document_name="cleaned-aaaaaaaaaaaaaaaa__001.md",
+            document_key="item-1",
+            status="awaiting_model",
+            stage="model_queued",
+            content_sha256="b" * 64,
+            metadata_json={"record_type": "article"},
+            chunking_json={},
+            audit_json={"model_blocks": {"b0001": "来源内容。"}},
+            warnings_json=[],
+            cleaned_markdown="来源内容。",
+        )
+        session.add(document)
+        session.flush()
+        fingerprint = worker._candidate_fingerprint([document], "test-v1")
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="batch",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="approved",
+            candidate_fingerprint=fingerprint,
+            approval_fingerprint=fingerprint,
+            candidate_count=1,
+            estimated_input_tokens=100,
+            estimated_output_tokens=100,
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+
+    created = False
+    scheduled: list[dict] = []
+
+    class FakeClient:
+        def upload_batch_path(self, _path):
+            return "input-recovered"
+
+        def create_batch(self, _input_id):
+            nonlocal created
+            created = True
+            return "batch-recovered"
+
+        def close(self):
+            return None
+
+    real_session_local = worker.SessionLocal
+    failures = 1
+
+    def session_factory():
+        session = real_session_local()
+        original_commit = session.commit
+
+        def commit():
+            nonlocal failures
+            if created and failures:
+                failures -= 1
+                raise RuntimeError("local commit failed after remote create")
+            return original_commit()
+
+        session.commit = commit
+        return session
+
+    monkeypatch.setattr(worker, "SessionLocal", session_factory)
+    monkeypatch.setattr(worker, "_client", lambda: FakeClient())
+    monkeypatch.setattr(
+        worker.poll_batch_model_task,
+        "apply_async",
+        lambda **kwargs: scheduled.append(kwargs),
+    )
+
+    assert worker.submit_batch_model_task.run(task_id) is False
+    assert scheduled == [{"args": [task_id], "queue": "ai_model_batch", "countdown": 60}]
+    with real_session_local() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        assert task.status == "batch_running"
+        assert task.provider_batch_ids == ["batch-recovered"]
+        assert task.provider_input_file_ids == ["input-recovered"]
+        assert "恢复远端 ID" in task.last_error
+
+
 def test_provider_output_rejects_duplicate_custom_ids():
     import json
 
@@ -1034,6 +1136,7 @@ def test_expired_provider_batch_requires_fresh_approval_and_cleans_files(
     from ai_management.workers.tasks import model_cleaning as worker
 
     deleted: list[str] = []
+    scheduled: list[dict] = []
 
     class FakeClient:
         def get_batch(self, _batch_id):
@@ -1097,9 +1200,15 @@ def test_expired_provider_batch_requires_fresh_approval_and_cleans_files(
         document_id = document.id
 
     monkeypatch.setattr(worker, "_client", FakeClient)
+    monkeypatch.setattr(
+        worker.poll_batch_model_task,
+        "apply_async",
+        lambda **kwargs: scheduled.append(kwargs),
+    )
     assert worker.poll_batch_model_task.run(task_id) is True
 
     assert set(deleted) == {"input-1", "output-1", "error-1"}
+    assert scheduled == []
     with service_db() as session:
         task = session.get(ModelCleaningTask, task_id)
         document = session.get(CleaningDocument, document_id)
@@ -1229,6 +1338,305 @@ def test_transient_batch_poll_failure_keeps_remote_batch_pollable(
         assert task.status == "batch_running"
         assert task.provider_batch_ids == ["provider-1"]
         assert "provider connection reset" in (task.last_error or "")
+
+
+def test_batch_poll_without_active_provider_batch_fails_diagnosably(
+    service_db,
+    monkeypatch,
+):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    scheduled: list[dict] = []
+
+    class FakeClient:
+        def get_batch(self, _batch_id):
+            raise AssertionError("没有活动 Batch 时不应查询供应商")
+
+        def close(self):
+            return None
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="model_batch_running",
+        )
+        session.add(batch)
+        session.flush()
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="batch",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="batch_running",
+            candidate_fingerprint="f" * 64,
+            candidate_count=1,
+            estimated_input_tokens=100,
+            estimated_output_tokens=100,
+            provider_batch_ids=[],
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+
+    monkeypatch.setattr(worker, "_client", FakeClient)
+    monkeypatch.setattr(
+        worker.poll_batch_model_task,
+        "apply_async",
+        lambda **kwargs: scheduled.append(kwargs),
+    )
+
+    assert worker.poll_batch_model_task.run(task_id) is False
+    assert scheduled == []
+    with service_db() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        batch = session.get(CleaningBatch, task.batch_id)
+        assert task.status == "failed"
+        assert "provider_batch_ids" in task.last_error
+        assert batch.status == "processing"
+
+
+def test_batch_poll_reschedules_when_production_lock_backend_is_unavailable(
+    service_db, monkeypatch
+):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    scheduled: list[dict] = []
+
+    class LockUnavailable:
+        acquired = False
+        available = False
+
+        def __bool__(self):
+            return self.acquired
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="model_batch_running",
+        )
+        session.add(batch)
+        session.flush()
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="batch",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="batch_running",
+            candidate_fingerprint="f" * 64,
+            candidate_count=1,
+            provider_batch_ids=["provider-1"],
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+
+    monkeypatch.setattr(worker.cache, "lock", lambda *_args, **_kwargs: LockUnavailable())
+    monkeypatch.setattr(
+        worker.poll_batch_model_task,
+        "apply_async",
+        lambda **kwargs: scheduled.append(kwargs),
+    )
+
+    assert worker.poll_batch_model_task.run(task_id) is False
+    assert scheduled == [{"args": [task_id], "queue": "ai_model_batch", "countdown": 60}]
+    with service_db() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        assert task.status == "batch_running"
+        assert "锁后端不可用" in task.last_error
+
+
+def test_batch_poll_only_queries_provider_batches_that_are_still_active(
+    service_db, monkeypatch
+):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    calls: list[str] = []
+    scheduled: list[dict] = []
+
+    class FakeClient:
+        def get_batch(self, batch_id):
+            calls.append(batch_id)
+            if batch_id == "provider-done":
+                return {"status": "completed", "output_file_id": "output-done"}
+            return {
+                "status": "running",
+                "request_counts": {"total": 1, "completed": 0, "failed": 0},
+            }
+
+        def close(self):
+            return None
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="model_batch_running",
+        )
+        session.add(batch)
+        session.flush()
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="batch",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="batch_running",
+            candidate_fingerprint="f" * 64,
+            candidate_count=1,
+            provider_batch_ids=["provider-done", "provider-active"],
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+
+    monkeypatch.setattr(worker, "_client", FakeClient)
+    monkeypatch.setattr(
+        worker.poll_batch_model_task,
+        "apply_async",
+        lambda **kwargs: scheduled.append(kwargs),
+    )
+
+    assert worker.poll_batch_model_task.run(task_id) is True
+    assert calls == ["provider-done", "provider-active"]
+    with service_db() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        assert task.provider_batch_ids == ["provider-active"]
+        assert task.result_counts["provider_terminal_batches"]["provider-done"]["status"] == "completed"
+
+    calls.clear()
+    assert worker.poll_batch_model_task.run(task_id) is True
+    assert calls == ["provider-active"]
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        b"{not-json}\n",
+        (
+            b'{"custom_id":"same","response":{"body":{"choices":[{"message":'
+            b'{"content":"{}"}}]}}}\n'
+            b'{"custom_id":"same","response":{"body":{"choices":[{"message":'
+            b'{"content":"{}"}}]}}}\n'
+        ),
+        (
+            b'{"custom_id":"unknown","response":{"body":{"choices":[{"message":'
+            b'{"content":"{}"}}]}}}\n'
+        ),
+    ],
+    ids=["bad-json", "duplicate-custom-id", "unknown-custom-id"],
+)
+def test_terminal_batch_result_error_closes_task_and_cleans_provider_files(
+    service_db,
+    monkeypatch,
+    output,
+):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    deleted: list[str] = []
+    monkeypatch.setattr(worker, "_queue_publication_outputs", lambda *_args: None)
+
+    class FakeClient:
+        def get_batch(self, _batch_id):
+            return {"status": "completed", "output_file_id": "output-1"}
+
+        def get_file_content(self, _file_id):
+            return output
+
+        def delete_file(self, file_id):
+            deleted.append(file_id)
+
+        def close(self):
+            return None
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="model_batch_running",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="批量结果异常",
+            dify_document_name="cleaned-aaaaaaaaaaaaaaaa__001.md",
+            document_key="item-1",
+            status="model_processing",
+            stage="model_batch_running",
+            content_sha256="b" * 64,
+            metadata_json={
+                "record_type": "article",
+                "_cleaning_review_policy": {
+                    "enabled": True,
+                    "review_required_enabled": True,
+                    "source_markdown_fallback_enabled": True,
+                },
+            },
+            chunking_json={},
+            audit_json={"model_blocks": {"b0001": "来源内容足够长，用于安全回退。"}},
+            warnings_json=[],
+            cleaned_markdown="来源内容足够长，用于安全回退。",
+        )
+        session.add(document)
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="batch",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="batch_running",
+            candidate_fingerprint="f" * 64,
+            candidate_count=1,
+            estimated_input_tokens=100,
+            estimated_output_tokens=100,
+            provider_batch_ids=["provider-1"],
+            provider_input_file_ids=["input-1"],
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+
+    monkeypatch.setattr(worker, "_client", FakeClient)
+    assert worker.poll_batch_model_task.run(task_id) is True
+
+    assert set(deleted) == {"input-1", "output-1"}
+    with service_db() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        document = session.scalar(select(CleaningDocument))
+        assert task.status == "failed"
+        assert task.provider_batch_ids == []
+        assert task.result_counts["candidate_count"] == 1
+        assert task.last_error.startswith("百炼Batch结果解析失败")
+        assert document.status == "shard_pending"
+        assert document.audit_json["source_markdown_fallback"]["applied"] is True
+
+
+def test_duplicate_poll_delivery_is_skipped_by_task_lock(service_db, monkeypatch):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    class NotAcquired:
+        def __enter__(self):
+            return False
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(worker.cache, "lock", lambda *_args, **_kwargs: NotAcquired())
+    assert worker.poll_batch_model_task.run("active-task") is False
 
 
 def test_bailian_delete_file_treats_missing_file_as_cleaned(monkeypatch):
@@ -1945,6 +2353,247 @@ def test_realtime_post_no_response_retries_once(service_db, monkeypatch):
             "review": 0,
             "failed": 0,
         }
+
+
+def test_batch_contract_failure_repairs_once_with_fresh_fallback_result(
+    service_db, monkeypatch
+):
+    import json
+
+    from ai_management.model_cleaning import build_custom_id
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    body = "先访谈客户，再调整产品定位。 " * 20
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="model_batch_running",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="商业复盘",
+            dify_document_name="cleaned-aaaaaaaaaaaaaaaa__001.md",
+            document_key="item-1",
+            status="model_processing",
+            stage="model_batch_running",
+            content_sha256="b" * 64,
+            metadata_json={"record_type": "article"},
+            chunking_json={},
+            audit_json={"model_blocks": {"b0001": body}},
+            warnings_json=[],
+            cleaned_markdown=body,
+        )
+        session.add(document)
+        session.flush()
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="batch",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="batch_running",
+            candidate_fingerprint="f" * 64,
+            candidate_count=1,
+            estimated_input_tokens=100,
+            estimated_output_tokens=100,
+            provider_batch_ids=["provider-1"],
+            provider_input_file_ids=["input-1"],
+        )
+        session.add(task)
+        session.commit()
+        task_id, document_id = task.id, document.id
+
+        request = worker._request(document, batch.strategy_code)
+        custom_id = build_custom_id(request, task.prompt_version)
+
+    valid_payload = {
+        "disposition": "keep",
+        "business_relevance": "direct",
+        "reason_code": "business_method",
+        "keep_block_ids": ["b0001"],
+        "drop_block_ids": [],
+        "topic": "产品与客户",
+        "time_sensitive": False,
+        "confidence": 0.9,
+        "knowledge_units": [
+            {
+                "unit_id": "u001",
+                "title": "定位验证",
+                "topic": "产品与客户",
+                "problem": "客户问题需要确认。",
+                "conclusion": "先访谈客户再调整定位。",
+                "reasoning": "来源给出验证顺序。",
+                "applicable_conditions": [],
+                "actions": ["访谈客户", "调整产品定位"],
+                "risks_or_limits": [],
+                "source_block_ids": ["b0001"],
+            }
+        ],
+    }
+    invalid_payload = {**valid_payload, "keep_block_ids": ["missing"]}
+    initial_output = (
+        json.dumps(
+            {
+                "custom_id": custom_id,
+                "response": {
+                    "body": {
+                        "choices": [
+                            {"message": {"content": json.dumps(invalid_payload)}}
+                        ],
+                        "usage": {},
+                    }
+                },
+            }
+        ).encode()
+        + b"\n"
+    )
+
+    class FakeClient:
+        def get_batch(self, _batch_id):
+            return {"status": "completed", "output_file_id": "output-1"}
+
+        def get_file_content(self, _file_id):
+            return initial_output
+
+        def delete_file(self, _file_id):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(worker, "_client", FakeClient)
+    monkeypatch.setattr(worker, "_queue_publication_outputs", lambda *_args: None)
+    monkeypatch.setattr(worker, "_finish_model_task", lambda _task_id: None)
+    monkeypatch.setattr(
+        worker,
+        "_realtime_chat",
+        lambda *_args, **_kwargs: (valid_payload, {"input_tokens": 1, "output_tokens": 1}),
+    )
+
+    assert worker.poll_batch_model_task.run(task_id) is True
+    with service_db() as session:
+        document = session.get(CleaningDocument, document_id)
+        task = session.get(ModelCleaningTask, task_id)
+        assert document.status == "shard_pending"
+        assert task.result_counts == {
+            "candidate_count": 1,
+            "succeeded": 1,
+            "excluded": 0,
+            "review": 0,
+            "fallback": 0,
+            "failed": 0,
+            "retry_round": 0,
+            "retry_pending": 0,
+        }
+
+
+def test_batch_contract_failure_repair_batch_persists_100_candidates(
+    service_db, monkeypatch
+):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    uploaded: list[str] = []
+    created: list[str] = []
+    scheduled: list[dict] = []
+
+    class FakeClient:
+        def get_batch(self, _batch_id):
+            return {"status": "completed", "output_file_id": "output-1"}
+
+        def get_file_content(self, _file_id):
+            return b""
+
+        def upload_batch_path(self, path):
+            uploaded.append(path)
+            return "input-repair-1"
+
+        def create_batch(self, input_id):
+            created.append(input_id)
+            return "batch-repair-1"
+
+        def delete_file(self, _file_id):
+            return None
+
+        def close(self):
+            return None
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="model_batch_running",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        for sequence in range(1, 101):
+            session.add(
+                CleaningDocument(
+                    file_id=file_row.id,
+                    sequence=sequence,
+                    title=f"文章{sequence}",
+                    dify_document_name=f"cleaned-{sequence:016d}__001.md",
+                    document_key=f"item-{sequence}",
+                    status="model_processing",
+                    stage="model_batch_running",
+                    content_sha256=(str(sequence) * 64)[:64],
+                    metadata_json={"record_type": "article"},
+                    chunking_json={},
+                    audit_json={"model_blocks": {"b0001": "来源内容。"}},
+                    warnings_json=[],
+                    cleaned_markdown="来源内容。",
+                )
+            )
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="batch",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="batch_running",
+            candidate_fingerprint="f" * 64,
+            candidate_count=100,
+            estimated_input_tokens=100,
+            estimated_output_tokens=100,
+            provider_batch_ids=["provider-1"],
+            provider_input_file_ids=["input-1"],
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+
+    monkeypatch.setattr(worker, "_client", FakeClient)
+    monkeypatch.setattr(worker, "_queue_publication_outputs", lambda *_args: None)
+    monkeypatch.setattr(worker, "_finish_model_task", lambda _task_id: None)
+    monkeypatch.setattr(
+        worker.poll_batch_model_task,
+        "apply_async",
+        lambda **kwargs: scheduled.append(kwargs),
+    )
+
+    assert worker.poll_batch_model_task.run(task_id) is True
+
+    assert uploaded and created == ["input-repair-1"]
+    assert scheduled == [
+        {"args": [task_id], "queue": "ai_model_batch", "countdown": 60}
+    ]
+    with service_db() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        assert task.status == "batch_running"
+        assert task.candidate_count == 100
+        assert task.provider_input_file_ids == ["input-repair-1"]
+        assert task.provider_batch_ids == ["batch-repair-1"]
+        assert task.result_counts["retry_round"] == 1
+        assert task.result_counts["retry_pending"] == 100
 
 
 def test_finished_model_task_publishes_every_source_file(service_db, monkeypatch):

@@ -13,13 +13,14 @@ from sqlalchemy.orm import selectinload
 
 from knowledge_cleaner.dify import DifyKnowledgeClient
 
-from ...activity_cleaning import ActivityCleaningError
+from ...activity_cleaning import EVENT_METADATA_FIELDS, ActivityCleaningError
 from ...cache import cache
 from ...cleaning import (
     STRATEGY_REGISTRY,
     ChunkingConfig,
     cleaning_batch_cache_key,
     content_review_reason,
+    dify_activity_document_name,
     dify_document_name,
     finalize_knowledge_markdown,
     get_settings,
@@ -50,6 +51,17 @@ from ..celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+class DuplicateActivityEventError(ValueError):
+    """Raised when one source contains more than one revision of an event."""
+
+
+def _duplicate_activity_event_ids(metadata_rows: list[dict[str, Any]]) -> list[str]:
+    event_ids = [str((metadata or {}).get("event_id") or "") for metadata in metadata_rows]
+    return sorted(
+        {event_id for event_id in event_ids if event_id and event_ids.count(event_id) > 1}
+    )
 
 
 # Dify is a retrieval replica, not the protected provenance store.  These
@@ -154,16 +166,30 @@ def _remove_or_disable_document(client: DifyKnowledgeClient, document_id: str) -
 
 def _queue_document_cleanup(document_id: str, dataset_id: str) -> None:
     with SessionLocal() as session:
-        session.add(
-            ExternalDeletionTask(
-                kind="dify_document",
-                external_id=document_id,
-                payload={"dataset_id": dataset_id},
-                attempts=0,
-                last_error="Dify文档删除和停用均失败",
-            )
-        )
+        _ensure_document_cleanup_task(session, document_id, dataset_id)
         session.commit()
+
+
+def _ensure_document_cleanup_task(session, document_id: str, dataset_id: str):
+    task = session.scalar(
+        select(ExternalDeletionTask)
+        .where(
+            ExternalDeletionTask.kind == "dify_document",
+            ExternalDeletionTask.external_id == document_id,
+        )
+        .limit(1)
+    )
+    if task is not None:
+        return task
+    task = ExternalDeletionTask(
+        kind="dify_document",
+        external_id=document_id,
+        payload={"dataset_id": dataset_id},
+        attempts=0,
+        last_error="Dify文档删除和停用均失败",
+    )
+    session.add(task)
+    return task
 
 
 def _chunking_from_json(payload: dict[str, Any] | None) -> ChunkingConfig:
@@ -199,6 +225,17 @@ def _content_sha(markdown: str, metadata: dict[str, Any], chunking: dict[str, An
             "utf-8"
         )
     ).hexdigest()
+
+
+def _activity_content_version_sha(
+    markdown: str,
+    metadata: dict[str, Any],
+    chunking: dict[str, Any],
+) -> str:
+    stable_metadata = {
+        key: value for key, value in metadata.items() if key in EVENT_METADATA_FIELDS
+    }
+    return _content_sha(markdown, stable_metadata, chunking)
 
 
 def _project_dify_metadata(
@@ -494,6 +531,21 @@ def _publish_document(
                         if (item.metadata_json or {}).get("event_id") == event_id
                     ]
                 )
+                if replaced_activity_document_ids:
+                    audit = dict(row.audit_json or {})
+                    pending_ids = audit.get("_pending_activity_replacement_document_ids")
+                    if not isinstance(pending_ids, list):
+                        pending_ids = []
+                    audit["_pending_activity_replacement_document_ids"] = list(
+                        dict.fromkeys(
+                            [
+                                *(str(item) for item in pending_ids if str(item).strip()),
+                                *replaced_activity_document_ids,
+                            ]
+                        )
+                    )
+                    row.audit_json = audit
+                    session.commit()
         if row.dify_document_id and batch.strategy_code != "recent_activity":
             if not _remove_or_disable_document(client, row.dify_document_id):
                 _queue_document_cleanup(row.dify_document_id, client.dataset_id)
@@ -621,11 +673,29 @@ def _publish_document(
         row.retryable = False
         if batch.strategy_code in {"course_information", "learning_route"}:
             bump_catalog_revision(session)
+        if batch.strategy_code == "recent_activity":
+            for document_id in dict.fromkeys(replaced_activity_document_ids):
+                _ensure_document_cleanup_task(session, document_id, client.dataset_id)
         session.commit()
         if replaced_activity_document_ids:
+            cleanup_completed = True
             for document_id in dict.fromkeys(replaced_activity_document_ids):
-                if not _remove_or_disable_document(client, document_id):
-                    _queue_document_cleanup(document_id, client.dataset_id)
+                cleanup_task = session.scalar(
+                    select(ExternalDeletionTask)
+                    .where(
+                        ExternalDeletionTask.kind == "dify_document",
+                        ExternalDeletionTask.external_id == document_id,
+                    )
+                    .limit(1)
+                )
+                if _remove_or_disable_document(client, document_id):
+                    if cleanup_task is not None:
+                        session.delete(cleanup_task)
+            if cleanup_completed:
+                audit = dict(row.audit_json or {})
+                audit.pop("_pending_activity_replacement_document_ids", None)
+                row.audit_json = audit
+                session.commit()
         if batch.strategy_code in {"course_information", "learning_route"}:
             # DB is authoritative.  Rebuild the effective cache only after its
             # transaction succeeds; an old Dify copy is then safe to retire.
@@ -671,6 +741,8 @@ def _commit_source_publication(
 ) -> None:
     replaced_document_ids: list[str] = []
     replaced_activity_document_ids: list[str] = []
+    activity_replacement_markers: list[CleaningDocument] = []
+    activity_cleanup_client = None
     try:
         if batch.strategy_code in {
             "course_information",
@@ -705,6 +777,15 @@ def _commit_source_publication(
             document.error_code = None
             document.error_message = None
         if batch.strategy_code == "recent_activity":
+            for document in documents:
+                pending_ids = (document.audit_json or {}).get(
+                    "_pending_activity_replacement_document_ids"
+                )
+                if isinstance(pending_ids, list):
+                    replaced_activity_document_ids.extend(
+                        str(item) for item in pending_ids if str(item).strip()
+                    )
+                    activity_replacement_markers.append(document)
             current_document_ids = {document.id for document in documents}
             event_ids = {
                 str((document.metadata_json or {}).get("event_id") or "") for document in documents
@@ -727,6 +808,14 @@ def _commit_source_publication(
                     for item in candidates
                     if (item.metadata_json or {}).get("event_id") in event_ids
                 )
+            if replaced_activity_document_ids:
+                activity_cleanup_client = _knowledge_client(batch)
+                for document_id in dict.fromkeys(replaced_activity_document_ids):
+                    _ensure_document_cleanup_task(
+                        session,
+                        document_id,
+                        activity_cleanup_client.dataset_id,
+                    )
         session.commit()
     except Exception:
         session.rollback()
@@ -753,13 +842,39 @@ def _commit_source_publication(
             finally:
                 client.close()
     if replaced_activity_document_ids:
-        client = _knowledge_client(batch)
+        cleanup_completed = True
+        client = activity_cleanup_client
         try:
+            if client is None:
+                client = _knowledge_client(batch)
             for document_id in dict.fromkeys(replaced_activity_document_ids):
-                if not _remove_or_disable_document(client, document_id):
-                    _queue_document_cleanup(document_id, client.dataset_id)
+                if _remove_or_disable_document(client, document_id):
+                    cleanup_task = session.scalar(
+                        select(ExternalDeletionTask)
+                        .where(
+                            ExternalDeletionTask.kind == "dify_document",
+                            ExternalDeletionTask.external_id == document_id,
+                        )
+                        .limit(1)
+                    )
+                    if cleanup_task is not None:
+                        session.delete(cleanup_task)
+        except Exception:
+            cleanup_completed = False
+            logger.exception("activity replacement cleanup failed after source commit")
         finally:
-            client.close()
+            if client:
+                try:
+                    client.close()
+                except Exception:
+                    cleanup_completed = False
+                    logger.exception("activity replacement client close failed")
+        if cleanup_completed:
+            for document in activity_replacement_markers:
+                audit = dict(document.audit_json or {})
+                audit.pop("_pending_activity_replacement_document_ids", None)
+                document.audit_json = audit
+            session.commit()
 
 
 def _compensate_source_publication(
@@ -876,6 +991,15 @@ def _publish_source_file_unlocked(
             ),
         )
     try:
+        if batch.strategy_code == "recent_activity":
+            duplicate_event_ids = _duplicate_activity_event_ids(
+                [document.metadata_json or {} for document in documents]
+            )
+            if duplicate_event_ids:
+                raise DuplicateActivityEventError(
+                    "同一源文件包含重复活动 event_id，禁止同时发布多个版本："
+                    + ",".join(duplicate_event_ids)
+                )
         for document in documents:
             published = _publish_document(
                 session,
@@ -893,7 +1017,7 @@ def _publish_source_file_unlocked(
             documents=documents,
         )
         return True
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "source file publication failed; compensating",
             extra={"file_id": file_row.id},
@@ -902,13 +1026,35 @@ def _publish_source_file_unlocked(
         current_documents = list(
             session.scalars(select(CleaningDocument).where(CleaningDocument.file_id == file_row.id))
         )
-        retry = any(document.attempts < 2 for document in current_documents)
+        duplicate_activity = isinstance(exc, DuplicateActivityEventError)
+        retry = (
+            False
+            if duplicate_activity
+            else any(document.attempts < 2 for document in current_documents)
+        )
         _compensate_source_publication(
             session,
             file_row=session.get(CleaningFile, file_row.id),
             batch=session.get(CleaningBatch, batch.id),
             retry=retry,
         )
+        if duplicate_activity:
+            session.expire_all()
+            current_documents = list(
+                session.scalars(
+                    select(CleaningDocument).where(CleaningDocument.file_id == file_row.id)
+                )
+            )
+            for document in current_documents:
+                document.error_code = "DUPLICATE_ACTIVITY_EVENT_ID"
+                document.error_message = safe_exception_message(exc, limit=2000)
+                document.retryable = False
+            failed_file = session.get(CleaningFile, file_row.id)
+            if failed_file is not None:
+                failed_file.error_code = "DUPLICATE_ACTIVITY_EVENT_ID"
+                failed_file.error_message = safe_exception_message(exc, limit=2000)
+            session.commit()
+            return False
         if retry:
             raise
         return False
@@ -995,6 +1141,23 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 )
                 session.commit()
                 return True
+            if batch.strategy_code == "recent_activity":
+                duplicate_event_ids = _duplicate_activity_event_ids(
+                    [document.metadata or {} for document in cleaned_documents]
+                )
+                if duplicate_event_ids:
+                    row.status = "failed"
+                    row.outcome = "failed"
+                    row.stage = "failed"
+                    row.error_code = "DUPLICATE_ACTIVITY_EVENT_ID"
+                    row.error_message = (
+                        "同一源文件包含重复活动 event_id，禁止同时发布多个版本："
+                        + ",".join(duplicate_event_ids)
+                    )
+                    _refresh_file_state(session, row.id, commit=False)
+                    _finish_batch(session, row.batch_id)
+                    session.commit()
+                    return True
             if Path(row.original_filename).suffix.lower() == ".pdf":
                 _record_pdf_conversion_events(
                     session,
@@ -1155,6 +1318,19 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 item.content_sha256 = _content_sha(
                     item.cleaned_markdown, item.metadata_json, item.chunking_json
                 )
+                if batch.strategy_code == "recent_activity":
+                    event_id = str((metadata or {}).get("event_id") or "")
+                    activity_name = str((metadata or {}).get("source_title") or document.title)
+                    if event_id and activity_name:
+                        item.dify_document_name = dify_activity_document_name(
+                            activity_name,
+                            event_id,
+                            _activity_content_version_sha(
+                                item.cleaned_markdown,
+                                item.metadata_json,
+                                item.chunking_json,
+                            ),
+                        )
                 duplicate = session.scalar(
                     select(CleaningDocument)
                     .where(

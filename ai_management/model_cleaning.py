@@ -347,18 +347,16 @@ def choose_call_mode(
     batch_token_threshold: int = 200_000,
     batch_enabled: bool = False,
 ) -> Literal["realtime", "batch"]:
-    # Content strategies must isolate failures per document and continue the
-    # queue. Provider Batch has whole-job result/retry semantics, so keep it
-    # for the strict catalogue workflow only.
-    if strategy_code != "course_route_catalog":
-        return "realtime"
     if strategy_code not in MODEL_STRATEGIES:
         raise ValueError("策略不使用大模型")
+    # Content strategies may use Batch only when the operator explicitly
+    # enables it.  The default remains realtime, preserving per-document
+    # isolation for normal production runs.
     if not batch_enabled:
         return "realtime"
     if (
         candidate_count >= batch_candidate_threshold
-        or estimated_input_tokens > batch_token_threshold
+        or estimated_input_tokens >= batch_token_threshold
     ):
         return "batch"
     return "realtime"

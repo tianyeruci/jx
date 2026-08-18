@@ -5,6 +5,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Iterator
 
@@ -14,6 +15,15 @@ try:
     import redis
 except ImportError:  # pragma: no cover - dependency is required in deployment
     redis = None
+
+
+@dataclass(frozen=True)
+class LockState:
+    acquired: bool
+    available: bool
+
+    def __bool__(self) -> bool:
+        return self.acquired
 
 
 class Cache:
@@ -117,7 +127,7 @@ class Cache:
             self._pending_redis_sync.add(key)
 
     @contextmanager
-    def lock(self, key: str, ttl: int = 300) -> Iterator[bool]:
+    def lock(self, key: str, ttl: int = 300) -> Iterator[LockState]:
         token = uuid.uuid4().hex
         acquired = False
         redis_acquired = False
@@ -125,12 +135,14 @@ class Cache:
         renewal_thread: threading.Thread | None = None
         production = get_settings().app_env == "production"
         use_memory = not bool(self.client)
+        available = bool(self.client) or not production
         try:
             if self.client:
                 try:
                     acquired = bool(self.client.set(key, token, nx=True, ex=ttl))
                     redis_acquired = acquired
                 except Exception:
+                    available = False
                     use_memory = not production
             if use_memory and not production:
                 with self._memory_lock:
@@ -158,7 +170,7 @@ class Cache:
 
                 renewal_thread = threading.Thread(target=renew, daemon=True)
                 renewal_thread.start()
-            yield acquired
+            yield LockState(acquired=acquired, available=available)
         finally:
             renewal_stop.set()
             if renewal_thread is not None:
