@@ -312,3 +312,15 @@
 - 预防：发布前同时校验“本轮源码闭包”和“发布脚本运行时闭包”；每次 stage 变更保留缺失文件清单和切换前失败证据。
 - 证据：jx `/opt/ai-management/var/reports/v2/20260816-activity-59d963-deploy`、`/opt/ai-management/backups/20260816-activity-59d963-predeploy-v2`。
 - 最后验证：2026-08-16。
+
+## DEPLOY-028：ai-management 配置变更后的全量服务重建必须等切换完成再做 smoke
+
+- 适用：用户已修改 jx 上 ai-management 配置，需要在保留现有配置和回滚点的前提下重新部署全部相关服务。
+- 触发：发布脚本退出成功但旧容器仍处于切换窗口，过早执行包导入或 Worker 稳定性检查，造成“新版本未生效”的假失败。
+- 根因：镜像构建、迁移、Compose 强制重建和旧容器退出不是同一时刻完成；Windows stage 的文本换行处理若覆盖二进制 wheel 也会破坏发布资产。
+- 解决：先做远端配置备份但不读取或输出明文，使用完整 release 资产；文本和二进制分开校验，等待 Compose 切换完成后再检查 ready、Alembic head、运行时导入、容器镜像和 Worker 重启次数。失败只重新发布修正后的完整 release，不在运行容器内热改代码。
+- 非解决：打印 `.env`、覆盖用户配置、只重建 API、在旧容器仍存在时下结论、对 wheel 做文本换行归一化，或跳过回滚备份。
+- 验证：2026-08-19 修复 Worker 辅助函数导入路径后重新部署完整 release；等待服务切换后，API ready、migration head、运行时导入和相关 Worker 均通过，重启次数为 `0`。本轮 ai-management 配置未写入报告或文档。
+- 预防：把“发布完成”和“smoke 可开始”分成两个时间点；保留原 release/备份，发布后逐一核对 Core/UI/OCR/Worker/Scheduler 的同源资产和稳定性。
+- 证据：本轮脱敏部署报告及 `scripts/jx_deploy_release.sh`。
+- 最后验证：2026-08-19。

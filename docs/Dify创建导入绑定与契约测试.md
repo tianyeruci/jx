@@ -10,6 +10,14 @@
 - 线上复核曾发现当前 App 的意图代码落后于仓库 DSL，导致“会议真实案例”误入活动分支；已在当前 App 直接修正 `quick_intent` 并发布更新。发布后正常/取消/延期、普通业务负例和案例重叠负例均通过。
 - 仓库的 `scripts/jx_deploy_release.sh` 不安装商业顾问 Dify DSL 或 Prompt；wheel 发布不会自动发布或切换 Dify 应用。每次 Dify 变更必须从 `dify/商业顾问（当前使用版本）.yml` 走受控导入、发布、Key 映射、`/parameters` 和真实 SSE 验收。
 
+## 咨询会议方法论 v3 当前状态（2026-08-19，优先于下文历史记录）
+
+- `personal_business_consultation` 已接入 Qwen v3 证据化清洗，Dify 文档按白名单 Metadata 投影。案例使用 `record_type=consulting_case`；单来源或未达跨来源晋升门槛的做法使用 `record_type=methodology_candidate`；只有 Registry 晋升后才使用 `validated_universal_methodology`。
+- 商业顾问 DSL 已包含方法论检索、咨询案例检索、聚合和证据压缩路径，且已在 Dify 发布。方法候选可以作为带上下文的候选证据参与检索，但回答不能把它标记为通用方法论；通用方法论需要跨批次独立证据晋升后才有可发布数据。
+- 18 份样本分 6 批页面上传，18/18 成功，生成 18 个案例文档、13 个候选方法文档、0 个通用方法论文档；Dify 文档详情回读候选方法 Metadata。5 个商业顾问查询均显示 `Success`，显式方法论+案例问题返回结构化回答。
+- Dify 日志详情页当前不展示完整节点执行轨迹，因此本轮结论只包含答案级验证，不仅凭回答文本宣称具体检索节点命中。页面上传、Dify 文档 Metadata 回读和 Chatflow 发布必须分别记录。
+- 详细脱敏结果见 `var/reports/consulting-methodology-v3/e2e-20260819-redacted.md`；样本与本轮测试数据按用户要求保留，未在文档中写入配置明文、Token、原始正文或原始敏感文件名。
+
 ## 2026-08-03 执行状态（历史）
 
 - 当前线上商业顾问行为基线仍为 `dify/商业顾问（当前使用版本）.yml`；本轮本地修复完成后，发布必须按“导出备份 → 导入/保存 → 发布 → `/parameters` 与真实 SSE 验收”顺序留存证据，不能只以本地 DSL 通过作为上线结论。

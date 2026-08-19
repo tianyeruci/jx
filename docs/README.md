@@ -2,7 +2,7 @@
 
 > 状态：当前有效  
 > 用途：按任务定位权威文档、源码和测试，避免每次全局扫描  
-> 最后核对：2026-08-17
+> 最后核对：2026-08-19
 
 ## 1. 使用方式
 
@@ -57,11 +57,11 @@
 | 商业会话、SSE、隐私 | [课程/路线移除改造记录](商业顾问移除课程与学习路线改造记录.md)、[接口交互版本](小程序后端与%20AI%20管理服务接口对接交互版本.md)、[正式接口标准](小程序后端与AI管理服务接口对接标准.md) | `conversations.py`、`sse.py`、`context.py`、`privacy.py`、`stream_filter.py` | `test_ai_management.py`、DSL 契约测试 | 两份接口文档、ADR、Dify 验收测试 |
 | 朋友圈、写作、画像与案例目录 | [V2 产品流程](V2产品流程与边界.md)、[Dify 绑定指南](Dify创建导入绑定与契约测试.md)、[小程序接口交互版本](小程序后端与%20AI%20管理服务接口对接交互版本.md)、[案例目录 Feature](features/tool-examples/SPEC.md) | `api/routers/tools.py`、`api/routers/admin_management.py`、`services/tool_examples.py`、`test_ui.py`、`dify.py` | `test_tool_examples.py`、`test_app_routing.py`、`test_v2_hardening.py`、Dify 契约脚本 | 接口交互版本、功能索引、案例目录契约；案例运行时注入不改变 DSL |
 | 课程、路线、点击 | [V2 需求](V2需求规格说明.md)、[日志与点击](日志与点击说明.md)、[课程与学习路线合并清洗策略规格计划](课程与学习路线合并清洗策略规格计划.md) | `courses.py`、`course_import.py`、`course_route_catalog.py`、`cleaning.py`、`api/routers/knowledge_admin.py`、`cli.py` | `test_course_route_catalog.py`、`test_model_cleaning_workflow.py`、`test_seed_data_contract.py` | 课程/路线规范、清洗策略、接口、测试样本、当前状态 |
-| 文档清洗、复核、重试、OCR | [清洗策略接入说明](清洗策略接入说明.md)、[清洗策略编写规范](../清洗策略接入与编写规范.md)、[最近活动功能契约](features/recent-activity/SPEC.md) | `cleaning.py`、`activity_cleaning.py`、`workers/tasks/cleaning.py`、`knowledge_cleaner/`、`docker-compose.ai.yml` | `test_activity_cleaning.py`、`test_dify_activity_contract.py`、`test_batch_cleaner.py`、`test_pdf_ocr_quality.py`、`test_cleaning_release_contract.py` | 清洗规范、Metadata/Dify、验收/排坑、OCR 部署 |
+| 文档清洗、复核、重试、OCR | [清洗策略接入说明](清洗策略接入说明.md)、[清洗策略编写规范](../清洗策略接入与编写规范.md)、[最近活动功能契约](features/recent-activity/SPEC.md) | `cleaning.py`、`activity_cleaning.py`、`workers/tasks/cleaning.py`、`knowledge_cleaner/`、`docker-compose.ai.yml` | `test_activity_cleaning.py`、`test_dify_activity_contract.py`、`test_batch_cleaner.py`、`test_pdf_ocr_quality.py`、`test_cleaning_release_contract.py`、咨询会议方法论 v3 契约/Worker/DSL 测试 | 清洗规范、Metadata/Dify、Registry 晋升、验收/排坑、OCR 部署 |
 | 数据库、Redis、任务 | [V2 数据设计](V2服务开发与数据设计.md)、[部署备份回滚](部署备份回滚与故障.md) | `db.py`、`models.py`、`cache.py`、`workers/`、`migrations/` | `test_v2_hardening.py`、迁移检查 | 数据设计、迁移、备份与恢复 |
 | 测试页和运维页 | [AI 管理页操作说明](AI管理页文档清洗操作说明-2026-07-28.md)、[测试与验收指南](测试与验收指南.md) | `ai_management/test_ui.py`、`api/routers/admin*.py` | `test_app_routing.py`、浏览器验收 | 操作说明、验收记录、状态交接 |
 | 部署、回滚、远端回归 | [快速代码测试部署](jx快速代码测试部署操作手册.md)、[V2 部署回滚手册](V2从开发到服务器部署与回滚手册.md)、[测试与验收指南](测试与验收指南.md) | `Dockerfile*`、`docker-compose*.yml`、`scripts/jx_*` | 本地全套测试、远端 runner | 状态交接、验收、排坑、运行手册 |
-| RAG 和知识库绑定 | [Dify 绑定指南](Dify创建导入绑定与契约测试.md)、[商业顾问 RAG 运行规范](../AI商业顾问RAG全链路执行计划.md) | `rag_eval.py`、`scripts/jx_rag_regression.py`、`dify/` | `test_dify_client.py`、RAG 黄金集 | Dify 指南、Prompt/DSL、验收证据 |
+| RAG 和知识库绑定 | [Dify 绑定指南](Dify创建导入绑定与契约测试.md)、[商业顾问 RAG 运行规范](../AI商业顾问RAG全链路执行计划.md) | `rag_eval.py`、`scripts/jx_rag_regression.py`、`dify/`、咨询会议方法论 Registry/Worker | `test_dify_client.py`、RAG 黄金集、咨询会议方法论 v3 DSL/晋升测试 | Dify 指南、Prompt/DSL、Metadata/Registry、验收证据 |
 
 ## 5. 当前专项规范
 
@@ -85,6 +85,7 @@
 
 - [清洗策略接入与编写规范](../清洗策略接入与编写规范.md)：新增策略及其 Metadata/Dify 投影的编写契约。
 - [清洗策略接入说明](清洗策略接入说明.md)：当前服务接入行为。
+- [咨询会议方法论 v3 脱敏验收报告](../var/reports/consulting-methodology-v3/e2e-20260819-redacted.md)：18 份样本的页面上传、千问清洗、Metadata、Dify 入库和商业顾问测试结果。
 - [最近活动功能契约](features/recent-activity/SPEC.md)：活动清洗、状态、Metadata、Chatflow 和验收边界。
 - [通用文档清洗策略接入提示词](../通用文档清洗策略接入提示词.md)：历史输入和策略设计参考，不高于当前规范。
 - [Dify 创建导入绑定与契约测试](Dify创建导入绑定与契约测试.md)：应用/知识库绑定和验证。
