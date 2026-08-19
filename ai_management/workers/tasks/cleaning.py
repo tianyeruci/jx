@@ -16,6 +16,7 @@ from knowledge_cleaner.dify import DifyKnowledgeClient
 from ...activity_cleaning import EVENT_METADATA_FIELDS, ActivityCleaningError
 from ...cache import cache
 from ...cleaning import (
+    DISABLED_COURSE_STRATEGIES,
     STRATEGY_REGISTRY,
     ChunkingConfig,
     cleaning_batch_cache_key,
@@ -1080,6 +1081,30 @@ def process_cleaning_file(self, file_id: str) -> bool:
             if row is None or row.status not in {"pending", "processing"}:
                 return False
             batch = row.batch
+            if (
+                batch.knowledge_base_code == "course"
+                or batch.strategy_code in DISABLED_COURSE_STRATEGIES
+            ):
+                row.status = "failed"
+                row.outcome = "failed"
+                row.stage = "failed"
+                row.error_code = "STRATEGY_DISABLED"
+                row.error_message = "课程与学习路线清洗入口已关闭"
+                _refresh_file_state(session, row.id, commit=False)
+                _finish_batch(session, row.batch_id)
+                record_event(
+                    level="WARNING",
+                    category="task",
+                    component="cleaning_worker",
+                    event_code="STRATEGY_DISABLED",
+                    status="failed",
+                    message="课程与学习路线清洗任务已阻断",
+                    resource_type="cleaning_file",
+                    resource_id=file_id,
+                    session=session,
+                )
+                session.commit()
+                return True
             strategy = STRATEGY_REGISTRY.get(batch.strategy_code)
             if batch.upload_mode != "raw" and strategy is None:
                 raise ValueError("清洗策略已从当前代码中移除")

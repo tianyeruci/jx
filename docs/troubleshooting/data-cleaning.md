@@ -1,5 +1,29 @@
 # 数据清理与清洗排障
 
+## DATA-033：未选择课程策略却出现课程目录字段错误
+
+- 适用：清洗批次创建、管理端显式上传接口和清洗 worker 的策略分派。
+- 触发：用户选择 `personal_business_consultation` 等 `general` 策略后，日志却出现 `课程目录缺少必需列`，或者新课程入口继续创建批次。
+- 根因：旧课程上传接口仍可被历史页面/脚本直接调用；它产生的批次自身携带 `course_route_catalog`，不是普通策略被运行时映射成课程策略。此前入口只隐藏课程策略，没有关闭显式写入。
+- 解决：创建批次前同时校验知识库和策略代码；`course` 知识库、`course_information`、`learning_route`、`course_route_catalog` 统一返回 `409 STRATEGY_DISABLED`，不创建本地状态。worker 对历史队列再做一次熔断，调用策略前直接失败并记录 `STRATEGY_DISABLED`；其它批次严格按自己保存的 `strategy_code` 分派。
+- 非解决：按错误文本猜测用户选择、删除课程解析器、把普通上传强行改成课程目录，或只隐藏前端按钮。
+- 验证：`tests/test_app_routing.py` 覆盖普通清洗入口和管理端课程入口；`tests/test_ai_management.py` 覆盖历史课程队列不调用课程策略；jx 发布后需验证课程入口返回 409 且课程批次数不再增长。
+- 预防：任何新增入口必须复用统一批次创建函数；课程域关闭时同时检查 HTTP、worker、模型任务和数据清理脚本，不能只改策略发现接口。
+- 证据：`ai_management/cleaning.py`、`ai_management/workers/tasks/cleaning.py`、`tests/test_app_routing.py`、`tests/test_ai_management.py`。
+- 最后验证：2026-08-19。
+
+## DATA-034：咨询 PDF 含图片不应仅因图片存在而人工阻断
+
+- 适用：`personal_business_consultation` 的 PDF 转换、OCR、隐私脱敏和 PDF 问题中心。
+- 触发：PDF 已完成 OCR 且正文/人名脱敏可继续，但仍记录 `PDF_CONSULTATION_IMAGE_PRIVACY_REVIEW` 并阻止发布。
+- 根因：旧逻辑把“pypdf 检测到图片”直接当作人工隐私审核条件；它没有把图片内容交给 OCR，因此把“图片存在”和“隐私无法判断”混为一谈。
+- 解决：咨询 PDF 只要含图片就强制整份进入 OCR；OCR 置信度、关键事实冲突、OCR 失败、正文为空和脱敏后残留隐私仍是硬门禁，但图片存在本身只记录 `pdf_consultation_image_ocr` 质量标记，不再触发人工审核。
+- 非解决：关闭 OCR、直接信任 PDF 原生文字层、忽略 OCR 低置信度或放过脱敏后的残留人名/联系方式。
+- 验证：`tests/test_pdf_ocr_quality.py` 覆盖含图咨询 PDF 自动 OCR、OCR 关闭仍阻断和旧人工审核码不再产生；远端需复核指定 PDF 日志从旧阻断转为已处理/不再新增。
+- 预防：咨询类 PDF 的安全边界由“强制 OCR + 脱敏 + 残留扫描 + 质量门禁”组成；不能恢复图片存在即人工审核的旧规则。
+- 证据：`knowledge_cleaner/pdf_convert.py`、`ai_management/cleaning.py`、`tests/test_pdf_ocr_quality.py`。
+- 最后验证：2026-08-19。
+
 ## DATA-001：Dify 测试文档删除必须依赖精确 ID
 
 - 适用：测试前清理和验收后清理。
@@ -300,8 +324,8 @@
 - 根因：旧分类器把含图低文字页统一归为 uncertain，导致有完整原生文字层的正文在转换前被硬阻断。
 - 解决：只要每页都有原生文字层、总文字量达到安全门槛，即使部分页面含图或低文字也优先走文字转换；首页/末页无图低文字继续记录 `PDF_BOUNDARY_LOW_TEXT_WARNING`，含图低文字记录 `PDF_TEXT_LAYER_IMAGE_PAGE_WARNING`，质量告警不投影到 Dify Metadata 或用户文本。
 - 非解决：因为单页含图或低文字就整份 PDF 拒绝，或把 image-only、隐私残留等硬阻断降级成普通质量告警。
-- 仍阻断：image-only 页、纯扫描 OCR 失败、空正文和隐私残留。咨询 PDF 含图片时额外触发 `PDF_CONSULTATION_IMAGE_PRIVACY_REVIEW`，人工确认前不得发布。
-- 验证：PDF、咨询和清洗集合覆盖文字层+插图放行、image-only 拦截、边界告警、咨询图片隐私和低文字全篇不误走 OCR。
+- 仍阻断：image-only 页、纯扫描 OCR 失败、空正文和隐私残留。咨询 PDF 含图片时强制 OCR；图片存在本身不再触发 `PDF_CONSULTATION_IMAGE_PRIVACY_REVIEW`，但 OCR/隐私质量门禁失败仍不得发布。
+- 验证：PDF、咨询和清洗集合覆盖文字层+插图放行、image-only 拦截、边界告警、咨询含图强制 OCR、OCR 质量门禁和隐私残留阻断。
 - 预防：所有 PDF 入口继续复用共享分类核心；新增边界例外必须同时补首尾、页中、含图、纯扫描和隐私门禁回归，不得按单一策略放宽。
 - 证据：`knowledge_cleaner/pdf_convert.py`、`ai_management/cleaning.py`、`ai_management/workers/tasks/cleaning.py`、`docs/执行计划合集/资料钩子 PDF 清洗入库根因定位方案.md`。
 - 最后验证：2026-08-07。

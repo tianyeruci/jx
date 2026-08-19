@@ -135,22 +135,13 @@ POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/file
 POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/model-tasks/{task_id}/items/{item_id}/retry
 ```
 
-以上接口还要求 `X-Admin-Token`；`kb_code` 只能为 `general` 或 `course`。当前测试页只展示 `general` 策略；`course_information`、`learning_route`、`course_route_catalog` 仅由后端兼容历史批次和显式旧调用，不在页面展示或本轮页面验收。完整条目查询、复核、启停和删除接口以 [小程序后端与 AI 管理服务接口对接标准](小程序后端与AI管理服务接口对接标准.md) 为准。
+以上接口还要求 `X-Admin-Token`；`kb_code` 只能为 `general` 或 `course`。当前测试页只展示 `general` 策略；`course_information`、`learning_route`、`course_route_catalog` 仅保留历史代码和读取兼容，所有课程/学习路线写入入口均在创建批次前返回 `409 STRATEGY_DISABLED`，不创建本地批次、文件、上传目录，也不会触发课程解析或模型发布。完整条目查询、复核、启停和删除接口以 [小程序后端与 AI 管理服务接口对接标准](小程序后端与AI管理服务接口对接标准.md) 为准。
 
 模型契约精确重试接口只接受已完成、唯一候选、`realtime` 模式且错误码为 `MODEL_CONTRACT_INVALID` 的条目；它只重新排队该条目，不开启 Bailian Batch、不绕过严格契约。其他状态返回 `409`，客户端应按错误码处理，不解析模型原始错误文字。
 
 上传为 `multipart/form-data`：
 
-当前课程目录示例：
-
-```text
-strategy_code=course_route_catalog
-files=<一个 .xlsx 文件>
-```
-
-旧接口调用若仍使用 `course_information` 或 `learning_route`，仅按兼容策略处理，不作为当前页面验收路径。
-
-课程上传成功的最终条件不是 HTTP 200，而是批次和所有条目完成、Dify 索引/Metadata 回读成功、数据库目录已写入、Redis 有效快照已重建。
+课程目录接口已关闭，不再提供当前上传示例。旧接口调用若仍使用 `course_information`、`learning_route` 或 `course_route_catalog`，统一返回 `STRATEGY_DISABLED`；用户选择的其它策略只按该 `strategy_code` 分派，不会隐式回退到课程/学习路线策略。
 
 ## 统一错误
 

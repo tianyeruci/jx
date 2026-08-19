@@ -279,7 +279,9 @@ def test_text_layer_first_accepts_low_text_image_pages_when_native_layer_is_comp
     assert _pdf_blocking_reasons(result.review_reasons, result.markdown) == []
 
 
-def test_consultation_pdf_image_keeps_privacy_review_gate(tmp_path, monkeypatch):
+def test_consultation_pdf_image_uses_ocr_without_manual_privacy_gate(
+    tmp_path, monkeypatch
+):
     from knowledge_cleaner import pdf_convert
 
     source = tmp_path / "consultation-image.pdf"
@@ -297,13 +299,44 @@ def test_consultation_pdf_image_keeps_privacy_review_gate(tmp_path, monkeypatch)
         pdf_convert, "_extract_pdfplumber_pages", lambda _path: rendered_pages
     )
 
+    backend = _DPIBackend(
+        [
+            [
+                _page(1, "客户目标：提升销售", confidence=0.98),
+                _page(2, "会议结论：继续验证", confidence=0.98),
+            ]
+        ]
+    )
+    result = pdf_convert.convert_consultation_pdf(
+        source,
+        enable_ocr=True,
+        ocr_backend=backend,
+    )
+
+    assert result.needs_review is False
+    assert result.status == "ready"
+    assert result.ocr_used is True
+    assert result.metadata["consultation_image_ocr"] is True
+    assert "pdf_consultation_image_ocr" in result.quality_flags
+    assert not any("PDF_CONSULTATION_IMAGE_PRIVACY_REVIEW" in reason for reason in result.review_reasons)
+
+
+def test_consultation_pdf_image_still_blocks_when_ocr_is_disabled(tmp_path, monkeypatch):
+    from knowledge_cleaner import pdf_convert
+
+    source = tmp_path / "consultation-image.pdf"
+    _blank_pdf(source, 1)
+    monkeypatch.setattr(
+        pdf_convert,
+        "_extract_pypdf_pages",
+        lambda _reader: [_page(1, "会议摘要", backend="pypdf", image_count=1)],
+    )
+
     result = pdf_convert.convert_consultation_pdf(source, enable_ocr=False)
 
     assert result.needs_review is True
-    assert any(
-        reason.startswith("PDF_CONSULTATION_IMAGE_PRIVACY_REVIEW")
-        for reason in result.review_reasons
-    )
+    assert "PDF缺少可用文字层，OCR已禁用" in result.review_reasons
+    assert not any("PDF_CONSULTATION_IMAGE_PRIVACY_REVIEW" in reason for reason in result.review_reasons)
 
 
 def test_settings_validate_ocr_page_timeout_linkage(monkeypatch):

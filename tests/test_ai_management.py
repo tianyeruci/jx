@@ -1857,6 +1857,57 @@ def test_cleaning_worker_enqueues_pending_items(service_db, monkeypatch, tmp_pat
         assert items[0].chunking_json["parent_separator"] == "<<<DIFY_PARENT>>>"
 
 
+def test_disabled_course_worker_does_not_invoke_course_strategy(
+    service_db, monkeypatch, tmp_path
+):
+    from ai_management import cleaning as cleaning_module
+    from ai_management.tasks import process_cleaning_file
+
+    monkeypatch.setattr(get_settings(), "upload_root", tmp_path)
+    monkeypatch.setattr(
+        cleaning_module.STRATEGY_REGISTRY["course_route_catalog"],
+        "clean",
+        lambda *_args, **_kwargs: pytest.fail("disabled course strategy was invoked"),
+    )
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="course_route_catalog",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="processing",
+            build_version="test-build",
+        )
+        session.add(batch)
+        session.flush()
+        storage_dir = tmp_path / batch.id
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        (storage_dir / "catalog.xlsx").write_bytes(b"not parsed")
+        row = CleaningFile(
+            batch_id=batch.id,
+            original_filename="catalog.xlsx",
+            storage_filename="catalog.xlsx",
+            extension=".xlsx",
+            source_sha256=hashlib.sha256(b"not parsed").hexdigest(),
+            size_bytes=9,
+            status="pending",
+            stage="upload",
+        )
+        session.add(row)
+        session.commit()
+        file_id = row.id
+        batch_id = batch.id
+
+    assert process_cleaning_file.run(file_id) is True
+
+    with service_db() as session:
+        row = session.get(CleaningFile, file_id)
+        batch = session.get(CleaningBatch, batch_id)
+        assert row is not None
+        assert batch is not None
+        assert row.error_code == "STRATEGY_DISABLED"
+        assert batch.status == "completed"
+
+
 def test_empty_content_strategy_is_failed_without_retry(
     service_db, monkeypatch, tmp_path
 ):

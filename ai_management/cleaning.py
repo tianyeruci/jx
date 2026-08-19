@@ -67,6 +67,32 @@ CONTENT_MODEL_STRATEGIES = frozenset(
     }
 )
 
+COURSE_KNOWLEDGE_BASE_CODE = "course"
+DISABLED_COURSE_STRATEGIES = frozenset(
+    {
+        "course_information",
+        "learning_route",
+        "course_route_catalog",
+    }
+)
+
+
+def _reject_disabled_course_write(
+    *, strategy_code: str, knowledge_base_code: str
+) -> None:
+    """Reject every course-domain write before it creates local state."""
+
+    if (
+        knowledge_base_code == COURSE_KNOWLEDGE_BASE_CODE
+        or strategy_code in DISABLED_COURSE_STRATEGIES
+    ):
+        raise ServiceError(
+            "STRATEGY_DISABLED",
+            "课程与学习路线清洗入口已关闭",
+            409,
+            False,
+        )
+
 
 def _review_force_strategy_codes(value: str | None) -> frozenset[str]:
     return frozenset(
@@ -405,7 +431,6 @@ def _conversion_audit(result: Any) -> dict[str, Any]:
 _PDF_HARD_BLOCK_PREFIXES = (
     "PDF读取失败",
     "PDF_TYPE_REVIEW_REQUIRED",
-    "PDF_CONSULTATION_IMAGE_PRIVACY_REVIEW",
     "OCR_PAGE_LIMIT_REVIEW",
     "PDF缺少可用文字层",
     "OCR执行失败",
@@ -2224,6 +2249,12 @@ async def create_cleaning_batch(
     files: list[UploadFile] = File(...),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
+    strategy_code = strategy_code.strip()
+    knowledge_base_code = knowledge_base_code.strip().lower()
+    _reject_disabled_course_write(
+        strategy_code=strategy_code,
+        knowledge_base_code=knowledge_base_code,
+    )
     settings = get_settings()
     max_batch_bytes = settings.max_upload_batch_mb * 1024 * 1024
     disk_free = shutil.disk_usage(settings.upload_root.resolve()).free

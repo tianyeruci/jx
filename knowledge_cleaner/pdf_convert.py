@@ -1458,16 +1458,17 @@ def convert_pdf(
         )
 
     pdf_type = _classify_pdf_type(pypdf_pages)
-    if consultation and any(page.image_count > 0 for page in pypdf_pages):
-        # Native text is safe to prefer for ordinary knowledge sources, but a
-        # consultation image may contain a name, phone number, or other PII
-        # that the text layer cannot reveal.  Keep the anonymized Markdown
-        # extraction for review, while requiring a privacy check before it can
-        # be published.
-        quality_flags.append("pdf_consultation_image_privacy_review")
-        review_reasons.append(
-            "PDF_CONSULTATION_IMAGE_PRIVACY_REVIEW:咨询PDF含图片，需人工确认图片中无隐私信息"
-        )
+    consultation_image_ocr = consultation and any(
+        page.image_count > 0 for page in pypdf_pages
+    )
+    if consultation_image_ocr:
+        # Consultation images are part of the privacy boundary.  Route the
+        # complete file through the configured OCR path so names or contact
+        # details embedded in images are covered by the same anonymization and
+        # residual-PII checks as native text.  OCR quality and privacy gates
+        # remain blocking; the presence of an image alone is not a manual gate.
+        quality_flags.append("pdf_consultation_image_ocr")
+        pdf_type = "scan"
     boundary_low_text_pages = (
         _boundary_low_text_pages(pypdf_pages) if pdf_type == "text" else []
     )
@@ -1659,6 +1660,7 @@ def convert_pdf(
         "ocr_low_confidence_pages": ocr_low_confidence_pages,
         "ocr_key_fact_conflicts": ocr_key_fact_conflicts,
         "quality_flags": quality_flags,
+        "consultation_image_ocr": consultation_image_ocr,
     }
     return PDFConversionResult(
         document_id=document_id,

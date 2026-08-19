@@ -143,6 +143,42 @@ def test_cleaning_strategy_listing_hides_course_route_entries(service_db) -> Non
     )
 
 
+def test_course_writes_are_rejected_before_batch_creation(service_db) -> None:
+    headers = {
+        "X-Internal-Token": "test-internal-token",
+        "X-Admin-Token": "test-admin-token",
+    }
+    with TestClient(app) as client:
+        legacy_strategy = client.post(
+            "/internal/v1/knowledge/cleaning-batches",
+            headers=headers,
+            data={
+                "strategy_code": "course_route_catalog",
+                "knowledge_base_code": "general",
+                "upload_mode": "cleaned",
+            },
+            files=[("files", ("catalog.xlsx", b"not parsed", "application/octet-stream"))],
+        )
+        course_knowledge_base = client.post(
+            "/internal/v1/admin/knowledge-bases/course/upload-batches",
+            headers=headers,
+            data={"strategy_code": "standard_document", "upload_mode": "raw"},
+            files=[("files", ("source.md", b"not written", "text/markdown"))],
+        )
+
+    assert legacy_strategy.status_code == 409
+    assert legacy_strategy.json()["code"] == "STRATEGY_DISABLED"
+    assert course_knowledge_base.status_code == 409
+    assert course_knowledge_base.json()["code"] == "STRATEGY_DISABLED"
+
+    from ai_management.db import SessionLocal
+    from ai_management.models import CleaningBatch, CleaningFile
+
+    with SessionLocal() as session:
+        assert session.query(CleaningBatch).count() == 0
+        assert session.query(CleaningFile).count() == 0
+
+
 def test_catalog_document_disable_updates_authority_and_delete_is_blocked(
     service_db, monkeypatch
 ) -> None:
