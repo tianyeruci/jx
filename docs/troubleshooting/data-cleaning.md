@@ -647,3 +647,15 @@
 - 预防：每批提交前核对文件选择数量；Streamlit uploader 重新选择前先确认空状态，避免上一批选择被保留；契约失败只按条目详情重试。候选方法只有在跨来源证据达到阈值后才进入公开方法论发布。
 - 证据：`var/reports/consulting-methodology-v3/e2e-20260819-redacted.md`、测试页和 Dify 日志页的脱敏验收记录。
 - 最后验证：2026-08-19。
+
+## DATA-051：realtime/Batch parity 必须以 Dify 远端全量回读为准
+
+- 适用：四个内容模型策略 `personal_business_consultation`、`wechat_public_account_cognition`、`xiaobot_post`、`zsxq_post` 的 Qwen realtime/Provider Batch 对照验收。
+- 触发：本地批次都显示成功，就直接宣称 realtime 与 Batch 的知识库效果和 Metadata 完全一致；或把模型拆分数量差异误判成 Batch 失败。
+- 根因：模型输出允许按知识单元拆分，realtime 与 Batch 可能产生不同数量的本地文档；本地 Metadata 还包含不会投影到 Dify 的来源/审计字段，而 Dify 会附加自己的内建字段。只比较候选数、HTTP 200 或本地 key set 不能证明最终知识库一致。
+- 解决：分别核对任务 `mode`、候选/文件/文档终态、每个本地文档的 Dify ID；再逐一 `get_document` 回读远端 `indexing_status` 和 `doc_metadata`，按策略比较远端 key set 与必需字段。将“最终远端 metadata 一致”和“本地中间态/文档拆分一致”分开结论。
+- 非解决：只抽查一个文档、只比较本地文档数、把 Dify 内建 `document_name/source/upload_date` 当作服务自定义字段，或为了数量一致强制合并/重拆模型结果。
+- 验证：2026-08-20 jx 四策略全量回读中，所有关联 Dify 文档索引均为 `completed`，必需 metadata 均存在，同一策略 realtime/Batch 远端 key set 一致；小报童/知识星球文档数量因模型拆分不同，本地部分可选字段缺失未投影到 Dify。
+- 预防：验收报告至少分列“任务模式与候选数”“本地文档终态与 Dify ID”“远端索引/Metadata 全量回读”“文档拆分差异”；保留脱敏报告，不输出正文、Token、真实用户 ID 或受保护映射。
+- 证据：[`full_remote_metadata_parity.safe.json`](../../var/reports/20260820-qwen-activity/full_remote_metadata_parity.safe.json)、`ai_management/model_cleaning.py`、`ai_management/workers/tasks/model_cleaning.py`。
+- 最后验证：2026-08-20。

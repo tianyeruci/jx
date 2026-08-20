@@ -219,3 +219,15 @@
 - 预防：Dify 操作固定复用已登录 Chrome 标签页；发布后重新从项目测试页发起新会话；分别留存 Metadata 回读、发布状态、日志 Success 和答案级结果。不得写入或输出 Cookie、Token、App Key 或配置正文。
 - 证据：`var/reports/consulting-methodology-v3/e2e-20260819-redacted.md`、`dify/商业顾问（当前使用版本）.yml`、Dify 文档详情/日志页脱敏记录。
 - 最后验证：2026-08-19。
+
+## DIFY-021：realtime/Batch 的最终 Metadata parity 必须逐文档回读，不能只看本地记录
+
+- 适用：Qwen realtime/Provider Batch 清洗结果写入同一 Dify `general` Dataset 后的入库对照验收。
+- 触发：本地两种任务的 `CleaningDocument.metadata_json` key set 不同，或小报童/知识星球文档数不同，就直接判定 Dify 入库不一致；反过来只抽查一个远端文档就宣称全量一致。
+- 根因：模型拆分数量可以不同；本地来源/审计字段不会全部投影到 Dify；Dify `doc_metadata` 还会附加 `document_name`、`source`、上传时间和上传者等平台字段。因此本地中间态、远端自定义 Metadata 和平台内建字段是三种不同口径。
+- 解决：按本地 Dify 文档 ID 对四个策略的 realtime/Batch 结果逐文档调用 `get_document`，核对 `indexing_status=completed`、必需字段存在，并在同一策略内比较远端 metadata key set；将本地可选字段缺失和模型拆分差异单独记录，不把它们混成 Dify metadata 失败。
+- 非解决：只看 Dify 控制台“已发布”、只比较候选数/文档数、只抽查一条文档、把平台内建字段当成服务字段，或修改结果以强行得到逐文档数量一致。
+- 验证：2026-08-20 四策略全量回读通过：咨询 `100/100`、微信公众号 `101/101`、小报童 Batch/realtime `202/186`、知识星球 `202/192`；所有已关联远端文档索引完成，同一策略远端 metadata key set 一致。完整脱敏证据见 `var/reports/20260820-qwen-activity/full_remote_metadata_parity.safe.json`。
+- 预防：Dify 验收报告固定拆分“发布状态”“jx App Key 映射”“本地终态”“远端索引/Metadata 回读”四项；没有全量回读证据时只能写“抽样通过”，不能写“全量一致”。
+- 证据：`var/reports/20260820-qwen-activity/full_remote_metadata_parity.safe.json`、`knowledge_cleaner/dify.py::DifyKnowledgeClient.get_document`。
+- 最后验证：2026-08-20。

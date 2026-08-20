@@ -168,3 +168,15 @@
 - 预防：验收清单固定包含正/负向意图、App 映射、`/parameters`、SSE 结束状态和知识库检索上下文五项证据。
 - 证据：`tests/test_dify_activity_contract.py`、`tests/test_business_advisor_unified_dsl.py`、当前状态交接文档 0.61。
 - 最后验证：2026-08-16。
+
+## TEST-015：模型 realtime/Batch parity 要分开验证本地中间态和远端知识库
+
+- 适用：四个内容模型策略在 jx 的 Qwen realtime/Provider Batch 双模式验收。
+- 触发：测试报告只有候选数、批次状态或单条 Dify 抽样，没有逐文档远端 metadata/索引回读；或把小报童、知识星球拆分数量差异报告成失败。
+- 根因：模型允许生成不同数量的知识单元；本地完整 metadata 包含来源/审计字段，Dify 只接收策略白名单和少量通用字段，并附加平台内建字段。
+- 解决：按任务模式分别统计候选数、文件/文档终态、Dify ID；对全部关联远端文档回读 `indexing_status` 和 `doc_metadata`，在策略内比较远端 key set 和必需字段；报告单独记录本地可选字段差异与模型拆分差异。
+- 非解决：只检查 HTTP 200、只抽查一条远端文档、只比较文档数，或用固定 seed 宣称模型输出逐字一致。
+- 验证：2026-08-20 全量远端回读四策略均无错误，所有关联文档 `indexing_status=completed`，同一策略 realtime/Batch 的远端 metadata key set 一致；质量门禁和 Qwen/Dify E2E 检查通过。
+- 预防：验收脚本保留脱敏 JSON 证据；Batch 测试完成后恢复 `BAILIAN_BATCH_ENABLED=false`，不删除用户要求保留的测试数据/任务。
+- 证据：[`full_remote_metadata_parity.safe.json`](../../var/reports/20260820-qwen-activity/full_remote_metadata_parity.safe.json)、`scripts/verify_qwen_activity_e2e.py`。
+- 最后验证：2026-08-20。

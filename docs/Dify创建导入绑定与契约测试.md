@@ -2,13 +2,14 @@
 
 目标版本：Dify 1.13.3。以下步骤先用隔离、脱敏的 `general` 测试资料跑通；正式资料只按当前清洗策略和 Metadata 契约替换，不能把课程/路线目录当作商业顾问新聊天的数据来源。
 
-## 当前商业顾问生效状态（2026-08-16，优先于全文历史记录）
+## 当前商业顾问生效状态（2026-08-20，优先于全文历史记录）
 
-- jx 最近活动代码已随 `20260816-activity-59d963` release 部署并通过健康、清洗入库和 Metadata 回读；jx 已同步并实际生效新版 App Key，Dify 控制台中的当前绑定 Chatflow 已发布更新。旧应用和发布前配置仍保留，未删除知识库、课程/路线数据或历史聊天。
+- jx 最近活动代码已随 `20260816-activity-59d963` release 部署并通过健康、清洗入库和 Metadata 回读；jx 当前仍使用此前已核验的绑定 Chatflow/App Key，旧应用和发布前配置仍保留，未删除知识库、课程/路线数据或历史聊天。
 - 新版 Chatflow 已增加活动意图、动态中国时区时间窗口、正常/取消/延期状态路由、活动 Metadata 检索、结果聚合排序去重和回答节点；普通商业、咨询案例和活动路径互斥。Dify 1.13.3 的动态变量、数值 Metadata 条件和 `doc_metadata` 读取已完成隔离/静态契约验证。
 - jx 当前 App Key 已生效：`.env` 与运行中 API 容器的脱敏指纹一致，`health/ready=200`、Dify `/parameters=200`，并已完成测试页真实 SSE 验收。密钥明文不写入报告或文档。
 - 线上复核曾发现当前 App 的意图代码落后于仓库 DSL，导致“会议真实案例”误入活动分支；已在当前 App 直接修正 `quick_intent` 并发布更新。发布后正常/取消/延期、普通业务负例和案例重叠负例均通过。
 - 仓库的 `scripts/jx_deploy_release.sh` 不安装商业顾问 Dify DSL 或 Prompt；wheel 发布不会自动发布或切换 Dify 应用。每次 Dify 变更必须从 `dify/商业顾问（当前使用版本）.yml` 走受控导入、发布、Key 映射、`/parameters` 和真实 SSE 验收。
+- 2026-08-20 最新 DSL 已在登录 Chrome 中导入并发布到独立 Chatflow（App ID `e178fae2-d6d2-4fe1-8424-c1efd20f73df`，源 SHA `de8394a2570c877e64f3c18452f74d632de525438566354a45fb1875077c4e2b`），并验证“最新活动有哪些”“最近活动有哪些”和指定活动详情。该独立 App 尚未映射到 jx 默认 `DIFY_BUSINESS_APP_API_KEY`；因此本条只证明 DSL 已发布并完成隔离查询验证，不证明 jx 默认商业顾问 API 已切换。
 
 ## 咨询会议方法论 v3 当前状态（2026-08-19，优先于下文历史记录）
 
@@ -24,13 +25,13 @@
 - 远端只读契约检查已验证四个应用的参数/调用路径；两个知识库检索结果为 0，不能据此宣称 RAG 召回通过。候选 DSL 导入/发布需要受控 Dify 管理员会话或 Enterprise API，并应通过 HTTPS/安全隧道完成；缺少这些条件时不得使用 HTTP 管理接口、猜测凭据或直接改数据库。
 - 商业顾问轻量语义评测仍有未通过案例；个人商业咨询模型契约和课程目录结构复核也必须保持复核门禁，不能为了提高通过率放宽 schema 或自动批准。
 
-## 当前商业顾问覆盖规则（2026-08-16，优先于下文历史说明）
+## 当前商业顾问覆盖规则（2026-08-20，优先于下文历史说明）
 
 - 新商业顾问聊天的当前源文件是 `dify/商业顾问（当前使用版本）.yml`：Start 只接收会话摘要、最近对话、用户画像和输出风格；只有一个 `combined_response_general` 主 LLM。
 - 课程推荐、学习路线、课程知识库检索、课程混合分支、推荐决策 JSON、格式重试和课程卡片输出均已移除。`quick_route`、`case_route` 只是流程分支 ID，不表示学习路线。
 - 保留“用户明确要求相关/类似/真实案例才检索 `consulting_case`”的非课程边界；新增“明确查询活动/会议时才检索 `record_type=event`”的活动边界。普通商业、案例和活动检索互斥，均绑定通用知识库，且不会访问课程库。
 - 活动正常分支使用动态 `event_end_ts ≥ start_ts`、`event_start_ts ≤ end_ts`；取消/延期分支只按 `event_status`，延期未定不把旧日期作为新日期。普通分支排除 `consulting_case` 和 `event`。
-- 2026-08-16 已完成新版 Dify 导入/发布更新、jx App Key 切换、`/parameters`、健康检查和测试页真实 SSE 验收；“控制台已发布”与“jx 已生效”仍必须分别记录，不能互相替代。
+- 2026-08-16 的当前绑定 App Key 切换和真实 SSE 验收仍是已核验历史事实；2026-08-20 新 DSL 发布到独立 App 后未切换 jx 默认 API 入口。“控制台已发布”“App Key 已映射”“容器已重建”“真实 SSE 已通过”必须分别记录，不能互相替代。
 
 ## 本轮 2026-08-10 发布与自动导入补充
 
@@ -73,7 +74,7 @@
 
 - Dify 只接收策略声明的业务 Metadata，外层附加 `cleaning_strategy`、`cleaning_spec_revision`、`content_format`；原文件名、文件/批次 ID、SHA、构建版本、人名映射和审计信息只留本地。
 - 普通/案例 DSL 的核心 Metadata 字段是 `record_type`。咨询案例必须回读为 `consulting_case`；活动文档必须回读为 `record_type=event`，并额外具备 `event_status`、`event_start_ts`、`event_end_ts` 等活动字段。
-- 活动分支在运行时动态传入 `event_status` 和中国时区时间戳；正常活动使用时间区间相交条件，取消/延期只按状态，结果 Code 从 `metadata.doc_metadata` 读取字段、按开始时间升序去重并限制 3 条。`topic`、`industry`、`business_stage` 等不会自动形成动态过滤。
+- 活动分支在运行时动态传入 `event_status` 和中国时区时间戳；正常活动使用时间区间相交条件，取消/延期只按状态，结果 Code 从 `metadata.doc_metadata` 读取字段、按开始时间升序去重并按 `ACTIVITY_MAX_RESULTS` 限制返回数（默认 10，允许范围 1～20）。`topic`、`industry`、`business_stage` 等不会自动形成动态过滤。
 - `retriever_resources` 仍可能发送通用引用。因此发布前必须确认 `general` 中没有课程/路线资料，且公开标题和正文已通过脱敏边界。
 
 ## 1. 建立商业顾问通用知识库
