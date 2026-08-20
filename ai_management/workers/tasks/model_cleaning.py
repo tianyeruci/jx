@@ -1678,7 +1678,13 @@ def _plan_post_publication(session, batch_id: str) -> list[str]:
         raise ValueError("模型分片规划缺少清洗批次")
     files = list(
         session.scalars(
-            select(CleaningFile).where(CleaningFile.batch_id == batch_id)
+            # Reconcile and model completion can both attempt to plan the
+            # same file.  Serialize per-file planning so shard indexes and
+            # the unique content constraint are evaluated against a stable
+            # snapshot instead of racing each other.
+            select(CleaningFile)
+            .where(CleaningFile.batch_id == batch_id)
+            .with_for_update()
         )
     )
     for file_row in files:
@@ -1689,18 +1695,33 @@ def _plan_post_publication(session, batch_id: str) -> list[str]:
                 )
             )
         )
-        if existing:
-            shard_ids.extend(item.id for item in existing)
-            continue
         documents = list(
             session.scalars(
                 select(CleaningDocument)
                 .where(
                     CleaningDocument.file_id == file_row.id,
                     CleaningDocument.status == "shard_pending",
+                    CleaningDocument.shard_id.is_(None),
                 )
                 .order_by(CleaningDocument.sequence)
             )
+        )
+        # Reconcile may run while a realtime/model task is still creating
+        # post knowledge-unit children.  Existing shards therefore do not
+        # mean the file is fully planned: append shards for newly-created
+        # unassigned documents and only requeue retryable shards.  Succeeded
+        # shards must not be submitted a second time.
+        if not documents:
+            shard_ids.extend(
+                item.id
+                for item in existing
+                if item.status == "shard_pending"
+            )
+            continue
+        shard_ids.extend(
+            item.id
+            for item in existing
+            if item.status == "shard_pending"
         )
         if documents:
             from ...cleaning import finalize_knowledge_markdown
@@ -1725,14 +1746,70 @@ def _plan_post_publication(session, batch_id: str) -> list[str]:
             max_bytes=settings.dify_shard_max_bytes,
         )
         by_id = {document.id: document for document in documents}
+        next_shard_index = max(
+            (int(item.shard_index) for item in existing),
+            default=0,
+        )
+        seen_content_sha256 = {
+            str(item.content_sha256)
+            for item in existing
+            if item.content_sha256
+            and item.status in {"succeeded", "shard_pending", "shard_indexing"}
+        }
         for plan in plans:
             from ...cleaning import finalize_knowledge_markdown
 
             shard_markdown = finalize_knowledge_markdown(plan.markdown)
             digest = hashlib.sha256(shard_markdown.encode("utf-8")).hexdigest()
+            existing_same_content = next(
+                (
+                    item
+                    for item in existing
+                    if item.content_sha256 == digest
+                ),
+                None,
+            )
+            if existing_same_content is not None and existing_same_content.status == "failed":
+                # A failed shard is not evidence that the content reached
+                # Dify.  Reuse it for the late document instead of inserting
+                # a second row that violates the file/content unique key.
+                existing_same_content.status = "shard_pending"
+                existing_same_content.attempts = 0
+                existing_same_content.last_error = ""
+                existing_same_content.item_count = len(plan.items)
+                existing_same_content.content_bytes = len(
+                    shard_markdown.encode("utf-8")
+                )
+                existing_same_content.markdown = shard_markdown
+                if existing_same_content.id not in shard_ids:
+                    shard_ids.append(existing_same_content.id)
+                for parent_index, item in enumerate(plan.items, start=1):
+                    document = by_id[item.item_id]
+                    document.shard_id = existing_same_content.id
+                    document.shard_parent_index = parent_index
+                continue
+            if digest in seen_content_sha256:
+                # The source cleaner already treats exact cleaned-content
+                # duplicates as an auditable no-op.  Apply the same rule at
+                # post-shard level so a late model child cannot trip the
+                # DifyPublicationShard(file_id, content_sha256) unique key
+                # and strand the whole file in a rolled-back transaction.
+                for item in plan.items:
+                    document = by_id[item.item_id]
+                    document.status = "excluded"
+                    document.stage = "duplicate_noop"
+                    document.error_code = "EXACT_CONTENT_DUPLICATE"
+                    document.error_message = "相同清洗内容已存在，未重复发布"
+                    document.retryable = False
+                    document.audit_json = {
+                        **(document.audit_json or {}),
+                        "duplicate_of_content_sha256": digest,
+                    }
+                continue
+            seen_content_sha256.add(digest)
             shard = DifyPublicationShard(
                 file_id=file_row.id,
-                shard_index=plan.index,
+                shard_index=next_shard_index + plan.index,
                 status="shard_pending",
                 item_count=len(plan.items),
                 content_bytes=len(shard_markdown.encode("utf-8")),
@@ -3276,11 +3353,15 @@ def publish_dify_shard(self, shard_id: str) -> bool:
         raise self.retry(countdown=900, max_retries=None)
     client: DifyKnowledgeClient | None = None
     created_id = ""
+    cleanup_dataset_id = ""
+    replaced_document_id = ""
+    compensation_failed = False
     try:
         with SessionLocal() as session:
             shard = session.scalar(
                 select(DifyPublicationShard)
                 .where(DifyPublicationShard.id == shard_id)
+                .with_for_update()
                 .options(
                     selectinload(DifyPublicationShard.file).selectinload(
                         CleaningFile.batch
@@ -3288,29 +3369,56 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                     selectinload(DifyPublicationShard.documents),
                 )
             )
-            if shard is None or shard.status not in {
-                "shard_pending",
-                "shard_indexing",
-            }:
+            # Only a pending shard may be claimed.  A second queued delivery
+            # must not republish a shard already being indexed; the
+            # maintenance watchdog resets genuinely stale indexing rows back
+            # to pending after its timeout.
+            if shard is None or shard.status != "shard_pending":
                 return False
             dataset_id = (
                 settings.dify_general_dataset_id
                 if shard.file.batch.knowledge_base_code == "general"
                 else settings.dify_course_dataset_id
             )
+            cleanup_dataset_id = dataset_id
             client = DifyKnowledgeClient(
                 settings.knowledge_base_url,
                 settings.dify_knowledge_api_key,
                 dataset_id,
                 timeout=180,
             )
-            replaced_document_id = str(shard.dify_document_id or "")
+            shard_metadata = dict(shard.metadata_json or {})
+            pending_remote_id = str(
+                shard_metadata.get("_pending_dify_document_id") or ""
+            )
+            replaced_document_id = str(
+                shard_metadata.get("_replacement_document_id")
+                or shard.dify_document_id
+                or ""
+            )
             shard.status = "shard_indexing"
             shard.attempts += 1
             for document in shard.documents:
                 document.status = "shard_indexing"
                 document.stage = "shard_indexing"
             session.commit()
+            if pending_remote_id:
+                try:
+                    client.delete_document(pending_remote_id)
+                    shard_metadata.pop("_pending_dify_document_id", None)
+                except Exception as exc:
+                    session.add(
+                        ExternalDeletionTask(
+                            kind="dify_document",
+                            external_id=pending_remote_id,
+                            payload={"dataset_id": dataset_id},
+                            attempts=0,
+                            last_error=safe_exception_message(exc, limit=1000),
+                        )
+                    )
+                    shard_metadata.pop("_pending_dify_document_id", None)
+                shard.metadata_json = shard_metadata
+                session.commit()
             from ...cleaning import dify_document_name
 
             source_title = next(
@@ -3355,6 +3463,15 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 child_chunk_overlap=int(chunking.get("child_chunk_overlap") or 0),
             )
             created_id = document_id
+            # Keep the previous published ID authoritative until the new
+            # document is fully verified.  The pending ID and replacement
+            # target are durable local markers, so a worker crash cannot lose
+            # either remote cleanup target.
+            shard_metadata["_pending_dify_document_id"] = document_id
+            if replaced_document_id:
+                shard_metadata["_replacement_document_id"] = replaced_document_id
+            shard.metadata_json = shard_metadata
+            session.commit()
             client.wait_for_indexing(
                 dify_batch_id,
                 document_id=document_id,
@@ -3366,7 +3483,6 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 parent_mode="paragraph",
             )
             _validate_shard_structure(structure, item_count=shard.item_count)
-            shard_metadata = dict(shard.metadata_json or {})
             remote_metadata = {
                 key: shard_metadata[key]
                 for key in (
@@ -3390,6 +3506,9 @@ def publish_dify_shard(self, shard_id: str) -> bool:
             )
             shard.dify_document_id = document_id
             shard.dify_batch_id = dify_batch_id
+            shard_metadata.pop("_pending_dify_document_id", None)
+            shard_metadata.pop("_replacement_document_id", None)
+            shard.metadata_json = shard_metadata
             shard.remote_parent_count = int(structure["parent_count"])
             shard.remote_child_count = int(structure["child_count"])
             shard.status = "succeeded"
@@ -3406,6 +3525,25 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 document.remote_child_count = int(structure["child_count"])
                 document.status = "succeeded"
                 document.stage = "completed"
+            if replaced_document_id and replaced_document_id != document_id:
+                existing_cleanup = session.scalar(
+                    select(ExternalDeletionTask).where(
+                        ExternalDeletionTask.kind == "dify_document",
+                        ExternalDeletionTask.external_id == replaced_document_id,
+                    ).limit(1)
+                )
+                if existing_cleanup is None:
+                    # Durable cleanup is committed with the successful
+                    # replacement before the best-effort immediate delete.
+                    session.add(
+                        ExternalDeletionTask(
+                            kind="dify_document",
+                            external_id=replaced_document_id,
+                            payload={"dataset_id": dataset_id},
+                            attempts=0,
+                            last_error="替换旧 Dify 文档，等待确认删除",
+                        )
+                    )
             session.commit()
             if (
                 replaced_document_id
@@ -3439,10 +3577,35 @@ def publish_dify_shard(self, shard_id: str) -> bool:
             try:
                 client.delete_document(created_id)
             except Exception:
+                compensation_failed = True
                 logger.exception("failed to compensate Dify shard")
         with SessionLocal() as session:
             shard = session.get(DifyPublicationShard, shard_id)
             if shard:
+                # If a new remote document was created and then failed during
+                # indexing/metadata, it was compensated above.  Restore the
+                # prior remote ID (if any) so the retry can replace it rather
+                # than trying to delete the already-compensated new ID.
+                shard.dify_document_id = replaced_document_id or None
+                if not replaced_document_id:
+                    shard.dify_batch_id = None
+                if not compensation_failed:
+                    metadata = dict(shard.metadata_json or {})
+                    metadata.pop("_pending_dify_document_id", None)
+                    shard.metadata_json = metadata
+                if compensation_failed and created_id:
+                    # Keep a durable exact cleanup target when compensation
+                    # itself failed; the external-deletion worker can retry
+                    # it after this task has been marked pending/failed.
+                    session.add(
+                        ExternalDeletionTask(
+                            kind="dify_document",
+                            external_id=created_id,
+                            payload={"dataset_id": cleanup_dataset_id},
+                            attempts=0,
+                            last_error="发布异常后的 Dify 文档补偿删除失败，等待重试",
+                        )
+                    )
                 shard.status = "shard_pending" if shard.attempts < 2 else "failed"
                 shard.last_error = safe_exception_message(exc, limit=2000)
                 for document in shard.documents:

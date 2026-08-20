@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from runpy import run_path
 
 import pytest
 
@@ -35,13 +36,35 @@ def test_remote_cleaning_acceptance_uses_anonymous_names_and_covers_new_flow():
     source = _source("scripts/full_cleaning_acceptance.py")
 
     assert "dify_document_name" in source
+    assert "dify_activity_document_name" in source
+    assert 'dify_document_name(f"{source_title}.md"' not in source
     assert "course_route_catalog" in source
     assert "model-tasks/" in source
     assert "publication_shards" in source
     assert "source_name" not in source[source.index("def _expected_remote_name") : source.index("class AcceptanceRunner")]
     assert "split: bool = False" in source[source.index("def _expected_remote_name") : source.index("class AcceptanceRunner")]
-    assert "split=len(details) > 1" in source
+    assert "_remote_name_matches_strategy_contract" in source
+    assert "details_count=len(details)" in source
     assert "STORAGE_MARKDOWN_TABLE_RETAINED" in source
+
+
+def test_consultation_multi_case_name_matches_production_child_contract():
+    from ai_management.cleaning import dify_document_name
+
+    acceptance = run_path(str(ROOT / "scripts/full_cleaning_acceptance.py"))
+    matches_name = acceptance["_remote_name_matches_strategy_contract"]
+
+    source_name = dify_document_name("咨询样本.pdf", "a" * 64, 1, split=False)
+    child_name = f"{Path(source_name).stem}__02.md"
+    assert matches_name(
+        strategy="personal_business_consultation",
+        item={"sequence": 1002},
+        metadata={"case_id": "case_source_c02"},
+        remote_name=child_name,
+        original_filename="咨询样本.pdf",
+        source_sha256="a" * 64,
+        details_count=3,
+    )
 
 
 def test_remote_acceptance_generates_all_controlled_catalog_and_raw_inputs():
@@ -181,6 +204,16 @@ def test_precise_cleanup_accepts_a_relative_private_manifest_path_safely():
     assert '"$APP_DIR"/var/private-cleanup-manifests/*' in clean
     assert 'DATA_SCRIPT="$APP_DIR/scripts/jx_release_data.py"' in clean
     assert 'DATA_SCRIPT="/tmp/jx_release_data.py"' not in clean
+
+
+def test_precise_cleanup_verifies_dify_dataset_after_exact_cleanup():
+    clean = _source("scripts/jx_prebaseline_clean.sh")
+
+    assert "verify_dify_targets()" in clean
+    assert "post-clean-state.safe.json" in clean
+    assert ".preflight.dify.${dataset_code}.count" in clean
+    assert ".dify.${dataset_code}.count" in clean
+    assert "Dify %s Dataset still contains" in clean
 
 
 def test_local_cleaning_state_reset_is_explicit_recoverable_and_never_deletes_dify():

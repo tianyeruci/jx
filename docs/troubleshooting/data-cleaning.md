@@ -1,5 +1,17 @@
 # 数据清理与清洗排障
 
+## DATA-044：清理脚本必须在 Dify 删除后回读 Dataset
+
+- 适用：清洗策略测试数据的 Dify 知识库、PostgreSQL、Redis 和上传目录联合清理。
+- 触发：只读清理计划显示目标文档，但执行报告没有证明 Dify Dataset 已为空；或将“删除命令退出 0”误认为知识库已经清空。
+- 根因：精确 manifest 清理链路只验证 manifest 中的 Dify ID 被逐个删除；外层脚本没有把清理后的 Dataset inventory 作为硬门禁，且清理可能在计划/备份阶段停止，导致知识库保持原状。
+- 解决：清理后使用当前 release 的 `snapshot` 回读 general/course Dataset；当 manifest 覆盖某个 Dataset 的全部文档时，要求该 Dataset 数量为 `0`，否则失败并保留备份。仅删除精确 manifest 中仍存在的文档 ID，陈旧本地关联不扩大删除范围。
+- 非解决：只看 `plan-clean`、只看本地 `CleaningBatch=0`、按名称/时间批量删除，或用 `FLUSHDB` 代替 Dify 删除。
+- 验证：`scripts/jx_prebaseline_clean.sh` 的 `post-clean-state.safe.json` 显示 general/course 均为 `0`；清洗表、`ai:cleaning:*`、上传目录均为 `0`，`/health/ready` 为 `ready`。jx 报告：`/opt/ai-management/var/reports/v2/20260819-183500-general-cleaning-domain-reset`。
+- 证据：`scripts/jx_prebaseline_clean.sh`、`scripts/jx_release_data.py`、jx 备份 `/opt/ai-management/backups/20260819-175300-general-cleaning-domain-reset` 和执行报告 `/opt/ai-management/var/reports/v2/20260819-183500-general-cleaning-domain-reset`。
+- 预防：把“计划、备份、精确删除、Dify 回读、数据库/Redis/上传目录回读、健康检查”作为一个不可拆分的完成判据；报告只保留计数和指纹，不输出文档 ID 或正文。
+- 最后验证：2026-08-19。
+
 ## DATA-033：未选择课程策略却出现课程目录字段错误
 
 - 适用：清洗批次创建、管理端显式上传接口和清洗 worker 的策略分派。

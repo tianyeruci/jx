@@ -4,7 +4,33 @@
 > 用途：保存最新线上事实、回滚点、数据状态和开放事项。新任务先读 `AGENTS.md` 与 `docs/README.md`，再按功能域读取本文顶部最新状态。  
 > 本文不是需求或设计基线；权威顺序以 `docs/V2决策记录.md` 和 `docs/README.md` 为准。第 1～8 节为历史过程记录，不再作为当前执行指令。
 
-## 0.71 2026-08-19 文档清洗策略熔断、咨询 PDF OCR 修复与 jx 回归（当前最新）
+## 0.73 2026-08-19 文档清洗策略数据与知识库精确清理（当前最新）
+
+- 上一轮只完成了只读计划和备份，未进入删除阶段；本轮已修正 `scripts/jx_prebaseline_clean.sh`，清理后额外执行 release `snapshot`，当 manifest 覆盖某个 Dataset 的全部文档时，回读非零即失败，不再把“计划通过”当作清理完成。
+- jx 使用精确 `manual_incident_cleanup` manifest 清理：general Dify 文档 `35 → 0`；course Dify 文档保持 `0`；清理批次 `23` 个及其文件 `51`、文档 `70`、模型任务 `16`、发布分片 `5` 均为 `0`。
+- `ai:cleaning:*` Redis 键为 `0`，上传卷顶层清洗目录为 `0`；Redis 总键数仍为 `448`，其中包含业务/运行时键，未执行整库清空。`health/ready` 为 `ready`，数据库、Redis、Dify 均可达。
+- 本次未删除商业会话、画像、消息、`AdminSetting`、样式配置或非 Dify 外部删除任务；备份为 `/opt/ai-management/backups/20260819-175300-general-cleaning-domain-reset`，执行报告为 `/opt/ai-management/var/reports/v2/20260819-183500-general-cleaning-domain-reset`。
+
+### 本节变更记录
+
+- 修改原因：用户反馈知识库未清除；核实上一轮删除未执行后，补充 Dify 清理后回读门禁并重新执行精确清理。
+- 修改前：本文最新状态为 0.72；清理脚本没有在包装层记录并强制校验 Dataset 清空结果，上一轮停留在只读计划/备份阶段。
+- 修改后：新增 0.73；记录脚本修复、35 篇 general 文档删除、清洗数据库/Redis/上传目录归零、服务健康和保留边界。
+
+## 0.72 2026-08-19 ai-management 系统事件日志精确清理（历史）
+
+- 已确认本地与 jx `/opt/ai-management` 均存在 `scripts/jx_clear_system_event_logs.py`，SHA-256 为 `0d48642fe93bbc0c834c56f448c52da05a478cd6e11ee2f5fdef287d7bff7355`。该脚本的范围仅为 `system_event_log` 表，不清理 Docker stdout/stderr、宿主机 journal、Redis、Dify 或业务数据。
+- jx 清理前 `system_event_log` 为 `227` 条；停用写入该表的 ai-management 应用/Worker 后，脚本备份并删除 `227` 条，删除后复核为 `0`。备份目录为 `/opt/ai-management/backups/20260819-clear-system-event-logs-pre`，目录权限 `700`，备份文件权限 `600`。
+- 清理期间第一次恢复命令遗漏 Compose `test` profile，导致容器短暂退出；未改动数据。随后使用 `--profile test` 恢复 API、全部 Worker、Scheduler、测试 UI 及两个 methodology Worker，容器均为 `running`；API 容器内 `/health/ready` 为 `ready`，数据库、Redis、Dify 均可达。
+- 本次未清理 Docker/宿主机日志，也未删除数据库、Redis、Dify、上传目录或持久卷。脱敏执行记录：[20260819 日志清理报告](var/reports/20260819-clear-system-event-logs/README.md)。
+
+### 本节变更记录
+
+- 修改原因：按用户要求确认并执行 ai-management 日志清理，记录脚本范围、备份、删除计数、恢复异常及最终线上状态。
+- 修改前：本文最新状态为 0.71，未记录本次系统事件日志清理和恢复过程。
+- 修改后：新增 0.72；明确仅清理 `system_event_log`，记录 `227 → 0`、备份位置、服务恢复和未触碰的其它日志/业务数据边界。
+
+## 0.71 2026-08-19 文档清洗策略熔断、咨询 PDF OCR 修复与 jx 回归（历史）
 
 - 根因已闭环：课程报错来自旧的显式课程上传调用方，不是用户选择 general 策略后被错误映射；此前兼容入口仍允许写课程知识库。现在线上课程知识库和 `course_information`、`learning_route`、`course_route_catalog` 均在创建批次前返回 `409 STRATEGY_DISABLED`，不创建本地批次/文件，不调用课程解析、模型或 Dify。存量排队课程任务也由 Worker 入口熔断，不再进入课程策略。
 - 咨询 PDF 含图片不再因为“有图片”触发人工隐私确认；咨询图片统一进入 OCR，OCR 失败、质量失败、残余隐私信息仍保持阻断。历史 7 条仅由旧图片人工确认门禁产生、且文件与知识库文档均已成功的 open 事件已逐条通过既有 resolve 接口收敛；没有把真实 OCR/隐私失败标记为已解决。
@@ -1998,3 +2024,60 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改前：本文没有记录课程策略创建前熔断、存量 Worker 熔断、咨询 PDF 含图统一 OCR、指定批次重试成功、7 条历史误报事件收敛和课程域旧数据清理结果。
 - 修改后：新增 0.71 当前状态；补充 release、备份、报告、精确清理范围、线上探针、批次和 PDF 事件结果，明确 general 数据保留、DSL 未变更和发布过程中的环境问题处理。
 - 验证：jx `health/ready`、运行时导入、课程写入 `409` 探针、课程清理 dry-run、咨询批次数据库回读和 PDF 事件精确复核均通过；未写入密钥、Token、源正文、真实用户标识或受保护映射。
+
+### 文档修改记录（2026-08-19 ai-management 系统事件日志精确清理）
+
+- 修改原因：按用户要求确认并执行 ai-management 日志清理，记录既有脚本范围、备份、删除计数、恢复异常及最终线上状态。
+- 修改前：本文最新状态为 0.71，未记录本次系统事件日志清理和恢复过程。
+- 修改后：新增 0.72；明确仅清理 `system_event_log`，记录 `227 → 0`、备份位置、服务恢复和未触碰的其它日志/业务数据边界；脱敏报告见 `var/reports/20260819-clear-system-event-logs/README.md`。
+
+### 文档修改记录（2026-08-20 活动语义路由与 Qwen 请求一致性修复）
+
+- 修改原因：本轮独立审查发现活动近期查询未命中时间过滤分支、详情问法未进入活动路由、命名详情会同时展示多个候选、列表上限不可配置，以及验收命名规则与生产函数可能漂移；同时需要补齐 Qwen 请求稳定参数。
+- 修改前：近期窗口输出 `recent` 但状态路由只匹配 `normal`；活动意图依赖“活动/会议”固定词和有限列表词；上限在 Code 中硬编码 10；验收脚本自行拼接长标题和分片名称；请求体没有固定 seed。
+- 修改后：活动实体扩展到沙龙/工作坊/训练营等自然表达，详情/报名/序号/指代优先于“怎么”分析负向；近期默认输出 `normal` 并进入动态时间过滤，已结束独立输出 `completed`；新增 Dify `ACTIVITY_MAX_RESULTS` 环境变量（默认 10、限制 1～20），检索 top_k 提升到 50，命名详情按名称/序号只返回一个候选；验收复用 `dify_activity_document_name` 和生产 `dify_document_name(source_title, ..., split=True)`；Qwen realtime/Batch 共用 `temperature=0.01`、`enable_thinking=false`、`seed=1234` 和 JSON 输出策略。
+- 验证：活动/统一 DSL 13 项、清洗发布契约 23 项、Ruff 和 DSL 生成检查通过；大模型清洗 39 项已完成并全绿。新的 jx release 已上传到临时 stage，待治理质量、独立审查和 Dify 登录后的发布验证完成后切换；既有测试样本和 Batch 证据保留在 `var/reports/20260819-qwen-activity/`，未删除。
+
+### 文档修改记录（2026-08-20 活动与清洗分片最终修复、jx 发布及 Batch 验收进行中）
+
+- 修改原因：修复独立复审发现的模型完成后增量文档未规划、重复摘要唯一键冲突、失败分片误去重、重复发布 claim，以及 SQLite watchdog 时区比较异常；按用户确认完成本地质量、独立复审和 jx 部署，并保留测试数据继续做真实 Batch 验收。
+- 修改前：reconcile 可能在模型仍生成子文档时提前结束；后生成相同内容可能使整文件规划回滚；失败但未入库的分片可能被错误排除；watchdog 在 SQLite 测试环境可能抛 naive/aware datetime 异常；旧 release 尚未包含最终修复。
+- 修改后：按文件行锁增量规划，成功/待发布/索引中内容按最终 Markdown 摘要去重，失败同摘要分片复用并重置为 pending；发布 worker 使用 pending-only claim，替换远端 ID 和补偿删除目标持久化；watchdog 统一 UTC 并在行锁后复检。jx 已切换到 `20260820-qwen-activity-5eb267ef-fix4`，wheel SHA 为 `fae25f9e300fc9f8c837bf8a795b862ec6f2a09e9aaebe082ed8f4f9677fc122`，备份和发布报告保留在 `/opt/ai-management/backups/20260820-qwen-activity-fix4` 与 `/opt/ai-management/var/reports/v2/20260820-qwen-activity-5eb267ef-fix4-deploy`。
+- 验证：本地 `gov quality` 通过（指纹 `b141a10a0b65a26fb32551e176d5d043c818a0dfeefcb66a975854d2a9302950`），独立复审对分片/claim 修复通过；jx `health/ready` 的数据库、Redis、Dify 配置和可达性均为 true，实时配置已恢复 `BAILIAN_BATCH_ENABLED=false`、候选阈值 100、token 阈值 200000、上传上限 10。真实 zsxq 增量测试中 198 个文档最终 196 个成功、2 个明确重复排除，196 个分片全部 succeeded，无未分配孤儿；测试数据未删除。四策略真实 Batch 已启动，首个咨询策略为 100 候选、`mode=batch` 且 provider batch id 存在，但供应商仍为 `in_progress`，其余策略及 realtime/Batch 全量最终 KB parity 尚未宣称完成；报告和任务保留待终态复核。最新 Dify DSL 发布仍需浏览器导入权限/发布证据，不能以旧 SSE 报告替代。
+
+### 文档修改记录（2026-08-20 最终质量与外部验证边界补录）
+
+- 修改原因：补录 fix4 发布后最终质量重跑、Batch 供应商延迟和 Dify URL/文件导入的实际排障证据，避免把未完成的外部终态误记为通过。
+- 修改前：质量指纹仍为前一轮；Dify URL 导入的 SSRF 超时和 Chrome 文件 chooser 权限阻塞尚未写入；Batch 只记录启动，没有明确当前运行配置已恢复。
+- 修改后：最终 `gov quality` 指纹为 `634bdc06d836fedc659de93af53fbd9fb4797d6af795c7c883baed2b1edf7026`；Dify API 日志确认 SSRF proxy 对临时 URL 四次超时，Chrome 文件 chooser 仍要求开启 ChatGPT 扩展的 “Allow access to file URLs”，临时 HTTP 服务已停止且 DSL 临时文件已移除；jx 服务恢复默认实时配置，已提交 Batch 任务继续保留轮询。
+- 验证：以上阻塞均有本地/远端可复核日志；不宣称最新 DSL 已发布，也不宣称四策略 realtime/Batch parity 已完成。测试数据、Batch provider 任务、备份和发布报告均保留，未删除业务知识库数据。
+
+### 文档修改记录（2026-08-20 最终质量复核指纹补录）
+
+- 修改原因：独立复审发现状态文档仍引用上一轮质量指纹，需要与当前最终质量证据一致。
+- 修改前：最新记录为 `634bdc06d836fedc659de93af53fbd9fb4797d6af795c7c883baed2b1edf7026`。
+- 修改后：当前 `gov quality` 状态为 `passed`，指纹更新为 `63974947e43bb6cf735ca101ec03c934c50279145b5adc532f30e82ae55b7a39`；代码复审通过。四策略 Batch 最终终态与最新 Dify DSL 发布仍是外部待验收项，未改变其未完成边界。
+- 验证：质量门禁、独立复审和分片定向回归均通过；测试数据、Batch provider 任务、备份与发布报告继续保留。
+
+### 文档修改记录（2026-08-20 四策略 Qwen realtime/Batch 终态与最新 DSL 外部验收）
+
+- 修改原因：继续完成用户批准的四个认知分享策略 realtime/Batch 对照验收、最新活动 DSL 发布验证，并把外部终态证据纳入交接，避免继续沿用“进行中”的旧状态。
+- 修改前：咨询策略已有 Batch 进度记录，其余三策略及四策略最终 KB parity 尚未形成终态证据；最新 DSL 已生成但未记录已发布应用；jx 默认配置需恢复为实时模式。
+- 修改后：四策略均完成真实 Batch 与 realtime 任务。咨询 Batch/realtime 均为 100/100；微信公众号 Batch/realtime 均为 101/101；小报童 Batch 为 101 候选、202 个本地成功文档，realtime 为 101 候选、186 个成功文档；知识星球 Batch 为 101 候选、202 个本地成功文档，realtime 为 101 候选、192 个成功文档。四策略本地结果均为 `succeeded`、均有 Dify 文档 ID，动态字段剔除后的 metadata key set 一致；各策略 realtime/Batch 均抽样回读 Dify，索引状态为 `completed`。输出文档数量差异来自模型分片，不是失败、未分配或孤儿文档。
+- 最新 DSL 已在登录 Chrome 中导入并发布，SHA 为 `de8394a2570c877e64f3c18452f74d632de525438566354a45fb1875077c4e2b`，独立 Chatflow App ID 为 `e178fae2-d6d2-4fe1-8424-c1efd20f73df`；“最新活动有哪些”“最近活动有哪些”均返回紧凑活动列表，指定活动详情返回详情。jx 默认 `DIFY_BUSINESS_APP_API_KEY` 未切换到该新 App，避免未经确认改动现有 API 入口；本项只能表述为“最新 DSL 已发布并验证”，不能表述为“jx 默认商业顾问 API 已切换”。
+- jx 默认配置已恢复为 `BAILIAN_BATCH_ENABLED=false`、上传上限 10、Batch 候选阈值 100、Token 阈值 200000；备份、任务、测试数据和知识库结果均保留，未删除历史/测试数据。
+- 验证：四策略供应商任务均为终态 `completed` 且成功数与候选数一致；本地 metadata/Dify 抽样回读报告保留在 `var/reports/20260820-qwen-activity/`；浏览器发布与查询验证完成。外部 Dify 新 App 与 jx 默认 API 入口的切换仍是待用户确认的独立发布动作。
+
+### 文档修改记录（2026-08-20 外部验收后治理质量复跑）
+
+- 修改原因：外部验收证据补录后重新执行项目级质量门禁，更新当前质量指纹和治理阶段，避免继续引用旧质量结果。
+- 修改前：交接已记录四策略终态和 DSL 发布，但质量指纹仍为前一轮值。
+- 修改后：项目级 `gov quality` 通过，当前指纹为 `76b897cd60d972b172354da8f5852dae45c1242a24b5cc1b459f5ce9dba15e3c`；独立复审状态已按当前代码和文档同步，治理门禁为 `READY`。
+- 验证：格式、Lint、编译、全量单元/集成测试、Qwen/Dify E2E 检查均通过；未修改 jx 默认 Dify API 入口，未删除测试数据、Batch 任务、知识库结果或备份。
+
+### 文档修改记录（2026-08-20 四策略全量远端 metadata 回读复核）
+
+- 修改原因：用户要求确认模型 Batch 与 realtime 最终入库效果及 metadata 是否一致；此前仅有抽样证据，需要对本轮四策略所有已关联 Dify 文档做只读回读。
+- 修改前：交接只记录抽样 Dify `indexing_status=completed` 和 metadata key set 一致，未区分最终远端 metadata 与本地中间文档 metadata。
+- 修改后：四策略全部已关联 Dify 文档逐一回读通过，Batch/realtime 每组的远端 metadata key set 完全一致，必需字段齐全，索引状态全部 `completed`。但本地中间态并非完全一致：小报童 realtime 有 16 个、知识星球 realtime 有 10 个文档缺少可选 `topic/unit_title/knowledge_unit_id`；这些字段当前不在发送到 Dify 的 metadata 集合中，因此不影响最终知识库 metadata。小报童和知识星球的 Batch/realtime 文档数量仍因模型拆分差异而不同，不能表述为逐文档内容完全一致。
+- 验证：脱敏全量证据见 `var/reports/20260820-qwen-activity/full_remote_metadata_parity.safe.json`；未修改业务数据、测试任务或 Dify 文档。

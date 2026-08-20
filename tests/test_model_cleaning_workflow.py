@@ -13,6 +13,7 @@ from ai_management.models import (
     CleaningBatch,
     CleaningDocument,
     CleaningFile,
+    DifyPublicationShard,
     ModelCleaningTask,
 )
 
@@ -3008,6 +3009,211 @@ def test_post_model_task_refreshes_review_only_file_when_another_file_has_shard(
         assert review_file.status == "review_required"
         assert review_file.outcome == "review_required"
         assert len(queued) == 1
+
+
+def test_post_shard_planner_appends_documents_created_after_reconcile(
+    service_db,
+):
+    """A reconcile pass must not strand later model-generated child documents."""
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="partially_completed",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        first = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="第一条",
+            dify_document_name="first.md",
+            document_key="first",
+            status="shard_pending",
+            stage="shard_pending",
+            shard_id=None,
+            cleaned_markdown="# 第一条\n\n内容",
+            metadata_json={"record_type": "article"},
+            chunking_json={},
+            audit_json={},
+            content_sha256="a" * 64,
+        )
+        second = CleaningDocument(
+            file_id=file_row.id,
+            sequence=2,
+            title="后生成子文档",
+            dify_document_name="second.md",
+            document_key="second",
+            status="shard_pending",
+            stage="shard_pending",
+            cleaned_markdown="# 后生成子文档\n\n新增内容",
+            metadata_json={"record_type": "article"},
+            chunking_json={},
+            audit_json={},
+            content_sha256="b" * 64,
+        )
+        session.add_all([first, second])
+        session.flush()
+        existing = DifyPublicationShard(
+            file_id=file_row.id,
+            shard_index=1,
+            status="shard_pending",
+            item_count=1,
+            content_bytes=20,
+            content_sha256="c" * 64,
+            markdown="# 第一条\n\n内容",
+            metadata_json={"record_type": "article"},
+        )
+        session.add(existing)
+        session.flush()
+        first.shard_id = existing.id
+        first.shard_parent_index = 1
+        session.commit()
+        file_id = file_row.id
+
+        shard_ids = worker._plan_post_publication(session, batch.id)
+
+        assert len(shard_ids) == 2
+        assert existing.id in shard_ids
+        new_shard_id = next(item for item in shard_ids if item != existing.id)
+        session.refresh(second)
+        assert second.shard_id == new_shard_id
+        new_shard = session.get(DifyPublicationShard, new_shard_id)
+        assert new_shard is not None
+        assert new_shard.shard_index == 2
+        assert new_shard.status == "shard_pending"
+        assert session.query(DifyPublicationShard).filter(
+            DifyPublicationShard.file_id == file_id
+        ).count() == 2
+
+
+def test_post_shard_planner_marks_late_exact_duplicate_without_unique_key_failure(
+    service_db,
+):
+    import hashlib
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    markdown = "# 相同内容\n\n同一正文"
+    digest = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="partially_completed",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=2,
+            title="相同内容",
+            dify_document_name="duplicate.md",
+            document_key="duplicate",
+            status="shard_pending",
+            stage="shard_pending",
+            cleaned_markdown="同一正文",
+            metadata_json={"record_type": "article"},
+            chunking_json={},
+            audit_json={},
+            content_sha256="b" * 64,
+        )
+        existing = DifyPublicationShard(
+            file_id=file_row.id,
+            shard_index=1,
+            status="succeeded",
+            item_count=1,
+            content_bytes=len(markdown.encode("utf-8")),
+            content_sha256=digest,
+            markdown=markdown,
+            metadata_json={"record_type": "article"},
+        )
+        session.add_all([document, existing])
+        session.commit()
+        batch_id = batch.id
+
+        assert worker._plan_post_publication(session, batch_id) == []
+
+        session.refresh(document)
+        assert document.status == "excluded"
+        assert document.error_code == "EXACT_CONTENT_DUPLICATE"
+        assert session.query(DifyPublicationShard).filter(
+            DifyPublicationShard.file_id == file_row.id
+        ).count() == 1
+
+
+def test_post_shard_planner_does_not_dedupe_against_failed_shard(service_db):
+    """A failed, never-published shard is not proof that content is in Dify."""
+
+    import hashlib
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    markdown = "# 待重试内容\n\n正文"
+    from ai_management.cleaning import finalize_knowledge_markdown
+
+    digest = hashlib.sha256(
+        finalize_knowledge_markdown(markdown).encode("utf-8")
+    ).hexdigest()
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="partially_completed",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=2,
+            title="待重试内容",
+            dify_document_name="retry.md",
+            document_key="retry",
+            status="shard_pending",
+            stage="shard_pending",
+            cleaned_markdown="正文",
+            metadata_json={"record_type": "article"},
+            chunking_json={},
+            audit_json={},
+            content_sha256="d" * 64,
+        )
+        failed = DifyPublicationShard(
+            file_id=file_row.id,
+            shard_index=1,
+            status="failed",
+            item_count=1,
+            content_bytes=len(markdown.encode("utf-8")),
+            content_sha256=digest,
+            markdown=markdown,
+            metadata_json={"record_type": "article"},
+        )
+        session.add_all([document, failed])
+        session.commit()
+        assert failed.status == "failed"
+
+        shard_ids = worker._plan_post_publication(session, batch.id)
+
+        assert shard_ids == [failed.id]
+        session.refresh(failed)
+        assert failed.status == "shard_pending"
+        assert failed.attempts == 0
+        session.refresh(document)
+        assert document.status == "shard_pending"
 
 
 def test_catalog_review_round_trip_creates_approved_catalog_records(service_db):

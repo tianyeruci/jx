@@ -27,6 +27,7 @@ POST_STRATEGIES = frozenset(
         "xiaobot_post",
     }
 )
+REALTIME_ONLY_STRATEGIES = frozenset({"recent_activity"})
 ALLOWED_TOPICS = frozenset(
     {
         "战略与商业模式",
@@ -347,6 +348,8 @@ def choose_call_mode(
     batch_token_threshold: int = 200_000,
     batch_enabled: bool = False,
 ) -> Literal["realtime", "batch"]:
+    if strategy_code in REALTIME_ONLY_STRATEGIES:
+        return "realtime"
     if strategy_code not in MODEL_STRATEGIES:
         raise ValueError("策略不使用大模型")
     # Content strategies may use Batch only when the operator explicitly
@@ -360,6 +363,28 @@ def choose_call_mode(
     ):
         return "batch"
     return "realtime"
+
+
+def build_model_request_body(
+    messages: list[dict[str, str]], *, model: str = "qwen-plus"
+) -> dict[str, Any]:
+    """Build the single canonical Qwen request used by realtime and Batch.
+
+    Keeping the request body in one seam prevents the two transports from
+    silently drifting in temperature, thinking, or structured-output policy.
+    The provider currently supports JSON-object mode; a JSON Schema is not
+    forced here because the configured Qwen-compatible endpoint does not
+    advertise the stricter schema variant.
+    """
+
+    return {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.01,
+        "seed": 1234,
+        "enable_thinking": False,
+        "response_format": {"type": "json_object"},
+    }
 
 
 def _normalize_post_semantic_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -683,13 +708,7 @@ class BailianClient:
             response = self._request(
                 "POST",
                 "chat/completions",
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "temperature": 0,
-                    "enable_thinking": False,
-                    "response_format": {"type": "json_object"},
-                },
+                json=build_model_request_body(messages, model=model),
             )
         except Exception as exc:
             raise ModelNoResponseError("模型服务未返回可用响应") from exc
@@ -797,13 +816,9 @@ def batch_request_line(
         "custom_id": build_custom_id(request, prompt_version),
         "method": "POST",
         "url": "/v1/chat/completions",
-        "body": {
-            "model": model,
-            "messages": build_prompt_messages(request, repair_hint=repair_hint),
-            "temperature": 0,
-            "enable_thinking": False,
-            "response_format": {"type": "json_object"},
-        },
+        "body": build_model_request_body(
+            build_prompt_messages(request, repair_hint=repair_hint), model=model
+        ),
     }
     return (json.dumps(line, ensure_ascii=False, separators=(",", ":")) + "\n").encode(
         "utf-8"
@@ -818,6 +833,7 @@ __all__ = [
     "PromptRequest",
     "batch_request_line",
     "build_custom_id",
+    "build_model_request_body",
     "build_prompt_messages",
     "choose_call_mode",
     "validate_consultation_response",

@@ -74,6 +74,32 @@ def test_prompt_and_custom_id_do_not_depend_on_filename():
     )
 
 
+def test_realtime_and_batch_request_body_share_the_same_model_policy():
+    from ai_management.model_cleaning import (
+        PromptRequest,
+        batch_request_line,
+        build_model_request_body,
+        build_prompt_messages,
+    )
+
+    request = PromptRequest(
+        strategy_code="zsxq_post",
+        item_id="item-1",
+        content_sha256="a" * 64,
+        title="商业复盘",
+        blocks={"b001": "先访谈客户，再调整产品定位。"},
+    )
+    messages = build_prompt_messages(request)
+    realtime_body = build_model_request_body(messages, model="qwen-plus")
+    batch_body = json.loads(
+        batch_request_line(request, prompt_version="semantic-v1", model="qwen-plus")
+    )["body"]
+    assert batch_body == realtime_body
+    assert realtime_body["temperature"] == 0.01
+    assert realtime_body["seed"] == 1234
+    assert realtime_body["enable_thinking"] is False
+
+
 def test_post_prompt_declares_the_only_valid_machine_values():
     from ai_management.model_cleaning import PromptRequest, build_prompt_messages
 
@@ -233,6 +259,7 @@ def test_contract_retry_prompt_is_structural_and_has_no_filename():
         ("wechat_public_account_cognition", 1, 200_001, True, "batch"),
         ("xiaobot_post", 1, 200_000, True, "batch"),
         ("xiaobot_post", 100, 1, True, "batch"),
+        ("recent_activity", 100, 1, True, "realtime"),
     ],
 )
 def test_model_channel_planner(

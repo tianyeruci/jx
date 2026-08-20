@@ -18,7 +18,7 @@ from docx import Document
 from openpyxl import Workbook, load_workbook
 
 from ai_management.acceptance_budget import AcceptanceBudget
-from ai_management.cleaning import dify_document_name
+from ai_management.cleaning import dify_activity_document_name, dify_document_name
 from ai_management.config import get_settings
 from knowledge_cleaner.dify import DifyKnowledgeClient
 
@@ -262,6 +262,81 @@ def _expected_remote_name(
         sequence,
         split=split,
     )
+
+
+def _remote_name_matches_strategy_contract(
+    *,
+    strategy: str,
+    item: dict[str, Any],
+    metadata: dict[str, Any],
+    remote_name: str,
+    original_filename: str,
+    source_sha256: str,
+    details_count: int,
+) -> bool:
+    """Validate the current naming contract without assuming upload filenames.
+
+    Post strategies publish shard documents named from the first cleaned title,
+    while activities use the event identity and content-version suffix.  The
+    former acceptance check incorrectly required the original upload filename
+    for both cases, producing false negatives after a successful Dify readback.
+    """
+
+    if not remote_name:
+        return False
+    is_shard = bool(item.get("shard_id"))
+    if strategy == "recent_activity":
+        source_title = str(metadata.get("source_title") or item.get("title") or "").strip()
+        event_id = str(metadata.get("event_id") or "").strip()
+        if not source_title or not event_id:
+            return False
+        safe_event_id = re.sub(r"[^A-Za-z0-9_-]", "_", event_id)
+        sentinel_version = "v" * 16
+        sentinel = dify_activity_document_name(source_title, event_id, sentinel_version)
+        sentinel_suffix = f"__{safe_event_id}__{sentinel_version}.md"
+        if not sentinel.endswith(sentinel_suffix):
+            return False
+        base = sentinel[: -len(sentinel_suffix)]
+        return bool(re.fullmatch(re.escape(base) + r"__" + re.escape(safe_event_id) + r"__[A-Za-z0-9_-]{1,16}\.md", remote_name))
+    if is_shard:
+        source_title = str(
+            metadata.get("source_title") or item.get("title") or original_filename
+        ).strip()
+        canonical = dify_document_name(source_title, source_sha256, 1, split=True)
+        base = canonical.rsplit("__", 1)[0]
+        return bool(re.fullmatch(re.escape(base) + r"__\d{3}\.md", remote_name))
+    if strategy == "personal_business_consultation" and details_count > 1:
+        # The consultation model keeps case 1 on the source document and
+        # creates later cases as ``<source-stem>__02.md``.  This is a
+        # different contract from the generic split/shard ``__001.md`` name.
+        consultation_base = dify_document_name(
+            original_filename,
+            source_sha256,
+            1,
+            split=False,
+        )
+        case_id = str(metadata.get("case_id") or "")
+        case_match = re.search(r"_c(\d{2})$", case_id)
+        sequence = int(item.get("sequence") or 1)
+        case_index = int(case_match.group(1)) if case_match else (
+            sequence % 1000 if sequence >= 1000 else sequence
+        )
+        if case_index <= 1:
+            expected_name = consultation_base
+        else:
+            child_name_path = Path(consultation_base or "consulting_case.md")
+            expected_name = (
+                f"{child_name_path.stem}__{case_index:02d}"
+                f"{child_name_path.suffix or '.md'}"
+            )[:300]
+        return remote_name == expected_name
+    expected_name = _expected_remote_name(
+        original_filename,
+        source_sha256,
+        int(item.get("sequence") or 0),
+        split=details_count > 1,
+    )
+    return remote_name == expected_name
 
 
 def _leak_fingerprints(value: Any, forbidden: list[str]) -> list[str]:
@@ -1206,34 +1281,20 @@ class AcceptanceRunner:
                     custom_metadata_fields = (
                         set(remote_metadata) - DIFY_BUILTIN_METADATA_FIELDS
                     )
-                    is_shard = bool(item.get("shard_id"))
-                    expected_name = _expected_remote_name(
-                        str(file_payload.get("original_filename") or ""),
-                        result["source_sha256"],
-                        int(item.get("sequence") or 0),
-                        split=len(details) > 1,
-                    )
                     allowed = REMOTE_ALLOWED_FIELDS.get(spec["strategy"])
                     if allowed is not None:
                         allowed = allowed | REMOTE_PROVENANCE_FIELDS
                     remote_checks = {
-                        "name_matches": (
-                            bool(
-                                re.fullmatch(
-                                    re.escape(
-                                        _expected_remote_name(
-                                            str(file_payload.get("original_filename") or ""),
-                                            result["source_sha256"],
-                                            1,
-                                            split=True,
-                                        ).rsplit("__", 1)[0]
-                                    )
-                                    + r"__\d{3}\.md",
-                                    remote_name,
-                                )
-                            )
-                            if is_shard
-                            else remote_name == expected_name
+                        "name_matches": _remote_name_matches_strategy_contract(
+                            strategy=spec["strategy"],
+                            item=item,
+                            metadata=metadata,
+                            remote_name=remote_name,
+                            original_filename=str(
+                                file_payload.get("original_filename") or ""
+                            ),
+                            source_sha256=result["source_sha256"],
+                            details_count=len(details),
                         ),
                         "name_sha256": _fingerprint(remote_name),
                         "metadata_keys": sorted(remote_metadata),

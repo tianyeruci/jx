@@ -324,3 +324,15 @@
 - 预防：把“发布完成”和“smoke 可开始”分成两个时间点；保留原 release/备份，发布后逐一核对 Core/UI/OCR/Worker/Scheduler 的同源资产和稳定性。
 - 证据：本轮脱敏部署报告及 `scripts/jx_deploy_release.sh`。
 - 最后验证：2026-08-19。
+
+## DEPLOY-029：恢复合并 Compose 配置时必须保留 test profile
+
+- 适用：jx 上同时恢复 ai-management Core 服务和 `test-ui` 的停服清理、发布或回滚脚本。
+- 触发：停用服务后的清理动作已成功，但恢复命令未让 API/Worker/UI 回到运行态；使用含 `test-ui` 的合并 Compose 文件执行 `up` 时尤其容易发生。
+- 根因：`test-ui` 声明在 Compose `test` profile 中；合并 `docker-compose.ai.yml` 与 `docker-compose.ui.yml` 后，如果恢复命令未带 `--profile test`，Compose 不能按原服务集合恢复，导致恢复门禁被跳过或返回非零。
+- 解决：恢复时显式使用 `docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml --profile test up -d --no-deps ...`，随后用容器内 `/health/ready`、服务状态和原先运行的孤立 Worker 名单复核；不要使用 `--remove-orphans`。
+- 非解决：只重启 API、直接访问宿主机 `127.0.0.1:8000`（jx API 可能绑定私网地址）、忽略恢复命令退出码，或借 `--remove-orphans` 清理孤立容器。
+- 验证：2026-08-19 日志清理后第一次恢复遗漏 profile，容器短暂退出；补充 `--profile test` 后 Core/UI/OCR/Worker/Scheduler 与两个 methodology Worker 均为 `running`，容器内 ready 为 `ready`。
+- 预防：停服脚本把“当前运行服务快照、profile、恢复结果、容器内健康检查”作为一个原子恢复门禁；使用 merged compose 时 profile 与服务名必须来自同一份快照。
+- 证据：[20260819 日志清理报告](../../var/reports/20260819-clear-system-event-logs/README.md)。
+- 最后验证：2026-08-19。

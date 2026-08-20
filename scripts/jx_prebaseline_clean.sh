@@ -66,6 +66,39 @@ docker compose -f docker-compose.ai.yml run --rm --no-deps -T --user 0 \
   --output /evidence/prebaseline-clean-result.json \
   > "$REPORT_DIR/prebaseline-clean-safe-summary.json"
 
+verify_dify_targets() {
+  local dataset_code
+  local planned_count
+  local target_count
+  local remaining_count
+
+  docker compose -f docker-compose.ai.yml run --rm --no-deps -T --user 0 \
+    -v "$DATA_SCRIPT:/tmp/jx_release_data.py:ro" \
+    -v "$REPORT_DIR:/evidence" \
+    api python /tmp/jx_release_data.py snapshot \
+    --output /evidence/post-clean-state.safe.json \
+    > "$REPORT_DIR/post-clean-state.safe-summary.json"
+
+  for dataset_code in general course; do
+    planned_count="$(jq -r ".preflight.dify.${dataset_code}.count" \
+      "$PRIVATE_DIR/clean-plan.json")"
+    target_count="$(jq -r ".targets.dify_documents.${dataset_code} | length" \
+      "$PRIVATE_DIR/clean-plan.json")"
+    remaining_count="$(jq -r ".dify.${dataset_code}.count" \
+      "$REPORT_DIR/post-clean-state.safe.json")"
+    test "$planned_count" != "null"
+    test "$target_count" != "null"
+    test "$remaining_count" != "null"
+    if test "$planned_count" = "$target_count" && test "$remaining_count" != "0"; then
+      printf 'Dify %s Dataset still contains %s documents after cleanup\n' \
+        "$dataset_code" "$remaining_count" >&2
+      return 1
+    fi
+  done
+}
+
+verify_dify_targets
+
 UPLOAD_BATCH_IDS="$PRIVATE_DIR/removed-cleaning-batch-ids.txt"
 jq -r '.removed_cleaning_batch_ids[]?' \
   "$PRIVATE_DIR/clean-result.json" > "$UPLOAD_BATCH_IDS"

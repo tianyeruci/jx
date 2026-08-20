@@ -154,10 +154,20 @@ def _reconcile_cleaning_pipeline() -> dict[str, int]:
                     DifyPublicationShard.status == "shard_indexing",
                     DifyPublicationShard.updated_at <= processing_cutoff,
                 )
+                .with_for_update()
                 .limit(500)
             )
         )
         for shard in stale_shards:
+            # The row lock makes the query/mutation pair atomic with the
+            # publisher's claim.  Recheck after waiting on a concurrent
+            # publisher so a just-succeeded shard is never reset.
+            if (
+                shard.status != "shard_indexing"
+                or shard.updated_at is None
+                or _utc(shard.updated_at) > processing_cutoff
+            ):
+                continue
             retryable = shard.attempts < 2
             shard.status = "shard_pending" if retryable else "failed"
             shard.last_error = (
