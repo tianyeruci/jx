@@ -3,15 +3,18 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import re
 import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import object_session, selectinload
 
 from knowledge_cleaner.chunking import prepare_chunks
 from knowledge_cleaner.consultation_rag import (
@@ -36,6 +39,7 @@ from ...model_cleaning import (
     build_custom_id,
     build_prompt_messages,
     choose_call_mode,
+    get_provider_batch_ids,
     validate_consultation_response,
     validate_semantic_response,
 )
@@ -52,6 +56,10 @@ from ...models import (
 from ...publication_shards import ShardItem, plan_post_shards
 from ...sanitization import sanitize_for_knowledge
 from ...schemas import CourseRecord, RouteRecord
+from ...services.bailian_cleanup import (
+    clear_successful_bailian_file_tasks,
+    ensure_bailian_cleanup_tasks,
+)
 from ...services.observability import exception_details, record_event, safe_exception_message
 from ..celery_app import celery_app
 
@@ -70,11 +78,26 @@ CONTENT_MODEL_STRATEGIES = frozenset(
         "xiaobot_post",
     }
 )
-PROVIDER_TERMINAL = {"completed", "failed", "expired", "cancelled", "cancelling"}
+PROVIDER_TERMINAL = {"completed", "failed", "expired", "cancelled"}
 # Dify requires a 50-unit minimum for custom segments.  Keep a conservative
 # buffer after sanitization and title/context assembly.
 _DIFY_MIN_CUSTOM_SEGMENT_CHARS = 120
 _DIFY_MIN_SOURCE_SEGMENT_CHARS = 8
+_MODEL_REVIEW_ARTIFACT_MAX_BYTES = 16 * 1024 * 1024
+
+
+def _normalized_publication_digest(markdown: str) -> str:
+    from ...cleaning import normalized_publication_content_sha256
+
+    return normalized_publication_content_sha256(markdown)
+
+
+def _existing_shard_publication_digest(shard: DifyPublicationShard) -> str:
+    """Use normalized final Markdown; unknown legacy digest domains do not match."""
+
+    if shard.markdown:
+        return _normalized_publication_digest(shard.markdown)
+    return ""
 
 
 def _source_fallback_enabled(document: CleaningDocument, strategy_code: str) -> bool:
@@ -90,8 +113,6 @@ def _model_requires_source_fallback(
     document: CleaningDocument,
     strategy_code: str,
 ) -> bool:
-    if not _source_fallback_enabled(document, strategy_code):
-        return False
     if document.status == "excluded":
         return False
     if document.status in {"failed", "review_required"}:
@@ -101,9 +122,7 @@ def _model_requires_source_fallback(
         return False
     model_result = audit.get("model_result") or {}
     disposition = str(model_result.get("disposition") or "").lower()
-    return disposition in {"review", "review_required"} or bool(
-        audit.get("review_original_error")
-    )
+    return disposition in {"review", "review_required"} or bool(audit.get("review_original_error"))
 
 
 def _apply_source_markdown_fallback(
@@ -114,53 +133,87 @@ def _apply_source_markdown_fallback(
     source_metadata: dict[str, Any],
     source_chunking: dict[str, Any],
 ) -> bool:
-    """Restore the pre-model source without persisting model output."""
+    """Persist a review artifact and stop; never auto-publish source text.
+
+    The function name is retained because older worker call sites use it.  A
+    contract failure is a human decision boundary now: the source Markdown is
+    kept on the local document for an eventual explicit approval, but its
+    status cannot be changed to a publishable state here.
+    """
 
     if not source_markdown.strip() or not _model_requires_source_fallback(
         document,
         strategy_code,
     ):
+        document.__dict__.pop("_model_review_payload_for_artifact", None)
+        document.__dict__.pop("_model_review_request_for_artifact", None)
         return False
     from ...cleaning import preserve_review_reason
     from .cleaning import _content_sha
 
     original_code = document.error_code
     original_message = document.error_message
+    model_payload = document.__dict__.get("_model_review_payload_for_artifact")
     audit = preserve_review_reason(
         document.audit_json,
         original_code,
         original_message,
     )
+    model_request = document.__dict__.get("_model_review_request_for_artifact")
+    if model_request is None:
+        model_request = audit.get("_model_review_request")
+    artifact_error = ""
+    try:
+        artifact_path = _save_model_review_artifact(
+            document,
+            strategy_code=strategy_code,
+            source_markdown=source_markdown,
+            source_metadata=source_metadata,
+            model_payload=model_payload,
+            request_context=model_request,
+        )
+    except Exception as exc:
+        # A bounded/permission failure must not leave a model task stuck in
+        # validating.  Fail closed into the same human-review gate while
+        # removing transient raw payload/context from the local audit row.
+        artifact_path = ""
+        artifact_error = safe_exception_message(exc, limit=500)
     audit["source_markdown_fallback"] = {
-        "applied": True,
+        "applied": False,
+        "review_required": True,
         "reason_code": original_code or "MODEL_REVIEW_OR_FAILURE",
         "model_output_ignored": True,
+        "artifact_path": artifact_path,
     }
-    document.audit_json = audit
+    if artifact_error:
+        audit["source_markdown_fallback"]["artifact_write_error"] = artifact_error
+    audit.pop("_model_review_payload", None)
+    audit.pop("_model_review_request", None)
+    document.__dict__.pop("_model_review_payload_for_artifact", None)
+    document.__dict__.pop("_model_review_request_for_artifact", None)
+    # Keep the source candidate locally so an explicit approve action can
+    # publish it. The review status remains a hard gate until that action.
     document.cleaned_markdown = source_markdown
     document.metadata_json = dict(source_metadata)
     document.chunking_json = dict(source_chunking)
     document.content_sha256 = _content_sha(
-        document.cleaned_markdown,
+        source_markdown,
         document.metadata_json,
         document.chunking_json,
     )
-    if strategy_code in POST_STRATEGIES:
-        document.status = "shard_pending"
-        document.stage = "shard_pending"
-    else:
-        document.status = "pending"
-        document.stage = "pending"
-    document.error_code = None
-    document.error_message = None
-    document.retryable = True
+    document.audit_json = audit
+    document.status = "review_required"
+    document.stage = "review"
+    document.error_code = original_code or "MODEL_CONTRACT_INVALID"
+    document.error_message = original_message or "模型结果未通过契约校验，需要人工审批"
+    document.retryable = False
     record_event(
         level="WARNING",
         category="task",
         component="model_cleaning_worker",
         event_code="CLEANING_SOURCE_MARKDOWN_FALLBACK",
-        status="pending",
-        message="模型结果未采用，已恢复清洗源 Markdown 继续入库",
+        status="review_required",
+        message="模型结果未采用，已保存审核材料并转人工审批；未自动入库",
         resource_type="cleaning_document",
         resource_id=str(document.id or ""),
         details={
@@ -168,8 +221,125 @@ def _apply_source_markdown_fallback(
             "reason_code": audit["source_markdown_fallback"]["reason_code"],
             "model_output_ignored": True,
         },
+        session=object_session(document),
     )
-    return True
+    return False
+
+
+def _review_artifact_filename(strategy_code: str, original_filename: str) -> str:
+    from ...cleaning import normalized_original_filename
+
+    safe = normalized_original_filename(original_filename)
+    safe = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._（）()\[\]【】 -]", "_", safe)
+    return f"{strategy_code}+{safe[:220]}.json"
+
+
+def _save_model_review_artifact(
+    document: CleaningDocument,
+    *,
+    strategy_code: str,
+    source_markdown: str,
+    source_metadata: dict[str, Any],
+    model_payload: dict[str, Any] | None = None,
+    request_context: dict[str, Any] | None = None,
+) -> str:
+    """Write an internal, bounded review artifact without leaking source to logs."""
+
+    file_row = getattr(document, "file", None)
+    original_filename = str(
+        getattr(file_row, "original_filename", "")
+        or source_metadata.get("source_filename")
+        or document.title
+        or "未命名文件"
+    )
+    root = Path(settings.audit_root) / "model-review"
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root.chmod(0o700)
+    target = root / _review_artifact_filename(strategy_code, original_filename)
+    audit = document.audit_json or {}
+    payload = (
+        model_payload
+        if model_payload is not None
+        else getattr(document, "_model_review_payload_for_artifact", None)
+    )
+    if payload is None:
+        payload = audit.get("_model_review_payload")
+    request_fingerprint_source = (
+        request_context
+        or audit.get("_model_review_request")
+        or {
+            "title": document.title,
+            "metadata": source_metadata,
+            "source_sha256": document.content_sha256,
+        }
+    )
+    payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    entry = {
+        "strategy_code": strategy_code,
+        "original_filename": original_filename,
+        "document_id": str(document.id or ""),
+        "item_sequence": int(document.sequence or 0),
+        "request_sha256": hashlib.sha256(
+            json.dumps(
+                request_fingerprint_source,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest(),
+        "response_sha256": hashlib.sha256(payload_json.encode("utf-8")).hexdigest(),
+        "repair_hint_sha256": str(request_fingerprint_source.get("repair_hint_sha256") or ""),
+        "model_result": payload,
+        "source_markdown_sha256": hashlib.sha256(source_markdown.encode("utf-8")).hexdigest(),
+        "error": {
+            "code": document.error_code or "MODEL_CONTRACT_INVALID",
+            "message": str(document.error_message or "模型结果未通过契约校验")[:500],
+        },
+        "validation_summary": audit.get("review_original_error") or {},
+    }
+    lock_key = "ai:model-review-artifact:" + hashlib.sha256(str(target).encode("utf-8")).hexdigest()
+    with cache.lock(lock_key, ttl=120) as acquired:
+        if not acquired:
+            raise RuntimeError("模型审核材料正在写入，请稍后重试")
+        if target.exists():
+            try:
+                existing = json.loads(target.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                existing = {}
+            entries = list(existing.get("entries") or []) if isinstance(existing, dict) else []
+        else:
+            entries = []
+        entries = [item for item in entries if item.get("document_id") != entry["document_id"]]
+        entries.append(entry)
+        artifact = {
+            "artifact_version": 1,
+            "strategy_code": strategy_code,
+            "original_filename": original_filename,
+            "entries": entries,
+        }
+        serialized = json.dumps(
+            artifact,
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
+        if len(serialized.encode("utf-8")) > _MODEL_REVIEW_ARTIFACT_MAX_BYTES:
+            raise ValueError("模型审核材料超过单文件大小上限")
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            fd = os.open(
+                str(temporary),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+                0o600,
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(serialized)
+            temporary.chmod(0o600)
+            os.replace(temporary, target)
+            target.chmod(0o600)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return str(target)
 
 
 def _client() -> BailianClient:
@@ -204,9 +374,7 @@ def _iter_documents_for_batch(
     session,
     batch_id: str,
 ) -> Iterable[CleaningDocument]:
-    return session.scalars(
-        _document_statement(batch_id).execution_options(yield_per=500)
-    )
+    return session.scalars(_document_statement(batch_id).execution_options(yield_per=500))
 
 
 def _iter_realtime_document_pages(
@@ -224,9 +392,7 @@ def _iter_realtime_document_pages(
             .join(CleaningFile, CleaningDocument.file_id == CleaningFile.id)
             .where(
                 CleaningFile.batch_id == batch_id,
-                CleaningDocument.status.in_(
-                    ("awaiting_model", "model_processing")
-                ),
+                CleaningDocument.status.in_(("awaiting_model", "model_processing")),
                 CleaningDocument.id > last_id,
             )
             .order_by(CleaningDocument.id)
@@ -280,9 +446,7 @@ def _realtime_chat(
         if wait_seconds <= 0:
             break
         time.sleep(min(60, wait_seconds))
-    return client.chat_json(
-        build_prompt_messages(request, repair_hint=repair_hint), model=model
-    )
+    return client.chat_json(build_prompt_messages(request, repair_hint=repair_hint), model=model)
 
 
 def _validation_error_entries(exc: Exception) -> list[dict[str, str]]:
@@ -346,9 +510,7 @@ def _model_contract_error_message(exc: Exception) -> str:
         return "模型未返回可用结果（已按文档重试一次）"
     entries = _validation_error_entries(exc)
     if entries:
-        details = "; ".join(
-            f"path={entry['path']},code={entry['code']}" for entry in entries
-        )
+        details = "; ".join(f"path={entry['path']},code={entry['code']}" for entry in entries)
         return f"模型契约校验失败（脱敏）: {details}"
     message = str(exc)
     if "包含不匹配的事实状态" in message:
@@ -462,9 +624,7 @@ def _model_contract_retry_hint(exc: Exception) -> str:
     return "字段、枚举值、来源块引用和 JSON 类型必须完全符合系统提示。"
 
 
-def _candidate_fingerprint(
-    documents: Iterable[CleaningDocument], prompt_version: str
-) -> str:
+def _candidate_fingerprint(documents: Iterable[CleaningDocument], prompt_version: str) -> str:
     digest = hashlib.sha256()
     for item in documents:
         digest.update(f"{item.id}:{item.content_sha256}\n".encode("utf-8"))
@@ -534,9 +694,7 @@ def _fail_catalog_auto_run(session, batch: CleaningBatch, reason: str) -> None:
     error_code = "CATALOG_AUTO_PUBLISH_BLOCKED"
     error_message = f"课程目录自动发布已阻断：{reason}"
     documents = session.scalars(
-        select(CleaningDocument)
-        .join(CleaningFile)
-        .where(CleaningFile.batch_id == batch.id)
+        select(CleaningDocument).join(CleaningFile).where(CleaningFile.batch_id == batch.id)
     )
     for document in documents:
         if document.status == "excluded":
@@ -552,9 +710,7 @@ def _fail_catalog_auto_run(session, batch: CleaningBatch, reason: str) -> None:
         document.error_code = error_code
         document.error_message = error_message
         document.retryable = False
-    for file_row in session.scalars(
-        select(CleaningFile).where(CleaningFile.batch_id == batch.id)
-    ):
+    for file_row in session.scalars(select(CleaningFile).where(CleaningFile.batch_id == batch.id)):
         file_row.status = "failed"
         file_row.outcome = "failed"
         file_row.stage = "failed"
@@ -611,24 +767,19 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
         # A concurrent file worker may still be parsing. Wait for its final
         # call rather than pricing an incomplete candidate set.
         if any(
-            item.stage in {"upload", "cleaning"}
-            or item.status == "pending"
-            for item in batch.files
+            item.stage in {"upload", "cleaning"} or item.status == "pending" for item in batch.files
         ):
             return None
         existing = session.scalar(
             select(ModelCleaningTask).where(
                 ModelCleaningTask.batch_id == batch_id,
-                ModelCleaningTask.status.not_in(
-                    ("failed", "cancelled", "superseded")
-                ),
+                ModelCleaningTask.status.not_in(("failed", "cancelled", "superseded")),
             )
         )
         if existing is not None:
             return existing.id
         auto_catalog = (
-            batch.strategy_code == "course_route_catalog"
-            and settings.course_catalog_auto_publish
+            batch.strategy_code == "course_route_catalog" and settings.course_catalog_auto_publish
         )
         candidate_count = 0
         estimated_input = 0
@@ -642,15 +793,11 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
                     oversized_reason = "单候选超过模型输入上限"
                 else:
                     is_content_strategy = batch.strategy_code in CONTENT_MODEL_STRATEGIES
-                    fallback_enabled = _source_fallback_enabled(
-                        document, batch.strategy_code
-                    )
+                    fallback_enabled = _source_fallback_enabled(document, batch.strategy_code)
                     can_publish_source = bool(document.cleaned_markdown.strip())
                     if fallback_enabled and can_publish_source:
                         document.status = (
-                            "shard_pending"
-                            if batch.strategy_code in POST_STRATEGIES
-                            else "pending"
+                            "shard_pending" if batch.strategy_code in POST_STRATEGIES else "pending"
                         )
                         document.stage = document.status
                     else:
@@ -683,9 +830,7 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
                 continue
             candidate_count += 1
             estimated_input += tokens
-            fingerprint_digest.update(
-                f"{document.id}:{document.content_sha256}\n".encode("utf-8")
-            )
+            fingerprint_digest.update(f"{document.id}:{document.content_sha256}\n".encode("utf-8"))
         if not candidate_count:
             if oversized_reason:
                 _fail_catalog_auto_run(session, batch, oversized_reason)
@@ -697,9 +842,7 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
                 _finish_batch(session, batch.id)
             session.commit()
             return None
-        fingerprint_digest.update(
-            f"prompt:{settings.cleaning_prompt_version}".encode("utf-8")
-        )
+        fingerprint_digest.update(f"prompt:{settings.cleaning_prompt_version}".encode("utf-8"))
         mode = choose_call_mode(
             batch.strategy_code,
             candidate_count,
@@ -717,19 +860,9 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
             output_price_per_million,
             price_discount,
         ) = _price_snapshot(mode)
-        input_cost = (
-            estimated_input
-            / 1_000_000
-            * input_price_per_million
-            * price_discount
-        )
+        input_cost = estimated_input / 1_000_000 * input_price_per_million * price_discount
         estimated_output = max(500, candidate_count * 500)
-        output_cost = (
-            estimated_output
-            / 1_000_000
-            * output_price_per_million
-            * price_discount
-        )
+        output_cost = estimated_output / 1_000_000 * output_price_per_million * price_discount
         estimated_cost_high = input_cost + output_cost
         daily_budget = Decimal(str(settings.cleaning_daily_budget_yuan))
         daily_reserved = _daily_model_reserved_cost(session)
@@ -853,14 +986,10 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
         session.commit()
         task_id = task.id
     if submit_realtime:
-        process_realtime_model_task.apply_async(
-            args=[task_id], queue="ai_model_realtime"
-        )
+        process_realtime_model_task.apply_async(args=[task_id], queue="ai_model_realtime")
     elif auto_submit_batch:
         try:
-            submit_batch_model_task.apply_async(
-                args=[task_id], queue="ai_model_batch"
-            )
+            submit_batch_model_task.apply_async(args=[task_id], queue="ai_model_batch")
         except Exception:
             logger.exception("course catalogue auto model queue failed")
             with SessionLocal() as session:
@@ -878,13 +1007,14 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
 def _mark_privacy_review(document: CleaningDocument, message: str) -> None:
     from ...cleaning import content_review_bypass_enabled, preserve_review_reason
 
-    strategy_code = str(
-        (document.metadata_json or {}).get("cleaning_strategy") or ""
-    )
-    if content_review_bypass_enabled(
-        strategy_code,
-        document.metadata_json or {},
-    ) and document.cleaned_markdown.strip():
+    strategy_code = str((document.metadata_json or {}).get("cleaning_strategy") or "")
+    if (
+        content_review_bypass_enabled(
+            strategy_code,
+            document.metadata_json or {},
+        )
+        and document.cleaned_markdown.strip()
+    ):
         document.audit_json = preserve_review_reason(
             document.audit_json,
             "PRIVACY_REVIEW_REQUIRED",
@@ -935,9 +1065,7 @@ def _source_block_review_fallback(
         for block_id, text in request.blocks.items()
         if block_id in wanted
         or (
-            block_id[:1].lower() == "b"
-            and block_id[1:].isdigit()
-            and int(block_id[1:]) in ordinals
+            block_id[:1].lower() == "b" and block_id[1:].isdigit() and int(block_id[1:]) in ordinals
         )
     ]
     values = [value for value in values if value]
@@ -966,9 +1094,7 @@ def _render_post_knowledge_unit(
     """Render an evidence-bound model unit without adding unsupported facts."""
 
     evidence = "\n\n".join(
-        source_blocks[block_id]
-        for block_id in unit.source_block_ids
-        if block_id in source_blocks
+        source_blocks[block_id] for block_id in unit.source_block_ids if block_id in source_blocks
     ).strip()
     sections: list[str] = []
     for heading, value in (
@@ -1002,31 +1128,53 @@ def _render_post_markdown(*, body: str, title: str, topic: str) -> str:
         topics=(topic,) if topic else (),
         overlap=0,
     )
-    raw_children = [
-        child
-        for chunk in chunks
-        for child in chunk.children
-        if child.strip()
-    ]
-    children = [
-        _post_child_for_dify(child, title=title)
-        for child in raw_children
-    ]
+    raw_children = [child for chunk in chunks for child in chunk.children if child.strip()]
+    children = [_post_child_for_dify(child, title=title) for child in raw_children]
     if any(child is None for child in children):
         raise ValueError("DIFY_CHILD_TOO_SHORT: 帖子有效内容不足以满足知识库最小分段长度")
     children = [child for child in children if child is not None]
-    context = (
-        chunks[0].content.partition("\n")[0]
-        if chunks
-        else f"【上下文】{title}｜article"
-    )
-    one_parent = (
-        f"{context}\n\n"
-        + "\n\n<<<DIFY_CHILD>>>\n\n".join(children)
-        if children
-        else body
-    )
+    context = chunks[0].content.partition("\n")[0] if chunks else f"【上下文】{title}｜article"
+    one_parent = f"{context}\n\n" + "\n\n<<<DIFY_CHILD>>>\n\n".join(children) if children else body
     return sanitize_for_knowledge(one_parent)
+
+
+def _model_review_request_context(
+    request: PromptRequest,
+    *,
+    model_name: str = "",
+    prompt_version: str = "",
+    repair_hint: str = "",
+) -> dict[str, Any]:
+    return {
+        "strategy_code": request.strategy_code,
+        "item_id": request.item_id,
+        "content_sha256": request.content_sha256,
+        "title": request.title,
+        "blocks": request.blocks,
+        "model": model_name,
+        "prompt_version": prompt_version,
+        "repair_hint_sha256": hashlib.sha256(repair_hint.encode("utf-8")).hexdigest()
+        if repair_hint
+        else "",
+    }
+
+
+def _store_model_review_request_context(
+    document: CleaningDocument,
+    request: PromptRequest,
+    *,
+    model_name: str = "",
+    prompt_version: str = "",
+    repair_hint: str = "",
+) -> None:
+    audit = dict(document.audit_json or {})
+    audit["_model_review_request"] = _model_review_request_context(
+        request,
+        model_name=model_name,
+        prompt_version=prompt_version,
+        repair_hint=repair_hint,
+    )
+    document.audit_json = audit
 
 
 def _apply_model_payload(
@@ -1036,8 +1184,28 @@ def _apply_model_payload(
     payload: dict[str, Any],
     *,
     session=None,
+    model_name: str | None = None,
+    prompt_version: str | None = None,
+    repair_hint: str | None = None,
 ) -> None:
     audit = dict(document.audit_json or {})
+    # Keep the provider response in the internal audit trail so a later
+    # contract failure can produce a complete review artifact.  It never goes
+    # to Dify metadata or user-facing logs.
+    audit["_model_review_payload"] = payload
+    existing_request = audit.get("_model_review_request") or {}
+    request_context = _model_review_request_context(
+        request,
+        model_name=model_name or "",
+        prompt_version=prompt_version or "",
+        repair_hint=repair_hint or "",
+    )
+    if repair_hint is None and isinstance(existing_request, dict):
+        request_context["repair_hint_sha256"] = str(
+            existing_request.get("repair_hint_sha256") or ""
+        )
+    audit["_model_review_request"] = request_context
+    document.audit_json = audit
     available = set(request.blocks)
     if strategy_code in POST_STRATEGIES:
         result = validate_semantic_response(
@@ -1059,9 +1227,7 @@ def _apply_model_payload(
             document.status = "failed"
             document.stage = "failed"
             document.error_code = "MODEL_REVIEW_SKIPPED"
-            document.error_message = (
-                f"模型判定需要复核，已跳过（reason={result.reason_code}）"
-            )
+            document.error_message = f"模型判定需要复核，已跳过（reason={result.reason_code}）"
             document.retryable = True
         else:
             if result.disposition == "review":
@@ -1072,10 +1238,7 @@ def _apply_model_payload(
                     "MODEL_REVIEW_SKIPPED",
                     f"模型判定需要复核，按保留来源继续（reason={result.reason_code}）",
                 )
-            kept = [
-                request.blocks[block_id]
-                for block_id in result.keep_block_ids
-            ]
+            kept = [request.blocks[block_id] for block_id in result.keep_block_ids]
             body = "\n\n".join(kept)
             if not body.strip():
                 document.status = "review_required"
@@ -1139,6 +1302,7 @@ def _apply_model_payload(
                 )
 
             from .cleaning import _content_sha
+
             source_article_title = document.title
 
             def apply_rendered(
@@ -1236,9 +1400,7 @@ def _apply_model_payload(
                 source_case_id = f"case_{document.content_sha256[:16]}"
             for case_index, case in enumerate(response.cases, start=1):
                 case_id = f"{source_case_id}_c{case_index:02d}"
-                rendered = sanitize_for_knowledge(
-                    render_consultation_rag_case(case_id, case)
-                )
+                rendered = sanitize_for_knowledge(render_consultation_rag_case(case_id, case))
                 from knowledge_cleaner.pdf_convert import scan_residual_pii
 
                 residual = scan_residual_pii(rendered)
@@ -1303,16 +1465,28 @@ def _apply_model_payload(
                 )
 
             first_case_id, first_rendered, first_topic, first_audit = rendered_cases[0]
+            if len(rendered_cases) > 1:
+                from ...cleaning import dify_document_name
+
+                document.dify_document_name = dify_document_name(
+                    getattr(document.file, "original_filename", document.dify_document_name),
+                    document.content_sha256,
+                    1,
+                    split=True,
+                )
             apply_case(document, first_case_id, first_rendered, first_topic, first_audit)
             if session is not None and len(rendered_cases) > 1:
                 for case_index, (case_id, rendered, topic, case_audit) in enumerate(
                     rendered_cases[1:], start=2
                 ):
-                    child_name_path = Path(document.dify_document_name or "consulting_case.md")
-                    child_dify_name = (
-                        f"{child_name_path.stem}__{case_index:02d}"
-                        f"{child_name_path.suffix or '.md'}"
-                    )[:300]
+                    from ...cleaning import dify_document_name
+
+                    child_dify_name = dify_document_name(
+                        getattr(document.file, "original_filename", document.dify_document_name),
+                        document.content_sha256,
+                        case_index,
+                        split=True,
+                    )
                     child = CleaningDocument(
                         file_id=document.file_id,
                         sequence=document.sequence * 1000 + case_index,
@@ -1398,9 +1572,7 @@ def _apply_model_payload(
 
             residual = scan_residual_pii(rendered)
             forbidden_names = [
-                str(value)
-                for value in audit.get("forbidden_public_names") or []
-                if str(value)
+                str(value) for value in audit.get("forbidden_public_names") or [] if str(value)
             ]
             document.cleaned_markdown = sanitize_for_knowledge(rendered)
             if residual or any(value in rendered for value in forbidden_names):
@@ -1428,10 +1600,7 @@ def _apply_model_payload(
             available_block_ids=available,
             source_blocks=request.blocks,
         )
-        parts = [
-            f"## {section.heading}\n\n{section.text}"
-            for section in result.sections
-        ]
+        parts = [f"## {section.heading}\n\n{section.text}" for section in result.sections]
         document.cleaned_markdown = sanitize_for_knowledge(
             f"# {document.title}\n\n" + "\n\n".join(parts)
         )
@@ -1439,13 +1608,9 @@ def _apply_model_payload(
 
         residual = scan_residual_pii(document.cleaned_markdown)
         forbidden_names = [
-            str(value)
-            for value in audit.get("forbidden_public_names") or []
-            if str(value)
+            str(value) for value in audit.get("forbidden_public_names") or [] if str(value)
         ]
-        if residual or any(
-            value in document.cleaned_markdown for value in forbidden_names
-        ):
+        if residual or any(value in document.cleaned_markdown for value in forbidden_names):
             _mark_privacy_review(document, "咨询模型输出仍含潜在PII或受保护身份")
             return
         document.status = "pending"
@@ -1457,9 +1622,7 @@ def _apply_model_payload(
         audit["model_result"] = result.model_dump(mode="json")
         draft = dict(audit.get("catalog_draft") or {})
         kind = str(audit.get("catalog_kind") or "")
-        direction = result.direction_candidate.strip() or str(
-            draft.get("direction") or ""
-        ).strip()
+        direction = result.direction_candidate.strip() or str(draft.get("direction") or "").strip()
         if not direction and kind == "route":
             direction = "课程学习路线"
         if not direction:
@@ -1505,9 +1668,7 @@ def _apply_model_payload(
                 "review_status": "approved",
             }
         elif kind == "route":
-            route_target = result.route_target.strip() or str(
-                draft.get("target") or ""
-            ).strip()
+            route_target = result.route_target.strip() or str(draft.get("target") or "").strip()
             # The workbook's route rows are authoritative for the complete
             # stage/course structure but may not contain a separate marketing
             # target.  Keep those routes publishable without inventing a
@@ -1585,6 +1746,12 @@ def _finalize_model_document(
     from .cleaning import _content_sha
 
     audit = dict(document.audit_json or {})
+    model_payload = audit.pop("_model_review_payload", None)
+    if model_payload is not None:
+        document.__dict__["_model_review_payload_for_artifact"] = model_payload
+    model_request = audit.pop("_model_review_request", None)
+    if model_request is not None:
+        document.__dict__["_model_review_request_for_artifact"] = model_request
     document.cleaned_markdown = finalize_knowledge_markdown(
         document.cleaned_markdown,
         audit=audit,
@@ -1644,9 +1811,7 @@ def _mark_contract_failure(
     review_on_final: bool = False,
 ) -> None:
     error_code = (
-        "MODEL_NO_RESPONSE"
-        if isinstance(exc, ModelNoResponseError)
-        else "MODEL_CONTRACT_INVALID"
+        "MODEL_NO_RESPONSE" if isinstance(exc, ModelNoResponseError) else "MODEL_CONTRACT_INVALID"
     )
     if final and auto_fail:
         document.status = "failed"
@@ -1671,7 +1836,7 @@ def _mark_contract_failure(
     document.error_message = _model_contract_error_message(exc)
 
 
-def _plan_post_publication(session, batch_id: str) -> list[str]:
+def _plan_post_publication_unlocked(session, batch_id: str) -> list[str]:
     shard_ids: list[str] = []
     batch = session.get(CleaningBatch, batch_id)
     if batch is None:
@@ -1682,17 +1847,13 @@ def _plan_post_publication(session, batch_id: str) -> list[str]:
             # same file.  Serialize per-file planning so shard indexes and
             # the unique content constraint are evaluated against a stable
             # snapshot instead of racing each other.
-            select(CleaningFile)
-            .where(CleaningFile.batch_id == batch_id)
-            .with_for_update()
+            select(CleaningFile).where(CleaningFile.batch_id == batch_id).with_for_update()
         )
     )
     for file_row in files:
         existing = list(
             session.scalars(
-                select(DifyPublicationShard).where(
-                    DifyPublicationShard.file_id == file_row.id
-                )
+                select(DifyPublicationShard).where(DifyPublicationShard.file_id == file_row.id)
             )
         )
         documents = list(
@@ -1712,17 +1873,9 @@ def _plan_post_publication(session, batch_id: str) -> list[str]:
         # unassigned documents and only requeue retryable shards.  Succeeded
         # shards must not be submitted a second time.
         if not documents:
-            shard_ids.extend(
-                item.id
-                for item in existing
-                if item.status == "shard_pending"
-            )
+            shard_ids.extend(item.id for item in existing if item.status == "shard_pending")
             continue
-        shard_ids.extend(
-            item.id
-            for item in existing
-            if item.status == "shard_pending"
-        )
+        shard_ids.extend(item.id for item in existing if item.status == "shard_pending")
         if documents:
             from ...cleaning import finalize_knowledge_markdown
 
@@ -1751,22 +1904,37 @@ def _plan_post_publication(session, batch_id: str) -> list[str]:
             default=0,
         )
         seen_content_sha256 = {
-            str(item.content_sha256)
+            _existing_shard_publication_digest(item)
             for item in existing
             if item.content_sha256
             and item.status in {"succeeded", "shard_pending", "shard_indexing"}
         }
+        global_shards = list(
+            session.scalars(
+                select(DifyPublicationShard)
+                .join(CleaningFile, DifyPublicationShard.file_id == CleaningFile.id)
+                .join(CleaningBatch, CleaningFile.batch_id == CleaningBatch.id)
+                .where(
+                    CleaningBatch.knowledge_base_code == batch.knowledge_base_code,
+                    CleaningBatch.strategy_code == batch.strategy_code,
+                    CleaningBatch.spec_revision == batch.spec_revision,
+                    DifyPublicationShard.status.in_(
+                        ("succeeded", "shard_pending", "shard_indexing")
+                    ),
+                    DifyPublicationShard.file_id != file_row.id,
+                )
+            )
+        )
+        seen_content_sha256.update(
+            _normalized_publication_digest(item.markdown) for item in global_shards if item.markdown
+        )
         for plan in plans:
             from ...cleaning import finalize_knowledge_markdown
 
             shard_markdown = finalize_knowledge_markdown(plan.markdown)
-            digest = hashlib.sha256(shard_markdown.encode("utf-8")).hexdigest()
+            digest = _normalized_publication_digest(shard_markdown)
             existing_same_content = next(
-                (
-                    item
-                    for item in existing
-                    if item.content_sha256 == digest
-                ),
+                (item for item in existing if _existing_shard_publication_digest(item) == digest),
                 None,
             )
             if existing_same_content is not None and existing_same_content.status == "failed":
@@ -1777,9 +1945,7 @@ def _plan_post_publication(session, batch_id: str) -> list[str]:
                 existing_same_content.attempts = 0
                 existing_same_content.last_error = ""
                 existing_same_content.item_count = len(plan.items)
-                existing_same_content.content_bytes = len(
-                    shard_markdown.encode("utf-8")
-                )
+                existing_same_content.content_bytes = len(shard_markdown.encode("utf-8"))
                 existing_same_content.markdown = shard_markdown
                 if existing_same_content.id not in shard_ids:
                     shard_ids.append(existing_same_content.id)
@@ -1804,9 +1970,43 @@ def _plan_post_publication(session, batch_id: str) -> list[str]:
                     document.audit_json = {
                         **(document.audit_json or {}),
                         "duplicate_of_content_sha256": digest,
+                        "duplicate_scope": {
+                            "knowledge_base_code": batch.knowledge_base_code,
+                            "strategy_code": batch.strategy_code,
+                            "spec_revision": batch.spec_revision,
+                        },
                     }
                 continue
             seen_content_sha256.add(digest)
+            first_document = by_id[plan.items[0].item_id]
+            from ...cleaning import STRATEGY_REGISTRY
+            from .cleaning import _project_dify_metadata
+
+            shard_metadata = dict(first_document.metadata_json or {})
+            shard_metadata.update(
+                {
+                    "record_type": str(shard_metadata.get("record_type") or "article"),
+                    "content_format": "markdown",
+                    "cleaning_strategy": batch.strategy_code,
+                    "cleaning_spec_revision": batch.spec_revision,
+                    "source_title": str(shard_metadata.get("source_title") or first_document.title),
+                }
+            )
+            shard_metadata = _project_dify_metadata(
+                shard_metadata,
+                strategy=STRATEGY_REGISTRY.get(batch.strategy_code),
+            )
+            shard_metadata["chunking"] = {
+                "doc_form": "hierarchical_model",
+                "process_mode": "hierarchical",
+                "parent_mode": "paragraph",
+                "parent_separator": "<<<DIFY_PARENT>>>",
+                "parent_max_tokens": settings.dify_parent_max_tokens,
+                "child_separator": "<<<DIFY_CHILD>>>",
+                "child_max_tokens": 800,
+                "parent_chunk_overlap": 0,
+                "child_chunk_overlap": 0,
+            }
             shard = DifyPublicationShard(
                 file_id=file_row.id,
                 shard_index=next_shard_index + plan.index,
@@ -1815,29 +2015,7 @@ def _plan_post_publication(session, batch_id: str) -> list[str]:
                 content_bytes=len(shard_markdown.encode("utf-8")),
                 content_sha256=digest,
                 markdown=shard_markdown,
-                metadata_json={
-                    "record_type": str(
-                        (by_id[plan.items[0].item_id].metadata_json or {}).get(
-                            "record_type"
-                        )
-                        or "article"
-                    ),
-                    "content_format": "markdown",
-                    "cleaning_strategy": batch.strategy_code,
-                    "cleaning_spec_revision": batch.spec_revision,
-                    "source_title": by_id[plan.items[0].item_id].title,
-                    "chunking": {
-                        "doc_form": "hierarchical_model",
-                        "process_mode": "hierarchical",
-                        "parent_mode": "paragraph",
-                        "parent_separator": "<<<DIFY_PARENT>>>",
-                        "parent_max_tokens": settings.dify_parent_max_tokens,
-                        "child_separator": "<<<DIFY_CHILD>>>",
-                        "child_max_tokens": 800,
-                        "parent_chunk_overlap": 0,
-                        "child_chunk_overlap": 0,
-                    },
-                },
+                metadata_json=shard_metadata,
             )
             session.add(shard)
             session.flush()
@@ -1848,6 +2026,21 @@ def _plan_post_publication(session, batch_id: str) -> list[str]:
             shard_ids.append(shard.id)
     session.commit()
     return shard_ids
+
+
+def _plan_post_publication(session, batch_id: str) -> list[str]:
+    """Plan post shards under one knowledge-base/contract publication lock."""
+
+    batch = session.get(CleaningBatch, batch_id)
+    if batch is None:
+        raise ValueError("模型分片规划缺少清洗批次")
+    with cache.lock(
+        f"ai:content-publication:{batch.knowledge_base_code}:{batch.strategy_code}:{batch.spec_revision}",
+        ttl=3600,
+    ) as acquired:
+        if not acquired:
+            raise RuntimeError("同一清洗契约正在规划发布，请稍后重试")
+        return _plan_post_publication_unlocked(session, batch_id)
 
 
 def _fallback_failed_model_documents(
@@ -1869,9 +2062,7 @@ def _fallback_failed_model_documents(
     batch = session.get(CleaningBatch, batch_id)
     if batch is None or batch.strategy_code == "course_route_catalog":
         return False, [], []
-    documents = list(
-        _iter_documents_for_batch(session, batch_id)
-    )
+    documents = list(_iter_documents_for_batch(session, batch_id))
     candidates = [
         document
         for document in documents
@@ -1923,9 +2114,7 @@ def _fallback_failed_model_documents(
         first_document_by_file: dict[str, str] = {}
         for document in documents:
             if document.status == "pending":
-                first_document_by_file.setdefault(
-                    str(document.file_id), str(document.id)
-                )
+                first_document_by_file.setdefault(str(document.file_id), str(document.id))
         pending_ids = list(first_document_by_file.values())
     _finish_batch(session, batch_id)
     return True, pending_ids, shard_ids
@@ -1935,8 +2124,6 @@ def _handle_terminal_batch_result_error(
     session,
     task: ModelCleaningTask,
     batch: CleaningBatch,
-    client: BailianClient,
-    file_ids: list[str],
     exc: Exception,
 ) -> tuple[list[str], list[str]]:
     """Close a terminal Batch whose output cannot be parsed or reconciled."""
@@ -1969,12 +2156,14 @@ def _handle_terminal_batch_result_error(
 
     documents = list(
         session.scalars(
-            select(CleaningDocument)
-            .join(CleaningFile)
-            .where(CleaningFile.batch_id == batch.id)
+            select(CleaningDocument).join(CleaningFile).where(CleaningFile.batch_id == batch.id)
         )
     )
-    previous = dict(task.result_counts or {})
+    previous = {
+        key: value
+        for key, value in (task.result_counts or {}).items()
+        if key != "provider_terminal_batches"
+    }
     task.result_counts = {
         **previous,
         "candidate_count": task.candidate_count,
@@ -1984,13 +2173,10 @@ def _handle_terminal_batch_result_error(
         "fallback": sum(
             1
             for document in documents
-            if (document.audit_json or {}).get("source_markdown_fallback", {}).get(
-                "applied"
-            )
+            if (document.audit_json or {}).get("source_markdown_fallback", {}).get("applied")
         ),
         "failed": sum(1 for document in documents if document.status == "failed"),
     }
-    _delete_provider_files(client, task, file_ids)
     task.provider_batch_id = None
     task.provider_batch_ids = []
     task.provider_input_file_ids = []
@@ -1998,8 +2184,7 @@ def _handle_terminal_batch_result_error(
     task.provider_error_file_ids = []
     task.status = "failed"
     task.last_error = (
-        "百炼Batch结果解析失败，已停止轮询："
-        + safe_exception_message(exc, limit=1800)
+        "百炼Batch结果解析失败，已停止轮询：" + safe_exception_message(exc, limit=1800)
     )[:2000]
     return pending_ids, shard_ids
 
@@ -2010,9 +2195,7 @@ def _queue_publication_outputs(
     for document_id in pending_document_ids:
         from .cleaning import process_cleaning_document
 
-        process_cleaning_document.apply_async(
-            args=[document_id], queue="ai_publication"
-        )
+        process_cleaning_document.apply_async(args=[document_id], queue="ai_publication")
     for shard_id in shard_ids:
         publish_dify_shard.apply_async(args=[shard_id], queue="ai_publication")
 
@@ -2032,8 +2215,12 @@ def _validate_shard_structure(structure: dict[str, Any], *, item_count: int) -> 
 
 def _finish_model_task(task_id: str) -> None:
     with SessionLocal() as session:
-        task = session.get(ModelCleaningTask, task_id)
+        task = session.scalar(
+            select(ModelCleaningTask).where(ModelCleaningTask.id == task_id).with_for_update()
+        )
         if task is None:
+            return
+        if task.status == "cancelled":
             return
         batch = session.get(CleaningBatch, task.batch_id)
         task.status = "completed"
@@ -2045,13 +2232,15 @@ def _finish_model_task(task_id: str) -> None:
         from .cleaning import _finish_batch, _refresh_file_state
 
         file_ids = list(
-            session.scalars(
-                select(CleaningFile.id).where(CleaningFile.batch_id == task.batch_id)
-            )
+            session.scalars(select(CleaningFile.id).where(CleaningFile.batch_id == task.batch_id))
         )
         for file_id in file_ids:
             _refresh_file_state(session, str(file_id), commit=False)
-        if batch and batch.strategy_code == "course_route_catalog" and settings.course_catalog_auto_publish:
+        if (
+            batch
+            and batch.strategy_code == "course_route_catalog"
+            and settings.course_catalog_auto_publish
+        ):
             catalog_documents = list(
                 session.scalars(
                     select(CleaningDocument)
@@ -2088,9 +2277,7 @@ def _finish_model_task(task_id: str) -> None:
                 _finish_batch(session, batch.id)
             session.commit()
             for shard_id in shard_ids:
-                publish_dify_shard.apply_async(
-                    args=[shard_id], queue="ai_publication"
-                )
+                publish_dify_shard.apply_async(args=[shard_id], queue="ai_publication")
         elif batch:
             pending_documents = list(
                 session.execute(
@@ -2182,19 +2369,24 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                     payload: dict[str, Any] | None = None
                     try:
                         request = _request(document, batch.strategy_code)
-                        payload, item_usage = _realtime_chat(
-                            client, request, model=task.model
+                        _store_model_review_request_context(
+                            document,
+                            request,
+                            model_name=task.model,
+                            prompt_version=task.prompt_version,
                         )
+                        session.commit()
+                        payload, item_usage = _realtime_chat(client, request, model=task.model)
                         _apply_model_payload(
                             document,
                             batch.strategy_code,
                             request,
                             payload,
                             session=session,
+                            model_name=task.model,
+                            prompt_version=task.prompt_version,
                         )
-                        _finalize_model_document(
-                            document, strategy_code=batch.strategy_code
-                        )
+                        _finalize_model_document(document, strategy_code=batch.strategy_code)
                         _apply_source_markdown_fallback(
                             document,
                             batch.strategy_code,
@@ -2210,19 +2402,24 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                         document.audit_json = audit
                         try:
                             request = _request(document, batch.strategy_code)
-                            payload, item_usage = _realtime_chat(
-                                client, request, model=task.model
+                            _store_model_review_request_context(
+                                document,
+                                request,
+                                model_name=task.model,
+                                prompt_version=task.prompt_version,
                             )
+                            session.commit()
+                            payload, item_usage = _realtime_chat(client, request, model=task.model)
                             _apply_model_payload(
                                 document,
                                 batch.strategy_code,
                                 request,
                                 payload,
                                 session=session,
+                                model_name=task.model,
+                                prompt_version=task.prompt_version,
                             )
-                            _finalize_model_document(
-                                document, strategy_code=batch.strategy_code
-                            )
+                            _finalize_model_document(document, strategy_code=batch.strategy_code)
                             _apply_source_markdown_fallback(
                                 document,
                                 batch.strategy_code,
@@ -2259,8 +2456,7 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                         if (
                             batch.strategy_code == "personal_business_consultation"
                             and isinstance(payload, dict)
-                            and str(payload.get("schema_version") or "")
-                            == "consultation-rag-v1"
+                            and str(payload.get("schema_version") or "") == "consultation-rag-v1"
                         ):
                             # The standalone cleaner allows one bounded
                             # semantic repair before taking the conservative
@@ -2272,17 +2468,26 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                                 audit["model_repair_attempted"] = True
                                 document.audit_json = audit
                                 request = _request(document, batch.strategy_code)
+                                repair_hint = (
+                                    "只修复 consultation-rag-v1 的 JSON/证据契约；"
+                                    "每个案例至少保留 background 与 problem 的可回溯原文证据，"
+                                    "retrieval_queries 必须为 3~6 条简体中文问法；"
+                                    "不要改变事实、不要新增案例或人物。\n"
+                                    + _model_contract_retry_hint(contract_exc)
+                                )
+                                _store_model_review_request_context(
+                                    document,
+                                    request,
+                                    model_name=task.model,
+                                    prompt_version=task.prompt_version,
+                                    repair_hint=repair_hint,
+                                )
+                                session.commit()
                                 payload, item_usage = _realtime_chat(
                                     client,
                                     request,
                                     model=task.model,
-                                    repair_hint=(
-                                        "只修复 consultation-rag-v1 的 JSON/证据契约；"
-                                        "每个案例至少保留 background 与 problem 的可回溯原文证据，"
-                                        "retrieval_queries 必须为 3~6 条简体中文问法；"
-                                        "不要改变事实、不要新增案例或人物。\n"
-                                        + _model_contract_retry_hint(contract_exc)
-                                    ),
+                                    repair_hint=repair_hint,
                                 )
                                 _apply_model_payload(
                                     document,
@@ -2290,6 +2495,9 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                                     request,
                                     payload,
                                     session=session,
+                                    model_name=task.model,
+                                    prompt_version=task.prompt_version,
+                                    repair_hint=repair_hint,
                                 )
                                 _finalize_model_document(
                                     document, strategy_code=batch.strategy_code
@@ -2349,13 +2557,11 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                 ):
                     _fail_catalog_auto_run(session, batch, "模型任务执行异常")
                 elif batch is not None:
-                    _, fallback_pending_ids, fallback_shard_ids = (
-                        _fallback_failed_model_documents(
-                            session,
-                            batch.id,
-                            reason_code="MODEL_TASK_FAILED",
-                            reason_message="模型任务执行失败，已使用清洗源 Markdown 继续入库",
-                        )
+                    _, fallback_pending_ids, fallback_shard_ids = _fallback_failed_model_documents(
+                        session,
+                        batch.id,
+                        reason_code="MODEL_TASK_FAILED",
+                        reason_message="模型任务执行失败，已使用清洗源 Markdown 继续入库",
                     )
                     if fallback_pending_ids or fallback_shard_ids:
                         batch.status = "processing"
@@ -2400,11 +2606,19 @@ def _write_batch_files(
     try:
         for document in documents:
             request = _request(document, batch.strategy_code)
+            repair_hint = (repair_hints or {}).get(document.id, "")
+            _store_model_review_request_context(
+                document,
+                request,
+                model_name=task.model,
+                prompt_version=task.prompt_version,
+                repair_hint=repair_hint,
+            )
             line = batch_request_line(
                 request,
                 prompt_version=task.prompt_version,
                 model=task.model,
-                repair_hint=(repair_hints or {}).get(document.id, ""),
+                repair_hint=repair_hint,
             )
             if len(line) > 1_000_000:
                 raise ValueError("单条Batch请求超过1MB")
@@ -2433,20 +2647,35 @@ def _recover_created_provider_batches(
     provider_batch_ids: list[str],
     provider_input_file_ids: list[str],
     reason: str,
-) -> bool:
+) -> bool | str:
     """Persist remote IDs after a commit failure in the create window."""
     if not provider_batch_ids:
         return False
     with SessionLocal() as session:
-        task = session.get(ModelCleaningTask, task_id)
+        task = session.scalar(
+            select(ModelCleaningTask).where(ModelCleaningTask.id == task_id).with_for_update()
+        )
         if task is None:
             return False
         batch = session.get(CleaningBatch, task.batch_id)
+        if task.status == "cancelled":
+            # The remote create may have completed after the cancelling
+            # request committed.  Persist the IDs without reviving the local
+            # task; the submitter will cancel these exact IDs before return.
+            task.provider_batch_ids = list(provider_batch_ids)
+            task.provider_batch_id = provider_batch_ids[0]
+            task.provider_input_file_ids = list(provider_input_file_ids)
+            task.last_error = reason[:2000]
+            session.commit()
+            return "cancelled"
         task.provider_batch_ids = list(provider_batch_ids)
         task.provider_batch_id = provider_batch_ids[0]
         task.provider_input_file_ids = list(provider_input_file_ids)
         task.provider_output_file_ids = []
         task.provider_error_file_ids = []
+        result_counts = dict(task.result_counts or {})
+        result_counts.pop("provider_terminal_batches", None)
+        task.result_counts = result_counts
         task.status = "batch_running"
         task.last_error = reason[:2000]
         if batch is not None:
@@ -2472,7 +2701,9 @@ def submit_batch_model_task(self, task_id: str) -> bool:
     fallback_shard_ids: list[str] = []
     try:
         with SessionLocal() as session:
-            task = session.get(ModelCleaningTask, task_id)
+            task = session.scalar(
+                select(ModelCleaningTask).where(ModelCleaningTask.id == task_id).with_for_update()
+            )
             if task is None or task.status not in {"approved", "batch_uploading"}:
                 return False
             if task.approval_fingerprint != task.candidate_fingerprint:
@@ -2485,9 +2716,7 @@ def submit_batch_model_task(self, task_id: str) -> bool:
                     .join(CleaningFile)
                     .where(
                         CleaningFile.batch_id == task.batch_id,
-                        CleaningDocument.status.in_(
-                            ("awaiting_model", "model_processing")
-                        ),
+                        CleaningDocument.status.in_(("awaiting_model", "model_processing")),
                     )
                 )
                 or 0
@@ -2504,8 +2733,15 @@ def submit_batch_model_task(self, task_id: str) -> bool:
             batch.status = "model_batch_uploading"
             session.commit()
             client = _client()
-            if task.provider_batch_ids or task.provider_input_file_ids:
-                for provider_batch_id in task.provider_batch_ids or []:
+            if get_provider_batch_ids(task) or task.provider_input_file_ids:
+                task = session.scalar(
+                    select(ModelCleaningTask)
+                    .where(ModelCleaningTask.id == task_id)
+                    .with_for_update()
+                )
+                if task is None or task.status != "batch_uploading":
+                    return False
+                for provider_batch_id in get_provider_batch_ids(task):
                     client.cancel_batch(provider_batch_id)
                 _delete_provider_files(
                     client,
@@ -2524,20 +2760,52 @@ def submit_batch_model_task(self, task_id: str) -> bool:
                     batch,
                     _iter_documents_for_batch(session, task.batch_id),
                 )
+                session.commit()
                 input_ids: list[str] = []
                 batch_ids: list[str] = []
                 for path in paths:
+                    task = session.scalar(
+                        select(ModelCleaningTask)
+                        .where(ModelCleaningTask.id == task_id)
+                        .with_for_update()
+                    )
+                    if task is None or task.status != "batch_uploading":
+                        session.rollback()
+                        return False
                     input_id = client.upload_batch_path(str(path))
                     input_ids.append(input_id)
                     created_input_ids.append(input_id)
+                    task = session.scalar(
+                        select(ModelCleaningTask)
+                        .where(ModelCleaningTask.id == task_id)
+                        .with_for_update()
+                    )
+                    if task is None or task.status != "batch_uploading":
+                        session.rollback()
+                        _cleanup_cancelled_batch_input(client, task_id, input_id)
+                        return False
                     task.provider_input_file_ids = list(input_ids)
                     session.commit()
+                    task = session.scalar(
+                        select(ModelCleaningTask)
+                        .where(ModelCleaningTask.id == task_id)
+                        .with_for_update()
+                    )
+                    if task is None or task.status != "batch_uploading":
+                        session.rollback()
+                        _cleanup_cancelled_batch_input(client, task_id, input_id)
+                        return False
                     batch_id = client.create_batch(input_id)
                     batch_ids.append(batch_id)
                     created_batch_ids.append(batch_id)
                     task.provider_batch_ids = list(batch_ids)
                     task.provider_batch_id = batch_ids[0]
                     session.commit()
+            task = session.scalar(
+                select(ModelCleaningTask).where(ModelCleaningTask.id == task_id).with_for_update()
+            )
+            if task is None or task.status != "batch_uploading":
+                return False
             task.provider_input_file_ids = input_ids
             task.provider_batch_ids = batch_ids
             task.provider_batch_id = batch_ids[0] if batch_ids else None
@@ -2547,9 +2815,7 @@ def submit_batch_model_task(self, task_id: str) -> bool:
                 document.status = "model_processing"
                 document.stage = "model_batch_running"
             session.commit()
-        poll_batch_model_task.apply_async(
-            args=[task_id], queue="ai_model_batch", countdown=60
-        )
+        poll_batch_model_task.apply_async(args=[task_id], queue="ai_model_batch", countdown=60)
         return True
     except Exception as exc:
         logger.exception("batch model submit failed")
@@ -2564,46 +2830,109 @@ def submit_batch_model_task(self, task_id: str) -> bool:
             except Exception:
                 logger.exception("failed to recover provider batch IDs after commit failure")
                 recovered = False
+            if recovered == "cancelled":
+                if client is not None:
+                    _cleanup_cancelled_provider_batches(
+                        client,
+                        task_id,
+                        created_batch_ids,
+                        created_input_ids,
+                    )
+                return False
             if recovered:
                 poll_batch_model_task.apply_async(
                     args=[task_id], queue="ai_model_batch", countdown=60
                 )
                 return False
+            if client is not None and (created_batch_ids or created_input_ids):
+                # Recovery can fail after the provider accepted a Batch. Do
+                # exact compensating cleanup before entering the local retry
+                # path so returned output/error files are not orphaned.
+                _cleanup_cancelled_provider_batches(
+                    client,
+                    task_id,
+                    created_batch_ids,
+                    created_input_ids,
+                )
         replan_batch_id = ""
         with SessionLocal() as session:
-            task = session.get(ModelCleaningTask, task_id)
+            task = session.scalar(
+                select(ModelCleaningTask).where(ModelCleaningTask.id == task_id).with_for_update()
+            )
             if task:
+                cancelled_task = task.status == "cancelled"
                 task.last_error = safe_exception_message(exc, limit=2000)
                 batch = session.get(CleaningBatch, task.batch_id)
                 if client:
-                    for provider_batch_id in task.provider_batch_ids or []:
-                        try:
-                            client.cancel_batch(provider_batch_id)
-                        except Exception:
-                            logger.exception("failed to cancel partial Bailian batch")
-                    _delete_provider_files(
-                        client,
-                        task,
-                        [
+                    partial_cancel_failed = False
+                    cleanup_file_ids = {
+                        str(file_id)
+                        for file_id in [
                             *(task.provider_input_file_ids or []),
                             *(task.provider_output_file_ids or []),
                             *(task.provider_error_file_ids or []),
-                        ],
+                        ]
+                        if file_id
+                    }
+                    for provider_batch_id in get_provider_batch_ids(task):
+                        try:
+                            cancelled = client.cancel_batch(provider_batch_id)
+                            cleanup_file_ids.update(
+                                str(cancelled.get(field) or "")
+                                for field in ("output_file_id", "error_file_id")
+                                if cancelled.get(field)
+                            )
+                        except Exception as cancel_exc:
+                            partial_cancel_failed = True
+                            logger.exception("failed to cancel partial Bailian batch")
+                            existing = session.scalar(
+                                select(ExternalDeletionTask)
+                                .where(
+                                    ExternalDeletionTask.kind == "bailian_batch",
+                                    ExternalDeletionTask.external_id == provider_batch_id,
+                                )
+                                .limit(1)
+                            )
+                            if existing is None:
+                                session.add(
+                                    ExternalDeletionTask(
+                                        kind="bailian_batch",
+                                        external_id=provider_batch_id,
+                                        payload={"model_task_id": task.id},
+                                        attempts=0,
+                                        last_error=safe_exception_message(
+                                            cancel_exc,
+                                            limit=1000,
+                                        ),
+                                    )
+                                )
+                    _delete_provider_files(
+                        client,
+                        task,
+                        sorted(cleanup_file_ids),
                     )
-                    if (
-                        batch is not None
-                        and batch.strategy_code == "course_route_catalog"
-                        and settings.course_catalog_auto_publish
-                    ):
-                        task.status = "failed"
-                        _fail_catalog_auto_run(session, batch, "模型批量任务提交异常")
-                    else:
-                        task.status = "awaiting_approval"
-                        task.approval_fingerprint = ""
-                        task.approved_at = None
-                        if batch:
-                            batch.status = "awaiting_model_approval"
-                else:
+                    if partial_cancel_failed:
+                        task.cleanup_status = "pending_retry"
+                    task.provider_batch_ids = []
+                    task.provider_batch_id = None
+                    task.provider_input_file_ids = []
+                    task.provider_output_file_ids = []
+                    task.provider_error_file_ids = []
+                    if not cancelled_task:
+                        if (
+                            batch is not None
+                            and batch.strategy_code == "course_route_catalog"
+                            and settings.course_catalog_auto_publish
+                        ):
+                            task.status = "failed"
+                            _fail_catalog_auto_run(session, batch, "模型批量任务提交异常")
+                        else:
+                            task.status = "awaiting_approval"
+                            task.approval_fingerprint = ""
+                            task.approved_at = None
+                            if batch:
+                                batch.status = "awaiting_model_approval"
+                elif not cancelled_task:
                     if (
                         batch is not None
                         and batch.strategy_code == "course_route_catalog"
@@ -2616,7 +2945,7 @@ def submit_batch_model_task(self, task_id: str) -> bool:
                         replan_batch_id = task.batch_id
                         if batch:
                             batch.status = "processing"
-                if not (
+                if not cancelled_task and not (
                     batch is not None
                     and batch.strategy_code == "course_route_catalog"
                     and settings.course_catalog_auto_publish
@@ -2676,7 +3005,7 @@ def _delete_provider_files(
     client: BailianClient,
     task: ModelCleaningTask,
     file_ids: list[str],
-) -> None:
+) -> list[str]:
     failed: list[str] = []
     for file_id in sorted(set(file_ids)):
         try:
@@ -2690,11 +3019,143 @@ def _delete_provider_files(
                         external_id=file_id,
                         payload={"model_task_id": task.id},
                         attempts=0,
-                    last_error=safe_exception_message(exc, limit=1000),
+                        last_error=safe_exception_message(exc, limit=1000),
                     )
                 )
                 cleanup_session.commit()
-    task.cleanup_status = "pending_retry" if failed else "completed"
+    if failed:
+        task.cleanup_status = "pending_retry"
+    elif task.cleanup_status != "pending_retry":
+        task.cleanup_status = "completed"
+    return failed
+
+
+def _cleanup_provider_files_for_task(
+    client: BailianClient,
+    task_id: str,
+    file_ids: list[str],
+) -> None:
+    """Delete provider files only after the local result is durable."""
+
+    if not file_ids:
+        return
+    with SessionLocal() as session:
+        task = session.scalar(
+            select(ModelCleaningTask).where(ModelCleaningTask.id == task_id).with_for_update()
+        )
+        if task is None:
+            return
+        failed_file_ids = _delete_provider_files(client, task, file_ids)
+        clear_successful_bailian_file_tasks(
+            session,
+            [file_id for file_id in file_ids if file_id not in set(failed_file_ids)],
+        )
+        session.commit()
+
+
+def _cleanup_cancelled_provider_batches(
+    client: BailianClient,
+    task_id: str,
+    provider_batch_ids: list[str],
+    provider_input_file_ids: list[str],
+) -> None:
+    """Cancel recovered provider Batches and delete their exact files."""
+
+    with SessionLocal() as session:
+        task = session.scalar(
+            select(ModelCleaningTask).where(ModelCleaningTask.id == task_id).with_for_update()
+        )
+        if task is None:
+            return
+        cleanup_file_ids = {str(file_id) for file_id in provider_input_file_ids if file_id}
+        pending_batch_ids: set[str] = set()
+        terminal_output_ids: set[str] = set()
+        terminal_error_ids: set[str] = set()
+        cancel_errors: list[str] = []
+        for provider_batch_id in provider_batch_ids:
+            try:
+                cancelled = client.cancel_batch(provider_batch_id)
+                provider_status = str(cancelled.get("status") or "cancelled")
+                returned_output_id = str(cancelled.get("output_file_id") or "")
+                returned_error_id = str(cancelled.get("error_file_id") or "")
+                if returned_output_id:
+                    cleanup_file_ids.add(returned_output_id)
+                    terminal_output_ids.add(returned_output_id)
+                if returned_error_id:
+                    cleanup_file_ids.add(returned_error_id)
+                    terminal_error_ids.add(returned_error_id)
+                if provider_status not in PROVIDER_TERMINAL:
+                    pending_batch_ids.add(provider_batch_id)
+                    cancel_errors.append(f"{provider_batch_id}:供应商取消仍处于 {provider_status}")
+            except Exception as exc:
+                pending_batch_ids.add(provider_batch_id)
+                cancel_errors.append(
+                    f"{provider_batch_id}:" + safe_exception_message(exc, limit=1000)
+                )
+        if pending_batch_ids:
+            task.cleanup_status = "pending_retry"
+            task.last_error = ("取消孤儿 Batch 未终态：" + "；".join(cancel_errors))[:2000]
+            task.provider_batch_ids = sorted(pending_batch_ids)
+            task.provider_batch_id = sorted(pending_batch_ids)[0]
+            task.provider_input_file_ids = sorted(cleanup_file_ids)
+            task.provider_output_file_ids = sorted(terminal_output_ids)
+            task.provider_error_file_ids = sorted(terminal_error_ids)
+            ensure_bailian_cleanup_tasks(
+                session,
+                task,
+                provider_batch_ids=pending_batch_ids,
+                provider_file_ids=cleanup_file_ids,
+                include_file_tasks=False,
+                last_error=task.last_error,
+            )
+            session.commit()
+            return
+        failed_file_ids = _delete_provider_files(client, task, sorted(cleanup_file_ids))
+        clear_successful_bailian_file_tasks(
+            session,
+            [file_id for file_id in cleanup_file_ids if file_id not in set(failed_file_ids)],
+        )
+        if failed_file_ids:
+            task.cleanup_status = "pending_retry"
+        task.provider_batch_ids = []
+        task.provider_batch_id = None
+        task.provider_input_file_ids = []
+        task.provider_output_file_ids = []
+        task.provider_error_file_ids = []
+        session.commit()
+
+
+def _cleanup_cancelled_batch_input(
+    client: BailianClient,
+    task_id: str,
+    file_id: str,
+) -> None:
+    """Delete an input uploaded after cancellation, with exact retry fallback."""
+
+    try:
+        client.delete_file(file_id)
+        return
+    except Exception as exc:
+        with SessionLocal() as session:
+            existing = session.scalar(
+                select(ExternalDeletionTask)
+                .where(
+                    ExternalDeletionTask.kind == "bailian_file",
+                    ExternalDeletionTask.external_id == file_id,
+                )
+                .limit(1)
+            )
+            if existing is None:
+                session.add(
+                    ExternalDeletionTask(
+                        kind="bailian_file",
+                        external_id=file_id,
+                        payload={"model_task_id": task_id},
+                        attempts=0,
+                        last_error=safe_exception_message(exc, limit=1000),
+                    )
+                )
+            session.commit()
 
 
 @celery_app.task(
@@ -2712,7 +3173,11 @@ def poll_batch_model_task(self, task_id: str) -> bool:
             try:
                 with SessionLocal() as session:
                     task = session.get(ModelCleaningTask, task_id)
-                    if task is not None and task.status == "batch_running" and task.provider_batch_ids:
+                    if (
+                        task is not None
+                        and task.status in {"batch_running", "validating"}
+                        and get_provider_batch_ids(task, include_terminal=True)
+                    ):
                         task.last_error = "Batch轮询锁后端不可用，已保留活动状态并重试"
                         session.commit()
                         reschedule = True
@@ -2732,14 +3197,22 @@ def poll_batch_model_task(self, task_id: str) -> bool:
     try:
         client = _client()
         with SessionLocal() as session:
-            task = session.get(ModelCleaningTask, task_id)
-            if task is None or task.status != "batch_running":
+            task = session.scalar(
+                select(ModelCleaningTask).where(ModelCleaningTask.id == task_id).with_for_update()
+            )
+            if task is None or task.status not in {"batch_running", "validating"}:
                 return False
-            if not task.provider_batch_ids:
+            provider_batch_ids = get_provider_batch_ids(task)
+            if not provider_batch_ids:
+                # A prior poll may have durably moved every provider Batch to
+                # terminal while the local result transition was interrupted.
+                # Only use the persisted terminal map as a recovery source;
+                # normal active polling should not re-query completed Batches.
+                provider_batch_ids = get_provider_batch_ids(task, include_terminal=True)
+            if not provider_batch_ids:
                 task.status = "failed"
                 task.last_error = (
-                    "Batch轮询失败：batch_running 但没有 provider_batch_ids，"
-                    "无法恢复供应商任务"
+                    "Batch轮询失败：batch_running 但没有 provider_batch_ids，无法恢复供应商任务"
                 )
                 task.result_counts = {
                     **(task.result_counts or {}),
@@ -2749,15 +3222,16 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                     batch.status = "processing"
                 session.commit()
                 return False
+            if task.provider_batch_ids != provider_batch_ids:
+                task.provider_batch_ids = provider_batch_ids
+                task.provider_batch_id = provider_batch_ids[0]
             batch = session.get(CleaningBatch, task.batch_id)
-            previous_terminal = (task.result_counts or {}).get(
-                "provider_terminal_batches", {}
-            )
+            previous_terminal = (task.result_counts or {}).get("provider_terminal_batches", {})
             if not isinstance(previous_terminal, dict):
                 previous_terminal = {}
             active_batch_ids: list[str] = []
             fetched_statuses: list[dict[str, Any]] = []
-            for provider_batch_id in task.provider_batch_ids:
+            for provider_batch_id in provider_batch_ids:
                 status = client.get_batch(provider_batch_id)
                 status = {**status, "provider_batch_id": provider_batch_id}
                 if str(status.get("status") or "") in PROVIDER_TERMINAL:
@@ -2765,15 +3239,30 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                 else:
                     active_batch_ids.append(provider_batch_id)
                     fetched_statuses.append(status)
+            terminal_output_ids = {
+                str(file_id) for file_id in (task.provider_output_file_ids or []) if file_id
+            }
+            terminal_error_ids = {
+                str(file_id) for file_id in (task.provider_error_file_ids or []) if file_id
+            }
+            for terminal_status in previous_terminal.values():
+                if terminal_status.get("output_file_id"):
+                    terminal_output_ids.add(str(terminal_status["output_file_id"]))
+                if terminal_status.get("error_file_id"):
+                    terminal_error_ids.add(str(terminal_status["error_file_id"]))
+            task.provider_output_file_ids = sorted(terminal_output_ids)
+            task.provider_error_file_ids = sorted(terminal_error_ids)
             statuses = [*previous_terminal.values(), *fetched_statuses]
+            task.result_counts = {**(task.result_counts or {})}
+            if previous_terminal:
+                # Keep terminal provider IDs until the local result transition
+                # is durable.  If the worker crashes in validating/finalize,
+                # the watchdog can replay the exact terminal result instead of
+                # treating the task as an approval-only orphan.
+                task.result_counts["provider_terminal_batches"] = previous_terminal
             if active_batch_ids:
                 task.provider_batch_ids = active_batch_ids
                 task.provider_batch_id = active_batch_ids[0]
-                task.result_counts = {
-                    **(task.result_counts or {}),
-                }
-                if previous_terminal:
-                    task.result_counts["provider_terminal_batches"] = previous_terminal
             else:
                 task.provider_batch_ids = []
                 task.provider_batch_id = None
@@ -2785,8 +3274,7 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                 # worker without retaining provider identifiers or payloads.
                 request_totals = {
                     key: sum(
-                        int((item.get("request_counts") or {}).get(key) or 0)
-                        for item in statuses
+                        int((item.get("request_counts") or {}).get(key) or 0) for item in statuses
                     )
                     for key in ("total", "completed", "failed")
                 }
@@ -2800,32 +3288,22 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                     args=[task_id], queue="ai_model_batch", countdown=60
                 )
                 return True
-            output_ids = [
-                str(item.get("output_file_id") or "")
-                for item in statuses
-                if item.get("output_file_id")
-            ]
-            error_ids = [
-                str(item.get("error_file_id") or "")
-                for item in statuses
-                if item.get("error_file_id")
-            ]
+            output_ids = sorted(terminal_output_ids)
+            error_ids = sorted(terminal_error_ids)
             task.provider_output_file_ids = output_ids
             task.provider_error_file_ids = error_ids
             if state_values != {"completed"}:
-                _delete_provider_files(
-                    client,
-                    task,
-                    [
-                        *(task.provider_input_file_ids or []),
-                        *output_ids,
-                        *error_ids,
-                    ],
-                )
+                cleanup_file_ids = [
+                    *(task.provider_input_file_ids or []),
+                    *output_ids,
+                    *error_ids,
+                ]
                 task.result_counts = {
-                    **(task.result_counts or {}),
-                    "provider_retry_reason": sorted(state_values),
+                    key: value
+                    for key, value in (task.result_counts or {}).items()
+                    if key != "provider_terminal_batches"
                 }
+                task.result_counts["provider_retry_reason"] = sorted(state_values)
                 auto_catalog = (
                     batch is not None
                     and batch.strategy_code == "course_route_catalog"
@@ -2858,58 +3336,99 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                     ):
                         document.status = "awaiting_model"
                         document.stage = "model_retry"
-                        document.error_code = (
-                            "MODEL_PROVIDER_RETRY_APPROVAL_REQUIRED"
-                        )
+                        document.error_code = "MODEL_PROVIDER_RETRY_APPROVAL_REQUIRED"
                         document.error_message = "Batch未完成，需重新确认费用后重试"
                     if batch:
                         batch.status = "awaiting_model_approval"
-                    if batch is not None:
-                        fallback_applied, fallback_pending_ids, fallback_shard_ids = (
-                            _fallback_failed_model_documents(
-                                session,
-                                batch.id,
-                                reason_code="MODEL_PROVIDER_FAILED",
-                                reason_message="百炼 Batch 未成功完成，已使用清洗源 Markdown 继续入库",
-                            )
+                if batch is not None:
+                    fallback_applied, fallback_pending_ids, fallback_shard_ids = (
+                        _fallback_failed_model_documents(
+                            session,
+                            batch.id,
+                            reason_code="MODEL_PROVIDER_FAILED",
+                            reason_message="百炼 Batch 未成功完成，已使用清洗源 Markdown 继续入库",
                         )
-                        if fallback_applied:
-                            task.status = "failed"
-                            task.approval_fingerprint = ""
-                            task.approved_at = None
-                            batch.status = "processing"
+                    )
+                    if fallback_applied:
+                        task.status = "failed"
+                        task.approval_fingerprint = ""
+                        task.approved_at = None
+                        batch.status = "processing"
                 session.commit()
+                _cleanup_provider_files_for_task(client, task_id, cleanup_file_ids)
                 _queue_publication_outputs(fallback_pending_ids, fallback_shard_ids)
                 return True
             task.status = "validating"
             if batch:
                 batch.status = "model_validating"
             session.commit()
+
+            def abort_if_model_task_cancelled(*, expected_status: str | None = None) -> bool:
+                locked_task = session.scalar(
+                    select(ModelCleaningTask)
+                    .where(ModelCleaningTask.id == task_id)
+                    .with_for_update()
+                )
+                if (
+                    locked_task is None
+                    or locked_task.status == "cancelled"
+                    or (expected_status is not None and locked_task.status != expected_status)
+                ):
+                    session.rollback()
+                    return True
+                return False
+
             results: dict[str, dict[str, Any]] = {}
             try:
                 for output_id in output_ids:
-                    parsed = _parse_provider_output(
-                        client.get_file_content(output_id)
-                    )
+                    try:
+                        content = client.get_file_content(output_id)
+                    except Exception as exc:
+                        if abort_if_model_task_cancelled():
+                            return False
+                        previous_counts = dict(task.result_counts or {})
+                        fetch_attempts = (
+                            int(previous_counts.get("provider_result_fetch_attempts") or 0) + 1
+                        )
+                        task.result_counts = {
+                            **previous_counts,
+                            "provider_result_fetch_attempts": fetch_attempts,
+                            "provider_result_fetch_error": safe_exception_message(exc, limit=1800),
+                        }
+                        task.last_error = (
+                            "百炼 Batch 输出文件暂时不可读取，保留供应商结果并重试："
+                            + safe_exception_message(exc, limit=1800)
+                        )[:2000]
+                        task.status = "batch_running"
+                        if batch is not None:
+                            batch.status = "model_batch_running"
+                        session.commit()
+                        poll_batch_model_task.apply_async(
+                            args=[task_id], queue="ai_model_batch", countdown=60
+                        )
+                        return True
+                    parsed = _parse_provider_output(content)
                     overlap = set(results) & set(parsed)
                     if overlap:
-                        raise ValueError(
-                            f"Batch跨文件custom_id重复：{sorted(overlap)[:3]}"
-                        )
+                        raise ValueError(f"Batch跨文件custom_id重复：{sorted(overlap)[:3]}")
                     results.update(parsed)
                 expected_ids = {
-                    build_custom_id(
-                        _request(document, batch.strategy_code), task.prompt_version
-                    )
+                    build_custom_id(_request(document, batch.strategy_code), task.prompt_version)
                     for document in _iter_documents_for_batch(session, task.batch_id)
                 }
                 unknown_ids = set(results) - expected_ids
                 if unknown_ids:
                     raise ValueError(
-                        "Batch结果包含不属于当前候选集的custom_id："
-                        f"{sorted(unknown_ids)[:3]}"
+                        f"Batch结果包含不属于当前候选集的custom_id：{sorted(unknown_ids)[:3]}"
                     )
             except Exception as exc:
+                if abort_if_model_task_cancelled():
+                    return False
+                cleanup_file_ids = [
+                    *(task.provider_input_file_ids or []),
+                    *output_ids,
+                    *error_ids,
+                ]
                 (
                     fallback_pending_ids,
                     fallback_shard_ids,
@@ -2917,18 +3436,11 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                     session,
                     task,
                     batch,
-                    client,
-                    [
-                        *(task.provider_input_file_ids or []),
-                        *output_ids,
-                        *error_ids,
-                    ],
                     exc,
                 )
                 session.commit()
-                _queue_publication_outputs(
-                    fallback_pending_ids, fallback_shard_ids
-                )
+                _cleanup_provider_files_for_task(client, task_id, cleanup_file_ids)
+                _queue_publication_outputs(fallback_pending_ids, fallback_shard_ids)
                 return True
             counts = {
                 "succeeded": 0,
@@ -2960,9 +3472,7 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                         final=False,
                     )
                     document.error_code = "MODEL_BATCH_RESULT_MISSING"
-                    retry_hints[document.id] = (
-                        "请输出完整 JSON，并逐一归类输入 blocks 的全部 key。"
-                    )
+                    retry_hints[document.id] = "请输出完整 JSON，并逐一归类输入 blocks 的全部 key。"
                     retry_count += 1
                     if retry_count < 100:
                         small_retry_documents.append(document)
@@ -2970,12 +3480,8 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                         small_retry_documents.clear()
                     continue
                 item_usage = item.get("usage") or {}
-                usage["input_tokens"] += int(
-                    item_usage.get("prompt_tokens") or 0
-                )
-                usage["output_tokens"] += int(
-                    item_usage.get("completion_tokens") or 0
-                )
+                usage["input_tokens"] += int(item_usage.get("prompt_tokens") or 0)
+                usage["output_tokens"] += int(item_usage.get("completion_tokens") or 0)
                 try:
                     _apply_model_payload(
                         document,
@@ -2983,10 +3489,10 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                         request,
                         item["payload"],
                         session=session,
+                        model_name=task.model,
+                        prompt_version=task.prompt_version,
                     )
-                    _finalize_model_document(
-                        document, strategy_code=batch.strategy_code
-                    )
+                    _finalize_model_document(document, strategy_code=batch.strategy_code)
                     fallback_applied = _apply_source_markdown_fallback(
                         document,
                         batch.strategy_code,
@@ -3000,11 +3506,7 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                         counts[
                             "excluded"
                             if document.status == "excluded"
-                            else (
-                                "review"
-                                if document.status == "review_required"
-                                else "succeeded"
-                            )
+                            else ("review" if document.status == "review_required" else "succeeded")
                         ] += 1
                 except Exception as exc:
                     _mark_contract_failure(document, exc, final=False)
@@ -3030,23 +3532,38 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                         source_metadata = dict(document.metadata_json or {})
                         source_chunking = dict(document.chunking_json or {})
                         request = _request(document, batch.strategy_code)
+                        repair_hint = retry_hints.get(document.id, "")
+                        _store_model_review_request_context(
+                            document,
+                            request,
+                            model_name=task.model,
+                            prompt_version=task.prompt_version,
+                            repair_hint=repair_hint,
+                        )
+                        session.commit()
                         try:
+                            if abort_if_model_task_cancelled(expected_status="validating"):
+                                return False
+                            session.commit()
                             payload, item_usage = _realtime_chat(
                                 client,
                                 request,
                                 model=task.model,
-                                repair_hint=retry_hints.get(document.id, ""),
+                                repair_hint=repair_hint,
                             )
+                            if abort_if_model_task_cancelled(expected_status="validating"):
+                                return False
                             _apply_model_payload(
                                 document,
                                 batch.strategy_code,
                                 request,
                                 payload,
                                 session=session,
+                                model_name=task.model,
+                                prompt_version=task.prompt_version,
+                                repair_hint=repair_hint,
                             )
-                            _finalize_model_document(
-                                document, strategy_code=batch.strategy_code
-                            )
+                            _finalize_model_document(document, strategy_code=batch.strategy_code)
                             fallback_applied = _apply_source_markdown_fallback(
                                 document,
                                 batch.strategy_code,
@@ -3055,9 +3572,7 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                                 source_chunking=source_chunking,
                             )
                             usage["input_tokens"] += item_usage["input_tokens"]
-                            usage["output_tokens"] += item_usage[
-                                "output_tokens"
-                            ]
+                            usage["output_tokens"] += item_usage["output_tokens"]
                             if fallback_applied:
                                 counts["fallback"] += 1
                             else:
@@ -3097,9 +3612,7 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                                 counts["failed"] += 1
                     task.actual_usage = usage
                 else:
-                    with tempfile.TemporaryDirectory(
-                        prefix="jx-bailian-retry-"
-                    ) as directory:
+                    with tempfile.TemporaryDirectory(prefix="jx-bailian-retry-") as directory:
                         retry_paths = _write_batch_files(
                             Path(directory),
                             task,
@@ -3107,20 +3620,99 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                             _iter_documents_for_batch(session, task.batch_id),
                             repair_hints=retry_hints,
                         )
+                        session.commit()
                         retry_input_ids: list[str] = []
                         retry_batch_ids: list[str] = []
+
+                        def abort_cancelled_repair_submission() -> bool:
+                            session.rollback()
+                            if created_repair_batch_ids or created_repair_input_ids:
+                                _cleanup_cancelled_provider_batches(
+                                    client,
+                                    task_id,
+                                    created_repair_batch_ids,
+                                    created_repair_input_ids,
+                                )
+                            return False
+
                         for path in retry_paths:
+                            task = session.scalar(
+                                select(ModelCleaningTask)
+                                .where(ModelCleaningTask.id == task_id)
+                                .with_for_update()
+                            )
+                            if task is None or task.status not in {
+                                "batch_running",
+                                "validating",
+                            }:
+                                return abort_cancelled_repair_submission()
                             input_id = client.upload_batch_path(str(path))
                             retry_input_ids.append(input_id)
                             created_repair_input_ids.append(input_id)
+                            task = session.scalar(
+                                select(ModelCleaningTask)
+                                .where(ModelCleaningTask.id == task_id)
+                                .with_for_update()
+                            )
+                            if task is None or task.status not in {
+                                "batch_running",
+                                "validating",
+                            }:
+                                return abort_cancelled_repair_submission()
                             task.provider_input_file_ids = list(retry_input_ids)
                             session.commit()
+                            task = session.scalar(
+                                select(ModelCleaningTask)
+                                .where(ModelCleaningTask.id == task_id)
+                                .with_for_update()
+                            )
+                            if task is None or task.status not in {
+                                "batch_running",
+                                "validating",
+                            }:
+                                return abort_cancelled_repair_submission()
                             retry_batch_id = client.create_batch(input_id)
                             retry_batch_ids.append(retry_batch_id)
                             created_repair_batch_ids.append(retry_batch_id)
+                            task = session.scalar(
+                                select(ModelCleaningTask)
+                                .where(ModelCleaningTask.id == task_id)
+                                .with_for_update()
+                            )
+                            if task is None or task.status not in {
+                                "batch_running",
+                                "validating",
+                            }:
+                                return abort_cancelled_repair_submission()
                             task.provider_batch_ids = list(retry_batch_ids)
                             task.provider_batch_id = retry_batch_ids[0]
+                            result_counts = {
+                                key: value
+                                for key, value in (task.result_counts or {}).items()
+                                if key != "provider_terminal_batches"
+                            }
+                            result_counts["provider_batch_generation"] = (
+                                int(result_counts.get("provider_batch_generation") or 0) + 1
+                            )
+                            task.result_counts = result_counts
+                            ensure_bailian_cleanup_tasks(
+                                session,
+                                task,
+                                provider_file_ids=old_file_ids,
+                            )
+                            task.provider_output_file_ids = []
+                            task.provider_error_file_ids = []
                             session.commit()
+                        task = session.scalar(
+                            select(ModelCleaningTask)
+                            .where(ModelCleaningTask.id == task_id)
+                            .with_for_update()
+                        )
+                        if task is None or task.status not in {
+                            "batch_running",
+                            "validating",
+                        }:
+                            return abort_cancelled_repair_submission()
                     if not retry_batch_ids:
                         retry_documents = list(
                             session.scalars(
@@ -3153,7 +3745,11 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                                 counts["failed"] += 1
                         task.status = "failed"
                         task.result_counts = {
-                            **(task.result_counts or {}),
+                            **{
+                                key: value
+                                for key, value in (task.result_counts or {}).items()
+                                if key != "provider_terminal_batches"
+                            },
                             "candidate_count": task.candidate_count,
                             "succeeded": counts["succeeded"],
                             "excluded": counts["excluded"],
@@ -3162,23 +3758,17 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                             "failed": counts["failed"],
                             "retry_pending": 0,
                         }
-                        _delete_provider_files(client, task, old_file_ids)
                         task.provider_input_file_ids = []
                         task.provider_batch_ids = []
                         task.provider_batch_id = None
                         task.last_error = "Batch修复没有可提交的候选请求"
                         from .cleaning import _refresh_file_state
 
-                        touched_files = {
-                            str(document.file_id)
-                            for document in retry_documents
-                        }
+                        touched_files = {str(document.file_id) for document in retry_documents}
                         for file_id in touched_files:
                             _refresh_file_state(session, file_id, commit=False)
                         if batch.strategy_code in POST_STRATEGIES:
-                            fallback_shard_ids = _plan_post_publication(
-                                session, task.batch_id
-                            )
+                            fallback_shard_ids = _plan_post_publication(session, task.batch_id)
                         else:
                             fallback_pending_ids = [
                                 str(document.id)
@@ -3187,20 +3777,21 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                             ]
                         batch.status = "processing"
                         session.commit()
-                        _queue_publication_outputs(
-                            fallback_pending_ids, fallback_shard_ids
-                        )
+                        _cleanup_provider_files_for_task(client, task_id, old_file_ids)
+                        _queue_publication_outputs(fallback_pending_ids, fallback_shard_ids)
                         return True
-                    _delete_provider_files(client, task, old_file_ids)
                     task.provider_input_file_ids = retry_input_ids
                     task.provider_output_file_ids = []
                     task.provider_error_file_ids = []
                     task.provider_batch_ids = retry_batch_ids
-                    task.provider_batch_id = (
-                        retry_batch_ids[0] if retry_batch_ids else None
-                    )
+                    task.provider_batch_id = retry_batch_ids[0] if retry_batch_ids else None
+                    result_counts = {
+                        key: value
+                        for key, value in (task.result_counts or {}).items()
+                        if key != "provider_terminal_batches"
+                    }
                     task.result_counts = {
-                        **(task.result_counts or {}),
+                        **result_counts,
                         "retry_round": 1,
                         "retry_candidate_count": retry_count,
                         "candidate_count": task.candidate_count,
@@ -3214,6 +3805,7 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                     task.cleanup_status = "not_started"
                     task.status = "batch_running"
                     session.commit()
+                    _cleanup_provider_files_for_task(client, task_id, old_file_ids)
                     poll_batch_model_task.apply_async(
                         args=[task_id],
                         queue="ai_model_batch",
@@ -3226,10 +3818,7 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                         continue
                     _mark_contract_failure(
                         document,
-                        ValueError(
-                            document.error_message
-                            or "Batch补偿重试仍未得到有效结果"
-                        ),
+                        ValueError(document.error_message or "Batch补偿重试仍未得到有效结果"),
                         final=True,
                         auto_fail=(
                             batch.strategy_code == "course_route_catalog"
@@ -3251,33 +3840,36 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                         counts["fallback"] += 1
                     else:
                         counts["failed"] += 1
+            if abort_if_model_task_cancelled():
+                return False
+            cleanup_file_ids = [
+                *(task.provider_input_file_ids or []),
+                *output_ids,
+                *error_ids,
+            ]
             previous = task.result_counts or {}
             task.result_counts = {
                 "candidate_count": task.candidate_count,
-                "succeeded": counts["succeeded"]
-                + int(previous.get("prior_succeeded") or 0),
-                "excluded": counts["excluded"]
-                + int(previous.get("prior_excluded") or 0),
-                "review": counts["review"]
-                + int(previous.get("prior_review") or 0),
-                "fallback": counts["fallback"]
-                + int(previous.get("prior_fallback") or 0),
-                "failed": counts["failed"]
-                + int(previous.get("prior_failed") or 0),
+                "succeeded": counts["succeeded"] + int(previous.get("prior_succeeded") or 0),
+                "excluded": counts["excluded"] + int(previous.get("prior_excluded") or 0),
+                "review": counts["review"] + int(previous.get("prior_review") or 0),
+                "fallback": counts["fallback"] + int(previous.get("prior_fallback") or 0),
+                "failed": counts["failed"] + int(previous.get("prior_failed") or 0),
                 "retry_round": int(previous.get("retry_round") or 0),
                 "retry_pending": 0,
             }
-            _delete_provider_files(
-                client,
+            if previous.get("provider_terminal_batches"):
+                task.result_counts["provider_terminal_batches"] = previous[
+                    "provider_terminal_batches"
+                ]
+            ensure_bailian_cleanup_tasks(
+                session,
                 task,
-                [
-                    *(task.provider_input_file_ids or []),
-                    *output_ids,
-                    *error_ids,
-                ],
+                provider_file_ids=cleanup_file_ids,
             )
             session.commit()
         _finish_model_task(task_id)
+        _cleanup_provider_files_for_task(client, task_id, cleanup_file_ids)
         return True
     except Exception as exc:
         logger.exception("batch model polling failed")
@@ -3292,6 +3884,14 @@ def poll_batch_model_task(self, task_id: str) -> bool:
             except Exception:
                 logger.exception("failed to recover repair provider batch IDs")
                 recovered = False
+            if recovered == "cancelled":
+                _cleanup_cancelled_provider_batches(
+                    client,
+                    task_id,
+                    created_repair_batch_ids,
+                    created_repair_input_ids,
+                )
+                return False
             if recovered:
                 poll_batch_model_task.apply_async(
                     args=[task_id], queue="ai_model_batch", countdown=60
@@ -3309,22 +3909,19 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                 task = session.get(ModelCleaningTask, task_id)
                 if (
                     task is None
-                    or task.status != "batch_running"
-                    or not task.provider_batch_ids
+                    or task.status not in {"batch_running", "validating"}
+                    or not get_provider_batch_ids(task, include_terminal=True)
                 ):
                     reschedule = False
                 else:
                     task.last_error = (
-                        "Batch轮询暂时失败："
-                        + safe_exception_message(exc, limit=1900)
+                        "Batch轮询暂时失败：" + safe_exception_message(exc, limit=1900)
                     )[:2000]
                     session.commit()
         except Exception:
             logger.exception("failed to persist transient batch polling error")
         if reschedule:
-            poll_batch_model_task.apply_async(
-                args=[task_id], queue="ai_model_batch", countdown=60
-            )
+            poll_batch_model_task.apply_async(args=[task_id], queue="ai_model_batch", countdown=60)
         return False
     finally:
         if client:
@@ -3346,9 +3943,7 @@ def publish_dify_shard(self, shard_id: str) -> bool:
 
     now_hour = datetime.now(ZoneInfo("Asia/Shanghai")).hour
     if not (
-        settings.dify_publish_window_start_hour
-        <= now_hour
-        < settings.dify_publish_window_end_hour
+        settings.dify_publish_window_start_hour <= now_hour < settings.dify_publish_window_end_hour
     ):
         raise self.retry(countdown=900, max_retries=None)
     client: DifyKnowledgeClient | None = None
@@ -3363,9 +3958,7 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 .where(DifyPublicationShard.id == shard_id)
                 .with_for_update()
                 .options(
-                    selectinload(DifyPublicationShard.file).selectinload(
-                        CleaningFile.batch
-                    ),
+                    selectinload(DifyPublicationShard.file).selectinload(CleaningFile.batch),
                     selectinload(DifyPublicationShard.documents),
                 )
             )
@@ -3388,13 +3981,9 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 timeout=180,
             )
             shard_metadata = dict(shard.metadata_json or {})
-            pending_remote_id = str(
-                shard_metadata.get("_pending_dify_document_id") or ""
-            )
+            pending_remote_id = str(shard_metadata.get("_pending_dify_document_id") or "")
             replaced_document_id = str(
-                shard_metadata.get("_replacement_document_id")
-                or shard.dify_document_id
-                or ""
+                shard_metadata.get("_replacement_document_id") or shard.dify_document_id or ""
             )
             shard.status = "shard_indexing"
             shard.attempts += 1
@@ -3419,29 +4008,25 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                     shard_metadata.pop("_pending_dify_document_id", None)
                 shard.metadata_json = shard_metadata
                 session.commit()
+            from ...cleaning import finalize_knowledge_markdown
+
+            shard.markdown = finalize_knowledge_markdown(shard.markdown)
+            shard.content_bytes = len(shard.markdown.encode("utf-8"))
+            shard.content_sha256 = _normalized_publication_digest(shard.markdown)
             from ...cleaning import dify_document_name
 
-            source_title = next(
-                (
-                    document.title.strip()
-                    for document in shard.documents
-                    if document.title and document.title.strip()
-                ),
-                shard.file.original_filename,
-            )
+            # The source filename is the stable external identity.  Model
+            # titles remain content metadata only and must never replace it.
+            # Normalize and recalculate the digest before deriving the
+            # external name so historical shards cannot retain a legacy
+            # pre-normalization digest in Dify.
+            source_title = shard.file.original_filename
             remote_name = dify_document_name(
                 source_title,
                 shard.content_sha256,
                 shard.shard_index,
                 split=True,
             )
-            from ...cleaning import finalize_knowledge_markdown
-
-            shard.markdown = finalize_knowledge_markdown(shard.markdown)
-            shard.content_bytes = len(shard.markdown.encode("utf-8"))
-            shard.content_sha256 = hashlib.sha256(
-                shard.markdown.encode("utf-8")
-            ).hexdigest()
             chunking = dict((shard.metadata_json or {}).get("chunking") or {})
             document_id, dify_batch_id = client.create_document(
                 remote_name,
@@ -3449,15 +4034,11 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 doc_form=str(chunking.get("doc_form") or "hierarchical_model"),
                 process_mode=str(chunking.get("process_mode") or "hierarchical"),
                 parent_mode=str(chunking.get("parent_mode") or "paragraph"),
-                parent_separator=chunking.get(
-                    "parent_separator", "<<<DIFY_PARENT>>>"
-                ),
+                parent_separator=chunking.get("parent_separator", "<<<DIFY_PARENT>>>"),
                 parent_max_tokens=int(
                     chunking.get("parent_max_tokens") or settings.dify_parent_max_tokens
                 ),
-                child_separator=chunking.get(
-                    "child_separator", "<<<DIFY_CHILD>>>"
-                ),
+                child_separator=chunking.get("child_separator", "<<<DIFY_CHILD>>>"),
                 child_max_tokens=int(chunking.get("child_max_tokens") or 800),
                 parent_chunk_overlap=int(chunking.get("parent_chunk_overlap") or 0),
                 child_chunk_overlap=int(chunking.get("child_chunk_overlap") or 0),
@@ -3483,22 +4064,24 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 parent_mode="paragraph",
             )
             _validate_shard_structure(structure, item_count=shard.item_count)
-            remote_metadata = {
-                key: shard_metadata[key]
-                for key in (
-                    "record_type",
-                    "content_format",
-                    "cleaning_strategy",
-                    "cleaning_spec_revision",
-                    "source_title",
-                )
-                if shard_metadata.get(key) not in (None, "", [], {})
-            }
-            fields = client.ensure_metadata_names(sorted(remote_metadata))
+            from ...cleaning import STRATEGY_REGISTRY
+            from .cleaning import _project_dify_metadata
+
+            strategy = STRATEGY_REGISTRY.get(shard.file.batch.strategy_code)
+            remote_metadata = _project_dify_metadata(
+                shard_metadata,
+                strategy=strategy,
+            )
+            field_types = getattr(strategy, "dify_metadata_types", None)
+            fields = client.ensure_metadata_names(
+                sorted(remote_metadata),
+                field_types=field_types,
+            )
             client.set_document_metadata(
                 document_id,
                 remote_metadata,
                 fields,
+                field_types=field_types,
             )
             client.verify_document_metadata(
                 document_id,
@@ -3527,10 +4110,12 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 document.stage = "completed"
             if replaced_document_id and replaced_document_id != document_id:
                 existing_cleanup = session.scalar(
-                    select(ExternalDeletionTask).where(
+                    select(ExternalDeletionTask)
+                    .where(
                         ExternalDeletionTask.kind == "dify_document",
                         ExternalDeletionTask.external_id == replaced_document_id,
-                    ).limit(1)
+                    )
+                    .limit(1)
                 )
                 if existing_cleanup is None:
                     # Durable cleanup is committed with the successful
@@ -3545,10 +4130,7 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                         )
                     )
             session.commit()
-            if (
-                replaced_document_id
-                and replaced_document_id != document_id
-            ):
+            if replaced_document_id and replaced_document_id != document_id:
                 try:
                     client.delete_document(replaced_document_id)
                 except Exception as exc:
@@ -3609,18 +4191,12 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 shard.status = "shard_pending" if shard.attempts < 2 else "failed"
                 shard.last_error = safe_exception_message(exc, limit=2000)
                 for document in shard.documents:
-                    document.status = (
-                        "shard_pending" if shard.attempts < 2 else "failed"
-                    )
-                    document.stage = (
-                        "shard_pending" if shard.attempts < 2 else "failed"
-                    )
+                    document.status = "shard_pending" if shard.attempts < 2 else "failed"
+                    document.stage = "shard_pending" if shard.attempts < 2 else "failed"
                 from .cleaning import _finish_batch, _refresh_file_state
 
                 batch_id = session.scalar(
-                    select(CleaningFile.batch_id).where(
-                        CleaningFile.id == shard.file_id
-                    )
+                    select(CleaningFile.batch_id).where(CleaningFile.id == shard.file_id)
                 )
                 _refresh_file_state(session, shard.file_id, commit=False)
                 if batch_id:

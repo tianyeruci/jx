@@ -22,6 +22,7 @@ from ai_management.cleaning import (
     dify_document_name,
     maintain_conversion_markdown_artifacts,
     normalized_original_filename,
+    review_cleaning_item,
 )
 from ai_management.config import get_settings
 from ai_management.context import build_context, should_summarize
@@ -42,6 +43,7 @@ from ai_management.models import (
     CleaningDocument,
     CleaningFile,
     Course,
+    ExternalDeletionTask,
     LearningRoute,
     LearningRouteProgress,
 )
@@ -74,15 +76,11 @@ def test_conversion_markdown_toggle_naming_and_retention(tmp_path, monkeypatch):
 
     created_at = datetime(2026, 8, 1, tzinfo=timezone.utc)
     os.utime(target, (created_at.timestamp(), created_at.timestamp()))
-    retained = maintain_conversion_markdown_artifacts(
-        now=created_at + timedelta(days=6)
-    )
+    retained = maintain_conversion_markdown_artifacts(now=created_at + timedelta(days=6))
     assert retained == {"removed": 0, "retained": 1, "skipped_directories": 0}
     assert target.exists()
 
-    expired = maintain_conversion_markdown_artifacts(
-        now=created_at + timedelta(days=8)
-    )
+    expired = maintain_conversion_markdown_artifacts(now=created_at + timedelta(days=8))
     assert expired == {"removed": 1, "retained": 0, "skipped_directories": 0}
     assert not target.exists()
 
@@ -180,9 +178,7 @@ def test_business_chat_stream_and_history(service_db, monkeypatch):
         assert "内部标识已隐藏" not in body
         assert "event: message_end" in body
 
-        conversations = client.get(
-            "/internal/v1/business/conversations", headers=HEADERS
-        ).json()
+        conversations = client.get("/internal/v1/business/conversations", headers=HEADERS).json()
         assert len(conversations["items"]) == 1
         assert conversations["next_cursor"] is None
         conversation_id = conversations["items"][0]["conversation_id"]
@@ -235,9 +231,7 @@ def test_business_chat_does_not_load_course_catalog_or_route_progress(service_db
     assert "event: learning_route" not in response.text
 
 
-def test_business_chat_stream_separates_progress_answer_from_final_history(
-    service_db, monkeypatch
-):
+def test_business_chat_stream_separates_progress_answer_from_final_history(service_db, monkeypatch):
     from ai_management.dify import DifyAppClient
 
     progress_text = "正在结合你的情况进行分析，请稍候……"
@@ -313,11 +307,7 @@ def test_business_chat_stream_separates_progress_answer_from_final_history(
         assert status_codes.index("progress_answer_started") < status_codes.index(
             "final_answer_started"
         )
-        answer_deltas = [
-            payload["delta"]
-            for name, payload in events
-            if name == "answer_delta"
-        ]
+        answer_deltas = [payload["delta"] for name, payload in events if name == "answer_delta"]
         assert "".join(answer_deltas) == progress_text + final_text
         progress_status_index = next(
             index
@@ -339,9 +329,9 @@ def test_business_chat_stream_separates_progress_answer_from_final_history(
         )
         assert progress_status_index < first_delta_index < final_status_index < final_delta_index
 
-        conversation_id = client.get(
-            "/internal/v1/business/conversations", headers=HEADERS
-        ).json()["items"][0]["conversation_id"]
+        conversation_id = client.get("/internal/v1/business/conversations", headers=HEADERS).json()[
+            "items"
+        ][0]["conversation_id"]
         messages = client.get(
             f"/internal/v1/business/conversations/{conversation_id}/messages",
             headers=HEADERS,
@@ -350,7 +340,9 @@ def test_business_chat_stream_separates_progress_answer_from_final_history(
         assert progress_text not in messages["items"][1]["content"]
 
 
-def test_business_chat_never_exposes_course_route_data_in_stream_or_history(service_db, monkeypatch):
+def test_business_chat_never_exposes_course_route_data_in_stream_or_history(
+    service_db, monkeypatch
+):
     from ai_management.dify import DifyAppClient
 
     with service_db() as session:
@@ -361,8 +353,7 @@ def test_business_chat_never_exposes_course_route_data_in_stream_or_history(serv
         yield {
             "event": "message",
             "answer": (
-                "路线ID：route_1，阶段ID：stage_1，课程ID：course_1。"
-                "focus_directions 不应展示。"
+                "路线ID：route_1，阶段ID：stage_1，课程ID：course_1。focus_directions 不应展示。"
             ),
             "task_id": "task-catalog-001",
             "message_id": "dify-message-catalog-001",
@@ -401,9 +392,9 @@ def test_business_chat_never_exposes_course_route_data_in_stream_or_history(serv
         assert "course_1" not in body
         assert "内部标识已隐藏" not in body
 
-        conversation_id = client.get(
-            "/internal/v1/business/conversations", headers=HEADERS
-        ).json()["items"][0]["conversation_id"]
+        conversation_id = client.get("/internal/v1/business/conversations", headers=HEADERS).json()[
+            "items"
+        ][0]["conversation_id"]
         messages = client.get(
             f"/internal/v1/business/conversations/{conversation_id}/messages",
             headers=HEADERS,
@@ -411,9 +402,7 @@ def test_business_chat_never_exposes_course_route_data_in_stream_or_history(serv
         assert "route_1" not in messages["items"][1]["content"]
         assert "stage_1" not in messages["items"][1]["content"]
         assert "course_1" not in messages["items"][1]["content"]
-        assert messages["items"][1]["retriever_resources"][0]["metadata"] == {
-            "course_id": ""
-        }
+        assert messages["items"][1]["retriever_resources"][0]["metadata"] == {"course_id": ""}
 
 
 def test_history_course_cards_are_re_signed_from_current_catalog(service_db):
@@ -450,7 +439,10 @@ def test_history_course_cards_are_re_signed_from_current_catalog(service_db):
         payload = list_conversation_messages(session, "history-user", conversation.id)
     card = payload["items"][0]["recommendation"]["course_cards"][0]
     assert card["redirect_url"] != "http://old.example/r/expired"
-    assert parse_redirect_token(card["redirect_url"].rsplit("/", 1)[-1])["course_id"] == "history-course"
+    assert (
+        parse_redirect_token(card["redirect_url"].rsplit("/", 1)[-1])["course_id"]
+        == "history-course"
+    )
 
 
 def _seed_catalog(session):
@@ -709,9 +701,7 @@ def test_seven_day_cleanup_keeps_active_summary_and_profile(
         assert session.get(BusinessConversation, inactive_id) is None
         contents = list(
             session.scalars(
-                select(BusinessMessage.content).where(
-                    BusinessMessage.conversation_id == active_id
-                )
+                select(BusinessMessage.content).where(BusinessMessage.conversation_id == active_id)
             )
         )
         assert contents == ["今天的原文"]
@@ -765,9 +755,7 @@ def test_profile_confirmed_update_requires_user_evidence(service_db):
 def test_course_catalog_matches_expected():
     base = Path("test_data/courses")
     catalog = load_catalog(base / "测试课程与路线.md")
-    expected = json.loads(
-        (base / "测试课程与路线.expected.json").read_text(encoding="utf-8")
-    )
+    expected = json.loads((base / "测试课程与路线.expected.json").read_text(encoding="utf-8"))
     assert catalog_summary(catalog) == expected
     with pytest.raises(ValueError, match="重复"):
         load_catalog(base / "错误样本_重复课程ID.md")
@@ -805,9 +793,7 @@ stages:
     assert first.courses[0].course_id.startswith("course_")
     assert first.routes[0].route_id.startswith("route_")
     assert first.routes[0].stages[0].stage_id.endswith("_stage_1")
-    assert first.routes[0].stages[0].course_ids == [
-        first.courses[0].course_id
-    ]
+    assert first.routes[0].stages[0].course_ids == [first.courses[0].course_id]
 
 
 def test_cleaning_strategy_and_filename_rules(tmp_path):
@@ -816,12 +802,8 @@ def test_cleaning_strategy_and_filename_rules(tmp_path):
         "test_markdown",
         "personal_business_consultation",
         "wechat_public_account_cognition",
-    } <= set(
-        STRATEGY_REGISTRY
-    )
-    original = normalized_original_filename(
-        "../很长的 客户：案例<>名称" + "甲" * 80 + ".md"
-    )
+    } <= set(STRATEGY_REGISTRY)
+    original = normalized_original_filename("../很长的 客户：案例<>名称" + "甲" * 80 + ".md")
     name = dify_document_name(original, hashlib.sha256(b"x").hexdigest(), 1, split=True)
     assert "/" not in name and "\\" not in name
     assert name.startswith("很长的 客户：案例__名称")
@@ -842,9 +824,7 @@ def test_cleaning_strategy_and_filename_rules(tmp_path):
             "定位复盘原创作者测试账号2026-01-02 03:04:05北京预览\n"
         ).encode("gb18030")
     )
-    cleaned = STRATEGY_REGISTRY["wechat_public_account_cognition"].clean(
-        wechat, "公众号.txt"
-    )
+    cleaned = STRATEGY_REGISTRY["wechat_public_account_cognition"].clean(wechat, "公众号.txt")
     assert cleaned[0].metadata == {
         "record_type": "article",
         "source_title": "定位复盘",
@@ -873,7 +853,10 @@ def test_cleaning_batch_upload_reports_each_file(
     with TestClient(app) as client:
         response = client.post(
             "/internal/v1/knowledge/cleaning-batches",
-            headers={"X-Internal-Token": "test-internal-token", "X-Admin-Token": "test-admin-token"},
+            headers={
+                "X-Internal-Token": "test-internal-token",
+                "X-Admin-Token": "test-admin-token",
+            },
             data={
                 "strategy_code": "test_markdown",
                 "knowledge_base_code": "general",
@@ -1498,12 +1481,30 @@ def test_admin_knowledge_item_endpoints(service_db, monkeypatch):
                 ("markdown_file", ("patched.md", "# 如何做定位\n\n修订后的正文", "text/markdown")),
             ],
         )
+        repeat_review = client.post(
+            f"/internal/v1/admin/knowledge-bases/general/upload-batches/{batch_id}/files/{file_id}/items/{item_id}/review-decisions",
+            headers=admin_headers,
+            data={
+                "action": "replace_and_approve",
+                "expected_revision": "0",
+                "reason": "人工修订",
+                "metadata_patch": '{"topic":"AI与智能体"}',
+            },
+            files=[
+                ("markdown_file", ("patched.md", "# 如何做定位\n\n修订后的正文", "text/markdown")),
+            ],
+        )
 
     assert retry_review_required.status_code == 409
-    assert retry_review_required.json()["message"] == "只有失败条目可以重试；待复核条目请先执行人工复核"
+    assert (
+        retry_review_required.json()["message"]
+        == "只有失败条目可以重试；待复核条目请先执行人工复核"
+    )
     assert review.status_code == 200
     assert review.json()["status"] == "shard_pending"
     assert review.json()["review_revision"] == 1
+    assert repeat_review.status_code == 200
+    assert repeat_review.json() == review.json()
     assert queued == []
     assert shard_queued == [("review-shard-1", "ai_publication")]
     with service_db() as session:
@@ -1563,10 +1564,7 @@ def test_failed_item_export_is_paged_and_keeps_failure_reason(service_db):
         "X-Internal-Token": "test-internal-token",
         "X-Admin-Token": "test-admin-token",
     }
-    path = (
-        f"/internal/v1/admin/knowledge-bases/general/upload-batches/{batch_id}"
-        "/failed-items"
-    )
+    path = f"/internal/v1/admin/knowledge-bases/general/upload-batches/{batch_id}/failed-items"
     with TestClient(app) as client:
         first = client.get(path, headers=admin_headers, params={"limit": 1})
         second = client.get(
@@ -1653,6 +1651,90 @@ def test_review_required_file_retry_is_rejected(service_db):
     assert response.json()["message"] == "待复核条目不能直接重试，请先执行人工复核"
 
 
+def test_review_decision_requires_review_status_and_queues_remote_cleanup(service_db):
+    from ai_management.errors import ServiceError
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="lead_magnet",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="processing",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = CleaningFile(
+            batch_id=batch.id,
+            original_filename="资料.md",
+            storage_filename="资料.md",
+            extension=".md",
+            source_sha256="a" * 64,
+            size_bytes=10,
+            status="mixed",
+            outcome="mixed",
+            stage="review",
+        )
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="资料",
+            dify_document_name="资料.md",
+            document_key="资料-1",
+            status="succeeded",
+            stage="completed",
+            retryable=False,
+            cleaned_markdown="# 资料\n\n正文",
+            metadata_json={"record_type": "article"},
+            chunking_json={},
+            dify_document_id="remote-doc-1",
+        )
+        session.add(document)
+        session.commit()
+        batch_id, file_id, item_id = batch.id, file_row.id, document.id
+
+        with pytest.raises(ServiceError) as exc_info:
+            review_cleaning_item(
+                batch_id,
+                file_id,
+                item_id,
+                action="exclude",
+                expected_revision=0,
+                reason="误入库",
+                metadata_patch={},
+                markdown_text=None,
+                session=session,
+            )
+        assert exc_info.value.code == "CONFLICT"
+        assert session.scalars(select(ExternalDeletionTask)).all() == []
+
+        document.status = "review_required"
+        document.stage = "review"
+        document.retryable = False
+        document.review_revision = 0
+        session.commit()
+
+        result = review_cleaning_item(
+            batch_id,
+            file_id,
+            item_id,
+            action="exclude",
+            expected_revision=0,
+            reason="误入库",
+            metadata_patch={},
+            markdown_text=None,
+            session=session,
+        )
+
+        assert result["status"] == "excluded"
+        cleanup = session.scalar(select(ExternalDeletionTask))
+        assert cleanup is not None
+        assert cleanup.kind == "dify_document"
+        assert cleanup.external_id == "remote-doc-1"
+        assert cleanup.payload["dataset_id"] == get_settings().dify_general_dataset_id
+
+
 def test_review_exclude_refreshes_file_and_batch_state(service_db):
     with service_db() as session:
         batch = CleaningBatch(
@@ -1728,9 +1810,7 @@ def test_review_exclude_refreshes_file_and_batch_state(service_db):
     assert payload["files"][0]["outcome"] == "excluded"
 
 
-def test_finish_batch_serializes_summary_without_refreshing_sibling_files(
-    service_db, monkeypatch
-):
+def test_finish_batch_serializes_summary_without_refreshing_sibling_files(service_db, monkeypatch):
     """A multi-file completion must not lock and rewrite every sibling file."""
     from ai_management.workers.tasks import cleaning as cleaning_tasks
 
@@ -1832,7 +1912,9 @@ def test_cleaning_worker_enqueues_pending_items(service_db, monkeypatch, tmp_pat
             storage_filename=file_name,
             extension=".md",
             source_sha256=hashlib.sha256(
-                "# 私域成交复盘\n\n通过微信私域获客、优化成交话术和交付流程，最终提升成交率。".encode("utf-8")
+                "# 私域成交复盘\n\n通过微信私域获客、优化成交话术和交付流程，最终提升成交率。".encode(
+                    "utf-8"
+                )
             ).hexdigest(),
             size_bytes=(storage_dir / file_name).stat().st_size,
             status="pending",
@@ -1848,18 +1930,14 @@ def test_cleaning_worker_enqueues_pending_items(service_db, monkeypatch, tmp_pat
 
     with service_db() as session:
         items = list(
-            session.scalars(
-                select(CleaningDocument).where(CleaningDocument.file_id == file_id)
-            )
+            session.scalars(select(CleaningDocument).where(CleaningDocument.file_id == file_id))
         )
         assert len(items) == 1
         assert items[0].status == "pending"
         assert items[0].chunking_json["parent_separator"] == "<<<DIFY_PARENT>>>"
 
 
-def test_disabled_course_worker_does_not_invoke_course_strategy(
-    service_db, monkeypatch, tmp_path
-):
+def test_disabled_course_worker_does_not_invoke_course_strategy(service_db, monkeypatch, tmp_path):
     from ai_management import cleaning as cleaning_module
     from ai_management.tasks import process_cleaning_file
 
@@ -1908,9 +1986,7 @@ def test_disabled_course_worker_does_not_invoke_course_strategy(
         assert batch.status == "completed"
 
 
-def test_empty_content_strategy_is_failed_without_retry(
-    service_db, monkeypatch, tmp_path
-):
+def test_empty_content_strategy_is_failed_without_retry(service_db, monkeypatch, tmp_path):
     from ai_management.tasks import process_cleaning_file
 
     monkeypatch.setattr(get_settings(), "upload_root", tmp_path)
@@ -1957,9 +2033,7 @@ def test_empty_content_strategy_is_failed_without_retry(
         assert batch.status == "completed"
 
 
-def test_book_scope_is_trusted_and_enqueued_without_model(
-    service_db, monkeypatch, tmp_path
-):
+def test_book_scope_is_trusted_and_enqueued_without_model(service_db, monkeypatch, tmp_path):
     from ai_management.tasks import process_cleaning_document, process_cleaning_file
 
     monkeypatch.setattr(get_settings(), "upload_root", tmp_path)
@@ -2006,9 +2080,7 @@ def test_book_scope_is_trusted_and_enqueued_without_model(
         batch = session.get(CleaningBatch, batch_id)
         row = session.get(CleaningFile, file_id)
         items = list(
-            session.scalars(
-                select(CleaningDocument).where(CleaningDocument.file_id == file_id)
-            )
+            session.scalars(select(CleaningDocument).where(CleaningDocument.file_id == file_id))
         )
         assert batch is not None
         assert row is not None

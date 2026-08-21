@@ -36,6 +36,7 @@ from .cache import cache
 from .config import get_settings
 from .db import SessionLocal, get_session
 from .errors import ServiceError
+from .model_cleaning import get_provider_batch_ids
 from .models import (
     CleaningBatch,
     CleaningDocument,
@@ -77,9 +78,7 @@ DISABLED_COURSE_STRATEGIES = frozenset(
 )
 
 
-def _reject_disabled_course_write(
-    *, strategy_code: str, knowledge_base_code: str
-) -> None:
+def _reject_disabled_course_write(*, strategy_code: str, knowledge_base_code: str) -> None:
     """Reject every course-domain write before it creates local state."""
 
     if (
@@ -95,11 +94,7 @@ def _reject_disabled_course_write(
 
 
 def _review_force_strategy_codes(value: str | None) -> frozenset[str]:
-    return frozenset(
-        item.strip()
-        for item in str(value or "").split(",")
-        if item.strip()
-    )
+    return frozenset(item.strip() for item in str(value or "").split(",") if item.strip())
 
 
 def review_policy_snapshot(strategy_code: str) -> dict[str, Any]:
@@ -110,15 +105,14 @@ def review_policy_snapshot(strategy_code: str) -> dict[str, Any]:
     return {
         "enabled": enabled,
         "review_required_enabled": settings.cleaning_review_required_enabled,
-        # New batches may publish any non-empty cleaned Markdown directly.
-        # The catalogue remains explicitly excluded because its model output
-        # changes authoritative course/route records rather than just text.
-        "source_markdown_fallback_enabled": strategy_code != "course_route_catalog",
+        # A model result which fails its contract is always a human gate.  The
+        # historical switch is retained in the snapshot for compatibility,
+        # but no new batch may silently publish source Markdown as a fallback.
+        "source_markdown_fallback_enabled": False,
         "min_chars": settings.cleaning_review_min_chars if enabled else 0,
         "force_review": enabled
-        and strategy_code in _review_force_strategy_codes(
-            settings.cleaning_review_force_strategies
-        ),
+        and strategy_code
+        in _review_force_strategy_codes(settings.cleaning_review_force_strategies),
     }
 
 
@@ -192,9 +186,10 @@ def content_review_reason(
     )
     if not isinstance(policy, dict) or not policy.get("enabled", True):
         return None
-    if policy.get("review_required_enabled", True) is False or policy.get(
-        "source_markdown_fallback_enabled"
-    ) is True:
+    if (
+        policy.get("review_required_enabled", True) is False
+        or policy.get("source_markdown_fallback_enabled") is True
+    ):
         return None
     if bool(policy.get("force_review")):
         return "CONFIG_REVIEW_REQUIRED", "服务端清洗策略配置要求人工复核"
@@ -316,7 +311,9 @@ def _docx_markdown(path: Path) -> str:
             table = tables.get(id(child))
             if table is None:
                 continue
-            rows = [[cell.text.strip().replace("|", "\\|") for cell in row.cells] for row in table.rows]
+            rows = [
+                [cell.text.strip().replace("|", "\\|") for cell in row.cells] for row in table.rows
+            ]
             if not rows:
                 continue
             width = max(len(row) for row in rows)
@@ -460,11 +457,7 @@ def _pdf_blocking_reasons(reasons: Iterable[Any], markdown: str) -> list[str]:
 
 def _is_pdf_table_warning(value: Any) -> bool:
     text = str(value)
-    return (
-        text.startswith("table_review:")
-        or text.startswith("table_")
-        or "表格" in text
-    )
+    return text.startswith("table_review:") or text.startswith("table_") or "表格" in text
 
 
 def _read_pdf_markdown(path: Path, *, diagnostics: dict[str, Any] | None = None) -> str:
@@ -537,10 +530,7 @@ def _save_conversion_markdown(
     markdown: str,
 ) -> Path | None:
     settings = get_settings()
-    if (
-        not settings.save_conversion_markdown
-        or path.suffix.lower() not in {".pdf", ".docx"}
-    ):
+    if not settings.save_conversion_markdown or path.suffix.lower() not in {".pdf", ".docx"}:
         return None
     root = _conversion_artifact_root()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -574,13 +564,9 @@ def maintain_conversion_markdown_artifacts(
         return {"removed": 0, "retained": 0, "skipped_directories": 0}
     if not root.is_dir():
         raise ValueError("CONVERSION_MARKDOWN_ROOT 不是目录")
-    remove_everything = (
-        not settings.save_conversion_markdown if delete_all is None else delete_all
-    )
+    remove_everything = not settings.save_conversion_markdown if delete_all is None else delete_all
     current = now or datetime.now(timezone.utc)
-    cutoff = current.timestamp() - (
-        settings.conversion_markdown_retention_days * 24 * 60 * 60
-    )
+    cutoff = current.timestamp() - (settings.conversion_markdown_retention_days * 24 * 60 * 60)
     removed = 0
     retained = 0
     skipped_directories = 0
@@ -653,9 +639,7 @@ class TestDocumentStrategy:
 
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
         conversion: dict[str, Any] = {}
-        title, markdown = _load_markdown_like(
-            file_path, original_filename, diagnostics=conversion
-        )
+        title, markdown = _load_markdown_like(file_path, original_filename, diagnostics=conversion)
         if not markdown.strip():
             raise ValueError("文档没有可入库正文")
         return [
@@ -679,9 +663,7 @@ class StandardDocumentStrategy:
 
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
         conversion: dict[str, Any] = {}
-        title, markdown = _load_markdown_like(
-            file_path, original_filename, diagnostics=conversion
-        )
+        title, markdown = _load_markdown_like(file_path, original_filename, diagnostics=conversion)
         if not markdown.strip():
             raise ValueError("文档没有可入库正文")
         return [
@@ -735,9 +717,7 @@ class PersonalBusinessConsultationStrategy:
             if not markdown.strip():
                 review_reasons.append("未生成可入库正文")
             if residual_pii:
-                review_reasons.append(
-                    f"脱敏后仍检测到{len(residual_pii)}处潜在PII，禁止直接发布"
-                )
+                review_reasons.append(f"脱敏后仍检测到{len(residual_pii)}处潜在PII，禁止直接发布")
             needs_review = bool(review_reasons)
         elif suffix == ".pdf":
             aliases = consultation_aliases("", original_filename)
@@ -770,10 +750,7 @@ class PersonalBusinessConsultationStrategy:
                 getattr(result, "source_checksum", "")
                 or hashlib.sha256(file_path.read_bytes()).hexdigest()
             )
-            document_id = str(
-                getattr(result, "document_id", "")
-                or f"case_{source_checksum[:16]}"
-            )
+            document_id = str(getattr(result, "document_id", "") or f"case_{source_checksum[:16]}")
             review_reasons = list(getattr(result, "review_reasons", []) or [])
             for warning in review_reasons:
                 if _is_pdf_table_warning(warning):
@@ -784,9 +761,7 @@ class PersonalBusinessConsultationStrategy:
                     )
             blocking_reasons = _pdf_blocking_reasons(review_reasons, markdown)
             conversion_audit["blocking_reasons"] = blocking_reasons
-            needs_review = bool(
-                blocking_reasons or residual_pii or not markdown.strip()
-            )
+            needs_review = bool(blocking_reasons or residual_pii or not markdown.strip())
         elif suffix in {".md", ".markdown"}:
             conversion_audit = {}
             table_audit: dict[str, Any] = {}
@@ -811,9 +786,7 @@ class PersonalBusinessConsultationStrategy:
             if not markdown.strip():
                 review_reasons.append("未生成可入库正文")
             if residual_pii:
-                review_reasons.append(
-                    f"脱敏后仍检测到{len(residual_pii)}处潜在PII，禁止直接发布"
-                )
+                review_reasons.append(f"脱敏后仍检测到{len(residual_pii)}处潜在PII，禁止直接发布")
             needs_review = bool(review_reasons)
         else:
             raise ValueError(f"个人商业咨询不支持 {suffix} 文件")
@@ -823,9 +796,7 @@ class PersonalBusinessConsultationStrategy:
         if not safe_markdown:
             safe_markdown = "# 匿名商业咨询案例\n\n内容需人工复核后发布。"
         redaction_summary = {
-            str(getattr(item, "category", "unknown")): int(
-                getattr(item, "count", 0)
-            )
+            str(getattr(item, "category", "unknown")): int(getattr(item, "count", 0))
             for item in redactions
         }
         return [
@@ -849,9 +820,7 @@ class PersonalBusinessConsultationStrategy:
                     child_chunk_overlap=0,
                 ),
                 disposition=disposition,
-                error_code=(
-                    "PRIVACY_REVIEW_REQUIRED" if needs_review else None
-                ),
+                error_code=("PRIVACY_REVIEW_REQUIRED" if needs_review else None),
                 error_message=(
                     "；".join(review_reasons[:3]) or "隐私或版面检查需要人工确认"
                     if needs_review
@@ -866,9 +835,7 @@ class PersonalBusinessConsultationStrategy:
                     "forbidden_public_names": sorted(aliases),
                     "redaction_summary": redaction_summary,
                     "residual_pii_count": len(residual_pii),
-                    "model_blocks": (
-                        {} if needs_review else _source_blocks(safe_markdown)
-                    ),
+                    "model_blocks": ({} if needs_review else _source_blocks(safe_markdown)),
                 },
             )
         ]
@@ -926,14 +893,9 @@ def _advisor_topic(decision: SemanticDecision) -> str:
 
 def _source_blocks(text: str) -> dict[str, str]:
     paragraphs = [
-        value.strip()
-        for value in re.split(r"\n\s*\n+", str(text or ""))
-        if value.strip()
+        value.strip() for value in re.split(r"\n\s*\n+", str(text or "")) if value.strip()
     ]
-    return {
-        f"b{index:04d}": value
-        for index, value in enumerate(paragraphs, start=1)
-    }
+    return {f"b{index:04d}": value for index, value in enumerate(paragraphs, start=1)}
 
 
 class WechatPublicAccountCognitionStrategy:
@@ -999,7 +961,9 @@ _ARTICLE_METADATA_FIELDS = frozenset(
 )
 
 
-def _article_chunking(*, parent_max_tokens: int = 1000, child_max_tokens: int = 350) -> ChunkingConfig:
+def _article_chunking(
+    *, parent_max_tokens: int = 1000, child_max_tokens: int = 350
+) -> ChunkingConfig:
     return ChunkingConfig(
         doc_form="hierarchical_model",
         process_mode="hierarchical",
@@ -1163,9 +1127,7 @@ class LeadMagnetStrategy:
         from .document_structure import remove_reliable_toc
 
         conversion: dict[str, Any] = {}
-        title, markdown = _load_markdown_like(
-            file_path, original_filename, diagnostics=conversion
-        )
+        title, markdown = _load_markdown_like(file_path, original_filename, diagnostics=conversion)
         toc = remove_reliable_toc(markdown)
         document = _build_article_document(
             title=title,
@@ -1228,15 +1190,15 @@ class BookStrategy:
     supported_extensions = {".md", ".markdown", ".txt", ".docx", ".pdf"}
     sensitive = False
     knowledge_base_code = "general"
-    dify_metadata_fields = frozenset({"record_type", "topic", "source_title", "book_id", "part_index", "part_count"})
+    dify_metadata_fields = frozenset(
+        {"record_type", "topic", "source_title", "book_id", "part_index", "part_count"}
+    )
 
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
         from .document_structure import remove_reliable_toc
 
         conversion: dict[str, Any] = {}
-        title, markdown = _load_markdown_like(
-            file_path, original_filename, diagnostics=conversion
-        )
+        title, markdown = _load_markdown_like(file_path, original_filename, diagnostics=conversion)
         toc = remove_reliable_toc(markdown)
         markdown = toc.markdown
         parts = _split_book_markdown(markdown, get_settings().cleaning_markdown_split_bytes)
@@ -1273,24 +1235,12 @@ class BookStrategy:
                         parent_chunk_overlap=0,
                         child_chunk_overlap=0,
                     ),
-                    disposition=(
-                        "review_required"
-                        if toc.needs_review
-                        else "pending"
-                    ),
-                    error_code=(
-                        "TOC_REVIEW_REQUIRED"
-                        if toc.needs_review
-                        else None
-                    ),
+                    disposition=("review_required" if toc.needs_review else "pending"),
+                    error_code=("TOC_REVIEW_REQUIRED" if toc.needs_review else None),
                     error_message=(
                         "疑似目录无法与正文标题可靠对应"
                         if toc.needs_review
-                        else (
-                            None
-                            if metadata_topic
-                            else None
-                        )
+                        else (None if metadata_topic else None)
                     ),
                     warnings=list(toc.warnings),
                     audit={
@@ -1314,7 +1264,15 @@ class CourseInformationStrategy:
     sensitive = False
     knowledge_base_code = "course"
     dify_metadata_fields = frozenset(
-        {"document_type", "course_id", "direction", "stage", "source_platform", "series_name", "status"}
+        {
+            "document_type",
+            "course_id",
+            "direction",
+            "stage",
+            "source_platform",
+            "series_name",
+            "status",
+        }
     )
 
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
@@ -1330,15 +1288,11 @@ class CourseInformationStrategy:
         # An initial course upload has no dependency on a live catalogue.  Only
         # touch the DB when the supplied template explicitly names prerequisite
         # IDs that need resolving against already published courses.
-        courses = load_course_records_text(
-            text, validate_prerequisite_references=False
-        )
+        courses = load_course_records_text(text, validate_prerequisite_references=False)
         if any(item.prerequisite_course_ids for item in courses):
             with SessionLocal() as session:
                 known_course_ids = set(session.scalars(select(Course.course_id)))
-            courses = load_course_records_text(
-                text, known_course_ids=known_course_ids
-            )
+            courses = load_course_records_text(text, known_course_ids=known_course_ids)
         return [
             CleanedDocument(
                 markdown=_course_text(item),
@@ -1350,7 +1304,9 @@ class CourseInformationStrategy:
                     "stage": item.stage,
                     "source_platform": item.source_platform or "小鹅通",
                     "series_name": item.series_name or "",
-                    "status": "active" if item.enabled and item.review_status == "approved" else "inactive",
+                    "status": "active"
+                    if item.enabled and item.review_status == "approved"
+                    else "inactive",
                 },
                 audit={
                     "catalog_record": item.model_dump(mode="json"),
@@ -1399,7 +1355,9 @@ class LearningRouteStrategy:
                     "document_type": "learning_route",
                     "route_id": item.route_id,
                     "direction": item.direction,
-                    "status": "active" if item.enabled and item.review_status == "approved" else "inactive",
+                    "status": "active"
+                    if item.enabled and item.review_status == "approved"
+                    else "inactive",
                 },
                 audit={
                     "catalog_record": item.model_dump(mode="json"),
@@ -1474,10 +1432,9 @@ class CourseRouteCatalogStrategy:
             "invalid_rows": catalog.audit.invalid_rows,
             "warnings": catalog.audit.warnings,
         }
-        structure_blocked = any(
-            item.structure_conflicts for item in catalog.courses
-        ) or any(
-            warning.get("code") in {
+        structure_blocked = any(item.structure_conflicts for item in catalog.courses) or any(
+            warning.get("code")
+            in {
                 "duplicate_course_order",
                 "route_course_stage_conflict",
             }
@@ -1497,9 +1454,7 @@ class CourseRouteCatalogStrategy:
                 "b009": f"学习目标：{item.learning_outcomes_candidate}",
             }
             blocks = {
-                key: value
-                for key, value in blocks.items()
-                if value.split("：", 1)[-1].strip()
+                key: value for key, value in blocks.items() if value.split("：", 1)[-1].strip()
             }
             documents.append(
                 CleanedDocument(
@@ -1523,7 +1478,9 @@ class CourseRouteCatalogStrategy:
                     error_message=(
                         "同一课程链接存在结构字段冲突，需先人工确定最终名称/合集"
                         if item.structure_conflicts
-                        else ("同一文件存在结构冲突，需先完成结构审核" if structure_blocked else None)
+                        else (
+                            "同一文件存在结构冲突，需先完成结构审核" if structure_blocked else None
+                        )
                     ),
                     audit={
                         "catalog_kind": "course",
@@ -1585,16 +1542,12 @@ class CourseRouteCatalogStrategy:
                             "audience": item.audience_candidate,
                             "highlights": [
                                 value.strip()
-                                for value in re.split(
-                                    r"[；;\n]+", item.highlights_candidate
-                                )
+                                for value in re.split(r"[；;\n]+", item.highlights_candidate)
                                 if value.strip()
                             ],
                             "learning_outcomes": [
                                 value.strip()
-                                for value in re.split(
-                                    r"[；;\n]+", item.learning_outcomes_candidate
-                                )
+                                for value in re.split(r"[；;\n]+", item.learning_outcomes_candidate)
                                 if value.strip()
                             ],
                             "enabled": False,
@@ -1622,9 +1575,7 @@ class CourseRouteCatalogStrategy:
                     for course_id in stage.get("course_ids", [])
                 ]
                 if names:
-                    stage_context.append(
-                        f"{stage.get('name', '')}：" + "、".join(names)
-                    )
+                    stage_context.append(f"{stage.get('name', '')}：" + "、".join(names))
             route_blocks = {
                 "b001": f"路线名称：{item.name}",
                 "b002": f"路线目标：{item.target_candidate}",
@@ -1646,9 +1597,7 @@ class CourseRouteCatalogStrategy:
                         "review_status": "pending_review",
                     },
                     disposition="review_required" if structure_blocked else "awaiting_model",
-                    error_code=(
-                        "CATALOG_STRUCTURE_REVIEW_BLOCKED" if structure_blocked else None
-                    ),
+                    error_code=("CATALOG_STRUCTURE_REVIEW_BLOCKED" if structure_blocked else None),
                     error_message=(
                         "同一文件存在结构冲突，需先完成结构审核" if structure_blocked else None
                     ),
@@ -1789,11 +1738,7 @@ def validate_uploaded_file(path: Path, suffix: str, content_type: str | None) ->
         try:
             with zipfile.ZipFile(path) as archive:
                 names = set(archive.namelist())
-                required = (
-                    "word/document.xml"
-                    if suffix == ".docx"
-                    else "xl/workbook.xml"
-                )
+                required = "word/document.xml" if suffix == ".docx" else "xl/workbook.xml"
                 if "[Content_Types].xml" not in names or required not in names:
                     raise ValueError(f"{suffix.upper()[1:]}内部结构无效")
         except zipfile.BadZipFile as exc:
@@ -1827,7 +1772,9 @@ def cleaning_batch_files_cache_key(batch_id: str) -> str:
 
 def normalized_original_filename(value: str) -> str:
     name = PurePath(value.replace("\\", "/")).name
-    name = "".join(char for char in unicodedata.normalize("NFC", name) if unicodedata.category(char) != "Cc")
+    name = "".join(
+        char for char in unicodedata.normalize("NFC", name) if unicodedata.category(char) != "Cc"
+    )
     name = re.sub(r"\s+", " ", name).strip(" .")
     return name[:500] or "未命名文件"
 
@@ -1863,16 +1810,28 @@ def dify_document_name(
     return f"{stem}__{sequence:03d}{suffix}"
 
 
+def normalized_publication_content_sha256(markdown: str) -> str:
+    """Digest final knowledge text without collapsing Markdown structure."""
+
+    normalized = "\n".join(
+        line.rstrip()
+        for line in str(markdown or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    ).strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def dify_activity_document_name(
     activity_name: str,
     event_id: str,
     version: str,
+    *,
+    source_filename: str | None = None,
 ) -> str:
     """Build a readable, collision-resistant name for an activity revision."""
 
     if not event_id or not version:
         raise ValueError("活动 Dify 文档名缺少 event_id 或版本摘要")
-    base = dify_document_name(f"{activity_name}.md", "", 1).removesuffix(".md")
+    base = dify_document_name(source_filename or f"{activity_name}.md", "", 1).removesuffix(".md")
     safe_event_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(event_id))
     safe_version = re.sub(r"[^A-Za-z0-9_-]", "_", str(version))
     suffix = f"__{safe_event_id}__{safe_version[:16]}.md"
@@ -1919,9 +1878,18 @@ def _summarize_file(file_row: CleaningFile) -> dict[str, Any]:
         "review_required": sum(item.status == "review_required" for item in items),
         "failed": sum(item.status == "failed" for item in items),
     }
-    terminal = status_counts["succeeded"] + status_counts["excluded"] + status_counts["review_required"] + status_counts["failed"]
+    terminal = (
+        status_counts["succeeded"]
+        + status_counts["excluded"]
+        + status_counts["review_required"]
+        + status_counts["failed"]
+    )
     if item_total == 0:
-        outcome = file_row.outcome if file_row.outcome and file_row.outcome != "pending" else file_row.status
+        outcome = (
+            file_row.outcome
+            if file_row.outcome and file_row.outcome != "pending"
+            else file_row.status
+        )
     elif terminal < item_total or any(
         status_counts[name]
         for name in (
@@ -1936,10 +1904,7 @@ def _summarize_file(file_row: CleaningFile) -> dict[str, Any]:
         outcome = "processing"
     elif status_counts["excluded"] == item_total:
         outcome = "excluded"
-    elif (
-        status_counts["succeeded"] + status_counts["excluded"]
-        == item_total
-    ):
+    elif status_counts["succeeded"] + status_counts["excluded"] == item_total:
         outcome = "succeeded"
     elif status_counts["review_required"] == item_total:
         outcome = "review_required"
@@ -1947,7 +1912,13 @@ def _summarize_file(file_row: CleaningFile) -> dict[str, Any]:
         outcome = "failed"
     else:
         outcome = "mixed"
-    progress = 100 if item_total == 0 and outcome in FILE_TERMINAL_STATUSES else int((terminal / item_total) * 100) if item_total else 0
+    progress = (
+        100
+        if item_total == 0 and outcome in FILE_TERMINAL_STATUSES
+        else int((terminal / item_total) * 100)
+        if item_total
+        else 0
+    )
     return {
         "file_id": file_row.id,
         "original_filename": file_row.original_filename,
@@ -2001,7 +1972,7 @@ def _serialize_model_task(task: ModelCleaningTask) -> dict[str, Any]:
         "price_effective_date": task.price_effective_date,
         "price_valid_until": task.price_valid_until,
         "approved_at": task.approved_at,
-        "provider_batch_ids": task.provider_batch_ids or [],
+        "provider_batch_ids": get_provider_batch_ids(task),
         "result_counts": task.result_counts or {},
         "actual_usage": task.actual_usage or {},
         "cleanup_status": task.cleanup_status,
@@ -2031,7 +2002,12 @@ def _serialize_batch(batch: CleaningBatch) -> dict[str, Any]:
         "review_required": sum(item["item_counts"]["review_required"] for item in files),
         "failed": sum(item["item_counts"]["failed"] for item in files),
     }
-    terminal_items = item_counts["succeeded"] + item_counts["excluded"] + item_counts["review_required"] + item_counts["failed"]
+    terminal_items = (
+        item_counts["succeeded"]
+        + item_counts["excluded"]
+        + item_counts["review_required"]
+        + item_counts["failed"]
+    )
     status = (
         "completed"
         if file_total and non_terminal_files == 0 and terminal_items == total_items
@@ -2046,10 +2022,7 @@ def _serialize_batch(batch: CleaningBatch) -> dict[str, Any]:
     all_files_terminal = file_total > 0 and non_terminal_files == 0
     all_files_succeeded = all_files_terminal and file_succeeded == file_total
     all_files_processed_without_error = (
-        all_files_terminal
-        and file_failed == 0
-        and file_review == 0
-        and file_mixed == 0
+        all_files_terminal and file_failed == 0 and file_review == 0 and file_mixed == 0
     )
     return {
         "batch_id": batch.id,
@@ -2152,14 +2125,16 @@ def _preflight_local_duplicates(
     # uploads with the same content/name.  SQLite serializes the write
     # transaction itself, while other dialects retain the row-lock query.
     if session.bind is not None and session.bind.dialect.name == "postgresql":
-        for lock_key in sorted({
-            f"{knowledge_base_code}:sha:{row.source_sha256}"
-            for row in rows
-        } | {
-            f"{knowledge_base_code}:name:{row.source_name_key or normalized_filename_key(row.original_filename)}"
-            for row in rows
-        }):
-            session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": lock_key})
+        for lock_key in sorted(
+            {f"{knowledge_base_code}:sha:{row.source_sha256}" for row in rows}
+            | {
+                f"{knowledge_base_code}:name:{row.source_name_key or normalized_filename_key(row.original_filename)}"
+                for row in rows
+            }
+        ):
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": lock_key}
+            )
     submitted_ids = {row.id for row in rows}
     activity_submission = any(
         getattr(getattr(row, "batch", None), "strategy_code", "") == "recent_activity"
@@ -2167,8 +2142,7 @@ def _preflight_local_duplicates(
     )
     source_hashes = {row.source_sha256 for row in rows}
     source_names = {
-        row.source_name_key or normalized_filename_key(row.original_filename)
-        for row in rows
+        row.source_name_key or normalized_filename_key(row.original_filename) for row in rows
     }
     existing = session.execute(
         select(CleaningFile, CleaningBatch)
@@ -2180,7 +2154,16 @@ def _preflight_local_duplicates(
                 | CleaningFile.source_name_key.is_(None)
             ),
             CleaningFile.status.in_(
-                ["pending", "processing", "awaiting_model", "model_processing", "succeeded", "review_required", "mixed", "excluded"]
+                [
+                    "pending",
+                    "processing",
+                    "awaiting_model",
+                    "model_processing",
+                    "succeeded",
+                    "review_required",
+                    "mixed",
+                    "excluded",
+                ]
             ),
             CleaningFile.dedupe_released_at.is_(None),
             CleaningBatch.knowledge_base_code == knowledge_base_code,
@@ -2188,7 +2171,8 @@ def _preflight_local_duplicates(
         .with_for_update()
     ).all()
     existing_by_hash = {
-        file_row.source_sha256 for file_row, _batch in existing
+        file_row.source_sha256
+        for file_row, _batch in existing
         if file_row.id not in submitted_ids and file_row.source_sha256
     }
     existing_by_name = {
@@ -2300,7 +2284,11 @@ async def create_cleaning_batch(
         )
     active_batch_ids = session.scalars(
         select(CleaningBatch.id)
-        .where(CleaningBatch.status.in_(["accepted", "processing", "awaiting_model", "model_processing", "publishing"]))
+        .where(
+            CleaningBatch.status.in_(
+                ["accepted", "processing", "awaiting_model", "model_processing", "publishing"]
+            )
+        )
         .with_for_update()
     ).all()
     if len(active_batch_ids) >= settings.max_active_cleaning_batches:
@@ -2315,7 +2303,9 @@ async def create_cleaning_batch(
         if not isinstance(parsed_metadata, dict):
             raise ValueError
     except ValueError as exc:
-        raise ServiceError("VALIDATION_ERROR", "公共 Metadata 必须是 JSON 对象", 422, False) from exc
+        raise ServiceError(
+            "VALIDATION_ERROR", "公共 Metadata 必须是 JSON 对象", 422, False
+        ) from exc
     unexpected_fields = sorted(set(parsed_metadata) - ALLOWED_COMMON_METADATA)
     if unexpected_fields:
         raise ServiceError(
@@ -2365,7 +2355,8 @@ async def create_cleaning_batch(
             size_bytes=0,
             status="pending",
             stage="upload",
-            source_expires_at=utcnow() + timedelta(days=settings.cleaning_source_error_retention_days),
+            source_expires_at=utcnow()
+            + timedelta(days=settings.cleaning_source_error_retention_days),
         )
         session.add(row)
         session.flush()
@@ -2394,7 +2385,9 @@ async def create_cleaning_batch(
         row.source_sha256 = digest.hexdigest()
         if row.status == "failed":
             target.unlink(missing_ok=True)
-        elif suffix not in (_ALLOWED_CONTENT_TYPES if upload_mode == "raw" else strategy.supported_extensions):
+        elif suffix not in (
+            _ALLOWED_CONTENT_TYPES if upload_mode == "raw" else strategy.supported_extensions
+        ):
             row.status = "failed"
             row.error_code = "UNSUPPORTED_FILE_TYPE"
             row.error_message = f"{'原样上传' if upload_mode == 'raw' else f'策略 {strategy_code}'} 不支持 {suffix or '无扩展名'}"
@@ -2437,10 +2430,10 @@ async def create_cleaning_batch(
         # is removed immediately during batch creation, so it must not remain
         # as a permanent duplicate-protection tombstone and block the same
         # workbook from being uploaded again after the original is deleted.
-        if row.status == "excluded" and not any(
-            document.dify_document_id for document in row.documents
-        ) and not any(
-            shard.dify_document_id for shard in row.publication_shards
+        if (
+            row.status == "excluded"
+            and not any(document.dify_document_id for document in row.documents)
+            and not any(shard.dify_document_id for shard in row.publication_shards)
         ):
             row.dedupe_released_at = deleted_at
     if not pending_ids:
@@ -2517,9 +2510,7 @@ def get_cleaning_batch(batch_id: str, session: Session = Depends(get_session)) -
         .where(CleaningBatch.id == batch_id)
         .options(
             selectinload(CleaningBatch.files).selectinload(CleaningFile.documents),
-            selectinload(CleaningBatch.files).selectinload(
-                CleaningFile.publication_shards
-            ),
+            selectinload(CleaningBatch.files).selectinload(CleaningFile.publication_shards),
             selectinload(CleaningBatch.model_tasks),
         )
     )
@@ -2569,7 +2560,9 @@ def get_cleaning_items(
     }
 
 
-def get_cleaning_item(batch_id: str, file_id: str, item_id: str, session: Session) -> dict[str, Any]:
+def get_cleaning_item(
+    batch_id: str, file_id: str, item_id: str, session: Session
+) -> dict[str, Any]:
     row = session.scalar(
         select(CleaningDocument)
         .join(CleaningFile, CleaningDocument.file_id == CleaningFile.id)
@@ -2603,8 +2596,14 @@ def retry_cleaning_file(
         raise ServiceError("VALIDATION_ERROR", "清洗文件不存在", 404, False)
     review_required_documents = [item for item in row.documents if item.status == "review_required"]
     retryable_documents = [item for item in row.documents if item.status in ITEM_RETRYABLE_STATUSES]
-    if review_required_documents and not retryable_documents and row.status in {"review_required", "mixed"}:
-        raise ServiceError("VALIDATION_ERROR", "待复核条目不能直接重试，请先执行人工复核", 409, False)
+    if (
+        review_required_documents
+        and not retryable_documents
+        and row.status in {"review_required", "mixed"}
+    ):
+        raise ServiceError(
+            "VALIDATION_ERROR", "待复核条目不能直接重试，请先执行人工复核", 409, False
+        )
     if row.status != "failed" and not retryable_documents:
         raise ServiceError("VALIDATION_ERROR", "当前文件没有失败条目可重试", 409, False)
     target = get_settings().upload_root.resolve() / batch_id / row.storage_filename
@@ -2642,7 +2641,9 @@ def retry_cleaning_file(
     return {"file_id": file_id, "status": "pending"}
 
 
-def retry_cleaning_item(batch_id: str, file_id: str, item_id: str, session: Session) -> dict[str, Any]:
+def retry_cleaning_item(
+    batch_id: str, file_id: str, item_id: str, session: Session
+) -> dict[str, Any]:
     row = session.scalar(
         select(CleaningDocument)
         .join(CleaningFile, CleaningDocument.file_id == CleaningFile.id)
@@ -2655,7 +2656,9 @@ def retry_cleaning_item(batch_id: str, file_id: str, item_id: str, session: Sess
     if row is None:
         raise ServiceError("VALIDATION_ERROR", "清洗条目不存在", 404, False)
     if row.status not in ITEM_RETRYABLE_STATUSES:
-        raise ServiceError("VALIDATION_ERROR", "只有失败条目可以重试；待复核条目请先执行人工复核", 409, False)
+        raise ServiceError(
+            "VALIDATION_ERROR", "只有失败条目可以重试；待复核条目请先执行人工复核", 409, False
+        )
     row.status = "pending"
     row.stage = "pending"
     row.error_code = None
@@ -2684,10 +2687,12 @@ def retry_model_contract_item(
     """
 
     task = session.scalar(
-        select(ModelCleaningTask).where(
+        select(ModelCleaningTask)
+        .where(
             ModelCleaningTask.id == task_id,
             ModelCleaningTask.batch_id == batch_id,
         )
+        .with_for_update()
     )
     document = session.scalar(
         select(CleaningDocument)
@@ -2696,6 +2701,7 @@ def retry_model_contract_item(
             CleaningDocument.id == item_id,
             CleaningFile.batch_id == batch_id,
         )
+        .with_for_update()
     )
     batch = session.get(CleaningBatch, batch_id)
     if task is None or document is None or batch is None:
@@ -2740,11 +2746,15 @@ def retry_model_contract_item(
     from .workers.tasks.model_cleaning import process_realtime_model_task
 
     try:
-        process_realtime_model_task.apply_async(
-            args=[task.id], queue="ai_model_realtime"
-        )
+        process_realtime_model_task.apply_async(args=[task.id], queue="ai_model_realtime")
     except Exception as exc:
-        document.status, document.stage, document.error_code, document.error_message, document.retryable = previous_document_state
+        (
+            document.status,
+            document.stage,
+            document.error_code,
+            document.error_message,
+            document.retryable,
+        ) = previous_document_state
         task.status = previous_task_status
         task.result_counts = previous_task_counts
         task.actual_usage = previous_task_usage
@@ -2780,20 +2790,80 @@ def review_cleaning_item(
             CleaningDocument.file_id == file_id,
             CleaningFile.batch_id == batch_id,
         )
+        .with_for_update()
     )
     if row is None:
         raise ServiceError("VALIDATION_ERROR", "清洗条目不存在", 404, False)
+    review_request_sha256 = hashlib.sha256(
+        json.dumps(
+            {
+                "action": action,
+                "reason": reason,
+                "metadata_patch": metadata_patch,
+                "markdown_sha256": hashlib.sha256(
+                    (markdown_text or "").encode("utf-8")
+                ).hexdigest(),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if row.status != "review_required":
+        last_review = (row.audit_json or {}).get("review_log") or []
+        if (
+            row.status in {"excluded", "pending", "shard_pending"}
+            and last_review
+            and isinstance(last_review[-1], dict)
+            and last_review[-1].get("request_sha256") == review_request_sha256
+        ):
+            return {
+                "item_id": item_id,
+                "status": row.status,
+                "review_revision": row.review_revision,
+            }
+        raise ServiceError(
+            "CONFLICT",
+            "只有待人工复核条目可以执行复核动作",
+            409,
+            False,
+        )
     if row.review_revision != expected_revision:
         raise ServiceError("CONFLICT", "条目版本已变化，请刷新后重试", 409, False)
-    if set(metadata_patch) - _ARTICLE_METADATA_FIELDS - {"record_type", "book_id", "part_index", "part_count", "case_id"}:
+    if (
+        set(metadata_patch)
+        - _ARTICLE_METADATA_FIELDS
+        - {"record_type", "book_id", "part_index", "part_count", "case_id"}
+    ):
         raise ServiceError("VALIDATION_ERROR", "metadata_patch 包含未允许字段", 422, False)
     row.review_revision += 1
     audit = dict(row.audit_json or {})
     review_log = list(audit.get("review_log") or [])
-    review_log.append({"action": action, "reason": reason, "at": utcnow().isoformat()})
+    review_log.append(
+        {
+            "action": action,
+            "reason": reason,
+            "request_sha256": review_request_sha256,
+            "at": utcnow().isoformat(),
+        }
+    )
     audit["review_log"] = review_log
     row.audit_json = audit
     if action == "exclude":
+        if row.dify_document_id:
+            # Excluding a reviewed item must also compensate any remote
+            # document that may have been created before the review gate was
+            # reached.  Keep the local ID for auditability and enqueue an
+            # exact-ID cleanup task in the same transaction.
+            from .workers.tasks.cleaning import _ensure_document_cleanup_task
+
+            settings = get_settings()
+            dataset_id = (
+                settings.dify_general_dataset_id
+                if row.file.batch.knowledge_base_code == "general"
+                else settings.dify_course_dataset_id
+            )
+            _ensure_document_cleanup_task(session, row.dify_document_id, dataset_id)
         row.status = "excluded"
         row.stage = "reviewed"
         row.retryable = False
@@ -2854,9 +2924,7 @@ def review_cleaning_item(
 
             shard_ids = _plan_post_publication(session, row.file.batch_id)
             for shard_id in shard_ids:
-                publish_dify_shard.apply_async(
-                    args=[shard_id], queue="ai_publication"
-                )
+                publish_dify_shard.apply_async(args=[shard_id], queue="ai_publication")
         else:
             _enqueue_cleaning_document(item_id, row.file.original_filename)
     return {"item_id": item_id, "status": row.status, "review_revision": row.review_revision}

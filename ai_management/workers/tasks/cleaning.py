@@ -25,6 +25,7 @@ from ...cleaning import (
     dify_document_name,
     finalize_knowledge_markdown,
     get_settings,
+    normalized_publication_content_sha256,
     preserve_review_reason,
     review_policy_snapshot,
     source_markdown_fallback_enabled,
@@ -207,6 +208,26 @@ def _chunking_from_json(payload: dict[str, Any] | None) -> ChunkingConfig:
         parent_chunk_overlap=int(payload.get("parent_chunk_overlap") or 0),
         child_chunk_overlap=int(payload.get("child_chunk_overlap") or 0),
     )
+
+
+def _publication_markdown_for_document(
+    document: CleaningDocument,
+    batch: CleaningBatch,
+) -> str:
+    """Reconstruct the exact final body used for a succeeded publication."""
+
+    publication_markdown = finalize_knowledge_markdown(
+        document.cleaned_markdown or "",
+    )
+    if batch.strategy_code == "personal_business_consultation":
+        from knowledge_cleaner.consultation_rag import render_publication_markdown
+
+        chunking = _chunking_from_json(document.chunking_json)
+        publication_markdown = render_publication_markdown(
+            publication_markdown,
+            child_max_chars=max(300, min(800, chunking.child_max_tokens * 2)),
+        )
+    return publication_markdown
 
 
 def _content_sha(markdown: str, metadata: dict[str, Any], chunking: dict[str, Any]) -> str:
@@ -582,6 +603,49 @@ def _publish_document(
             )
             if not publication_markdown.strip():
                 raise ValueError("知识库发布正文为空，无法生成咨询案例子块")
+        publication_digest = normalized_publication_content_sha256(publication_markdown)
+        candidates = session.scalars(
+            select(CleaningDocument)
+            .join(CleaningFile, CleaningDocument.file_id == CleaningFile.id)
+            .join(CleaningBatch, CleaningFile.batch_id == CleaningBatch.id)
+            .where(
+                CleaningBatch.knowledge_base_code == batch.knowledge_base_code,
+                CleaningBatch.strategy_code == batch.strategy_code,
+                CleaningBatch.spec_revision == batch.spec_revision,
+                CleaningDocument.status == "succeeded",
+                CleaningDocument.id != row.id,
+            )
+            .options(selectinload(CleaningDocument.file).selectinload(CleaningFile.batch))
+        ).all()
+        duplicate = next(
+            (
+                candidate
+                for candidate in candidates
+                if normalized_publication_content_sha256(
+                    _publication_markdown_for_document(candidate, candidate.file.batch)
+                )
+                == publication_digest
+            ),
+            None,
+        )
+        if duplicate is not None:
+            row.status = "excluded"
+            row.stage = "duplicate_noop"
+            row.error_code = "EXACT_CONTENT_DUPLICATE"
+            row.error_message = "同一知识库与清洗契约已存在相同正文，未重复发布"
+            row.retryable = False
+            row.audit_json = {
+                **audit,
+                "publication_content_sha256": publication_digest,
+                "duplicate_of_item_id": duplicate.id,
+                "duplicate_scope": {
+                    "knowledge_base_code": batch.knowledge_base_code,
+                    "strategy_code": batch.strategy_code,
+                    "spec_revision": batch.spec_revision,
+                },
+            }
+            session.commit()
+            return True
         audit["publication_input"] = {
             "content_format": "markdown",
             "content_bytes": len(publication_markdown.encode("utf-8")),
@@ -590,6 +654,7 @@ def _publish_document(
                 row.cleaned_markdown.encode("utf-8")
             ).hexdigest(),
         }
+        audit["publication_content_sha256"] = publication_digest
         row.audit_json = audit
         session.commit()
 
@@ -934,30 +999,39 @@ def _publish_source_file(
     file_row: CleaningFile,
     batch: CleaningBatch,
 ) -> bool:
-    if batch.strategy_code != "recent_activity":
-        return _publish_source_file_unlocked(session, file_row=file_row, batch=batch)
+    # Serialize all publication strategies within one knowledge-base/contract
+    # scope. Activity's event-specific lock alone allowed different event IDs
+    # to race on the same active-document/dedup contract.
+    with cache.lock(
+        f"ai:content-publication:{batch.knowledge_base_code}:{batch.strategy_code}:{batch.spec_revision}",
+        ttl=3600,
+    ) as acquired:
+        if not acquired:
+            raise RuntimeError("同一清洗契约正在发布，请稍后重试")
+        if batch.strategy_code != "recent_activity":
+            return _publish_source_file_unlocked(session, file_row=file_row, batch=batch)
 
-    event_ids = {
-        str((metadata or {}).get("event_id") or "")
-        for metadata in session.scalars(
-            select(CleaningDocument.metadata_json).where(
-                CleaningDocument.file_id == file_row.id,
-                CleaningDocument.status.in_(("pending", "processing", "staged")),
-            )
-        )
-    }
-    event_ids.discard("")
-    with ExitStack() as locks:
-        for event_id in sorted(event_ids):
-            acquired = locks.enter_context(
-                cache.lock(
-                    f"ai:activity-publication:{batch.knowledge_base_code}:{event_id}",
-                    ttl=3600,
+        event_ids = {
+            str((metadata or {}).get("event_id") or "")
+            for metadata in session.scalars(
+                select(CleaningDocument.metadata_json).where(
+                    CleaningDocument.file_id == file_row.id,
+                    CleaningDocument.status.in_(("pending", "processing", "staged")),
                 )
             )
-            if not acquired:
-                raise RuntimeError("同名活动正在发布，请稍后重试")
-        return _publish_source_file_unlocked(session, file_row=file_row, batch=batch)
+        }
+        event_ids.discard("")
+        with ExitStack() as locks:
+            for event_id in sorted(event_ids):
+                acquired = locks.enter_context(
+                    cache.lock(
+                        f"ai:activity-publication:{batch.knowledge_base_code}:{event_id}",
+                        ttl=3600,
+                    )
+                )
+                if not acquired:
+                    raise RuntimeError("同名活动正在发布，请稍后重试")
+            return _publish_source_file_unlocked(session, file_row=file_row, batch=batch)
 
 
 def _publish_source_file_unlocked(
@@ -1001,6 +1075,7 @@ def _publish_source_file_unlocked(
                     "同一源文件包含重复活动 event_id，禁止同时发布多个版本："
                     + ",".join(duplicate_event_ids)
                 )
+        publishable_documents: list[CleaningDocument] = []
         for document in documents:
             published = _publish_document(
                 session,
@@ -1011,11 +1086,18 @@ def _publish_source_file_unlocked(
             )
             if not published:
                 raise RuntimeError("同一源文件存在发布失败的子文档")
+            if document.status != "excluded":
+                publishable_documents.append(document)
+        if not publishable_documents:
+            _refresh_file_state(session, file_row.id, commit=False)
+            _finish_batch(session, batch.id)
+            session.commit()
+            return True
         _commit_source_publication(
             session,
             file_row=file_row,
             batch=batch,
-            documents=documents,
+            documents=publishable_documents,
         )
         return True
     except Exception as exc:
@@ -1299,16 +1381,11 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     file_id=row.id,
                     sequence=sequence,
                     title=document.title[:300],
-                    dify_document_name=(
-                        f"event_{document.metadata['event_id']}.md"
-                        if batch.strategy_code == "recent_activity"
-                        and document.metadata.get("event_id")
-                        else dify_document_name(
-                            row.original_filename,
-                            row.source_sha256,
-                            sequence,
-                            split=len(cleaned_documents) > 1,
-                        )
+                    dify_document_name=dify_document_name(
+                        row.original_filename,
+                        row.source_sha256,
+                        sequence,
+                        split=len(cleaned_documents) > 1,
                     ),
                     document_key=f"{row.id}:{sequence}:{row.source_sha256[:12]}",
                     status=status,
@@ -1355,6 +1432,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                                 item.metadata_json,
                                 item.chunking_json,
                             ),
+                            source_filename=row.original_filename,
                         )
                 duplicate = session.scalar(
                     select(CleaningDocument)

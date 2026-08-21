@@ -28,6 +28,35 @@ POST_STRATEGIES = frozenset(
     }
 )
 REALTIME_ONLY_STRATEGIES = frozenset({"recent_activity"})
+
+
+def get_provider_batch_ids(task: Any, *, include_terminal: bool = False) -> list[str]:
+    """Return provider Batch IDs from both current and legacy task fields.
+
+    Older rows stored only ``provider_batch_id`` while current rows also
+    maintain the plural field for multi-file Batch submissions.  Runtime
+    cleanup and polling must keep seeing the legacy ID until the row is
+    normalized by the current worker. Polling may additionally include IDs
+    persisted in ``result_counts.provider_terminal_batches``; the default view
+    excludes those already-terminal IDs so cancellation and admin views do not
+    treat them as active work.
+    """
+
+    batch_ids = [str(value) for value in (getattr(task, "provider_batch_ids", None) or []) if value]
+    legacy_batch_id = str(getattr(task, "provider_batch_id", None) or "")
+    if legacy_batch_id and legacy_batch_id not in batch_ids:
+        batch_ids.append(legacy_batch_id)
+    if include_terminal:
+        result_counts = getattr(task, "result_counts", None) or {}
+        terminal_batches = result_counts.get("provider_terminal_batches", {})
+        if isinstance(terminal_batches, dict):
+            for provider_batch_id in terminal_batches:
+                value = str(provider_batch_id or "")
+                if value and value not in batch_ids:
+                    batch_ids.append(value)
+    return batch_ids
+
+
 ALLOWED_TOPICS = frozenset(
     {
         "战略与商业模式",
@@ -318,8 +347,7 @@ def build_prompt_messages(
             + json.dumps(payload, ensure_ascii=False, sort_keys=True)
             + (
                 "\n\n上一次输出未通过结构契约。请在不改写来源正文的前提下"
-                "重新输出完整 JSON，并满足这一项纠正要求："
-                + repair_hint.strip()
+                "重新输出完整 JSON，并满足这一项纠正要求：" + repair_hint.strip()
                 if repair_hint.strip()
                 else ""
             ),
@@ -488,9 +516,7 @@ def validate_semantic_response(
 ) -> PostSemanticResponse:
     if strategy_code not in POST_STRATEGIES:
         raise ValueError("该校验器只适用于帖子/文章策略")
-    result = PostSemanticResponse.model_validate(
-        _normalize_post_semantic_payload(payload)
-    )
+    result = PostSemanticResponse.model_validate(_normalize_post_semantic_payload(payload))
     referenced = result.keep_block_ids + result.drop_block_ids
     if len(referenced) != len(set(referenced)):
         raise ValueError("来源块不能重复归类")
@@ -512,9 +538,7 @@ def validate_semantic_response(
         unit_ids.add(unit.unit_id)
         unknown_unit_blocks = set(unit.source_block_ids) - available_block_ids
         if unknown_unit_blocks:
-            raise ValueError(
-                f"knowledge_unit引用未知来源块：{sorted(unknown_unit_blocks)}"
-            )
+            raise ValueError(f"knowledge_unit引用未知来源块：{sorted(unknown_unit_blocks)}")
         if not set(unit.source_block_ids) <= kept_ids:
             raise ValueError("knowledge_unit只能引用keep来源块")
         if source_blocks is not None:
@@ -532,10 +556,7 @@ def validate_semantic_response(
                 r"(?<![A-Za-z0-9_])\d+(?:[.,]\d+)?%?(?![A-Za-z0-9_])",
                 unit_text,
             )
-            unit_evidence = "\n".join(
-                source_blocks[block_id]
-                for block_id in unit.source_block_ids
-            )
+            unit_evidence = "\n".join(source_blocks[block_id] for block_id in unit.source_block_ids)
             if any(token not in unit_evidence for token in numeric_tokens):
                 raise ValueError("knowledge_unit包含来源未支持的数字或日期")
     if (
@@ -556,9 +577,7 @@ def validate_consultation_response(
     available_block_ids: set[str],
     source_blocks: dict[str, str] | None = None,
 ) -> ConsultationSemanticResponse:
-    result = ConsultationSemanticResponse.model_validate(
-        _normalize_consultation_payload(payload)
-    )
+    result = ConsultationSemanticResponse.model_validate(_normalize_consultation_payload(payload))
     headings = [section.heading for section in result.sections]
     if len(headings) != len(set(headings)):
         raise ValueError("咨询结构章节不能重复")
@@ -567,10 +586,7 @@ def validate_consultation_response(
         if unknown:
             raise ValueError(f"咨询结果引用未知来源块：{sorted(unknown)}")
         if source_blocks is not None:
-            evidence = "\n".join(
-                source_blocks[block_id]
-                for block_id in section.source_block_ids
-            )
+            evidence = "\n".join(source_blocks[block_id] for block_id in section.source_block_ids)
             numeric_tokens = re.findall(
                 r"(?<![A-Za-z0-9_])\d+(?:[.,]\d+)?%?(?![A-Za-z0-9_])",
                 section.text,
@@ -635,9 +651,8 @@ def _normalize_consultation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         # expressly says not to output such headings, so discard only the
         # fully empty placeholder.  Any partially populated malformed section
         # remains a contract error for human review.
-        if (
-            not str(normalized_section.get("text") or "").strip()
-            and not normalized_section.get("source_block_ids")
+        if not str(normalized_section.get("text") or "").strip() and not normalized_section.get(
+            "source_block_ids"
         ):
             continue
         value = str(normalized_section.get("fact_state") or "").strip()
@@ -820,9 +835,7 @@ def batch_request_line(
             build_prompt_messages(request, repair_hint=repair_hint), model=model
         ),
     }
-    return (json.dumps(line, ensure_ascii=False, separators=(",", ":")) + "\n").encode(
-        "utf-8"
-    )
+    return (json.dumps(line, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
 
 
 __all__ = [

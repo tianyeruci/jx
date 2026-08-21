@@ -16,7 +16,10 @@ from ...context import messages_after_summary
 from ...courses import rebuild_snapshot
 from ...db import SessionLocal
 from ...dify import DifyAppClient
-from ...model_cleaning import BailianClient
+from ...model_cleaning import (
+    BailianClient,
+    get_provider_batch_ids,
+)
 from ...models import (
     BusinessConversation,
     BusinessConversationSegment,
@@ -32,6 +35,10 @@ from ...models import (
     SystemEventLog,
 )
 from ...services.admin_settings import get_history_retention_days
+from ...services.bailian_cleanup import (
+    clear_successful_bailian_file_tasks,
+    ensure_bailian_cleanup_tasks,
+)
 from ...services.observability.events import record_event
 from ..celery_app import celery_app
 from .cleaning import (
@@ -45,6 +52,144 @@ from .summary import _summarize_sync
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+_EXTERNAL_DELETION_BATCH_LIMIT = 200
+_EXTERNAL_DELETION_FETCH_LIMIT = 1000
+_EXTERNAL_DELETION_PER_KIND_QUOTA = 50
+_EXTERNAL_DELETION_MAX_AUTO_ATTEMPTS = 3
+
+
+def _model_task_cleanup_file_ids(task: ModelCleaningTask) -> set[str]:
+    file_ids = {
+        str(file_id)
+        for file_id in (
+            *(task.provider_input_file_ids or []),
+            *(task.provider_output_file_ids or []),
+            *(task.provider_error_file_ids or []),
+        )
+        if file_id
+    }
+    terminal_batches = (task.result_counts or {}).get("provider_terminal_batches", {})
+    if isinstance(terminal_batches, dict):
+        for status in terminal_batches.values():
+            if not isinstance(status, dict):
+                continue
+            for field in ("output_file_id", "error_file_id"):
+                if status.get(field):
+                    file_ids.add(str(status[field]))
+    return file_ids
+
+
+def _reconcile_model_cleanup_work(session) -> None:
+    """Rebuild missing exact Bailian cleanup work after a local crash."""
+
+    tasks = list(
+        session.scalars(
+            select(ModelCleaningTask)
+            .where(
+                ModelCleaningTask.status.in_(("cancelled", "completed", "validating")),
+                ModelCleaningTask.cleanup_status != "completed",
+            )
+            .order_by(ModelCleaningTask.updated_at, ModelCleaningTask.id)
+            .limit(_EXTERNAL_DELETION_FETCH_LIMIT)
+        )
+    )
+    for task in tasks:
+        provider_batch_ids = get_provider_batch_ids(task)
+        file_ids = _model_task_cleanup_file_ids(task)
+        if not provider_batch_ids and not file_ids:
+            continue
+        ensure_bailian_cleanup_tasks(
+            session,
+            task,
+            provider_batch_ids=provider_batch_ids,
+            provider_file_ids=file_ids,
+            include_file_tasks=not provider_batch_ids,
+            last_error="维护任务从本地状态重建供应商清理工作",
+        )
+
+
+def _select_fair_external_deletion_tasks(session) -> list[ExternalDeletionTask]:
+    candidates = list(
+        session.scalars(
+            select(ExternalDeletionTask)
+            .where(ExternalDeletionTask.next_attempt_at <= datetime.now(timezone.utc))
+            .order_by(
+                ExternalDeletionTask.next_attempt_at,
+                ExternalDeletionTask.id,
+            )
+            .limit(_EXTERNAL_DELETION_FETCH_LIMIT)
+        )
+    )
+    by_kind: dict[str, list[ExternalDeletionTask]] = {}
+    for task in candidates:
+        if (task.payload or {}).get("state") == "manual_intervention_required":
+            continue
+        by_kind.setdefault(task.kind, []).append(task)
+    selected: list[ExternalDeletionTask] = []
+    while len(selected) < _EXTERNAL_DELETION_BATCH_LIMIT:
+        progressed = False
+        for kind in sorted(by_kind):
+            queue = by_kind[kind]
+            if not queue:
+                continue
+            selected.append(queue.pop(0))
+            progressed = True
+            if len(selected) >= _EXTERNAL_DELETION_BATCH_LIMIT:
+                break
+        if not progressed:
+            break
+    return selected
+
+
+def _record_external_deletion_failure(
+    task: ExternalDeletionTask,
+    error: str,
+    *,
+    delay: timedelta,
+) -> None:
+    now = datetime.now(timezone.utc)
+    task.attempts += 1
+    task.last_error = error[:1000]
+    payload = dict(task.payload or {})
+    if task.attempts >= _EXTERNAL_DELETION_MAX_AUTO_ATTEMPTS:
+        payload.update(
+            {
+                "state": "manual_intervention_required",
+                "blocked_at": now.isoformat(),
+            }
+        )
+        task.last_error = (error[:800] + "；已暂停自动重试，需人工处理")[:1000]
+        task.next_attempt_at = now + timedelta(days=3650)
+    else:
+        task.next_attempt_at = now + delay
+    task.payload = payload
+
+
+def _queue_bailian_file_task(
+    session,
+    *,
+    file_id: str,
+    model_task_id: str | None,
+    last_error: str,
+) -> None:
+    existing = session.scalar(
+        select(ExternalDeletionTask)
+        .where(
+            ExternalDeletionTask.kind == "bailian_file",
+            ExternalDeletionTask.external_id == file_id,
+        )
+        .limit(1)
+    )
+    if existing is None:
+        session.add(
+            ExternalDeletionTask(
+                kind="bailian_file",
+                external_id=file_id,
+                payload={"model_task_id": model_task_id},
+                attempts=0,
+                last_error=last_error[:1000],
+            )
+        )
 
 
 def _reconcile_cleaning_pipeline() -> dict[str, int]:
@@ -113,9 +258,7 @@ def _reconcile_cleaning_pipeline() -> dict[str, int]:
 
         for document in stale_model_documents:
             batch = session.scalar(
-                select(CleaningBatch)
-                .join(CleaningFile)
-                .where(CleaningFile.id == document.file_id)
+                select(CleaningBatch).join(CleaningFile).where(CleaningFile.id == document.file_id)
             )
             if batch is None:
                 continue
@@ -274,9 +417,7 @@ def _cleanup_history() -> None:
         cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
         inactive_ids = list(
             session.scalars(
-                select(BusinessConversation.id).where(
-                    BusinessConversation.last_active_at <= cutoff
-                )
+                select(BusinessConversation.id).where(BusinessConversation.last_active_at <= cutoff)
             )
         )
         active_with_old = list(
@@ -369,17 +510,14 @@ def _cleanup_history() -> None:
 def _retry_external_deletions() -> None:
     client = DifyAppClient(settings.dify_url, settings.dify_business_app_api_key)
     with SessionLocal() as session:
-        tasks = list(
-            session.scalars(
-                select(ExternalDeletionTask)
-                .where(ExternalDeletionTask.next_attempt_at <= datetime.now(timezone.utc))
-                .limit(200)
-            )
-        )
+        _reconcile_model_cleanup_work(session)
+        tasks = _select_fair_external_deletion_tasks(session)
         for task in tasks:
             try:
                 if task.kind == "dify_conversation":
-                    client.delete_conversation(task.external_id, str(task.payload.get("user") or ""))
+                    client.delete_conversation(
+                        task.external_id, str(task.payload.get("user") or "")
+                    )
                 elif task.kind == "dify_document":
                     dataset_id = str(task.payload.get("dataset_id") or "")
                     knowledge = DifyKnowledgeClient(
@@ -403,15 +541,61 @@ def _retry_external_deletions() -> None:
                         model_client.delete_file(task.external_id)
                     finally:
                         model_client.close()
+                elif task.kind == "bailian_batch":
+                    model_client = BailianClient(
+                        api_key=settings.bailian_api_key,
+                        base_url=settings.bailian_base_url,
+                        timeout_seconds=60,
+                    )
+                    try:
+                        cancelled = model_client.cancel_batch(task.external_id)
+                        provider_status = str(cancelled.get("status") or "cancelled")
+                        returned_file_ids = {
+                            str(cancelled.get(field) or "")
+                            for field in ("output_file_id", "error_file_id")
+                            if cancelled.get(field)
+                        }
+                        returned_file_ids.update(
+                            str(file_id)
+                            for file_id in (task.payload or {}).get("file_ids", [])
+                            if file_id
+                        )
+                        if provider_status not in {"completed", "failed", "expired", "cancelled"}:
+                            _record_external_deletion_failure(
+                                task,
+                                f"供应商 Batch 取消仍处于 {provider_status}，等待下一次终态查询",
+                                delay=timedelta(minutes=10),
+                            )
+                            continue
+                        deleted_file_ids: set[str] = set()
+                        for file_id in sorted(returned_file_ids):
+                            try:
+                                model_client.delete_file(file_id)
+                                deleted_file_ids.add(file_id)
+                            except Exception as file_exc:
+                                _queue_bailian_file_task(
+                                    session,
+                                    file_id=file_id,
+                                    model_task_id=task.payload.get("model_task_id"),
+                                    last_error=str(file_exc),
+                                )
+                        clear_successful_bailian_file_tasks(session, deleted_file_ids)
+                    finally:
+                        model_client.close()
                 session.delete(task)
             except Exception as exc:
-                task.attempts += 1
-                task.last_error = str(exc)[:1000]
-                task.next_attempt_at = datetime.now(timezone.utc) + timedelta(days=1)
-                if task.attempts >= 3:
+                _record_external_deletion_failure(
+                    task,
+                    str(exc),
+                    delay=timedelta(days=1),
+                )
+                if task.payload.get("state") == "manual_intervention_required":
                     logger.error(
-                        "external deletion failed three times",
-                        extra={"external_id": task.external_id},
+                        "external deletion requires manual intervention",
+                        extra={
+                            "external_id": task.external_id,
+                            "kind": task.kind,
+                        },
                     )
         session.commit()
 
@@ -499,9 +683,7 @@ def _cleanup_files_and_stale_tasks() -> None:
         expired_batches = list(
             session.scalars(
                 select(CleaningBatch).where(
-                    CleaningBatch.status.in_(
-                        {"completed", "failed", "review_required", "mixed"}
-                    ),
+                    CleaningBatch.status.in_({"completed", "failed", "review_required", "mixed"}),
                     CleaningBatch.updated_at <= status_cutoff,
                 )
             )
@@ -519,19 +701,270 @@ def _terminalize_stale_model_tasks() -> None:
     """Requeue orphaned model work instead of turning it into human review."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
     active_states = {
-        "running", "validating", "batch_uploading", "batch_running",
+        "running",
+        "validating",
+        "batch_uploading",
+        "batch_running",
     }
     requeue_batch_ids: set[str] = set()
+    poll_task_ids: set[str] = set()
+    realtime_task_ids: set[str] = set()
     with SessionLocal() as session:
         tasks = list(
             session.scalars(
-                select(ModelCleaningTask).where(
+                select(ModelCleaningTask)
+                .where(
                     ModelCleaningTask.status.in_(active_states),
                     ModelCleaningTask.updated_at <= cutoff,
                 )
+                .with_for_update()
             )
         )
         for task in tasks:
+            provider_batch_ids = get_provider_batch_ids(task)
+            provider_file_ids = {
+                str(file_id)
+                for file_id in [
+                    *(task.provider_input_file_ids or []),
+                    *(task.provider_output_file_ids or []),
+                    *(task.provider_error_file_ids or []),
+                ]
+                if file_id
+            }
+            terminal_output_ids: set[str] = set()
+            terminal_error_ids: set[str] = set()
+            terminal_batches = (task.result_counts or {}).get("provider_terminal_batches", {})
+            if isinstance(terminal_batches, dict):
+                provider_batch_ids.extend(
+                    str(provider_batch_id)
+                    for provider_batch_id in terminal_batches
+                    if provider_batch_id and str(provider_batch_id) not in provider_batch_ids
+                )
+                for terminal_status in terminal_batches.values():
+                    if not isinstance(terminal_status, dict):
+                        continue
+                    for field in ("output_file_id", "error_file_id"):
+                        if terminal_status.get(field):
+                            provider_file_ids.add(str(terminal_status[field]))
+                            if field == "output_file_id":
+                                terminal_output_ids.add(str(terminal_status[field]))
+                            else:
+                                terminal_error_ids.add(str(terminal_status[field]))
+
+            documents = list(
+                session.scalars(
+                    select(CleaningDocument).where(
+                        CleaningDocument.file_id.in_(
+                            select(CleaningFile.id).where(CleaningFile.batch_id == task.batch_id)
+                        ),
+                        CleaningDocument.status.in_(["model_processing", "awaiting_model"]),
+                    )
+                )
+            )
+            if provider_batch_ids:
+                # A stale local timestamp is not evidence that a provider
+                # Batch is safe to cancel. Hand all known IDs to the normal
+                # poll state machine, which owns mixed terminal/active
+                # handling, result consumption, and eventual cleanup.
+                task.provider_batch_ids = provider_batch_ids
+                task.provider_batch_id = provider_batch_ids[0]
+                task.provider_output_file_ids = sorted(
+                    {
+                        *(task.provider_output_file_ids or []),
+                        *terminal_output_ids,
+                    }
+                )
+                task.provider_error_file_ids = sorted(
+                    {
+                        *(task.provider_error_file_ids or []),
+                        *terminal_error_ids,
+                    }
+                )
+                task.status = "batch_running"
+                task.last_error = "模型异步任务本地状态过期，已保留供应商 Batch 并交回正常轮询"
+                batch = session.get(CleaningBatch, task.batch_id)
+                if batch is not None:
+                    batch.status = "model_batch_running"
+                poll_task_ids.add(task.id)
+                continue
+
+            task.last_error = "模型任务本地状态已过期，未发现可轮询的供应商 Batch"
+            for document in documents:
+                document.status = "awaiting_model"
+                document.stage = "model_retry"
+                document.error_code = "MODEL_TASK_WATCHDOG_TIMEOUT"
+                document.error_message = "模型异步任务超时，已重新排队"
+                document.retryable = True
+            batch = session.get(CleaningBatch, task.batch_id)
+            if batch is None:
+                task.status = "failed"
+                task.last_error = "模型任务所属批次不存在，无法恢复"
+            elif provider_file_ids or task.mode == "batch":
+                # Without a provider Batch ID, keep exact file references for
+                # the admin cancellation/submit recovery path. Never delete
+                # output/error files merely because the local timestamp is
+                # stale.
+                task.status = "awaiting_approval"
+                task.approval_fingerprint = ""
+                task.approved_at = None
+                batch.status = "awaiting_model_approval"
+                task.last_error = (
+                    "模型任务本地状态过期但没有可轮询的供应商 Batch；已保留文件引用并等待重新批准"
+                )
+            else:
+                # Reuse the existing task row instead of creating a duplicate
+                # candidate-fingerprint row under the unique constraint.
+                task.status = "queued"
+                batch.status = "model_validating"
+                realtime_task_ids.add(task.id)
+            continue
+
+            had_remote_ids = bool(provider_batch_ids or provider_file_ids)
+            cleanup_failed = False
+            if had_remote_ids:
+                model_client = BailianClient(
+                    api_key=settings.bailian_api_key,
+                    base_url=settings.bailian_base_url,
+                    timeout_seconds=60,
+                )
+                try:
+                    remote_statuses: dict[str, dict] = {}
+                    query_failed = False
+                    for provider_batch_id in provider_batch_ids:
+                        try:
+                            remote_status = model_client.get_batch(provider_batch_id)
+                            if not str(remote_status.get("status") or ""):
+                                raise ValueError("供应商 Batch 状态为空")
+                            remote_statuses[provider_batch_id] = {
+                                **remote_status,
+                                "provider_batch_id": provider_batch_id,
+                            }
+                        except Exception as exc:
+                            query_failed = True
+                            task.provider_batch_ids = provider_batch_ids
+                            task.provider_batch_id = provider_batch_ids[0]
+                            task.provider_output_file_ids = sorted(
+                                {
+                                    *(task.provider_output_file_ids or []),
+                                    *terminal_output_ids,
+                                }
+                            )
+                            task.provider_error_file_ids = sorted(
+                                {
+                                    *(task.provider_error_file_ids or []),
+                                    *terminal_error_ids,
+                                }
+                            )
+                            task.last_error = (
+                                "模型异步任务过期，但供应商 Batch 状态暂时无法确认；"
+                                "已保留远端 ID 并安排重试：" + str(exc)[:1200]
+                            )[:2000]
+                            poll_task_ids.add(task.id)
+                            break
+                    if query_failed:
+                        continue
+
+                    terminal_summary = {
+                        str(provider_batch_id): value
+                        for provider_batch_id, value in terminal_batches.items()
+                        if isinstance(value, dict)
+                    }
+                    terminal_summary.update(
+                        {
+                            provider_batch_id: status
+                            for provider_batch_id, status in remote_statuses.items()
+                            if str(status.get("status") or "")
+                            in {"completed", "failed", "expired", "cancelled"}
+                        }
+                    )
+                    completed_remote_work = any(
+                        str(status.get("status") or "") == "completed"
+                        for status in terminal_summary.values()
+                    )
+                    if (
+                        completed_remote_work
+                        or terminal_summary
+                        and all(
+                            str(status.get("status") or "")
+                            in {"completed", "failed", "expired", "cancelled"}
+                            for status in terminal_summary.values()
+                        )
+                    ):
+                        output_ids = {
+                            str(file_id)
+                            for file_id in task.provider_output_file_ids or []
+                            if file_id
+                        }
+                        output_ids.update(terminal_output_ids)
+                        error_ids = {
+                            str(file_id)
+                            for file_id in task.provider_error_file_ids or []
+                            if file_id
+                        }
+                        error_ids.update(terminal_error_ids)
+                        for status in terminal_summary.values():
+                            if status.get("output_file_id"):
+                                output_ids.add(str(status["output_file_id"]))
+                            if status.get("error_file_id"):
+                                error_ids.add(str(status["error_file_id"]))
+                        task.provider_batch_ids = provider_batch_ids
+                        task.provider_batch_id = provider_batch_ids[0]
+                        task.provider_output_file_ids = sorted(output_ids)
+                        task.provider_error_file_ids = sorted(error_ids)
+                        task.result_counts = {
+                            **(task.result_counts or {}),
+                            "provider_terminal_batches": terminal_summary,
+                        }
+                        task.last_error = (
+                            "看门狗发现供应商 Batch 已有终态，已保留远端结果并安排正常轮询"
+                        )
+                        batch = session.get(CleaningBatch, task.batch_id)
+                        if batch is not None:
+                            batch.status = "model_batch_running"
+                        poll_task_ids.add(task.id)
+                        continue
+
+                    for provider_batch_id in provider_batch_ids:
+                        try:
+                            cancelled = model_client.cancel_batch(provider_batch_id)
+                            provider_file_ids.update(
+                                str(cancelled.get(field) or "")
+                                for field in ("output_file_id", "error_file_id")
+                                if cancelled.get(field)
+                            )
+                        except Exception as exc:
+                            cleanup_failed = True
+                            session.add(
+                                ExternalDeletionTask(
+                                    kind="bailian_batch",
+                                    external_id=provider_batch_id,
+                                    payload={"model_task_id": task.id},
+                                    attempts=0,
+                                    last_error=str(exc)[:1000],
+                                )
+                            )
+                    for file_id in sorted(provider_file_ids):
+                        try:
+                            model_client.delete_file(file_id)
+                        except Exception as exc:
+                            cleanup_failed = True
+                            session.add(
+                                ExternalDeletionTask(
+                                    kind="bailian_file",
+                                    external_id=file_id,
+                                    payload={"model_task_id": task.id},
+                                    attempts=0,
+                                    last_error=str(exc)[:1000],
+                                )
+                            )
+                finally:
+                    model_client.close()
+                task.provider_batch_ids = []
+                task.provider_batch_id = None
+                task.provider_input_file_ids = []
+                task.provider_output_file_ids = []
+                task.provider_error_file_ids = []
+                task.cleanup_status = "pending_retry" if cleanup_failed else "completed"
             task.status = "failed"
             task.last_error = "模型异步任务超过6小时未更新，已由维护看门狗终止"
             documents = list(
@@ -549,8 +982,12 @@ def _terminalize_stale_model_tasks() -> None:
                 document.stage = "model_retry"
                 document.error_code = "MODEL_TASK_WATCHDOG_TIMEOUT"
                 document.error_message = "模型异步任务超时，已重新排队"
-                document.retryable = False
-            if documents:
+                document.retryable = True
+            # A stale task with provider IDs already submitted work externally.
+            # Requeue only after every known remote resource was cancelled and
+            # deleted.  A failed cleanup keeps the exact ExternalDeletionTask
+            # trail and must not submit a duplicate provider Batch.
+            if documents and not cleanup_failed:
                 requeue_batch_ids.add(task.batch_id)
             batch = session.get(CleaningBatch, task.batch_id)
             if batch is not None:
@@ -567,6 +1004,18 @@ def _terminalize_stale_model_tasks() -> None:
                     "stale model task requeue failed",
                     extra={"batch_id": batch_id},
                 )
+    if poll_task_ids:
+        from .model_cleaning import poll_batch_model_task
+
+        for task_id in poll_task_ids:
+            poll_batch_model_task.apply_async(args=[task_id], queue="ai_model_batch", countdown=0)
+    if realtime_task_ids:
+        from .model_cleaning import process_realtime_model_task
+
+        for task_id in realtime_task_ids:
+            process_realtime_model_task.apply_async(
+                args=[task_id], queue="ai_model_realtime", countdown=0
+            )
 
 
 def _cleanup_system_event_logs() -> None:
@@ -585,9 +1034,7 @@ def _cleanup_system_event_logs() -> None:
 
 
 def _cleanup_conversion_markdown() -> None:
-    maintain_conversion_markdown_artifacts(
-        delete_all=not settings.save_conversion_markdown
-    )
+    maintain_conversion_markdown_artifacts(delete_all=not settings.save_conversion_markdown)
 
 
 def _refresh_course_snapshot() -> None:
