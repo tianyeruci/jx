@@ -1,0 +1,69 @@
+{
+  "description": "Codex engineering governance lifecycle hooks v2.4.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/governance_session_start.py\"",
+            "commandWindows": "powershell.exe -NoProfile -Command \"$r=(git rev-parse --show-toplevel); $s=Join-Path $r '.codex/hooks/governance_session_start.py'; if (Get-Command py -ErrorAction SilentlyContinue) { & py -3 -X utf8 $s } elseif (Get-Command python -ErrorAction SilentlyContinue) { & python $s } else { Write-Error 'Python 3 not found'; exit 127 }\"",
+            "timeout": 10,
+            "statusMessage": "Loading active engineering work"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/governance_pre_tool.py\"",
+            "commandWindows": "powershell.exe -NoProfile -Command \"$r=(git rev-parse --show-toplevel); $s=Join-Path $r '.codex/hooks/governance_pre_tool.py'; if (Get-Command py -ErrorAction SilentlyContinue) { & py -3 -X utf8 $s } elseif (Get-Command python -ErrorAction SilentlyContinue) { & python $s } else { Write-Error 'Python 3 not found'; exit 127 }\"",
+            "timeout": 10,
+            "statusMessage": "Checking write/release safety"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/governance_post_tool.py\"",
+            "commandWindows": "powershell.exe -NoProfile -Command \"$r=(git rev-parse --show-toplevel); $s=Join-Path $r '.codex/hooks/governance_post_tool.py'; if (Get-Command py -ErrorAction SilentlyContinue) { & py -3 -X utf8 $s } elseif (Get-Command python -ErrorAction SilentlyContinue) { & python $s } else { Write-Error 'Python 3 not found'; exit 127 }\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/governance_stop_gate.py\"",
+            "commandWindows": "powershell.exe -NoProfile -Command \"$r=(git rev-parse --show-toplevel); $s=Join-Path $r '.codex/hooks/governance_stop_gate.py'; if (Get-Command py -ErrorAction SilentlyContinue) { & py -3 -X utf8 $s } elseif (Get-Command python -ErrorAction SilentlyContinue) { & python $s } else { Write-Error 'Python 3 not found'; exit 127 }\"",
+            "timeout": 30,
+            "statusMessage": "Checking engineering completion gates"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/governance_session_end.py\"",
+            "commandWindows": "powershell.exe -NoProfile -Command \"$r=(git rev-parse --show-toplevel); $s=Join-Path $r '.codex/hooks/governance_session_end.py'; if (Get-Command py -ErrorAction SilentlyContinue) { & py -3 -X utf8 $s } elseif (Get-Command python -ErrorAction SilentlyContinue) { & python $s } else { Write-Error 'Python 3 not found'; exit 127 }\"",
+            "timeout": 3,
+            "statusMessage": "Releasing checkout write lease"
+          }
+        ]
+      }
+    ]
+  }
+}

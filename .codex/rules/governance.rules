@@ -1,0 +1,53 @@
+# Defense-in-depth prompts for common production-impacting shell commands.
+# The governance PreToolUse hook also requires an exact recorded release approval.
+
+prefix_rule(
+    pattern = ["git", "push"],
+    decision = "prompt",
+    justification = "Pushing changes affects a remote repository; verify the intended remote/ref and user approval.",
+)
+prefix_rule(
+    pattern = ["gh", "pr", "merge"],
+    decision = "prompt",
+    justification = "Merging a pull request is a release-impacting action and requires explicit review.",
+)
+prefix_rule(
+    pattern = ["npm", "publish"],
+    decision = "prompt",
+    justification = "Publishing a package is externally visible and requires explicit approval.",
+)
+prefix_rule(
+    pattern = ["terraform", ["apply", "destroy"]],
+    decision = "prompt",
+    justification = "Infrastructure mutation can affect production resources and requires explicit approval.",
+)
+prefix_rule(
+    pattern = ["kubectl", ["apply", "delete", "replace", "patch"]],
+    decision = "prompt",
+    justification = "Cluster mutation can affect running environments and requires explicit approval.",
+)
+prefix_rule(
+    pattern = ["pnpm", "publish"],
+    decision = "prompt",
+    justification = "Publishing a package is externally visible and requires explicit approval.",
+)
+prefix_rule(
+    pattern = ["cargo", "publish"],
+    decision = "prompt",
+    justification = "Publishing a crate is externally visible and requires explicit approval.",
+)
+prefix_rule(
+    pattern = ["dotnet", "nuget", "push"],
+    decision = "prompt",
+    justification = "Publishing a NuGet package is externally visible and requires explicit approval.",
+)
+prefix_rule(
+    pattern = ["helm", ["install", "upgrade", "uninstall", "rollback"]],
+    decision = "prompt",
+    justification = "Helm mutation can affect a running environment and requires explicit approval.",
+)
+prefix_rule(
+    pattern = ["fly", "deploy"],
+    decision = "prompt",
+    justification = "Deployment is externally visible and requires explicit approval.",
+)

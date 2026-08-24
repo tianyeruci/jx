@@ -1,0 +1,207 @@
+{
+  "schema_version": 4,
+  "id": "qwen-batch-cleaning",
+  "title": "千问 Batch 清洗策略验证与轮询修复",
+  "kind": "engineering-change",
+  "risk": "high",
+  "status": "in_progress",
+  "retired": false,
+  "retired_status": null,
+  "retired_at": null,
+  "retire_reason": null,
+  "superseded_by": [],
+  "requirements_approved": true,
+  "requirements_fingerprint": "00803853fd16a4b340b5ecfc11df9ae668a54e998c00cb7bf7436fe33fbbc076",
+  "requirements_approved_at": "2026-08-20T14:37:30+08:00",
+  "implementation_approved": true,
+  "implementation_fingerprint": "4380e3585a99c11d3f20639b716ea269edfb16f6628791f9a264e56c4352c558",
+  "architecture_fingerprint": "7699919c10a2dfe17e7781a7bbd95ebd5824c87dbe5e9ff98da6cf62dc952e68",
+  "quality_config_fingerprint": "a6c66e4d6b3059730961a6a94504f54d60eea4cd224e72764806c5ee3a933383",
+  "feature_validation_fingerprint": "9ca2814c65f96a3297746489ade83d11eec807377f50f03f07cbb6ca75d586c7",
+  "module_plan_fingerprint": "c16754a0d60dbbb38eeb6f21eabfa619f07eab830a2584c6971f549781807b5d",
+  "implementation_approved_at": "2026-08-20T16:01:04+08:00",
+  "ready_for_luna": true,
+  "prototype": {
+    "decision": "not-needed",
+    "status": "skipped",
+    "path": null,
+    "based_on_requirements_fingerprint": "8b96971ec896057e217e706a18ebbbe2544b98dfb0271a7d762355dd424b57ba",
+    "artifact_fingerprint": null
+  },
+  "review_required": true,
+  "review_status": "pending",
+  "review_fingerprint": null,
+  "reviewed_at": "2026-08-20T13:43:29+08:00",
+  "modules": [
+    {
+      "id": "model-cleaning-policy",
+      "title": "模型清洗策略规划",
+      "status": "verified",
+      "paths": [
+        "ai_management/model_cleaning.py",
+        "ai_management/config.py"
+      ],
+      "acceptance_ids": [
+        "AC-001",
+        "AC-004",
+        "AC-005"
+      ],
+      "optional": false,
+      "updated_at": "2026-08-22T10:16:56+08:00",
+      "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
+      "last_changed_at": "2026-08-21T03:37:39+08:00"
+    },
+    {
+      "id": "model-cleaning-orchestration",
+      "title": "Batch 生命周期与轮询",
+      "status": "verified",
+      "paths": [
+        "ai_management/workers/tasks/model_cleaning.py",
+        "ai_management/services/bailian_cleanup.py"
+      ],
+      "acceptance_ids": [
+        "AC-002",
+        "AC-004",
+        "AC-005",
+        "AC-006"
+      ],
+      "optional": false,
+      "updated_at": "2026-08-22T10:16:56+08:00",
+      "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
+      "last_changed_at": "2026-08-21T03:37:39+08:00"
+    },
+    {
+      "id": "model-cleaning-contract-tests",
+      "title": "模型清洗契约测试",
+      "status": "verified",
+      "paths": [
+        "tests/test_model_cleaning_workflow.py"
+      ],
+      "acceptance_ids": [
+        "AC-001",
+        "AC-002",
+        "AC-003",
+        "AC-004"
+      ],
+      "optional": false,
+      "updated_at": "2026-08-22T10:16:56+08:00",
+      "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
+      "last_changed_at": "2026-08-21T03:37:39+08:00"
+    },
+    {
+      "id": "jx-cleaning-acceptance",
+      "title": "jx 清洗验收证据",
+      "status": "verified",
+      "paths": [
+        "scripts/jx_*.sh"
+      ],
+      "acceptance_ids": [
+        "AC-005",
+        "AC-006"
+      ],
+      "optional": false,
+      "updated_at": "2026-08-20T03:52:19+08:00",
+      "last_change_summary": "四个内容清洗策略继续保留实时/Batch配置，最近活动固定实时；实时与Batch共用temperature 0.01、seed 1234、enable_thinking false和JSON object请求体；活动列表/详情DSL已发布并验证环境变量默认10。验收脚本补齐源树预算模块、咨询多案例子文档命名契约，Dify SSE安全证据已生成；四策略真实Batch对照仍待jx部署后按100候选阈值完成。",
+      "last_changed_at": "2026-08-20T01:28:20+08:00"
+    },
+    {
+      "id": "activity-chatflow",
+      "title": "活动意图与 Chatflow",
+      "status": "verified",
+      "paths": [
+        "dify/商业顾问（当前使用版本）.yml",
+        "dify/商业顾问_统一修复版_Dify-1.13.3.yml",
+        "tests/test_dify_activity_contract.py",
+        "tests/test_business_advisor_unified_dsl.py"
+      ],
+      "acceptance_ids": [
+        "AC-001",
+        "AC-002",
+        "AC-003"
+      ],
+      "optional": false,
+      "updated_at": "2026-08-20T03:52:19+08:00",
+      "last_change_summary": "四个内容清洗策略继续保留实时/Batch配置，最近活动固定实时；实时与Batch共用temperature 0.01、seed 1234、enable_thinking false和JSON object请求体；活动列表/详情DSL已发布并验证环境变量默认10。验收脚本补齐源树预算模块、咨询多案例子文档命名契约，Dify SSE安全证据已生成；四策略真实Batch对照仍待jx部署后按100候选阈值完成。",
+      "last_changed_at": "2026-08-20T01:28:20+08:00"
+    },
+    {
+      "id": "strategy-contracts",
+      "title": "三类策略契约与发布",
+      "status": "verified",
+      "paths": [
+        "ai_management/cleaning.py",
+        "ai_management/activity_cleaning.py",
+        "knowledge_cleaner/dify.py"
+      ],
+      "acceptance_ids": [
+        "AC-005",
+        "AC-008",
+        "AC-009"
+      ],
+      "optional": false,
+      "updated_at": "2026-08-22T10:16:56+08:00",
+      "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
+      "last_changed_at": "2026-08-21T03:37:39+08:00"
+    },
+    {
+      "id": "cleaning-contract-tests",
+      "title": "模型清洗契约回归",
+      "status": "verified",
+      "paths": [
+        "tests/test_model_cleaning_workflow.py",
+        "tests/test_large_scale_cleaning.py",
+        "tests/test_activity_cleaning.py",
+        "tests/test_release_acceptance_contract.py"
+      ],
+      "acceptance_ids": [
+        "AC-004",
+        "AC-005",
+        "AC-006",
+        "AC-008",
+        "AC-009"
+      ],
+      "optional": false,
+      "updated_at": "2026-08-22T10:16:56+08:00",
+      "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
+      "last_changed_at": "2026-08-21T03:37:39+08:00"
+    },
+    {
+      "id": "jx-acceptance-docs",
+      "title": "jx 验收与文档",
+      "status": "not_started",
+      "paths": [
+        "scripts/jx_*.sh",
+        "docs/features/qwen-batch-cleaning/**",
+        "docs/features/recent-activity/**",
+        "var/reports/**"
+      ],
+      "acceptance_ids": [
+        "AC-007",
+        "AC-008",
+        "AC-010"
+      ],
+      "optional": false,
+      "updated_at": "2026-08-20T14:37:48+08:00",
+      "last_change_summary": "四个内容清洗策略继续保留实时/Batch配置，最近活动固定实时；实时与Batch共用temperature 0.01、seed 1234、enable_thinking false和JSON object请求体；活动列表/详情DSL已发布并验证环境变量默认10。验收脚本补齐源树预算模块、咨询多案例子文档命名契约，Dify SSE安全证据已生成；四策略真实Batch对照仍待jx部署后按100候选阈值完成。",
+      "last_changed_at": "2026-08-20T01:28:20+08:00"
+    }
+  ],
+  "validation_commands": [
+    {
+      "phase": "e2e",
+      "command": "uv run python scripts/verify_qwen_activity_e2e.py",
+      "cwd": ".",
+      "timeout": 86400
+    }
+  ],
+  "documentation": {
+    "status": "current",
+    "last_code_change_at": "2026-08-21T03:37:38+08:00",
+    "last_synced_at": "2026-08-21T03:37:39+08:00",
+    "last_sync_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
+    "pending_changed_paths": [],
+    "changelog_fingerprint": "7f475292796ed1d7bd55d6dcc4bddf01aa819e2df15cc034dd1aeecedb40f019"
+  },
+  "created_at": "2026-08-18T08:01:54+08:00",
+  "updated_at": "2026-08-22T10:16:56+08:00"
+}

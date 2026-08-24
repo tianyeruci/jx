@@ -134,7 +134,10 @@ def test_jx_release_scripts_manage_all_cleaning_workers_and_exact_upload_targets
     assert 'DIFY_PUBLISH_WINDOW_END_HOUR "24"' in deploy
     assert 'DIFY_PARENT_MAX_TOKENS "2000"' in deploy
     assert 'CLEANING_SPEC_REVISION "commercial-cleaning-v3"' in deploy
-    assert 'MAX_UPLOAD_FILES "10"' in deploy
+    assert 'set_default_env MAX_UPLOAD_FILE_MB "200"' in deploy
+    assert 'set_default_env MAX_UPLOAD_FILES "10"' in deploy
+    assert 'set_default_env MAX_UPLOAD_BATCH_MB "500"' in deploy
+    assert 'upsert_env MAX_UPLOAD_FILES "10"' not in deploy
     assert 'MAX_ACTIVE_CLEANING_BATCHES "5"' in deploy
     assert "require_cleaning_price_snapshots" in deploy
     assert 'set_default_env BAILIAN_BATCH_ENABLED "false"' in deploy

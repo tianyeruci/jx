@@ -1,8 +1,30 @@
 # AI 管理服务当前状态与后续测试交接
 
-> 更新时间：2026-08-21
+> 更新时间：2026-08-22
 > 用途：保存最新线上事实、回滚点、数据状态和开放事项。新任务先读 `AGENTS.md` 与 `docs/README.md`，再按功能域读取本文顶部最新状态。  
 > 本文不是需求或设计基线；权威顺序以 `docs/V2决策记录.md` 和 `docs/README.md` 为准。第 1～8 节为历史过程记录，不再作为当前执行指令。
+
+## 0.76 2026-08-22 本地千问 Batch 上传门禁与运行策略（当前任务）
+
+- 策略已先在文档中固定：本地 `.env` 使用 `BAILIAN_BATCH_ENABLED=true`；达到 `CLEANING_BATCH_CANDIDATE_THRESHOLD=100` 或 `CLEANING_BATCH_TOKEN_THRESHOLD=200000` 时，四个内容模型策略可选择百炼 Batch；`recent_activity` 仍固定 realtime。
+- 上传入口限制与百炼 Provider Batch 输入限制分开：`MAX_UPLOAD_FILE_MB=200`（单文件）、`MAX_UPLOAD_FILES=100`（单批文件数）、`MAX_UPLOAD_BATCH_MB=200`（单批上传总大小）；`CLEANING_BATCH_MAX_BYTES` 仍为 Provider Batch JSONL 分片上限，当前代码默认 `400MiB`，不因上传门禁改为 200MB。
+- 本次本地 `.env` 已按该策略写入；jx 已完成 `.env` 备份、精确配置更新和六个相关核心服务的 `--force-recreate`。备份目录为 `/opt/ai-management/backups/20260822-100452-qwen-batch-upload-config`；运行容器实际为 `MAX_UPLOAD_FILES=100`、`MAX_UPLOAD_BATCH_MB=200`、`BAILIAN_BATCH_ENABLED=true`，候选/Token 阈值为 100/200000。API、普通 Worker、realtime/Batch Worker、publication Worker、Scheduler 均在同源镜像 `jx-now-ai-management:20260822-072927-timezone-beijing` 上运行；本次未修改数据库、Redis、Dify 数据、上传卷或 OCR 服务。不修改代码默认、不修改 `.env.example`；生产/已批准基线仍为 Batch 默认关闭、单批 10 文件/500MB。
+- 当前执行状态：本地配置解析检查通过；本地 Docker 因缺少外部 Dify `docker_default` 网络未重建，且本机没有对应 Dify Compose/容器，不能用临时空网络冒充成功。jx 运行态复核通过：`docker_default` 存在，六个相关核心服务均为 Up 且本次重建后 `restart=0`，API 容器内 `/health/ready` 返回 `ready` 且 `database/redis/dify` 均为 `true`；经 Nginx 的 `/ai-management-test/` 返回 HTTP 200。本地 Compose 尝试因外部网络缺失在创建服务前失败，没有生成本地容器或改动数据。
+- 策略选择烟测：在 jx Batch Worker 容器内以 `batch_enabled=true`、候选数 100 调用 `choose_call_mode`，`recent_activity` 返回 `realtime`，个人商业咨询、微信公众号、知识星球、小报童均返回 `batch`。本结果只验证当前代码的模式选择和运行配置，不代表已发起真实 Provider Batch 或完成新样本清洗。
+- jx 全链路限制核对：测试页经 Dify Nginx 的 `/ai-management-test/` 访问，Nginx 当前 `client_max_body_size=128M`；测试页容器的 `AI_MANAGEMENT_BASE_URL=http://ai-management-api:8000`，上传从 UI 服务到 API 走 Docker 内部网络。可信后端直连 `172.30.157.197:8000` 不经过该 Nginx；若调用方经 Nginx 的 HTTP 上传桥接，则 128M 可能先于应用的 200MB 门禁生效。
+- jx 运行态证据：配置切换后的复核确认 API、普通 Worker、realtime/Batch Worker、publication Worker、Scheduler 使用同一核心镜像，相关服务重建时间为 `2026-08-22T02:04:52Z`，关键日志错误计数为 0；API `/health/ready` 为 `ready`，数据库、Redis、Dify 均可达。Nginx 的 `client_max_body_size=128M` 未修改，因此经 Nginx 的 HTTP 上传路径仍可能先于应用层 200MB 门禁拒绝大请求；可信后端私网直连路径不经过该限制。
+
+### 本节变更记录
+
+- 修改原因：按本轮配置切换复核结果，更新 jx Batch 开关、上传门禁、相关服务重建状态和本地 Docker 网络阻断，避免继续依据过时的“远端待写入/Batch=false”事实操作。
+- 修改前：本文记录 jx `BAILIAN_BATCH_ENABLED=false`、单批总大小 500MB 且远端写入/重建待执行；未记录本轮 jx 容器实际环境回读和策略选择烟测。
+- 修改后：记录 jx 运行容器实际为 Batch 开启、单批 200MB，API ready/依赖可达，六个相关服务同源运行；记录本地外部网络缺失导致 Compose 未启动，并明确未进行重复远端写入。
+- 修改原因：按用户确认继续执行远端变更，并把备份、服务范围、健康检查和 Nginx 中间层限制写入可复用交接。
+- 修改前：jx 仅完成只读预检，`BAILIAN_BATCH_ENABLED=false`；`.env` 尚未建立本轮专用配置备份，服务未重建。
+- 修改后：完成 `/opt/ai-management/backups/20260822-100452-qwen-batch-upload-config` 配置备份；更新并回读 `MAX_UPLOAD_FILE_MB=200`、`MAX_UPLOAD_FILES=100`、`MAX_UPLOAD_BATCH_MB=200`、`BAILIAN_BATCH_ENABLED=true`、`CLEANING_BATCH_MAX_REQUESTS=40000`、`CLEANING_BATCH_MAX_BYTES=419430400`；重建六个相关核心服务并通过 API ready、依赖可达、Nginx 测试页 HTTP 200 验证。Compose 的 orphan warning 未执行清理，OCR/test-ui 未纳入本次重建范围。
+- 修改原因：明确本地百炼 Batch 验收的开关、候选阈值、上传文件数/总大小与 Provider JSONL 分片上限，避免下次把不同层级的 100/200 约束混用。
+- 修改前：本文最新状态仅记录远端样本和代码/质量事实，本地 `.env` 为 `MAX_UPLOAD_FILES=10`、`MAX_UPLOAD_BATCH_MB=500`，未显式设置 `BAILIAN_BATCH_ENABLED`。
+- 修改后：新增本地与 jx 目标策略、当前 jx 差异和远端变更前置门禁；代码默认和生产基线不变。
 
 ## 0.75 2026-08-21 接管中断会话、清除旧数据并完成 15 个新样本验收（当前最新）
 
@@ -2277,3 +2299,17 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改前：取消异常测试要求 `provider_batch_ids` 为空，无法验证远端资源可追踪。
 - 修改后：测试改为要求保留精确 Batch/input ID，并确认 `bailian_batch` 补偿任务存在；实现保持不变。未在交接文档写入原始敏感文件名或路径。
 - 验证：该回归、清理生命周期新增回归和 Ruff format/check 通过；canonical `gov quality` 需在本次断言校正后重跑，远端清理/上传/发布仍未执行。
+
+### 文档修改记录（2026-08-22 jx 千问 Batch 配置变更前核对）
+
+- 修改原因：用户将范围补充为 jx 服务器，需要把本地策略改为 jx 远端目标，并记录实际只读核对结果，避免把本地 Docker 缺少 Dify 外部网络误当成 jx 故障。
+- 修改前：本文只记录本地 `.env` 目标，且写成“不发布 jx”；未记录 jx 当前的 100 文件/500MB/Batch 关闭状态、服务清单和价格快照前置条件。
+- 修改后：补充 jx 当前配置差异、同源服务与网络证据、远端写入待备份/精确命令确认的状态；未写入任何密钥、Token、真实用户 ID 或原始敏感文件名。
+- 验证：只读 `ssh jx` 预检显示核心服务均运行约 17 小时、`docker_default` 网络包含 jx/Dify 服务、价格快照键齐全；修改与重建尚未执行。
+
+### 文档修改记录（2026-08-22 jx 千问 Batch 配置备份、重建与回读完成）
+
+- 修改原因：按用户确认继续执行 jx 远端配置，并把真实变更结果、回滚点和未覆盖的 Nginx 中间层限制写入交接，避免下次只看应用层配置。
+- 修改前：jx `.env` 为 `BAILIAN_BATCH_ENABLED=false`、单批 `100/500MB`；本轮仅完成只读预检。
+- 修改后：配置备份位于 `/opt/ai-management/backups/20260822-100452-qwen-batch-upload-config`；`.env` 与运行容器回读为 `MAX_UPLOAD_FILE_MB=200`、`MAX_UPLOAD_FILES=100`、`MAX_UPLOAD_BATCH_MB=200`、`BAILIAN_BATCH_ENABLED=true`、候选/Token 阈值 `100/200000`、Provider 分片 `40000/419430400`。API、普通 Worker、Batch Worker、realtime Worker、publication Worker、Scheduler 已完成强制重建。
+- 验证：API `/health/ready` 为 `ready` 且 database/redis/dify 均为 `true`；目标服务重建后 `restart=0`，关键日志错误计数为 0；Nginx `/ai-management-test/` 返回 HTTP 200。只修改 `.env`，未修改数据库、Redis、Dify、上传卷或 OCR 服务；Nginx `client_max_body_size=128M` 未改；未执行 orphan 容器清理，未发起真实百炼 Batch。

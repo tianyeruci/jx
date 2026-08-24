@@ -1,0 +1,129 @@
+{
+  "schema_version": 4,
+  "id": "recent-activity",
+  "title": "最近活动清洗与商业顾问 Chatflow 接入",
+  "kind": "feature",
+  "risk": "high",
+  "status": "approved",
+  "retired": false,
+  "retired_status": null,
+  "retired_at": null,
+  "retire_reason": null,
+  "superseded_by": [],
+  "requirements_approved": true,
+  "requirements_fingerprint": "fbf1267b4ba96b5838b4e9b68cfdfc1f149e8126034aceec5b106907951479d7",
+  "requirements_approved_at": "2026-08-20T01:29:33+08:00",
+  "implementation_approved": true,
+  "implementation_fingerprint": "f9b16ebe92aaafac1e9a9f29d924aed49b0aa38af934e9177648b9c613c8cf75",
+  "architecture_fingerprint": "7699919c10a2dfe17e7781a7bbd95ebd5824c87dbe5e9ff98da6cf62dc952e68",
+  "quality_config_fingerprint": "a6c66e4d6b3059730961a6a94504f54d60eea4cd224e72764806c5ee3a933383",
+  "feature_validation_fingerprint": "4bdf2bf35fefc0b0f70b8d369eafd0ef83441a8ea19f1d53e3e83fad3eaacb19",
+  "module_plan_fingerprint": "7793fe14f8fc96126b6da4e0431e8d55f520a287be76b307ac3eaa15b14389f9",
+  "implementation_approved_at": "2026-08-20T01:29:55+08:00",
+  "ready_for_luna": true,
+  "prototype": {
+    "decision": "not-needed",
+    "status": "skipped",
+    "path": null,
+    "based_on_requirements_fingerprint": "fbf1267b4ba96b5838b4e9b68cfdfc1f149e8126034aceec5b106907951479d7",
+    "artifact_fingerprint": null
+  },
+  "review_required": true,
+  "review_status": "pending",
+  "review_fingerprint": null,
+  "reviewed_at": "2026-08-18T05:26:50+08:00",
+  "modules": [
+    {
+      "id": "activity-cleaning",
+      "title": "活动清洗策略",
+      "status": "verified",
+      "paths": [
+        "ai_management/activity_cleaning.py",
+        "ai_management/cleaning.py",
+        "Other/event_rag_cleaner/**",
+        "tests/test_activity_cleaning.py"
+      ],
+      "acceptance_ids": [
+        "AC-001",
+        "AC-002",
+        "AC-003",
+        "AC-004"
+      ],
+      "optional": false,
+      "updated_at": "2026-08-22T10:16:57+08:00",
+      "last_change_summary": "共享清理生命周期在取消异常时保留精确远端引用并可由 maintenance 重建；recent_activity 业务语义未改变。",
+      "last_changed_at": "2026-08-21T03:37:42+08:00"
+    },
+    {
+      "id": "cleaning-publication",
+      "title": "清洗发布与 metadata",
+      "status": "verified",
+      "paths": [
+        "ai_management/workers/tasks/cleaning.py",
+        "knowledge_cleaner/dify.py"
+      ],
+      "acceptance_ids": [
+        "AC-002",
+        "AC-004"
+      ],
+      "optional": false,
+      "updated_at": "2026-08-22T10:16:57+08:00",
+      "last_change_summary": "共享清理生命周期在取消异常时保留精确远端引用并可由 maintenance 重建；recent_activity 业务语义未改变。",
+      "last_changed_at": "2026-08-21T03:37:42+08:00"
+    },
+    {
+      "id": "activity-chatflow",
+      "title": "活动 Chatflow",
+      "status": "verified",
+      "paths": [
+        "dify/商业顾问（当前使用版本）.yml",
+        "tests/test_dify_activity_contract.py",
+        "dify/商业顾问_统一修复版_Dify-1.13.3.yml",
+        "tests/test_business_advisor_unified_dsl.py"
+      ],
+      "acceptance_ids": [
+        "AC-005",
+        "AC-006",
+        "AC-007"
+      ],
+      "optional": false,
+      "updated_at": "2026-08-20T03:52:20+08:00",
+      "last_change_summary": "活动查询现在按自然表达识别列表与命名详情；详情走无时间窗口状态检索并支持第1至第5个序号；列表默认10条逐行输出名称、时间、状态，ACTIVITY_MAX_RESULTS可配置；最近活动保持实时Qwen。Dify发布后验证了最近/最新/全部活动与命名详情SSE形状。",
+      "last_changed_at": "2026-08-20T01:28:07+08:00"
+    },
+    {
+      "id": "activity-validation-docs",
+      "title": "活动验证与文档",
+      "status": "verified",
+      "paths": [
+        "docs/features/recent-activity/**",
+        "ai_management.zip"
+      ],
+      "acceptance_ids": [
+        "AC-008"
+      ],
+      "optional": false,
+      "updated_at": "2026-08-19T18:52:55+08:00",
+      "last_change_summary": "本次文档清洗修复未改变 recent_activity 语义、实现边界或 DSL；仅同步共享工作树的治理指纹。",
+      "last_changed_at": "2026-08-19T14:43:49+08:00"
+    }
+  ],
+  "validation_commands": [
+    {
+      "phase": "feature",
+      "command": "uv run python -m pytest -q tests/test_activity_cleaning.py tests/test_dify_activity_contract.py",
+      "cwd": ".",
+      "timeout": 600
+    }
+  ],
+  "documentation": {
+    "status": "current",
+    "last_code_change_at": "2026-08-21T03:37:38+08:00",
+    "last_synced_at": "2026-08-21T03:37:42+08:00",
+    "last_sync_summary": "共享清理生命周期在取消异常时保留精确远端引用并可由 maintenance 重建；recent_activity 业务语义未改变。",
+    "pending_changed_paths": [],
+    "changelog_fingerprint": "6e97525135053ca093f512b2ff6efcce46e10dddd53e881c92b0e65388cbd484"
+  },
+  "created_at": "2026-08-16T15:17:11+08:00",
+  "updated_at": "2026-08-22T10:16:57+08:00"
+}

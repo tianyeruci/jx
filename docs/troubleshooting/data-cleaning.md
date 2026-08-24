@@ -1,5 +1,17 @@
 # 数据清理与清洗排障
 
+## DATA-052：上传门禁与 Provider Batch JSONL 上限必须分开配置
+
+- 适用：本地或 jx 使用 Qwen/百炼 Batch 的文档清洗上传。
+- 触发：把“每批上传文件数/总大小”直接当成 Provider Batch 输入文件上限，或修改了上传门禁却误以为百炼 Batch 的 JSONL 分片上限也同步改变。
+- 根因：`MAX_UPLOAD_FILES` 与 `MAX_UPLOAD_BATCH_MB` 在创建/校验本地上传批次时生效；`CLEANING_BATCH_MAX_BYTES` 在 Worker 生成 Provider Batch JSONL 时生效，属于两个不同阶段，Worker 可以按后者拆分多个输入文件。
+- 解决：按业务目标分别设置并回读：本地上传门禁使用 `MAX_UPLOAD_FILES=100`、`MAX_UPLOAD_BATCH_MB=200`，单文件上限由 `MAX_UPLOAD_FILE_MB=200` 控制；Provider JSONL 上限继续按 `CLEANING_BATCH_MAX_BYTES` 校验。百炼官方批量推理还要求单个 JSONL 文件不超过 50,000 请求和 500MB，因此项目当前默认 40,000 请求、400MiB 是留有余量的本地分片策略。百炼是否参与还要单独核对 `BAILIAN_BATCH_ENABLED` 与候选/Token 阈值。
+- 非解决：只改 `MAX_UPLOAD_FILES`、只改 `CLEANING_BATCH_MAX_BYTES`，或将“100 文件/200MB 上传”写成 Provider API 的单输入文件承诺。
+- 验证：配置重建后在运行容器内回读 Pydantic settings，并用 99/100/101 文件及总大小边界的无写入校验验证错误码/消息；Batch 任务另核对实际 `mode` 与 Provider 输入分片数量。jx 变更前只读预检未发现活动任务；本次变更命令未触碰数据库、Redis 或 Dify 数据，后续仍需用无写入边界探针和真实 Batch 小样本完成行为级验收。
+- 预防：交接文档同时记录上传阶段、模型路由阶段和 Provider 文件生成阶段的配置；不要把 200MB 上传门禁改写成 200MiB JSONL 上限。
+- 证据：[本地千问 Batch 配置记录](../features/qwen-batch-cleaning/CHANGELOG.md)、[当前任务交接](../../AI管理服务当前状态与后续测试交接.md)。
+- 最后验证：2026-08-22（配置验证完成后更新）。
+
 ## DATA-044：清理脚本必须在 Dify 删除后回读 Dataset
 
 - 适用：清洗策略测试数据的 Dify 知识库、PostgreSQL、Redis 和上传目录联合清理。

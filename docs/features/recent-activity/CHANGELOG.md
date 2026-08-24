@@ -1,0 +1,3355 @@
+# 最近活动清洗与商业顾问 Chatflow 接入 — Change Log
+
+This is a semantic change log, not a copy of Git diff.
+
+
+## 2026-08-16T17:08:20+08:00 — 活动策略使用实时 Qwen（仅 BAILIAN_API_KEY），拆分活动并写入受控 Metadata；时间字段以 Dify number 类型发布；正常/取消/延期通过动态状态与时间条件检索，聚合器统一承接互斥分支并在 Code 节点排序去重。
+
+- **Purpose:** 活动策略使用实时 Qwen（仅 BAILIAN_API_KEY），拆分活动并写入受控 Metadata；时间字段以 Dify number 类型发布；正常/取消/延期通过动态状态与时间条件检索，聚合器统一承接互斥分支并在 Code 节点排序去重。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 活动时间 Metadata 曾可能按字符串写入；互斥检索结果直接引用未执行分支；改期边界和混合活动失败审计覆盖不足。
+- **After:** 时间 Metadata 按 number 创建、写入并回读；活动检索通过 variable-aggregator 统一输出；改期新旧日期、待定、ISO 单日、意图边界和脱敏跳过审计均有回归测试；同名 event_id 发布按 Redis 锁串行化。
+- **Impact / Notes:** 本地质量门禁已通过；jx/Dify 运行态与正式发布证据待本轮部署和隔离验收后补入状态交接。
+- **Validation:** uv run python .codex/governance/gov.py quality; uv run python -m scripts.build_business_advisor_unified_dsl --check; uv run python scripts/generate_project_index.py --check
+- **Changed paths:**
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-16T17:14:38+08:00 — 最终实现与部署包一致：活动发布按知识库与 event_id 获取分布式锁，完整覆盖同名替换和补偿；Chatflow 所有边的 sourceType/targetType 与实际节点类型一致。
+
+- **Purpose:** 最终实现与部署包一致：活动发布按知识库与 event_id 获取分布式锁，完整覆盖同名替换和补偿；Chatflow 所有边的 sourceType/targetType 与实际节点类型一致。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 最终发布包生成后，治理状态尚未记录发布锁与 DSL 边校验的最新实现。
+- **After:** 发布包、源代码、候选 DSL 和回归测试一致；独立审查通过，待 jx/Dify 真实隔离运行验收。
+- **Impact / Notes:** 本地质量门禁已在最终代码上通过；远端发布和 Chatflow 运行态证据仍待执行。
+- **Validation:** uv run python .codex/governance/gov.py quality; uv run python -m scripts.build_business_advisor_unified_dsl --check
+- **Changed paths:**
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-16T17:34:54+08:00 — 活动日期解析补充中文范围的省略年份/月份结束日期，避免最近活动窗口把多日活动压缩成起始日。
+
+- **Purpose:** 活动日期解析补充中文范围的省略年份/月份结束日期，避免最近活动窗口把多日活动压缩成起始日。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 2026年8月17日—8月23日只保存起始日
+- **After:** 保存正确的结束日期，并保留单日、完整日期和改期待定规则
+- **Impact / Notes:** jx样本文档真实测试发现该边界；未改变状态词、metadata字段或Chatflow合同。
+- **Validation:** uv run python -m pytest -q tests/test_activity_cleaning.py
+- **Changed paths:**
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-16T17:39:02+08:00 — 活动日期范围解析修复已格式化并重新打包；继续支持中文范围省略结束年份/月份，同时保持活动状态和动态 metadata 契约不变。
+
+- **Purpose:** 活动日期范围解析修复已格式化并重新打包；继续支持中文范围省略结束年份/月份，同时保持活动状态和动态 metadata 契约不变。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 发布包仍包含修复前的日期解析实现
+- **After:** 源代码、wheel 与测试均使用格式化后的日期范围解析实现
+- **Impact / Notes:** 本次同步只记录实现与发布包一致性，不改变产品边界。
+- **Validation:** uv run python .codex/governance/gov.py quality; uv run python -m pytest -q tests/test_activity_cleaning.py
+- **Changed paths:**
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-16T17:49:02+08:00 — 修复中文活动范围省略月份以及延期新日期省略年份的时间推断；重新生成 ai_management.zip，并增加 zip 内活动解析器与工作树字节一致性回归。
+
+- **Purpose:** 修复中文活动范围省略月份以及延期新日期省略年份的时间推断；重新生成 ai_management.zip，并增加 zip 内活动解析器与工作树字节一致性回归。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 快速部署 ZIP 与源码不一致；省略月份/年份的边界会丢失正确结束日期
+- **After:** 源码、快速部署 ZIP、wheel 和测试均覆盖完整日期、中文省略月份范围及延期省略年份
+- **Impact / Notes:** 独立审查发现并验证；不改变活动状态枚举、metadata 字段和 Chatflow 条件。
+- **Validation:** uv run python -m pytest -q tests/test_activity_cleaning.py
+- **Changed paths:**
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-16T18:02:16+08:00 — 活动日期推断现在支持跨年省略年份；活动全部 metadata 字段显式声明 Dify 类型并对既有冲突失败关闭；Chatflow 活动结果多条记录按换行输出并有执行级回归。
+
+- **Purpose:** 活动日期推断现在支持跨年省略年份；活动全部 metadata 字段显式声明 Dify 类型并对既有冲突失败关闭；Chatflow 活动结果多条记录按换行输出并有执行级回归。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 跨年省略年份会误判年份；字符串 metadata 类型未全部校验；多活动结果换行缺少执行级断言
+- **After:** 跨年活动、延期跨年、全部字段类型冲突和多活动格式均有实现与测试覆盖
+- **Impact / Notes:** 同时重新生成统一 DSL 与快速部署 ZIP；不改变活动状态枚举和时间窗口规则。
+- **Validation:** uv run python -m pytest -q tests/test_activity_cleaning.py tests/test_dify_activity_contract.py tests/test_business_advisor_unified_dsl.py
+- **Changed paths:**
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-16T18:05:14+08:00 — 最终质量门禁通过；仅同步测试导入格式，无功能语义变化。
+
+- **Purpose:** 最终质量门禁通过；仅同步测试导入格式，无功能语义变化。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** uv run python .codex/governance/gov.py quality
+- **Changed paths:**
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-16 — jx 清洗入库与新版 Dify Chatflow 已验证；服务侧 App Key 切换和最终负向路由验收待授权
+
+- **Purpose:** 记录最近活动真实测试页清洗、Metadata 回读、jx release 和新版 Dify Chatflow 导入发布的运行态结果，并明确控制台发布与服务配置切换的边界。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 本地质量与 DSL 契约已通过，但 jx 清洗、状态样本、Dify 控制台发布和新版 Chatflow 服务侧状态尚未集中记录。
+- **After:** jx release `20260816-activity-59d963` 已通过健康与同源镜像门禁；正常活动样本 `2/2`、状态样本 `4/4` 成功，正常/取消/延期新日期/延期未定 Metadata 回读通过；新版 Dify DSL 已导入发布并清理临时公开地址。
+- **Impact / Notes:** jx 仍绑定旧商业顾问 App；新版 App Key 尚未创建/同步，旧 App 的普通活动分析负向路由已复现失败。因此 feature 仍为 `in_progress`，不得宣称最终 Chatflow E2E 完成。
+- **Validation:** jx deploy report/backup、测试页批次状态、数据库 Metadata 回读；`uv run python .codex/governance/gov.py quality`；Dify 控制台发布状态。密钥、App ID、批次 ID、源正文和真实用户标识未写入。
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `docs/清洗策略接入说明.md`
+  - `docs/Dify创建导入绑定与契约测试.md`
+  - `AI商业顾问RAG全链路执行计划.md`
+  - `docs/troubleshooting/deployment.md`
+  - `docs/troubleshooting/dify.md`
+  - `docs/troubleshooting/data-cleaning.md`
+  - `docs/troubleshooting/testing.md`
+
+## 2026-08-16T18:57:52+08:00 — recent_activity 已接入清洗发布管线，活动状态与数值时间 Metadata 契约、Dify 动态筛选、jx 清洗入库和新版 DSL 导入发布均有验证；jx App Key 尚未切换，最终 Chatflow 正负向 SSE 验收保持开放。
+
+- **Purpose:** recent_activity 已接入清洗发布管线，活动状态与数值时间 Metadata 契约、Dify 动态筛选、jx 清洗入库和新版 DSL 导入发布均有验证；jx App Key 尚未切换，最终 Chatflow 正负向 SSE 验收保持开放。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 实现与文档只记录本地质量和计划，未集中记录 jx 清洗/Metadata 回读及 Dify 发布状态。
+- **After:** 当前状态、清洗规范、Dify/RAG 指南、测试页说明、排障知识库和索引均记录已验证结果及未完成的 App Key/最终 SSE 门禁。
+- **Impact / Notes:** 不写入密钥、App ID、批次 ID、源正文或真实用户标识；feature 保持 in_progress。
+- **Validation:** uv run python .codex\governance\gov.py quality; uv run python scripts/generate_project_index.py --check
+- **Changed paths:**
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-16T19:09:58+08:00 — 活动意图显式排除真实案例/案例参考请求，新增重叠问法回归；动态 Metadata 历史交接记录已脱敏，清洗、Dify、RAG、部署和测试文档仍准确区分 jx App Key 未切换的开放状态。
+
+- **Purpose:** 活动意图显式排除真实案例/案例参考请求，新增重叠问法回归；动态 Metadata 历史交接记录已脱敏，清洗、Dify、RAG、部署和测试文档仍准确区分 jx App Key 未切换的开放状态。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 活动和案例意图独立计算，重叠问题可能进入活动分支；历史探针记录含受保护标识。
+- **After:** 活动路由优先级和回归测试覆盖重叠意图；交接文档只保留脱敏结果和报告路径，不包含 App/Dataset/样本标识。
+- **Impact / Notes:** 新版 Dify 已重新生成统一 DSL；jx App Key 与最终真实 SSE 仍未完成，feature 保持 in_progress。
+- **Validation:** uv run python -m pytest -q tests/test_activity_cleaning.py tests/test_dify_activity_contract.py tests/test_business_advisor_unified_dsl.py; uv run python .codex\governance\gov.py quality
+- **Changed paths:**
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-16T19:13:08+08:00 — 独立审查发现并修复历史探针标识泄露与活动/案例重叠意图抢占；交接文档只保留脱敏结果，jx App Key 和最终 SSE 仍开放。
+
+- **Purpose:** 独立审查发现并修复历史探针标识泄露与活动/案例重叠意图抢占；交接文档只保留脱敏结果，jx App Key 和最终 SSE 仍开放。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 交接文档追加了审查修复记录但治理摘要尚未收敛。
+- **After:** 交接、功能变更日志和治理摘要同步，功能仍保持 in_progress。
+- **Impact / Notes:** 不写入密钥、App ID、批次 ID、源正文或真实用户标识。
+- **Validation:** uv run python -m pytest -q tests/test_activity_cleaning.py tests/test_dify_activity_contract.py tests/test_business_advisor_unified_dsl.py; uv run python .codex\governance\gov.py quality
+- **Changed paths:**
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-16T19:53:11+08:00 — 记录 jx App Key 已在运行容器生效、当前 Dify App 的 quick_intent 案例优先修复与发布更新，以及正常/取消/延期、普通业务负例和会议真实案例重叠负例的测试页真实 SSE 结果；精确清理本轮合成会话。
+
+- **Purpose:** 记录 jx App Key 已在运行容器生效、当前 Dify App 的 quick_intent 案例优先修复与发布更新，以及正常/取消/延期、普通业务负例和会议真实案例重叠负例的测试页真实 SSE 结果；精确清理本轮合成会话。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 0.60 仅完成清洗入库和 Dify 导入发布，jx Key 与最终正负向 SSE 未闭环；线上当前 App 仍可能误路由案例重叠问题。
+- **After:** 0.61 jx 配置与容器 Key 指纹一致，Dify 更新已发布；活动状态、普通业务负例和案例重叠负例均通过，合成会话已精确清理，功能进入完成门禁。
+- **Impact / Notes:** 不记录密钥明文、App ID、会话 ID、源正文、真实用户标识或受保护映射；旧应用和发布前配置保留作回滚。
+- **Validation:** uv run python -m pytest -q tests/test_activity_cleaning.py tests/test_dify_activity_contract.py tests/test_business_advisor_unified_dsl.py; uv run python -m scripts.build_business_advisor_unified_dsl --check; uv run python scripts/generate_project_index.py --check; jx /parameters、health/ready、测试页正负向 SSE 和精确会话清理
+- **Changed paths:**
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-18T03:30:19+08:00 — 活动 Dify 文档名改为活动名称前缀加 event_id 与内容版本摘要；同名重传持久保存精确旧文档 ID，先完成新文档索引和 Metadata 回读，再删除旧文档；新发布失败保留旧文档，旧删除失败保留新文档并进入精确外部清理。
+
+- **Purpose:** 活动 Dify 文档名改为活动名称前缀加 event_id 与内容版本摘要；同名重传持久保存精确旧文档 ID，先完成新文档索引和 Metadata 回读，再删除旧文档；新发布失败保留旧文档，旧删除失败保留新文档并进入精确外部清理。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 活动文档此前使用 event_<event_id>.md，单行重发布在本地记录切换后可能丢失旧 Dify ID。
+- **After:** 活动文档名可读且按版本区分；源级发布提交阶段使用持久化精确旧 ID 完成替换和失败保护。
+- **Impact / Notes:** None
+- **Validation:** uv run python -m pytest -q tests/test_activity_cleaning.py tests/test_dify_activity_contract.py tests/test_unified_document_pipeline.py tests/test_release_acceptance_contract.py; powershell -NoProfile -ExecutionPolicy Bypass -File .codex/governance/gov.ps1 quality
+- **Changed paths:**
+  - `Other/event_rag_cleaner/.env.example`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/output.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/output.jsonl`
+  - `Other/event_rag_cleaner/CHATFLOW_METADATA.md`
+  - `Other/event_rag_cleaner/README.md`
+  - `Other/event_rag_cleaner/VALIDATION.md`
+  - `Other/event_rag_cleaner/clean_events.py`
+  - `Other/event_rag_cleaner/controlled_vocab.json`
+  - `Other/event_rag_cleaner/install.sh`
+  - `Other/event_rag_cleaner/requirements.txt`
+  - `Other/event_rag_cleaner/test_clean_events.py`
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-18T03:49:51+08:00 — 同名活动发布将精确旧 Dify 文档删除任务写入同事务 outbox，提交后的远端删除异常不再反向补偿新文档；同一源文件重复 event_id 整源失败；新增提交后崩溃和重复活动回归测试。
+
+- **Purpose:** 同名活动发布将精确旧 Dify 文档删除任务写入同事务 outbox，提交后的远端删除异常不再反向补偿新文档；同一源文件重复 event_id 整源失败；新增提交后崩溃和重复活动回归测试。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 首轮实现虽保存 pending marker，但提交后进程退出时没有维护任务可消费的 durable outbox；同源重复 event_id 可能同时发布。
+- **After:** 旧文档任务在新文档 succeeded 提交前已持久化，维护任务可重试；重复 event_id 在远端写入前被阻断；新文档不会因旧清理异常被补偿删除。
+- **Impact / Notes:** None
+- **Validation:** uv run python -m pytest -q tests/test_activity_cleaning.py tests/test_release_acceptance_contract.py; powershell -NoProfile -ExecutionPolicy Bypass -File .codex/governance/gov.ps1 quality
+- **Changed paths:**
+  - `Other/event_rag_cleaner/.env.example`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/output.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/output.jsonl`
+  - `Other/event_rag_cleaner/CHATFLOW_METADATA.md`
+  - `Other/event_rag_cleaner/README.md`
+  - `Other/event_rag_cleaner/VALIDATION.md`
+  - `Other/event_rag_cleaner/clean_events.py`
+  - `Other/event_rag_cleaner/controlled_vocab.json`
+  - `Other/event_rag_cleaner/install.sh`
+  - `Other/event_rag_cleaner/requirements.txt`
+  - `Other/event_rag_cleaner/test_clean_events.py`
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-18T04:08:22+08:00 — 在通用内容去重前检查 recent_activity 同源 event_id 唯一性，完全相同内容也进入不可重试 DUPLICATE_ACTIVITY_EVENT_ID 失败终态，避免绕过同名版本门禁；补充预检回归。
+
+- **Purpose:** 在通用内容去重前检查 recent_activity 同源 event_id 唯一性，完全相同内容也进入不可重试 DUPLICATE_ACTIVITY_EVENT_ID 失败终态，避免绕过同名版本门禁；补充预检回归。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 完全相同内容的重复活动可能先被 EXACT_CONTENT_DUPLICATE 排除，未进入发布阶段的重复 event_id 门禁。
+- **After:** 清洗阶段先拒绝同源重复 event_id，再执行通用内容去重；活动同名身份和源级发布原子性保持一致。
+- **Impact / Notes:** None
+- **Validation:** uv run python -m pytest -q tests/test_activity_cleaning.py tests/test_release_acceptance_contract.py; powershell -NoProfile -ExecutionPolicy Bypass -File .codex/governance/gov.ps1 quality
+- **Changed paths:**
+  - `Other/event_rag_cleaner/.env.example`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/output.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/output.jsonl`
+  - `Other/event_rag_cleaner/CHATFLOW_METADATA.md`
+  - `Other/event_rag_cleaner/README.md`
+  - `Other/event_rag_cleaner/VALIDATION.md`
+  - `Other/event_rag_cleaner/clean_events.py`
+  - `Other/event_rag_cleaner/controlled_vocab.json`
+  - `Other/event_rag_cleaner/install.sh`
+  - `Other/event_rag_cleaner/requirements.txt`
+  - `Other/event_rag_cleaner/test_clean_events.py`
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-18T04:12:54+08:00 — 最终 ai_management.zip 已从当前 ai_management 源码重建并通过条目路径、活动解析器字节一致性和 Quality Gate；DSL 未变更，发布走快速代码部署。
+
+- **Purpose:** 最终 ai_management.zip 已从当前 ai_management 源码重建并通过条目路径、活动解析器字节一致性和 Quality Gate；DSL 未变更，发布走快速代码部署。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 治理文档记录的是源码修复，但根目录发布 ZIP 在最终代码修复后重新生成，尚未进入当前同步指纹。
+- **After:** 源码、最终 ZIP、质量指纹和 recent-activity CHANGELOG 一致；jx 发布将使用该 ZIP，知识库和 DSL 不做变更。
+- **Impact / Notes:** None
+- **Validation:** ZIP 58 entries; activity_cleaning.py byte match; powershell -NoProfile -ExecutionPolicy Bypass -File .codex/governance/gov.ps1 quality
+- **Changed paths:**
+  - `Other/event_rag_cleaner/.env.example`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/output.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/output.jsonl`
+  - `Other/event_rag_cleaner/CHATFLOW_METADATA.md`
+  - `Other/event_rag_cleaner/README.md`
+  - `Other/event_rag_cleaner/VALIDATION.md`
+  - `Other/event_rag_cleaner/clean_events.py`
+  - `Other/event_rag_cleaner/controlled_vocab.json`
+  - `Other/event_rag_cleaner/install.sh`
+  - `Other/event_rag_cleaner/requirements.txt`
+  - `Other/event_rag_cleaner/test_clean_events.py`
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-18T04:33:49+08:00 — 确认 recent_activity 使用活动名称前缀加 event_id/版本摘要命名；同名更新先发布新文档，再以同事务 ExternalDeletionTask 清理旧文档；重复 event_id 在通用去重前预检并进入明确失败终态。jx v1/v2 同名活动回归与精确清理已完成，课程/路线目标为零且 DSL 未变更。
+
+- **Purpose:** 确认 recent_activity 使用活动名称前缀加 event_id/版本摘要命名；同名更新先发布新文档，再以同事务 ExternalDeletionTask 清理旧文档；重复 event_id 在通用去重前预检并进入明确失败终态。jx v1/v2 同名活动回归与精确清理已完成，课程/路线目标为零且 DSL 未变更。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** uv run python -m pytest -q tests/test_activity_cleaning.py tests/test_dify_activity_contract.py; powershell -NoProfile -ExecutionPolicy Bypass -File .codex/governance/gov.ps1 quality
+- **Changed paths:**
+  - `Other/event_rag_cleaner/.env.example`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/output.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/output.jsonl`
+  - `Other/event_rag_cleaner/CHATFLOW_METADATA.md`
+  - `Other/event_rag_cleaner/README.md`
+  - `Other/event_rag_cleaner/VALIDATION.md`
+  - `Other/event_rag_cleaner/clean_events.py`
+  - `Other/event_rag_cleaner/controlled_vocab.json`
+  - `Other/event_rag_cleaner/install.sh`
+  - `Other/event_rag_cleaner/requirements.txt`
+  - `Other/event_rag_cleaner/test_clean_events.py`
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-18T04:50:21+08:00 — 版本摘要现在只由活动 Markdown、业务 Metadata 和分块配置计算，忽略来源/批次/构建 provenance；新增 process_cleaning_file 同源重复 event_id 纵向门禁和外部删除三次失败后保留任务及退避测试。接入文档同步 completed 状态和当前 jx App Key 事实。
+
+- **Purpose:** 版本摘要现在只由活动 Markdown、业务 Metadata 和分块配置计算，忽略来源/批次/构建 provenance；新增 process_cleaning_file 同源重复 event_id 纵向门禁和外部删除三次失败后保留任务及退避测试。接入文档同步 completed 状态和当前 jx App Key 事实。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** uv run python -m pytest -q tests/test_activity_cleaning.py tests/test_release_acceptance_contract.py; powershell -NoProfile -ExecutionPolicy Bypass -File .codex/governance/gov.ps1 quality
+- **Changed paths:**
+  - `Other/event_rag_cleaner/.env.example`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/output.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/output.jsonl`
+  - `Other/event_rag_cleaner/CHATFLOW_METADATA.md`
+  - `Other/event_rag_cleaner/README.md`
+  - `Other/event_rag_cleaner/VALIDATION.md`
+  - `Other/event_rag_cleaner/clean_events.py`
+  - `Other/event_rag_cleaner/controlled_vocab.json`
+  - `Other/event_rag_cleaner/install.sh`
+  - `Other/event_rag_cleaner/requirements.txt`
+  - `Other/event_rag_cleaner/test_clean_events.py`
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-18T05:01:12+08:00 — 活动版本摘要只使用 EVENT_METADATA_FIELDS 业务白名单，不受任意 common metadata、来源或构建字段影响；普通最近活动按 normal/postponed 与未来窗口检索，最近所有活动按四状态滚动窗口检索。最终本地质量、定向回归和独立审查均通过。
+
+- **Purpose:** 活动版本摘要只使用 EVENT_METADATA_FIELDS 业务白名单，不受任意 common metadata、来源或构建字段影响；普通最近活动按 normal/postponed 与未来窗口检索，最近所有活动按四状态滚动窗口检索。最终本地质量、定向回归和独立审查均通过。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** uv run python -m pytest -q tests/test_activity_cleaning.py tests/test_release_acceptance_contract.py; powershell -NoProfile -ExecutionPolicy Bypass -File .codex/governance/gov.ps1 quality
+- **Changed paths:**
+  - `Other/event_rag_cleaner/.env.example`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/output.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/output.jsonl`
+  - `Other/event_rag_cleaner/CHATFLOW_METADATA.md`
+  - `Other/event_rag_cleaner/README.md`
+  - `Other/event_rag_cleaner/VALIDATION.md`
+  - `Other/event_rag_cleaner/clean_events.py`
+  - `Other/event_rag_cleaner/controlled_vocab.json`
+  - `Other/event_rag_cleaner/install.sh`
+  - `Other/event_rag_cleaner/requirements.txt`
+  - `Other/event_rag_cleaner/test_clean_events.py`
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-18T05:14:36+08:00 — recent_activity 的 Dify 活动名称前缀、业务 Metadata 版本摘要白名单、同名活动新版本先发布旧版本后清理、精确外部删除 outbox 和重复 event_id 前置拒绝已完成；最终 jx release 已通过合成 v1/v2 回归并精确清理测试数据，正式课程/路线保留，DSL 未变更。
+
+- **Purpose:** recent_activity 的 Dify 活动名称前缀、业务 Metadata 版本摘要白名单、同名活动新版本先发布旧版本后清理、精确外部删除 outbox 和重复 event_id 前置拒绝已完成；最终 jx release 已通过合成 v1/v2 回归并精确清理测试数据，正式课程/路线保留，DSL 未变更。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 版本摘要可能受未登记公共 Metadata 影响，交接文档和发布记录未同步最终修正版本。
+- **After:** 版本摘要仅使用活动业务 Metadata 白名单；最终质量、发布、回归和清理证据已同步到当前状态与排障文档。
+- **Impact / Notes:** None
+- **Validation:** uv run python -m pytest -q tests/test_activity_cleaning.py tests/test_release_acceptance_contract.py; gov quality; jx recent_activity v1/v2 E2E and exact cleanup
+- **Changed paths:**
+  - `Other/event_rag_cleaner/.env.example`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/output.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/output.jsonl`
+  - `Other/event_rag_cleaner/CHATFLOW_METADATA.md`
+  - `Other/event_rag_cleaner/README.md`
+  - `Other/event_rag_cleaner/VALIDATION.md`
+  - `Other/event_rag_cleaner/clean_events.py`
+  - `Other/event_rag_cleaner/controlled_vocab.json`
+  - `Other/event_rag_cleaner/install.sh`
+  - `Other/event_rag_cleaner/requirements.txt`
+  - `Other/event_rag_cleaner/test_clean_events.py`
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-18T05:18:36+08:00 — recent_activity 的 Dify 活动名称前缀、业务 Metadata 版本摘要白名单、同名活动新版本先发布旧版本后清理、精确外部删除 outbox 和重复 event_id 前置拒绝已完成；最终 jx release 已通过合成 v1/v2 回归并精确清理测试数据，正式课程/路线保留，DSL 未变更。
+
+- **Purpose:** recent_activity 的 Dify 活动名称前缀、业务 Metadata 版本摘要白名单、同名活动新版本先发布旧版本后清理、精确外部删除 outbox 和重复 event_id 前置拒绝已完成；最终 jx release 已通过合成 v1/v2 回归并精确清理测试数据，正式课程/路线保留，DSL 未变更。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 版本摘要可能受未登记公共 Metadata 影响，交接文档和发布记录未同步最终修正版本。
+- **After:** 版本摘要仅使用活动业务 Metadata 白名单；最终质量、发布、回归和清理证据已同步到当前状态与排障文档。
+- **Impact / Notes:** None
+- **Validation:** uv run python -m pytest -q tests/test_activity_cleaning.py tests/test_release_acceptance_contract.py; gov quality; jx recent_activity v1/v2 E2E and exact cleanup
+- **Changed paths:**
+  - `Other/event_rag_cleaner/.env.example`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/output.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/output.jsonl`
+  - `Other/event_rag_cleaner/CHATFLOW_METADATA.md`
+  - `Other/event_rag_cleaner/README.md`
+  - `Other/event_rag_cleaner/VALIDATION.md`
+  - `Other/event_rag_cleaner/clean_events.py`
+  - `Other/event_rag_cleaner/controlled_vocab.json`
+  - `Other/event_rag_cleaner/install.sh`
+  - `Other/event_rag_cleaner/requirements.txt`
+  - `Other/event_rag_cleaner/test_clean_events.py`
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-18T05:22:27+08:00 — recent_activity 的 Dify 活动名称前缀、业务 Metadata 版本摘要白名单、同名活动新版本先发布旧版本后清理、精确外部删除 outbox 和重复 event_id 前置拒绝已完成；最终 jx release 已通过合成 v1/v2 回归并精确清理测试数据，正式课程/路线保留，DSL 未变更。
+
+- **Purpose:** recent_activity 的 Dify 活动名称前缀、业务 Metadata 版本摘要白名单、同名活动新版本先发布旧版本后清理、精确外部删除 outbox 和重复 event_id 前置拒绝已完成；最终 jx release 已通过合成 v1/v2 回归并精确清理测试数据，正式课程/路线保留，DSL 未变更。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 版本摘要可能受未登记公共 Metadata 影响，交接文档和发布记录未同步最终修正版本。
+- **After:** 版本摘要仅使用活动业务 Metadata 白名单；最终质量、发布、回归和清理证据已同步到当前状态与排障文档。
+- **Impact / Notes:** None
+- **Validation:** uv run python -m pytest -q tests/test_activity_cleaning.py tests/test_release_acceptance_contract.py; gov quality; jx recent_activity v1/v2 E2E and exact cleanup
+- **Changed paths:**
+  - `Other/event_rag_cleaner/.env.example`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/output.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/output.jsonl`
+  - `Other/event_rag_cleaner/CHATFLOW_METADATA.md`
+  - `Other/event_rag_cleaner/README.md`
+  - `Other/event_rag_cleaner/VALIDATION.md`
+  - `Other/event_rag_cleaner/clean_events.py`
+  - `Other/event_rag_cleaner/controlled_vocab.json`
+  - `Other/event_rag_cleaner/install.sh`
+  - `Other/event_rag_cleaner/requirements.txt`
+  - `Other/event_rag_cleaner/test_clean_events.py`
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-18T08:17:26+08:00 — 本工作周期涉及的共享源码与测试变更未改变 recent-activity 的产品语义、接口、Metadata 或 Dify DSL；其现有实现保持不变。
+
+- **Purpose:** 本工作周期涉及的共享源码与测试变更未改变 recent-activity 的产品语义、接口、Metadata 或 Dify DSL；其现有实现保持不变。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** recent-activity 当前状态存在未同步变更路径。
+- **After:** recent-activity 当前状态与既有语义保持一致，相关变更已记录。
+- **Impact / Notes:** 本次 qwen-batch-cleaning 实现未修改 recent-activity 专属模块。
+- **Validation:** uv run python -m pytest -q tests/test_model_cleaning_workflow.py tests/test_large_scale_cleaning.py tests/test_batch_cleaner.py；ruff check
+- **Changed paths:**
+  - `Other/event_rag_cleaner/.env.example`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/output.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/output.jsonl`
+  - `Other/event_rag_cleaner/CHATFLOW_METADATA.md`
+  - `Other/event_rag_cleaner/README.md`
+  - `Other/event_rag_cleaner/VALIDATION.md`
+  - `Other/event_rag_cleaner/clean_events.py`
+  - `Other/event_rag_cleaner/controlled_vocab.json`
+  - `Other/event_rag_cleaner/install.sh`
+  - `Other/event_rag_cleaner/requirements.txt`
+  - `Other/event_rag_cleaner/test_clean_events.py`
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-18T09:01:13+08:00 — 本次改动未改变最近活动策略、实时模型、活动 Chatflow 或其验收语义。
+
+- **Purpose:** 本次改动未改变最近活动策略、实时模型、活动 Chatflow 或其验收语义。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** uv run python -m pytest -q tests/test_model_cleaning_workflow.py tests/test_large_scale_cleaning.py tests/test_batch_cleaner.py
+- **Changed paths:**
+  - `Other/event_rag_cleaner/.env.example`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/output.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/output.jsonl`
+  - `Other/event_rag_cleaner/CHATFLOW_METADATA.md`
+  - `Other/event_rag_cleaner/README.md`
+  - `Other/event_rag_cleaner/VALIDATION.md`
+  - `Other/event_rag_cleaner/clean_events.py`
+  - `Other/event_rag_cleaner/controlled_vocab.json`
+  - `Other/event_rag_cleaner/install.sh`
+  - `Other/event_rag_cleaner/requirements.txt`
+  - `Other/event_rag_cleaner/test_clean_events.py`
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-18T11:35:28+08:00 — 本次未改变最近活动策略、实时模型、活动 Chatflow 或验收语义；仅同步共享索引和当前状态。
+
+- **Purpose:** 本次未改变最近活动策略、实时模型、活动 Chatflow 或验收语义；仅同步共享索引和当前状态。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** uv run python -m pytest -q tests/test_model_cleaning_workflow.py tests/test_large_scale_cleaning.py tests/test_batch_cleaner.py
+- **Changed paths:**
+  - `Other/event_rag_cleaner/.env.example`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/output.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/output.jsonl`
+  - `Other/event_rag_cleaner/CHATFLOW_METADATA.md`
+  - `Other/event_rag_cleaner/README.md`
+  - `Other/event_rag_cleaner/VALIDATION.md`
+  - `Other/event_rag_cleaner/clean_events.py`
+  - `Other/event_rag_cleaner/controlled_vocab.json`
+  - `Other/event_rag_cleaner/install.sh`
+  - `Other/event_rag_cleaner/requirements.txt`
+  - `Other/event_rag_cleaner/test_clean_events.py`
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-18T12:58:05+08:00 — 本次未修改 recent_activity 实现、测试或 DSL；现有 recent-activity 文档与代码保持一致。
+
+- **Purpose:** 本次未修改 recent_activity 实现、测试或 DSL；现有 recent-activity 文档与代码保持一致。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `Other/event_rag_cleaner/.env.example`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/output.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/output.jsonl`
+  - `Other/event_rag_cleaner/CHATFLOW_METADATA.md`
+  - `Other/event_rag_cleaner/README.md`
+  - `Other/event_rag_cleaner/VALIDATION.md`
+  - `Other/event_rag_cleaner/clean_events.py`
+  - `Other/event_rag_cleaner/controlled_vocab.json`
+  - `Other/event_rag_cleaner/install.sh`
+  - `Other/event_rag_cleaner/requirements.txt`
+  - `Other/event_rag_cleaner/test_clean_events.py`
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-18T13:09:20+08:00 — 本次未修改 recent_activity 实现、测试或 DSL；最近活动 Feature 继续保持现有实时语义和当前运行状态记录。
+
+- **Purpose:** 本次未修改 recent_activity 实现、测试或 DSL；最近活动 Feature 继续保持现有实时语义和当前运行状态记录。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `Other/event_rag_cleaner/.env.example`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/output.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/output.jsonl`
+  - `Other/event_rag_cleaner/CHATFLOW_METADATA.md`
+  - `Other/event_rag_cleaner/README.md`
+  - `Other/event_rag_cleaner/VALIDATION.md`
+  - `Other/event_rag_cleaner/clean_events.py`
+  - `Other/event_rag_cleaner/controlled_vocab.json`
+  - `Other/event_rag_cleaner/install.sh`
+  - `Other/event_rag_cleaner/requirements.txt`
+  - `Other/event_rag_cleaner/test_clean_events.py`
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-19T14:19:17+08:00 — 核对最近活动代码、测试和当前部署交接；本次课程写入关闭与咨询 PDF OCR 门禁修复不改变 recent_activity 的业务语义。
+
+- **Purpose:** 核对最近活动代码、测试和当前部署交接；本次课程写入关闭与咨询 PDF OCR 门禁修复不改变 recent_activity 的业务语义。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** 最近活动 Feature 文档未完成当前工作树治理周期同步。
+- **After:** 最近活动 Feature 文档和变更记录已与当前代码/质量证据同步，明确本次无语义影响。
+- **Impact / Notes:** 仅同步治理记录，不修改最近活动实现或 DSL。
+- **Validation:** gov quality 通过；相关仓库质量命令通过。
+- **Changed paths:**
+  - `Other/event_rag_cleaner/.env.example`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/output.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/output.jsonl`
+  - `Other/event_rag_cleaner/CHATFLOW_METADATA.md`
+  - `Other/event_rag_cleaner/README.md`
+  - `Other/event_rag_cleaner/VALIDATION.md`
+  - `Other/event_rag_cleaner/clean_events.py`
+  - `Other/event_rag_cleaner/controlled_vocab.json`
+  - `Other/event_rag_cleaner/install.sh`
+  - `Other/event_rag_cleaner/requirements.txt`
+  - `Other/event_rag_cleaner/test_clean_events.py`
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-19T14:43:25+08:00 — 本次文档清洗修复未改变 recent_activity 语义、实现边界或 DSL；仅同步共享工作树的治理指纹。
+
+- **Purpose:** 本次文档清洗修复未改变 recent_activity 语义、实现边界或 DSL；仅同步共享工作树的治理指纹。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** recent_activity 当前文档状态与共享工作树治理指纹未同步。
+- **After:** recent_activity 文档标记为无语义变化，治理指纹已同步。
+- **Impact / Notes:** 无语义变化；无 DSL 变化。
+- **Validation:** gov quality; documentation contract
+- **Changed paths:**
+  - `Other/event_rag_cleaner/.env.example`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/output.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/output.jsonl`
+  - `Other/event_rag_cleaner/CHATFLOW_METADATA.md`
+  - `Other/event_rag_cleaner/README.md`
+  - `Other/event_rag_cleaner/VALIDATION.md`
+  - `Other/event_rag_cleaner/clean_events.py`
+  - `Other/event_rag_cleaner/controlled_vocab.json`
+  - `Other/event_rag_cleaner/install.sh`
+  - `Other/event_rag_cleaner/requirements.txt`
+  - `Other/event_rag_cleaner/test_clean_events.py`
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-19T14:43:49+08:00 — 本次文档清洗修复未改变 recent_activity 语义、实现边界或 DSL；仅同步共享工作树的治理指纹。
+
+- **Purpose:** 本次文档清洗修复未改变 recent_activity 语义、实现边界或 DSL；仅同步共享工作树的治理指纹。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+  - `activity-validation-docs — 活动验证与文档`
+- **Before:** recent_activity 当前文档状态与共享工作树治理指纹未同步。
+- **After:** recent_activity 文档标记为无语义变化，治理指纹已同步。
+- **Impact / Notes:** 无语义变化；无 DSL 变化。
+- **Validation:** gov quality; documentation contract
+- **Changed paths:**
+  - `Other/event_rag_cleaner/.env.example`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190604/output.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/cleaned/不写入原文的活动__evt_d8f2115335188c87dc28.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/output/metadata/不写入原文的活动__evt_d8f2115335188c87dc28.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_audit_metadata_omits_raw_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/cleaned/AI老板增长营__evt_test.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/dify_state.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_dify_document_id_persiste0/output/metadata/AI老板增长营__evt_test.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/cleaned/后一个活动__evt_209e005d81a252220e42.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/output/metadata/后一个活动__evt_209e005d81a252220e42.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_middle_missing_time_does_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/cleaned/可重复活动__evt_97029dcefc29b62d594e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/output/metadata/可重复活动__evt_97029dcefc29b62d594e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_repeat_run_keeps_manifest0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/前一个活动__evt_108dc0679185916d4ba0.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/cleaned/后一个活动__evt_f54576ae6c6ad3600185.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/前一个活动__evt_108dc0679185916d4ba0.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/output/metadata/后一个活动__evt_f54576ae6c6ad3600185.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_single_model_failure_does0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/errors.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run.log`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/run_summary.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/logs/skipped_events.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动1__evt_e6284f435e2e9563c30e.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动2__evt_32a2495f20ce3b8058ba.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/cleaned/活动3__evt_c41c309df6506507ea86.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/manifest.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动1__evt_e6284f435e2e9563c30e.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动2__evt_32a2495f20ce3b8058ba.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/output/metadata/活动3__evt_c41c309df6506507ea86.metadata.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_three_events_all_succeed_0/source.md`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/failures.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/input.jsonl`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_created.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/job_final.json`
+  - `Other/event_rag_cleaner/.pytest-tmp-final2/test_true_batch_file_orchestra0/logs/batch_jobs/20260814_190613/output.jsonl`
+  - `Other/event_rag_cleaner/CHATFLOW_METADATA.md`
+  - `Other/event_rag_cleaner/README.md`
+  - `Other/event_rag_cleaner/VALIDATION.md`
+  - `Other/event_rag_cleaner/clean_events.py`
+  - `Other/event_rag_cleaner/controlled_vocab.json`
+  - `Other/event_rag_cleaner/install.sh`
+  - `Other/event_rag_cleaner/requirements.txt`
+  - `Other/event_rag_cleaner/test_clean_events.py`
+  - `ai_management.zip`
+  - `ai_management/activity_cleaning.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `tests/test_activity_cleaning.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-08-20T01:28:07+08:00 — 活动查询现在按自然表达识别列表与命名详情；详情走无时间窗口状态检索并支持第1至第5个序号；列表默认10条逐行输出名称、时间、状态，ACTIVITY_MAX_RESULTS可配置；最近活动保持实时Qwen。Dify发布后验证了最近/最新/全部活动与命名详情SSE形状。
+
+- **Purpose:** 活动查询现在按自然表达识别列表与命名详情；详情走无时间窗口状态检索并支持第1至第5个序号；列表默认10条逐行输出名称、时间、状态，ACTIVITY_MAX_RESULTS可配置；最近活动保持实时Qwen。Dify发布后验证了最近/最新/全部活动与命名详情SSE形状。
+- **Affected modules:**
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** 详情查询默认套用近期时间窗，活动名称不含通用活动词时可能落入普通问答，序号仅支持第一个。
+- **After:** 详情查询使用detail状态绕过近期窗口；活动名称词加详情可进入活动分支；支持中文/阿拉伯第1至第5个序号；Dify环境变量默认10并已发布验证。
+- **Impact / Notes:** None
+- **Validation:** uv run pytest -q tests/test_activity_cleaning.py tests/test_dify_activity_contract.py tests/test_cleaning_release_contract.py; gov quality; Dify SSE safe evidence
+- **Changed paths:**
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+
+## 2026-08-20T16:00:28+08:00 — Shared publication path now serializes same-contract dedup and preserves review_required model failures without changing recent_activity realtime behavior.
+
+- **Purpose:** Shared publication path now serializes same-contract dedup and preserves review_required model failures without changing recent_activity realtime behavior.
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** full local pytest and activity regression
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-20T16:57:43+08:00 — Shared publication locking and review gating preserve recent_activity realtime behavior; activity regression and full quality pass.
+
+- **Purpose:** Shared publication locking and review gating preserve recent_activity realtime behavior; activity regression and full quality pass.
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** activity/full local regression
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-20T21:17:47+08:00 — 本轮共享清洗路径的实现语义未新增 recent_activity 行为；现有活动契约、Dify 结果上限和验证边界保持不变，文档仅同步当前质量与索引证据。
+
+- **Purpose:** 本轮共享清洗路径的实现语义未新增 recent_activity 行为；现有活动契约、Dify 结果上限和验证边界保持不变，文档仅同步当前质量与索引证据。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** 共享清洗路径变化后，recent-activity 的当前 Feature 文档尚未完成本轮同步。
+- **After:** recent-activity 文档已确认与共享路径现状一致；当前 gov quality 通过，活动静态/集成验收通过。
+- **Impact / Notes:** 不改变活动 API、DSL、测试数据或 jx 配置。
+- **Validation:** gov quality；活动与 Dify 契约测试；Qwen 活动验收脚本
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-20T21:53:58+08:00 — 同步本轮模型清洗发布一致性修复对活动/共享清洗模块的影响：复核状态与版本更新受行锁保护，远端文档排除使用精确补偿任务，历史正文去重统一按最终发布 Markdown 比较。
+
+- **Purpose:** 同步本轮模型清洗发布一致性修复对活动/共享清洗模块的影响：复核状态与版本更新受行锁保护，远端文档排除使用精确补偿任务，历史正文去重统一按最终发布 Markdown 比较。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** 共享发布模块的当前状态与本轮代码变更未完成语义同步。
+- **After:** 共享发布模块已记录本轮复核、补偿与历史正文去重语义，未改变活动公开接口。
+- **Impact / Notes:** 本轮未进行远端写入或发布。
+- **Validation:** gov quality passed 0584e6b07bb577cad5d6b21dd71cd1c9e1cc4cb9d03aaac0d7bdfd5f9feb2c54
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-20T22:01:30+08:00 — 同步共享清洗发布模块的审核材料安全修复：审核 JSON 使用锁和原子替换、0600 权限及 16 MiB 单文件大小上限；复核、远端补偿和最终正文去重语义保持不变。
+
+- **Purpose:** 同步共享清洗发布模块的审核材料安全修复：审核 JSON 使用锁和原子替换、0600 权限及 16 MiB 单文件大小上限；复核、远端补偿和最终正文去重语义保持不变。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** 共享模块状态未反映审核材料新增大小上限。
+- **After:** 共享模块已记录审核材料锁、原子写、权限和大小上限。
+- **Impact / Notes:** 本轮未进行远端写入或发布。
+- **Validation:** previous gov quality code checks passed; final quality rerun pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-20T22:13:50+08:00 — 同步共享清洗发布模块的最终修复：复核状态与版本更新受行锁保护，远端文档排除使用精确补偿任务，历史正文/分片按最终 Markdown 去重并在规范化后生成名称；审核材料保留原始模型 payload，使用原子写、目录 0700、文件 0600 与 16 MiB 上限。
+
+- **Purpose:** 同步共享清洗发布模块的最终修复：复核状态与版本更新受行锁保护，远端文档排除使用精确补偿任务，历史正文/分片按最终 Markdown 去重并在规范化后生成名称；审核材料保留原始模型 payload，使用原子写、目录 0700、文件 0600 与 16 MiB 上限。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** 共享模块状态未反映最终审核 artifact 与历史分片名称修复。
+- **After:** 共享模块已记录最终复核、补偿、去重、命名与审核材料安全语义。
+- **Impact / Notes:** 本轮未进行远端写入或发布。
+- **Validation:** final gov quality rerun pending after index regeneration
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-20T22:27:35+08:00 — 同步当前交接文档中的最终质量指纹、本地 wheel 校验和审核材料安全边界；recent_activity 业务语义、公开接口和 DSL 未改变。
+
+- **Purpose:** 同步当前交接文档中的最终质量指纹、本地 wheel 校验和审核材料安全边界；recent_activity 业务语义、公开接口和 DSL 未改变。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** 共享交接文档仍引用上一轮质量指纹和 wheel 摘要。
+- **After:** 共享交接文档已记录最终质量指纹、wheel SHA、审核材料原始 payload 保留、权限和大小边界，并明确未发布 jx。
+- **Impact / Notes:** 本轮未进行远端写入或发布。
+- **Validation:** gov quality passed 7f196f54aa0fa2d8b2562b699ba3e7283e9908a8a70a35f7263150c3c642680f
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-20T22:38:51+08:00 — 同步共享清洗发布当前最终状态：Batch cancelling 保持轮询，取消/提交共用任务行锁并精确清理孤儿远端资源；审核 artifact 使用原始 payload、安全创建、0700/0600 权限与大小上限；recent_activity 业务接口和 DSL 未改变。
+
+- **Purpose:** 同步共享清洗发布当前最终状态：Batch cancelling 保持轮询，取消/提交共用任务行锁并精确清理孤儿远端资源；审核 artifact 使用原始 payload、安全创建、0700/0600 权限与大小上限；recent_activity 业务接口和 DSL 未改变。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** 共享交接文档未记录最新 Batch 生命周期和安全创建修复。
+- **After:** 共享交接文档已记录最终质量、wheel、Batch 取消边界与审核 artifact 安全边界，并明确 jx 未发布。
+- **Impact / Notes:** 本轮未进行远端写入或发布。
+- **Validation:** gov quality passed 6222e8c21dc8464c014a02c4facc4b25f4d06bd9f608643ec1cada2ed5c17965
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-20T22:47:57+08:00 — Dynamic evidence only; activity code semantics unchanged
+
+- **Purpose:** Dynamic evidence only; activity code semantics unchanged
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-20T23:12:46+08:00 — Shared documentation status records the final local verification and unchanged remote boundary
+
+- **Purpose:** Shared documentation status records the final local verification and unchanged remote boundary
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-20T23:22:26+08:00 — Shared handover status is synchronized with the final local verification boundary
+
+- **Purpose:** Shared handover status is synchronized with the final local verification boundary
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-20T23:34:49+08:00 — Shared documentation remains synchronized with final local verification and remote boundary
+
+- **Purpose:** Shared documentation remains synchronized with final local verification and remote boundary
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-20T23:51:03+08:00 — Shared documentation remains synchronized with final local verification
+
+- **Purpose:** Shared documentation remains synchronized with final local verification
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-21T00:02:52+08:00 — Shared documentation and generated index are current
+
+- **Purpose:** Shared documentation and generated index are current
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-21T00:12:52+08:00 — Generated index and shared documentation are synchronized
+
+- **Purpose:** Generated index and shared documentation are synchronized
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-21T00:23:04+08:00 — Generated index and shared documentation are current
+
+- **Purpose:** Generated index and shared documentation are current
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-21T00:38:46+08:00 — recent_activity 发布在现有 event_id 锁外增加知识库/策略/规范级锁，避免不同 event_id 跨批次并发竞争同一去重范围。
+
+- **Purpose:** recent_activity 发布在现有 event_id 锁外增加知识库/策略/规范级锁，避免不同 event_id 跨批次并发竞争同一去重范围。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** 活动发布只按 event_id 加锁，不同活动可能并行进入同一契约去重范围。
+- **After:** 活动与其它同契约发布共享契约级锁，并保留 event_id 锁作为局部保护。
+- **Impact / Notes:** None
+- **Validation:** 活动/清洗聚焦测试、Ruff、compileall、git diff --check
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-21T00:39:09+08:00 — recent_activity 发布在现有 event_id 锁外增加知识库/策略/规范级锁，避免不同 event_id 跨批次并发竞争同一去重范围。
+
+- **Purpose:** recent_activity 发布在现有 event_id 锁外增加知识库/策略/规范级锁，避免不同 event_id 跨批次并发竞争同一去重范围。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** 活动发布只按 event_id 加锁，不同活动可能并行进入同一契约去重范围。
+- **After:** 活动与其它同契约发布共享契约级锁，并保留 event_id 锁作为局部保护。
+- **Impact / Notes:** None
+- **Validation:** 活动/清洗聚焦测试、Ruff、compileall、git diff --check
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-21T00:50:06+08:00 — 活动发布继续采用知识库/策略/规范级锁与 event_id 局部锁，当前代码无新增语义变化，仅同步本轮实现周期状态。
+
+- **Purpose:** 活动发布继续采用知识库/策略/规范级锁与 event_id 局部锁，当前代码无新增语义变化，仅同步本轮实现周期状态。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** 上次同步后本轮补丁尚未完成所有关联功能文档闭环。
+- **After:** 关联功能文档与当前代码周期一致。
+- **Impact / Notes:** None
+- **Validation:** 活动/清洗聚焦测试、Ruff、compileall、git diff --check
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-21T01:00:40+08:00 — 共享 cleaning.py 变更保持 recent_activity 契约级发布锁；本轮其它生命周期补丁不改变活动业务语义。
+
+- **Purpose:** 共享 cleaning.py 变更保持 recent_activity 契约级发布锁；本轮其它生命周期补丁不改变活动业务语义。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** 关联共享清洗代码更新后文档周期未闭环。
+- **After:** 活动功能文档与共享发布锁当前实现保持同步。
+- **Impact / Notes:** None
+- **Validation:** 活动/清洗聚焦 pytest、Ruff、compileall、git diff --check
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-21T01:18:37+08:00 — 共享模型 Batch ID 兼容读取和质量命令覆盖已补齐，活动相关共享路径保持当前实现。
+
+- **Purpose:** 共享模型 Batch ID 兼容读取和质量命令覆盖已补齐，活动相关共享路径保持当前实现。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** 共享路径变更后的功能文档状态未同步。
+- **After:** 共享路径与当前验证状态已同步。
+- **Impact / Notes:** None
+- **Validation:** tests/test_model_cleaning_workflow.py；gov quality
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-21T01:40:04+08:00 — 共享清洗路径的看门狗远端状态对账和质量覆盖已同步，最近活动发布锁语义保持不变。
+
+- **Purpose:** 共享清洗路径的看门狗远端状态对账和质量覆盖已同步，最近活动发布锁语义保持不变。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** 共享路径修复后的功能文档状态未同步。
+- **After:** 共享路径和当前验证状态已同步。
+- **Impact / Notes:** None
+- **Validation:** tests/test_model_cleaning_workflow.py；gov quality
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-21T01:50:08+08:00 — 共享清洗路径的看门狗终态对账已完成，活动发布和查询路径保持现有契约；全量门禁通过。
+
+- **Purpose:** 共享清洗路径的看门狗终态对账已完成，活动发布和查询路径保持现有契约；全量门禁通过。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** 共享路径最终修复状态未同步。
+- **After:** 共享路径与最终验证状态已同步。
+- **Impact / Notes:** None
+- **Validation:** gov quality
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-21T02:08:23+08:00 — 共享清洗路径已统一 stale 任务恢复到既有 poll/实时任务入口，活动发布契约不变。
+
+- **Purpose:** 共享清洗路径已统一 stale 任务恢复到既有 poll/实时任务入口，活动发布契约不变。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** 共享路径恢复语义未同步。
+- **After:** 共享路径恢复语义和验证状态已同步。
+- **Impact / Notes:** None
+- **Validation:** gov quality
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-21T02:43:23+08:00 — 共享模型任务现在保留终态 Batch 映射并在本地结果提交后清理供应商文件；recent_activity 仍固定 realtime，业务契约与 DSL 未改变。
+
+- **Purpose:** 共享模型任务现在保留终态 Batch 映射并在本地结果提交后清理供应商文件；recent_activity 仍固定 realtime，业务契约与 DSL 未改变。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** uv run python -m pytest -q tests/test_activity_cleaning.py tests/test_model_cleaning_workflow.py; powershell -NoProfile -ExecutionPolicy Bypass -File .codex/governance/gov.ps1 quality
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-21T03:00:22+08:00 — 最近活动策略不再要求删除后重新上传历史原始样本；旧目标数据按精确清单删除且不备份，删除后只处理后续新数据。共享 Batch 终态恢复与 cancelling 清理状态逻辑已同步。
+
+- **Purpose:** 最近活动策略不再要求删除后重新上传历史原始样本；旧目标数据按精确清单删除且不备份，删除后只处理后续新数据。共享 Batch 终态恢复与 cancelling 清理状态逻辑已同步。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** focused model cleaning workflow tests passed; canonical quality pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-21T03:07:03+08:00 — 共享 Batch 终态结果先完成本地收敛再清理远端文件，失败时保留恢复信息；最近活动策略仍只处理删除后的后续新数据。
+
+- **Purpose:** 共享 Batch 终态结果先完成本地收敛再清理远端文件，失败时保留恢复信息；最近活动策略仍只处理删除后的后续新数据。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** focused model cleaning workflow tests passed; canonical quality pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-21T03:33:21+08:00 — 共享清理服务和 Batch 生命周期修复已同步；recent_activity 仍固定实时，旧目标数据不备份删除后只处理后续新数据，不重传历史样本。
+
+- **Purpose:** 共享清理服务和 Batch 生命周期修复已同步；recent_activity 仍固定实时，旧目标数据不备份删除后只处理后续新数据，不重传历史样本。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** focused model cleaning and cleanup lifecycle regressions passed; canonical quality pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-21T03:37:42+08:00 — 共享清理生命周期在取消异常时保留精确远端引用并可由 maintenance 重建；recent_activity 业务语义未改变。
+
+- **Purpose:** 共享清理生命周期在取消异常时保留精确远端引用并可由 maintenance 重建；recent_activity 业务语义未改变。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** focused cleanup lifecycle regressions passed; canonical quality pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`

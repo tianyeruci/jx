@@ -1,5 +1,29 @@
 # 部署与回滚排障
 
+## DEPLOY-030：Windows 本地 Docker 引擎未运行时不能把 Compose 无效执行当作重启成功
+
+- 适用：Windows 本地 `docker-compose.ai.yml` 配置修改后的服务重建。
+- 触发：已修改 `.env`，但 `docker compose` 无法连接 `dockerDesktopLinuxEngine`；若只看命令返回或空输出，容易误判服务已重启且配置已生效。
+- 根因：Compose 文件解析可以成功，但 Docker Desktop Linux 引擎未启动时没有容器状态可切换，`env_file` 也不会被任何新容器读取。
+- 解决：先只读执行 `docker info` 确认 ServerVersion；失败时启动 Docker Desktop 并等待 Linux 引擎可用，再用显式 `docker compose -f docker-compose.ai.yml up -d --no-deps --force-recreate` 重建实际读取配置的服务，最后容器内回读 settings 和 health。
+- 非解决：只执行 `docker compose restart`、只检查 Compose 文件能解析、启动后不等 ready 就结束，或使用 `down -v` 清理卷。
+- 验证：本次任务将保留 `docker info`、Compose 服务状态、容器内配置回读和 `/health/ready` 的脱敏结果；只有这些均通过才标记重启完成。
+- 预防：任何本地配置重启前先做 Docker daemon preflight；配置变更用 recreate，不用普通 restart；不要输出 `.env` 全文。
+- 证据：[本地千问 Batch 配置记录](../features/qwen-batch-cleaning/CHANGELOG.md)、[当前任务交接](../../AI管理服务当前状态与后续测试交接.md)。
+- 最后验证：2026-08-22（引擎恢复和重启验证完成后更新）。
+
+## DEPLOY-031：jx 的 200MB 应用上传门禁不能绕过 Nginx 128M 中间层
+
+- 适用：jx 测试页、Dify Nginx 临时上传桥接和 AI 管理服务知识库上传。
+- 触发：AI 管理服务已设置 `MAX_UPLOAD_BATCH_MB=200`，但经 Nginx 的 HTTP 上传在 128MB 左右被拒绝，或测试页大文件无法到达 API。
+- 根因：jx Nginx 当前全局 `client_max_body_size=128M`；这是反向代理层限制，早于 API 的 `MAX_UPLOAD_BATCH_MB`。同时，测试页从浏览器经 `/ai-management-test/` 进入 Streamlit，Streamlit 再通过 Docker 内部 `http://ai-management-api:8000` 调 API；可信后端私网 `172.30.157.197:8000` 则是另一条直连路径。
+- 解决：先确认实际调用路径。可信后端上传固定直连私网 `:8000`；若必须让 Nginx 承载 HTTP multipart 上传，需单独评审并把 Nginx body limit 调到高于 200MB，同时验证超时、临时磁盘和回滚，不要只改 AI 管理服务 `.env`。
+- 非解决：只把 `MAX_UPLOAD_BATCH_MB` 改成 200、只重启 API、只检查 Streamlit 默认 200MB，或绕过 Nginx 上传阻断规则。
+- 验证：jx 只读证据为 API 绑定 `172.30.157.197:8000`、测试页 API base 为 `http://ai-management-api:8000`、Nginx `client_max_body_size=128M`；修改任何入口前必须用实际调用路径做边界测试。
+- 预防：交接记录同时保存应用层、UI/Streamlit 层、Nginx 层和私网直连层的限制；大文件变更先做小样本/边界探针，不用公网入口猜测 API 能力。
+- 证据：jx `docker compose ps`、`docker inspect ai-management-api-1`、`docker inspect ai-management-test-ui-1`、`docker exec docker-nginx-1 nginx -T` 的 2026-08-22 脱敏只读结果；[Streamlit 上传配置说明](https://docs.streamlit.io/develop/api-reference/configuration/config.toml)。
+- 最后验证：2026-08-22。
+
 ## DEPLOY-001：jx 主机回环地址不代表 API 故障
 
 - 适用：jx Compose 部署。
