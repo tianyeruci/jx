@@ -4,6 +4,26 @@
 > 用途：保存最新线上事实、回滚点、数据状态和开放事项。新任务先读 `AGENTS.md` 与 `docs/README.md`，再按功能域读取本文顶部最新状态。  
 > 本文不是需求或设计基线；权威顺序以 `docs/V2决策记录.md` 和 `docs/README.md` 为准。第 1～8 节为历史过程记录，不再作为当前执行指令。
 
+## 0.79 2026-08-24 朋友圈顾问 IP 方法论 Prompt 规则校正与最终回归（当前最新）
+
+- 本轮按用户补充说明复用现有“朋友圈顾问” Dify Workflow、现有 qwen-plus、现有 API Key 和本地 `dify/dsl`；未创建新 App、未生成新 Key、未更换模型、未安装插件。现有 Workflow 已在原 App 内更新并发布，入口变量保持不变。
+- 仅新增三条朋友圈案例：`moments-feedback`、`moments-knowledge`、`moments-interaction`。jx 服务端回读为六条案例，和当前本地默认值逐项一致；旧三条案例没有删除或覆盖。
+- 测试发现模型仅靠 Prompt 仍可能在 `source_material` 为空时补写具体细节；曾尝试的接口级硬拒绝因会截断既有 request-only 案例调用而撤回。当前保留 Prompt/DSL 约束，不改变可选素材契约；request-only 与有素材均继续走原工作流。
+- 独立复核发现 Prompt 中“request 不是事实素材”与“用户明确给出的事实可用”存在冲突，已在本地 DSL/提示词和现有 Dify Workflow 原地修正为：`request` 与 `source_material` 中逐字明确提供的信息均可使用，主题/目标/写作要求本身不授权补造细节；现有 qwen-plus、入口变量和 API Key 未变。
+- jx 已完成两次 `--keep-data` 发布，最终兼容版本为 `quick-20260824-204821-2e6b8c4e0aea`。最终报告为 `/opt/ai-management/var/reports/v2/quick-20260824-204821-2e6b8c4e0aea-quick-deploy`，发布前备份为 `/opt/ai-management/backups/quick-20260824-204821-2e6b8c4e0aea-predeploy`。部署脚本报告完成，健康检查、容器切换和数据保留核验通过。
+- Prompt 校正后再次通过测试页完成生活、反馈、产品、专业干货、互动五类真实生成回归，均产生正常任务和输出；SSE 路由契约已补强 request-only/有素材的完整输入、鉴权映射和事件序列断言。五类输出仍属于模型生成结果，不能据此宣称模型在无素材时绝对不补写具体细节。
+- 先前硬拒绝回归产生的 12 个精确 Workflow 运行、关联节点和测试用户已清理；兼容修复回归产生的 5 个精确 Workflow 运行、关联节点和测试用户也已清理。未做整库清理，旧业务数据、正式案例和知识库数据未触碰。
+- Prompt 校正后的再次回归产生的 5 个精确 Workflow 运行、15 个节点执行、5 个应用日志和 1 个合成测试用户已按精确 ID 清理；清理前后核对目标计数均为 0，最近的旧 Workflow 运行仍保留。
+
+### 本节变更记录
+
+- 修改原因：独立复核确认接口级硬拒绝破坏可选素材和 SSE 兼容性，撤回该改动并补充真实路由回归；记录 jx 发布、测试和精确清理结果。
+- 修改前：文档声称空素材会被接口硬拒绝且五类回归不产生 Dify 任务，结论超过现有契约和验收目标。
+- 修改后：记录现有 App 原地发布、Prompt/DSL 约束、request-only 兼容链路、五类真实生成回归和两批精确测试记录清理；明确无素材不补写仍是模型行为约束而非接口硬门禁。
+- 修改原因：独立复核发现 request-only 语义规则自相矛盾；在不改变接口契约的前提下修正 Prompt，并通过已登录 Dify UI 发布到原 App 后重新跑测试页五类回归。
+- 修改前：Prompt 将 request 一概排除在事实来源之外，可能误伤案例中明确写出的事实；新一批回归记录尚未写入交接。
+- 修改后：明确 request/source_material 中逐字事实均可使用，主题/目标/写作要求不授权补造细节；记录现有 App 原地发布、r8 测试页五类成功任务和五条精确运行的清理复核。旧运行、旧案例和正式数据继续保留。
+
 ## 0.76 2026-08-22 本地千问 Batch 上传门禁与运行策略（当前任务）
 
 - 策略已先在文档中固定：本地 `.env` 使用 `BAILIAN_BATCH_ENABLED=true`；达到 `CLEANING_BATCH_CANDIDATE_THRESHOLD=100` 或 `CLEANING_BATCH_TOKEN_THRESHOLD=200000` 时，四个内容模型策略可选择百炼 Batch；`recent_activity` 仍固定 realtime。
@@ -2313,3 +2333,15 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改前：jx `.env` 为 `BAILIAN_BATCH_ENABLED=false`、单批 `100/500MB`；本轮仅完成只读预检。
 - 修改后：配置备份位于 `/opt/ai-management/backups/20260822-100452-qwen-batch-upload-config`；`.env` 与运行容器回读为 `MAX_UPLOAD_FILE_MB=200`、`MAX_UPLOAD_FILES=100`、`MAX_UPLOAD_BATCH_MB=200`、`BAILIAN_BATCH_ENABLED=true`、候选/Token 阈值 `100/200000`、Provider 分片 `40000/419430400`。API、普通 Worker、Batch Worker、realtime Worker、publication Worker、Scheduler 已完成强制重建。
 - 验证：API `/health/ready` 为 `ready` 且 database/redis/dify 均为 `true`；目标服务重建后 `restart=0`，关键日志错误计数为 0；Nginx `/ai-management-test/` 返回 HTTP 200。只修改 `.env`，未修改数据库、Redis、Dify、上传卷或 OCR 服务；Nginx `client_max_body_size=128M` 未改；未执行 orphan 容器清理，未发起真实百炼 Batch。
+
+### 文档修改记录（2026-08-24 朋友圈顾问 IP 方法论最小发布与回归）
+
+- 修改原因：按用户补充要求改用现有 Dify App、现有 API Key、现有 qwen-plus 和本地 DSL；补充空素材确定性兜底，并记录 jx 发布、测试和精确清理结果。
+- 修改前：本文没有本轮朋友圈顾问发布事实，专项文档仍按隔离 App/新 Key 计划描述；测试页空素材请求存在模型补写未提供细节的问题。
+- 修改后：已记录现有 App 原地发布、jx `--keep-data` 发布报告和备份、五类测试页回归、12 个精确 Dify Workflow 运行及关联测试记录清理；明确旧案例、旧业务数据、正式知识库和现有 Key 均未删除或更换。
+
+### 文档修改记录（2026-08-24 兼容修复与复核结论修正）
+
+- 修改原因：独立复核发现接口级空素材硬拒绝会截断既有 request-only 案例和测试页，并且静态 SSE 缺少 `status` 事件；撤回硬拒绝、恢复原链路、补充路由契约测试和最终发布事实。
+- 修改前：文档声称空素材会被接口硬拒绝、五类回归不创建 Dify 任务，且未区分模型输出质量与接口契约。
+- 修改后：文档记录最终兼容版本、五类真实生成回归、request-only/有素材路由测试、两批精确测试记录清理，并明确 Prompt 约束不是确定性事实门禁。

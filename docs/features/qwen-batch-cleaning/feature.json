@@ -36,7 +36,7 @@
     {
       "id": "model-cleaning-policy",
       "title": "模型清洗策略规划",
-      "status": "verified",
+      "status": "in_progress",
       "paths": [
         "ai_management/model_cleaning.py",
         "ai_management/config.py"
@@ -47,14 +47,14 @@
         "AC-005"
       ],
       "optional": false,
-      "updated_at": "2026-08-22T10:16:56+08:00",
+      "updated_at": "2026-08-24T12:53:59+08:00",
       "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
       "last_changed_at": "2026-08-21T03:37:39+08:00"
     },
     {
       "id": "model-cleaning-orchestration",
       "title": "Batch 生命周期与轮询",
-      "status": "verified",
+      "status": "in_progress",
       "paths": [
         "ai_management/workers/tasks/model_cleaning.py",
         "ai_management/services/bailian_cleanup.py"
@@ -66,14 +66,14 @@
         "AC-006"
       ],
       "optional": false,
-      "updated_at": "2026-08-22T10:16:56+08:00",
+      "updated_at": "2026-08-24T12:53:59+08:00",
       "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
       "last_changed_at": "2026-08-21T03:37:39+08:00"
     },
     {
       "id": "model-cleaning-contract-tests",
       "title": "模型清洗契约测试",
-      "status": "verified",
+      "status": "in_progress",
       "paths": [
         "tests/test_model_cleaning_workflow.py"
       ],
@@ -84,7 +84,7 @@
         "AC-004"
       ],
       "optional": false,
-      "updated_at": "2026-08-22T10:16:56+08:00",
+      "updated_at": "2026-08-24T12:53:59+08:00",
       "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
       "last_changed_at": "2026-08-21T03:37:39+08:00"
     },
@@ -127,7 +127,7 @@
     {
       "id": "strategy-contracts",
       "title": "三类策略契约与发布",
-      "status": "verified",
+      "status": "in_progress",
       "paths": [
         "ai_management/cleaning.py",
         "ai_management/activity_cleaning.py",
@@ -139,14 +139,14 @@
         "AC-009"
       ],
       "optional": false,
-      "updated_at": "2026-08-22T10:16:56+08:00",
+      "updated_at": "2026-08-24T12:53:59+08:00",
       "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
       "last_changed_at": "2026-08-21T03:37:39+08:00"
     },
     {
       "id": "cleaning-contract-tests",
       "title": "模型清洗契约回归",
-      "status": "verified",
+      "status": "in_progress",
       "paths": [
         "tests/test_model_cleaning_workflow.py",
         "tests/test_large_scale_cleaning.py",
@@ -161,7 +161,7 @@
         "AC-009"
       ],
       "optional": false,
-      "updated_at": "2026-08-22T10:16:56+08:00",
+      "updated_at": "2026-08-24T12:53:59+08:00",
       "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
       "last_changed_at": "2026-08-21T03:37:39+08:00"
     },
@@ -195,13 +195,33 @@
     }
   ],
   "documentation": {
-    "status": "current",
-    "last_code_change_at": "2026-08-21T03:37:38+08:00",
+    "status": "stale",
+    "last_code_change_at": "2026-08-24T21:43:13+08:00",
     "last_synced_at": "2026-08-21T03:37:39+08:00",
     "last_sync_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
-    "pending_changed_paths": [],
+    "pending_changed_paths": [
+      "AI管理服务当前状态与后续测试交接.md",
+      "dify/dsl/moments_advisor.yml",
+      "dify/prompts/朋友圈顾问提示词.md",
+      "tests/test_moments_run_contract.py",
+      "文件清洗样本/知识星球/11/《见优秀的人，在那里照见自己》——热可可.md",
+      "文件清洗样本/知识星球/11/【[微信红包]国庆节快乐，提前发个大红包！】.md",
+      "文件清洗样本/知识星球/11/【不写作的人，很难过上好的生活 12／48】.md",
+      "文件清洗样本/知识星球/11/【你写的内容具不具备「分享价值」？13／48】.md",
+      "文件清洗样本/知识星球/11/【你是怎么做读书笔记的？8／48】.md",
+      "文件清洗样本/知识星球/11/【先说总结，再说细节 1／48篇】.md",
+      "文件清洗样本/知识星球/11/【写作的四阶段 10／48】.md",
+      "文件清洗样本/知识星球/11/【写作的感悟 3／48篇】.md",
+      "文件清洗样本/知识星球/11/【到底写什么更好？9／48】.md",
+      "文件清洗样本/知识星球/11/【如何开始写作？2／48篇】.md",
+      "文件清洗样本/知识星球/11/【如何领取赠品+星球使用指南 】.md",
+      "文件清洗样本/知识星球/11/【思考质量决定写作质量 6／48】.md",
+      "文件清洗样本/知识星球/11/【来猜个奖】.md",
+      "文件清洗样本/知识星球/11/【给写作小白的建议 4／48篇】.md",
+      "朋友圈 I P打造.md"
+    ],
     "changelog_fingerprint": "7f475292796ed1d7bd55d6dcc4bddf01aa819e2df15cc034dd1aeecedb40f019"
   },
   "created_at": "2026-08-18T08:01:54+08:00",
-  "updated_at": "2026-08-22T10:16:56+08:00"
+  "updated_at": "2026-08-24T21:43:13+08:00"
 }

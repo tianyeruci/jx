@@ -12,7 +12,7 @@
     "commands": {
       "format": [
         {
-          "command": "uv run ruff format --check ai_management/model_cleaning.py ai_management/activity_cleaning.py ai_management/cleaning.py ai_management/workers/tasks/cleaning.py ai_management/workers/tasks/model_cleaning.py ai_management/workers/tasks/maintenance.py ai_management/api/routers/knowledge_admin.py tests/test_model_cleaning_workflow.py tests/test_ai_management.py tests/test_activity_cleaning.py tests/test_dify_activity_contract.py ai_management/services/bailian_cleanup.py ai_management/services/tool_examples.py ai_management/schemas.py ai_management/api/routers/tools.py ai_management/api/routers/admin_management.py ai_management/test_ui.py tests/test_tool_examples.py tests/test_app_routing.py tests/test_v2_hardening.py",
+          "command": "uv run ruff format --check ai_management/model_cleaning.py ai_management/activity_cleaning.py ai_management/cleaning.py ai_management/workers/tasks/cleaning.py ai_management/workers/tasks/model_cleaning.py ai_management/workers/tasks/maintenance.py ai_management/api/routers/knowledge_admin.py tests/test_model_cleaning_workflow.py tests/test_ai_management.py tests/test_activity_cleaning.py tests/test_dify_activity_contract.py ai_management/services/bailian_cleanup.py ai_management/services/tool_examples.py ai_management/schemas.py ai_management/api/routers/tools.py ai_management/api/routers/admin_management.py ai_management/test_ui.py tests/test_tool_examples.py tests/test_moments_run_contract.py tests/test_app_routing.py tests/test_v2_hardening.py",
           "cwd": ".",
           "timeout": 600,
           "required": true
@@ -20,7 +20,7 @@
       ],
       "lint": [
         {
-          "command": "uv run ruff check ai_management/model_cleaning.py ai_management/activity_cleaning.py ai_management/cleaning.py ai_management/workers/tasks/cleaning.py ai_management/workers/tasks/model_cleaning.py ai_management/workers/tasks/maintenance.py ai_management/api/routers/knowledge_admin.py tests/test_model_cleaning_workflow.py tests/test_ai_management.py tests/test_activity_cleaning.py tests/test_dify_activity_contract.py tests/test_business_advisor_unified_dsl.py ai_management/services/bailian_cleanup.py ai_management/services/tool_examples.py ai_management/schemas.py ai_management/api/routers/tools.py ai_management/api/routers/admin_management.py ai_management/test_ui.py tests/test_tool_examples.py tests/test_app_routing.py tests/test_v2_hardening.py",
+          "command": "uv run ruff check ai_management/model_cleaning.py ai_management/activity_cleaning.py ai_management/cleaning.py ai_management/workers/tasks/cleaning.py ai_management/workers/tasks/model_cleaning.py ai_management/workers/tasks/maintenance.py ai_management/api/routers/knowledge_admin.py tests/test_model_cleaning_workflow.py tests/test_ai_management.py tests/test_activity_cleaning.py tests/test_dify_activity_contract.py tests/test_business_advisor_unified_dsl.py ai_management/services/bailian_cleanup.py ai_management/schemas.py ai_management/api/routers/tools.py ai_management/api/routers/admin_management.py ai_management/test_ui.py tests/test_tool_examples.py tests/test_moments_run_contract.py tests/test_app_routing.py tests/test_v2_hardening.py",
           "cwd": ".",
           "timeout": 600,
           "required": true

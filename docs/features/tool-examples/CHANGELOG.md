@@ -698,3 +698,15 @@ This is a semantic change log, not a copy of Git diff.
 - **Validation:** focused cleanup lifecycle regressions passed; canonical quality pending
 - **Changed paths:**
   - `AI管理服务当前状态与后续测试交接.md`
+
+## 2026-08-24T21:34:06+08:00 — 新增 feedback、knowledge、interaction 三条朋友圈案例，保留旧案例和排序；通过本地案例回归及 jx 测试页五类真实生成回归后，按精确 Dify Workflow 运行记录完成测试数据清理。
+
+- **Purpose:** 新增 feedback、knowledge、interaction 三条朋友圈案例，保留旧案例和排序；通过本地案例回归及 jx 测试页五类真实生成回归后，按精确 Dify Workflow 运行记录完成测试数据清理。
+- **Affected modules:**
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`

@@ -134,7 +134,7 @@
     {
       "id": "examples-docs",
       "title": "接口、索引与状态交接文档",
-      "status": "verified",
+      "status": "in_progress",
       "paths": [
         "docs/小程序后端与 AI 管理服务接口对接交互版本.md",
         "docs/小程序后端与AI管理服务接口对接标准.md",
@@ -149,9 +149,9 @@
         "AC-006"
       ],
       "optional": false,
-      "updated_at": "2026-08-22T10:16:58+08:00",
-      "last_change_summary": "共享清理生命周期在取消异常时保留精确远端引用并可由 maintenance 重建；工具案例业务语义未改变。",
-      "last_changed_at": "2026-08-21T03:37:45+08:00"
+      "updated_at": "2026-08-24T12:54:01+08:00",
+      "last_change_summary": "新增 feedback、knowledge、interaction 三条朋友圈案例，保留旧案例和排序；通过本地案例回归及 jx 测试页五类真实生成回归后，按精确 Dify Workflow 运行记录完成测试数据清理。",
+      "last_changed_at": "2026-08-24T21:34:06+08:00"
     }
   ],
   "validation_commands": [
@@ -169,14 +169,16 @@
     }
   ],
   "documentation": {
-    "status": "current",
-    "last_code_change_at": "2026-08-21T03:37:38+08:00",
-    "last_synced_at": "2026-08-21T03:37:45+08:00",
-    "last_sync_summary": "共享清理生命周期在取消异常时保留精确远端引用并可由 maintenance 重建；工具案例业务语义未改变。",
-    "pending_changed_paths": [],
-    "changelog_fingerprint": "576baf1d5f283bfc6daf68082ce6be3562e0401db3ddf1b96eccadd8c056f7d1"
+    "status": "stale",
+    "last_code_change_at": "2026-08-24T21:43:13+08:00",
+    "last_synced_at": "2026-08-24T21:34:06+08:00",
+    "last_sync_summary": "新增 feedback、knowledge、interaction 三条朋友圈案例，保留旧案例和排序；通过本地案例回归及 jx 测试页五类真实生成回归后，按精确 Dify Workflow 运行记录完成测试数据清理。",
+    "pending_changed_paths": [
+      "AI管理服务当前状态与后续测试交接.md"
+    ],
+    "changelog_fingerprint": "b459c1e69b6eb7dc0fc7bcac3c16757fd0bad0ec48750acc609786f73461f35d"
   },
   "created_at": "2026-08-17T02:18:13+08:00",
-  "updated_at": "2026-08-22T10:16:58+08:00",
+  "updated_at": "2026-08-24T21:43:13+08:00",
   "last_abandon_reason": "独立复核修正完成，重新建立以当前修正工作树为基线的治理周期"
 }

@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
 
 from ai_management.main import app
-from ai_management.services.tool_examples import create_example, list_examples
+from ai_management.services.tool_examples import DEFAULT_EXAMPLES, create_example, list_examples
 
 USER_HEADERS = {
     "X-Internal-Token": "test-internal-token",
@@ -49,6 +49,9 @@ def test_user_examples_return_complete_enabled_defaults(service_db):
         "moments-life",
         "moments-product",
         "moments-thought",
+        "moments-feedback",
+        "moments-knowledge",
+        "moments-interaction",
     ]
     assert [item["id"] for item in writing.json()["items"]] == [
         "writing-summary",
@@ -59,6 +62,40 @@ def test_user_examples_return_complete_enabled_defaults(service_db):
         assert item["request"].strip()
         assert len(item["request"]) <= 12000
         assert item["enabled"] is True
+
+
+def test_moments_defaults_preserve_legacy_items_and_append_methodology_cases():
+    assert DEFAULT_EXAMPLES["moments"][:3] == [
+        {
+            "id": "moments-life",
+            "title": "介绍生活",
+            "description": "把一段具体生活经历写成自然、有真实感的朋友圈内容。",
+            "request": "请围绕主题“最近开始坚持晨间散步”写一条朋友圈：领域是个人生活方式与日常记录，受众是熟悉我的朋友和同事，目标是分享真实变化与一点可共鸣的感受。请基于这个主题组织具体场景、细节和收束句，语气自然克制，不夸张、不鸡汤、不编造未提供的经历，控制在 120 字以内。",
+            "enabled": True,
+            "sort_order": 0,
+        },
+        {
+            "id": "moments-product",
+            "title": "介绍产品",
+            "description": "用不强推的方式介绍一个产品，让读者理解它适合谁。",
+            "request": "请围绕产品“一个帮助小团队整理客户反馈的笔记工具”写一条朋友圈：领域是效率工具介绍，受众是正在管理客户反馈的创业者和产品经理，目标是说明我为什么使用、它解决了什么问题以及适合什么人。请只使用已知信息，不虚构功能、数据或用户评价，避免硬广和夸张承诺，语气像真实体验分享，控制在 160 字以内。",
+            "enabled": True,
+            "sort_order": 1,
+        },
+        {
+            "id": "moments-thought",
+            "title": "分享思考",
+            "description": "围绕一个工作或生活观察，写出清晰而不说教的思考。",
+            "request": "请围绕主题“很多计划不是输在执行，而是没有先定义完成”写一条朋友圈：领域是工作方法与个人思考，受众是希望提升工作效率的朋友和同事，目标是分享一个清晰、有启发但不说教的观点。请用一个具体观察引出结论，保留适度个人口吻，不引用无法核实的数据，不堆砌术语，控制在 180 字以内。",
+            "enabled": True,
+            "sort_order": 2,
+        },
+    ]
+    assert [item["id"] for item in DEFAULT_EXAMPLES["moments"][3:]] == [
+        "moments-feedback",
+        "moments-knowledge",
+        "moments-interaction",
+    ]
 
 
 def test_user_examples_require_user_and_hide_disabled_items(service_db):
@@ -146,7 +183,14 @@ def test_admin_examples_crud_restore_and_permissions(service_db):
 
 def test_empty_directory_and_example_validation(service_db):
     with TestClient(app) as client:
-        for example_id in ("moments-life", "moments-product", "moments-thought"):
+        for example_id in (
+            "moments-life",
+            "moments-product",
+            "moments-thought",
+            "moments-feedback",
+            "moments-knowledge",
+            "moments-interaction",
+        ):
             assert (
                 client.delete(
                     f"/internal/v1/admin/tools/moments/examples/{example_id}",
