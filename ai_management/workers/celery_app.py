@@ -39,6 +39,10 @@ celery_app.conf.update(
             "task": "ai_management.nightly_maintenance",
             "schedule": crontab(hour=settings.cleanup_hour, minute=settings.cleanup_minute),
         },
+        "cleanup-tool-conversations": {
+            "task": "ai_management.cleanup_tool_conversations",
+            "schedule": crontab(hour=0, minute=0),
+        },
         "cleaning-reconcile": {
             "task": "ai_management.reconcile_cleaning_pipeline",
             "schedule": 300,

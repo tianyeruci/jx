@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -13,9 +14,10 @@ from ...config import get_settings
 from ...db import get_session
 from ...dify import DifyAppClient
 from ...errors import ServiceError
-from ...schemas import MomentsRunRequest, WritingRunRequest
+from ...schemas import MomentsRunRequest, ToolConversationCreateRequest, WritingRunRequest
 from ...security import dify_user, require_internal_token, require_user_id
 from ...services.style_settings import get_style_prompt
+from ...services.tool_conversations import create, current, is_reset_intent, owned, reset
 from ...services.tool_examples import list_examples
 from ...sse import SSEEmitter
 
@@ -39,6 +41,23 @@ def get_tool_examples(
     session: Session = Depends(get_session),
 ) -> dict[str, list[dict[str, Any]]]:
     return {"items": list_examples(session, kind, enabled_only=True)}
+
+
+@router.get("/{kind}/conversations/current")
+def get_current_conversation(
+    kind: str, raw_user_id: str = Depends(require_user_id), session: Session = Depends(get_session)
+):
+    return current(session, raw_user_id, kind)
+
+
+@router.post("/{kind}/conversations")
+def create_tool_conversation(
+    kind: str,
+    payload: ToolConversationCreateRequest,
+    raw_user_id: str = Depends(require_user_id),
+    session: Session = Depends(get_session),
+):
+    return create(session, raw_user_id, kind, payload.type, payload.output_format)
 
 
 def _workflow_stream(
@@ -67,7 +86,7 @@ def _workflow_stream(
                 task_announced = True
                 cache.set_json(
                     f"ai:tool-task:{task_id}",
-                    {"entry": entry, "user": anonymous_user},
+                    {"entry": entry, "user": anonymous_user, "transport": "workflow"},
                     ttl=600,
                 )
                 yield emit(
@@ -149,6 +168,118 @@ def _workflow_stream(
         cache.delete(f"ai:tool-task:{task_id}")
 
 
+def _chat_stream(
+    *,
+    client: DifyAppClient,
+    row,
+    query: str,
+    inputs: dict[str, Any],
+    anonymous_user: str,
+    request_id: str,
+    entry: str,
+    session: Session,
+):
+    emit = SSEEmitter(request_id)
+    yield emit("request_started")
+    yield emit("status", {"code": "generating", "message": "正在生成内容…"})
+    answer = ""
+    task_id = ""
+    lock_context = cache.lock(f"ai:tool-conversation:{row.user_hash}:{row.kind}", ttl=600)
+    lock_state = lock_context.__enter__()
+    if not lock_state.acquired:
+        lock_context.__exit__(None, None, None)
+        yield emit(
+            "error",
+            {
+                "code": "CONFLICT",
+                "message": "当前会话正在生成，请稍后重试",
+                "request_id": request_id,
+                "retryable": True,
+            },
+        )
+        return
+    try:
+        # The route resolves the ORM row before StreamingResponse starts. A
+        # prior request may have committed the Dify ID in the meantime, so
+        # refresh inside the lock before the first Chatflow call.
+        session.refresh(row)
+        for item in client.stream_chat(
+            query=query,
+            user=anonymous_user,
+            conversation_id=row.dify_conversation_id,
+            inputs=inputs,
+        ):
+            data = item.get("data") or {}
+            task_id = str(item.get("task_id") or data.get("task_id") or task_id)
+            if task_id:
+                cache.set_json(
+                    f"ai:tool-task:{task_id}",
+                    {"entry": entry, "user": anonymous_user, "transport": "chat"},
+                    ttl=600,
+                )
+            event = str(item.get("event") or "")
+            delta = str(data.get("answer") or data.get("text") or item.get("answer") or "")
+            if event in {"message", "agent_message", "text_chunk"} and delta:
+                answer += delta
+                yield emit("answer_delta", {"delta": delta})
+            if event in {"message_end", "message_finished"}:
+                row.dify_conversation_id = str(
+                    data.get("conversation_id")
+                    or item.get("conversation_id")
+                    or row.dify_conversation_id
+                )
+                row.last_active_at = datetime.now(timezone.utc)
+                session.commit()
+        # Dify owns the short-lived conversation memory.  Do not persist
+        # user素材 or generated正文 locally; only keep the opaque Dify ID and
+        # activity timestamp needed for retention and access control.
+        row.last_active_at = datetime.now(timezone.utc)
+        session.commit()
+    except GeneratorExit:
+        if task_id:
+            try:
+                client.stop_chat(task_id, anonymous_user)
+            except Exception:
+                logger.warning("failed to stop Chat after client disconnect")
+            cache.delete(f"ai:tool-task:{task_id}")
+        raise
+    except ServiceError as exc:
+        if task_id:
+            cache.delete(f"ai:tool-task:{task_id}")
+        yield emit(
+            "error",
+            {
+                "code": exc.code,
+                "message": exc.message,
+                "request_id": request_id,
+                "retryable": exc.retryable,
+            },
+        )
+        return
+    finally:
+        lock_context.__exit__(None, None, None)
+    yield emit("message_end", {"request_id": request_id, "task_id": task_id or None})
+    if task_id:
+        cache.delete(f"ai:tool-task:{task_id}")
+
+
+def _reset_stream(request_id: str):
+    emit = SSEEmitter(request_id)
+    yield emit("request_started")
+    yield emit("answer_delta", {"delta": "已开启新会话"})
+    yield emit("message_end", {"request_id": request_id, "task_id": None})
+
+
+@router.post("/{kind}/conversations/{conversation_id}/reset")
+def reset_tool_conversation(
+    kind: str,
+    conversation_id: str,
+    raw_user_id: str = Depends(require_user_id),
+    session: Session = Depends(get_session),
+):
+    return reset(session, raw_user_id, kind, conversation_id)
+
+
 @router.post("/moments/run")
 def run_moments(
     payload: MomentsRunRequest,
@@ -156,18 +287,33 @@ def run_moments(
     raw_user_id: str = Depends(require_user_id),
     session: Session = Depends(get_session),
 ) -> StreamingResponse:
+    if is_reset_intent(payload.inputs.request):
+        reset(session, raw_user_id, "moments", payload.conversation_id)
+        return StreamingResponse(
+            _reset_stream(request.state.request_id),
+            media_type="text/event-stream",
+            headers=SSE_HEADERS,
+        )
+    if not payload.conversation_id:
+        created = create(session, raw_user_id, "moments", payload.inputs.type)
+        payload = payload.model_copy(update={"conversation_id": created["conversation_id"]})
+    row = owned(session, raw_user_id, "moments", payload.conversation_id)
     settings = get_settings()
     client = DifyAppClient(settings.dify_url, settings.dify_moments_app_api_key)
     return StreamingResponse(
-        _workflow_stream(
+        _chat_stream(
             client=client,
+            row=row,
+            query=payload.inputs.request,
             inputs={
                 **payload.inputs.model_dump(),
+                "type": row.tool_type,
                 "admin_output_style": get_style_prompt(session, "moments"),
             },
             anonymous_user=dify_user(raw_user_id),
             request_id=request.state.request_id,
             entry="moments_advisor",
+            session=session,
         ),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
@@ -181,18 +327,40 @@ def run_writing(
     raw_user_id: str = Depends(require_user_id),
     session: Session = Depends(get_session),
 ) -> StreamingResponse:
+    if is_reset_intent(payload.inputs.request):
+        reset(session, raw_user_id, "writing", payload.conversation_id)
+        return StreamingResponse(
+            _reset_stream(request.state.request_id),
+            media_type="text/event-stream",
+            headers=SSE_HEADERS,
+        )
+    if not payload.conversation_id:
+        created = create(
+            session,
+            raw_user_id,
+            "writing",
+            payload.inputs.type,
+            payload.output_format,
+        )
+        payload = payload.model_copy(update={"conversation_id": created["conversation_id"]})
+    row = owned(session, raw_user_id, "writing", payload.conversation_id)
     settings = get_settings()
     client = DifyAppClient(settings.dify_url, settings.dify_writing_app_api_key)
     return StreamingResponse(
-        _workflow_stream(
+        _chat_stream(
             client=client,
+            row=row,
+            query=payload.inputs.request,
             inputs={
                 **payload.inputs.model_dump(),
+                "type": row.tool_type,
+                "format": row.output_format,
                 "admin_output_style": get_style_prompt(session, "writing"),
             },
             anonymous_user=dify_user(raw_user_id),
             request_id=request.state.request_id,
             entry="writing_advisor",
+            session=session,
         ),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
@@ -215,16 +383,17 @@ def stop_tool(
             if mapping.get("entry") == "moments_advisor"
             else settings.dify_writing_app_api_key
         )
-        return DifyAppClient(settings.dify_url, app_key).stop_workflow(
-            task_id,
-            anonymous_user,
-        )
+        client = DifyAppClient(settings.dify_url, app_key)
+        if mapping.get("transport") == "workflow":
+            return client.stop_workflow(task_id, anonymous_user)
+        return client.stop_chat(task_id, anonymous_user)
     for key in (settings.dify_moments_app_api_key, settings.dify_writing_app_api_key):
         try:
-            return DifyAppClient(settings.dify_url, key).stop_workflow(
-                task_id,
-                anonymous_user,
-            )
+            client = DifyAppClient(settings.dify_url, key)
+            try:
+                return client.stop_workflow(task_id, anonymous_user)
+            except Exception:
+                return client.stop_chat(task_id, anonymous_user)
         except Exception:
             continue
     raise ServiceError("DIFY_UNAVAILABLE", "未找到可停止的任务", 404, False)

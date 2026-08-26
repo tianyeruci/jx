@@ -36,10 +36,10 @@ from .sse import SSEEmitter
 from .stream_filter import (
     StreamingExactPrefixDeduper,
     StreamingPublicRedactor,
-    redact_internal_ids,
-    redact_internal_ids_in_value,
     publicize_internal_references,
     publicize_internal_references_in_value,
+    redact_internal_ids,
+    redact_internal_ids_in_value,
 )
 from .timeutil import business_today
 

@@ -20,6 +20,7 @@ MIGRATION_FILES=(
   "h4e5f6a7b8c9_expand_cleaning_batch_status.py"
   "i5f6a7b8c9d0_upload_dedupe_tombstones.py"
   "j6a7b8c9d0e1_course_collections.py"
+  "k7b8c9d0e1f2_tool_conversations.py"
 )
 CORE_IMAGE="jx-now-ai-management:$RELEASE_ID"
 UI_IMAGE="jx-now-ai-management-ui:$RELEASE_ID"
@@ -30,6 +31,16 @@ OCR_AUTOSCALER_WAS_ACTIVE=0
 OCR_AUTOSCALER_INSTALLED=0
 OCR_WORKER_WAS_RUNNING=0
 OCR_DEPLOYMENT_ENABLED="${JX_OCR_DEPLOYMENT_ENABLED:-false}"
+# Once Alembic has committed the new revision, the migration files are part
+# of the database contract.  A later service/ready failure must not remove
+# them while leaving the database at that revision.
+MIGRATIONS_APPLIED=0
+# Revision recorded from the database before this release. If a post-
+# migration failure triggers rollback, the new image must downgrade to this
+# exact revision before the old image is restored; the old image cannot parse
+# a revision introduced by this release.
+PREVIOUS_ALEMBIC_REVISION=""
+MIGRATION_ROLLBACK_OK=1
 
 cd "$APP_DIR"
 test "$(id -u)" -eq 0
@@ -107,13 +118,36 @@ rollback() {
     return
   fi
   printf 'deployment_failed=%s\n' "$status" > "$REPORT_DIR/rollback-status.txt"
-  if test "$SWITCHED" -eq 1; then
+  if test "$MIGRATIONS_APPLIED" -eq 1; then
+    if test -n "$PREVIOUS_ALEMBIC_REVISION"; then
+      printf 'downgrading database to pre-release revision %s before restoring old image\n' \
+        "$PREVIOUS_ALEMBIC_REVISION" >> "$REPORT_DIR/rollback.log"
+      if ! docker compose -f docker-compose.ai.yml run --rm --no-deps -T api \
+        alembic downgrade "$PREVIOUS_ALEMBIC_REVISION" \
+        >> "$REPORT_DIR/rollback.log" 2>&1; then
+        MIGRATION_ROLLBACK_OK=0
+        printf '%s\n' \
+          'database downgrade failed; old image restore is intentionally skipped because it cannot parse the new revision' \
+          >> "$REPORT_DIR/rollback.log"
+      fi
+    else
+      MIGRATION_ROLLBACK_OK=0
+      printf '%s\n' \
+        'pre-release Alembic revision is unknown; old image restore is intentionally skipped after migration' \
+        >> "$REPORT_DIR/rollback.log"
+    fi
+  fi
+  if test "$SWITCHED" -eq 1 && { test "$MIGRATIONS_APPLIED" -eq 0 || test "$MIGRATION_ROLLBACK_OK" -eq 1; }; then
     cp -a "$BACKUP_DIR/env.backup" .env
     unset AI_IMAGE AI_UI_IMAGE AI_OCR_IMAGE BUILD_VERSION
     docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml \
       --profile test up -d --force-recreate \
       api worker model-realtime-worker model-batch-worker publication-worker scheduler test-ui \
       >> "$REPORT_DIR/rollback.log" 2>&1 || true
+  elif test "$SWITCHED" -eq 1; then
+    printf '%s\n' \
+      'skipping old service image restore; database revision is not known to be compatible with it' \
+      >> "$REPORT_DIR/rollback.log"
   fi
   if test -f "$BACKUP_DIR/$WHEEL_FILE.before-release"; then
     cp -a "$BACKUP_DIR/$WHEEL_FILE.before-release" "wheelhouse/$WHEEL_FILE"
@@ -134,13 +168,15 @@ rollback() {
   if test -f "$BACKUP_DIR/docker-compose.ui.yml.before-release"; then
     cp -a "$BACKUP_DIR/docker-compose.ui.yml.before-release" docker-compose.ui.yml
   fi
-  for migration in "${MIGRATION_FILES[@]}"; do
-    if test -f "$BACKUP_DIR/$migration.before-release"; then
-      cp -a "$BACKUP_DIR/$migration.before-release" "migrations/versions/$migration"
-    else
-      rm -f -- "migrations/versions/$migration"
-    fi
-  done
+  if test "$MIGRATIONS_APPLIED" -eq 0; then
+    for migration in "${MIGRATION_FILES[@]}"; do
+      if test -f "$BACKUP_DIR/$migration.before-release"; then
+        cp -a "$BACKUP_DIR/$migration.before-release" "migrations/versions/$migration"
+      else
+        rm -f -- "migrations/versions/$migration"
+      fi
+    done
+  fi
   for unit in jx-ocr-autoscaler.service jx-ocr-autoscaler.timer; do
     if test -f "$BACKUP_DIR/$unit.before-release"; then
       cp -a "$BACKUP_DIR/$unit.before-release" "/etc/systemd/system/$unit"
@@ -342,6 +378,16 @@ case "$APP_RUNTIME_UID:$APP_RUNTIME_GID" in
 esac
 install -d -o "$APP_RUNTIME_UID" -g "$APP_RUNTIME_GID" -m 0700 \
   "$APP_DIR/var/conversion-markdown"
+# Capture the database revision while the pre-release image is still active.
+# Rollback uses this exact value rather than guessing from migration names or
+# assuming that the previous release was one migration behind.
+docker compose -f docker-compose.ai.yml run --rm --no-deps -T api \
+  alembic current \
+  > "$REPORT_DIR/alembic-before-upgrade.txt" 2>&1
+PREVIOUS_ALEMBIC_REVISION="$(grep -Eo '[[:alnum:]_-]{12}' \
+  "$REPORT_DIR/alembic-before-upgrade.txt" | tail -n 1 || true)"
+test -n "$PREVIOUS_ALEMBIC_REVISION"
+printf '%s\n' "$PREVIOUS_ALEMBIC_REVISION" > "$REPORT_DIR/pre-release-alembic-revision.txt"
 upsert_env AI_IMAGE "$CORE_IMAGE"
 upsert_env AI_UI_IMAGE "$UI_IMAGE"
 upsert_env BUILD_VERSION "$RELEASE_ID"
@@ -383,6 +429,7 @@ unset AI_IMAGE AI_UI_IMAGE AI_OCR_IMAGE BUILD_VERSION
 docker compose -f docker-compose.ai.yml run --rm --no-deps -T api \
   alembic upgrade head \
   > "$REPORT_DIR/alembic-upgrade.txt" 2>&1
+MIGRATIONS_APPLIED=1
 docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml \
   --profile test up -d --force-recreate \
   api worker model-realtime-worker model-batch-worker publication-worker scheduler test-ui \

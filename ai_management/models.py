@@ -60,7 +60,9 @@ def utcnow() -> datetime:
 
 class TimestampMixin:
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
 
 class BusinessProfile(Base, TimestampMixin):
@@ -84,7 +86,9 @@ class BusinessConversation(Base, TimestampMixin):
     summary: Mapped[str] = mapped_column(Text, default="")
     summary_through_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     summary_gap: Mapped[bool] = mapped_column(Boolean, default=False)
-    last_active_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    last_active_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
 
     messages: Mapped[list["BusinessMessage"]] = relationship(
         back_populates="conversation", cascade="all, delete-orphan"
@@ -96,7 +100,9 @@ class BusinessConversation(Base, TimestampMixin):
 
 class BusinessConversationSegment(Base, TimestampMixin):
     __tablename__ = "business_conversation_segment"
-    __table_args__ = (UniqueConstraint("conversation_id", "segment_date", name="uq_conversation_segment_date"),)
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "segment_date", name="uq_conversation_segment_date"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     conversation_id: Mapped[str] = mapped_column(
@@ -127,7 +133,9 @@ class BusinessMessage(Base, TimestampMixin):
         String(36), ForeignKey("business_conversation.id", ondelete="CASCADE"), index=True
     )
     segment_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("business_conversation_segment.id", ondelete="SET NULL"), nullable=True
+        String(36),
+        ForeignKey("business_conversation_segment.id", ondelete="SET NULL"),
+        nullable=True,
     )
     role: Mapped[str] = mapped_column(String(16))
     content: Mapped[str] = mapped_column(Text, default="")
@@ -252,9 +260,7 @@ class CourseDirection(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-    review_status: Mapped[str] = mapped_column(
-        String(32), default="approved", index=True
-    )
+    review_status: Mapped[str] = mapped_column(String(32), default="approved", index=True)
     approved_by: Mapped[str] = mapped_column(String(100), default="admin")
 
 
@@ -308,14 +314,20 @@ class CleaningFile(Base, TimestampMixin):
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     replace_document_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     outcome: Mapped[str] = mapped_column(String(32), default="pending", index=True)
-    source_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    source_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    source_deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Normalized administrative filename used for upload-time duplicate
     # protection.  It is deliberately local-only and never sent to Dify.
     source_name_key: Mapped[str | None] = mapped_column(String(500), nullable=True, index=True)
     # Set only after an explicit source-level delete has completed (or been
     # tombstoned for retry), allowing a deliberate re-upload of the same name.
-    dedupe_released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dedupe_released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     batch: Mapped[CleaningBatch] = relationship(back_populates="files")
     documents: Mapped[list["CleaningDocument"]] = relationship(
@@ -354,7 +366,9 @@ class CleaningDocument(Base, TimestampMixin):
     retryable: Mapped[bool] = mapped_column(Boolean, default=False)
     remote_parent_count: Mapped[int] = mapped_column(Integer, default=0)
     remote_child_count: Mapped[int] = mapped_column(Integer, default=0)
-    remote_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    remote_deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     shard_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("dify_publication_shard.id", ondelete="SET NULL"),
@@ -398,12 +412,8 @@ class ModelCleaningTask(Base, TimestampMixin):
     price_effective_date: Mapped[str] = mapped_column(String(32), default="")
     price_valid_until: Mapped[str] = mapped_column(String(32), default="")
     approval_fingerprint: Mapped[str] = mapped_column(String(64), default="")
-    approved_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    provider_batch_id: Mapped[str | None] = mapped_column(
-        String(100), nullable=True, index=True
-    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    provider_batch_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     provider_batch_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     provider_input_file_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     provider_output_file_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
@@ -421,9 +431,7 @@ class DifyPublicationShard(Base, TimestampMixin):
     __tablename__ = "dify_publication_shard"
     __table_args__ = (
         UniqueConstraint("file_id", "shard_index", name="uq_dify_shard_file_index"),
-        UniqueConstraint(
-            "file_id", "content_sha256", name="uq_dify_shard_file_content"
-        ),
+        UniqueConstraint("file_id", "content_sha256", name="uq_dify_shard_file_content"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -437,20 +445,18 @@ class DifyPublicationShard(Base, TimestampMixin):
     content_sha256: Mapped[str] = mapped_column(String(64))
     markdown: Mapped[str] = mapped_column(Text)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    dify_document_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True, index=True
-    )
+    dify_document_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     dify_batch_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    remote_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    remote_deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     remote_parent_count: Mapped[int] = mapped_column(Integer, default=0)
     remote_child_count: Mapped[int] = mapped_column(Integer, default=0)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str] = mapped_column(Text, default="")
 
     file: Mapped[CleaningFile] = relationship(back_populates="publication_shards")
-    documents: Mapped[list[CleaningDocument]] = relationship(
-        back_populates="publication_shard"
-    )
+    documents: Mapped[list[CleaningDocument]] = relationship(back_populates="publication_shard")
 
 
 class ExternalDeletionTask(Base, TimestampMixin):
@@ -461,8 +467,42 @@ class ExternalDeletionTask(Base, TimestampMixin):
     external_id: Mapped[str] = mapped_column(String(100), index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
-    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
     last_error: Mapped[str] = mapped_column(Text, default="")
+
+
+class ToolConversation(Base, TimestampMixin):
+    __tablename__ = "tool_conversation"
+    __table_args__ = (UniqueConstraint("user_hash", "kind", name="uq_tool_conversation_user_kind"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_hash: Mapped[str] = mapped_column(String(64), index=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    tool_type: Mapped[str] = mapped_column(String(32))
+    output_format: Mapped[str] = mapped_column(String(64), default="article")
+    dify_conversation_id: Mapped[str] = mapped_column(String(128), default="")
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    last_active_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    messages: Mapped[list["ToolMessage"]] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan"
+    )
+
+
+class ToolMessage(Base, TimestampMixin):
+    __tablename__ = "tool_message"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tool_conversation.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(16))
+    content: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16), default="completed")
+    dify_task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    conversation: Mapped[ToolConversation] = relationship(back_populates="messages")
 
 
 class SystemEventLog(Base):

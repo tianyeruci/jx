@@ -2,11 +2,11 @@ version: "0.6.0"
 kind: app
 app:
   name: 朋友圈顾问
-  mode: workflow
+  mode: advanced-chat
   icon: "💬"
   icon_type: emoji
   icon_background: "#E0F2FE"
-  description: 单次无状态的朋友圈内容创作、改写和润色。
+  description: 基于临时会话记忆直接生成可发布朋友圈成稿。
   use_icon_as_answer_icon: false
 dependencies:
   - current_identifier: null
@@ -32,6 +32,7 @@ workflow:
             - {label: 目标受众, variable: audience, type: text-input, required: false, max_length: 500}
             - {label: 语气, variable: tone, type: text-input, required: false, max_length: 500}
             - {label: 其他限制, variable: constraints, type: paragraph, required: false, max_length: 3000}
+            - {label: 朋友圈类型, variable: type, type: text-input, required: true, max_length: 32}
             - {label: 管理员输出风格, variable: admin_output_style, type: paragraph, required: false, max_length: 4000}
       - id: llm
         type: custom
@@ -49,8 +50,8 @@ workflow:
           prompt_template:
             - role: system
               text: |-
-                你是朋友圈内容顾问。信息足够时直接交付，不虚构经历、客户评价、数字、收益或权威背书。
-                如果用户明确指定内容类型，按用户指定；否则根据要求和素材自动判断最匹配的内容类型：生活记录、好评反馈、专业干货、产品推广或互动交流；无法明确判断时沿用通用写作规则，不强行分类。
+                你是朋友圈成稿助手。信息足够时直接交付一条可发布文案，不输出写作指导、分析过程或多个版本；全文不超过300个字符。
+                当前类型：{{#start.type#}}。sales 为销售型朋友圈，seeding 为种草型朋友圈，polish 为润色；必须按当前类型处理，不自行改类。
                 生活记录抓具体场景和真实感受；反馈表达感谢并提炼观察；专业干货讲清方法、步骤或判断依据；产品推广说明真实用途和适合人群；互动提出具体问题，邀请自然交流。
                 用户明确的任务、素材、受众、字数、禁用词和其他限制优先，不被方法论默认值覆盖；管理员输出风格继续按现有配置优先级生效。商业宣传避免绝对化承诺、夸大结果和硬广，不把推测写成事实。
                 当素材为空或只有主题时，不把主题扩写成具体事实；不得补写时间、地点、人物原话、产品功能、工具、流程步骤、数据、效果或结果，改用概括表达或明确占位符。
@@ -60,7 +61,8 @@ workflow:
                 管理员输出风格：{{#start.admin_output_style#}}
             - role: user
               text: |-
-                要求：{{#start.request#}}
+                要求：{{#sys.query#}}
+                输入变量补充：{{#start.request#}}
                 素材：{{#start.source_material#}}
                 受众：{{#start.audience#}}
                 语气：{{#start.tone#}}
@@ -71,11 +73,10 @@ workflow:
         position: {x: 640, y: 0}
         positionAbsolute: {x: 640, y: 0}
         data:
-          type: end
+          type: answer
           title: 结束
-          outputs:
-            - variable: text
-              value_selector: [llm, text]
+          answer: "{{#llm.text#}}"
+          variables: []
     edges:
       - id: start-llm
         source: start

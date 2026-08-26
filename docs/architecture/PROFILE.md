@@ -18,8 +18,8 @@
 
 ## 3. Complexity Level
 - Level: L2
-- Why this is the minimum sufficient level: existing strategy registry, worker pipeline, Dify adapters, FastAPI routers and `AdminSetting` JSON configuration already provide the required seams; the activity feature and tool-examples catalog need focused modules, not a new service or bounded context.
-- Rejected ceremony: no new repository/service/DI layer, no query-time activity database, no separate activity API, no new tool-examples database table, and no standalone cleaner runtime dependency.
+- Why this is the minimum sufficient level: existing strategy registry, worker pipeline, Dify adapters, FastAPI routers, the focused tool-session service and `AdminSetting` JSON configuration provide the required seams; no new service or bounded context is needed.
+- Rejected ceremony: no new repository/service/DI layer, no query-time activity database, no separate activity API, no standalone cleaner runtime dependency, and no separate tool-session service process.
 - Upgrade triggers: activity query volume or result cardinality exceeds the verified Dify retrieval capacity, or activity lifecycle needs transactional operations beyond document publication.
 
 ## 4. Module Topology and Ownership
@@ -48,8 +48,8 @@ Only describe boundaries that actually exist.
 - UI/transport: FastAPI routers expose the internal tool-examples catalog API; the Streamlit test/admin UI consumes it over HTTP; no public internet API or new external service.
 - application/orchestration: existing FastAPI/Celery cleaning pipeline.
 - domain policy: activity parsing, source-status normalization, business status mapping and metadata allow-list.
-- persistence/integration: existing cleaning rows, Dify Knowledge API and `AdminSetting` JSON for tool-examples; no new database schema or migration.
-- cross-module communication: `CleanedDocument` metadata and publication records; Chatflow receives only Dify retrieval output.
+- persistence/integration: existing cleaning rows, focused `ToolConversation`/`ToolMessage` tables for temporary tool-session state, Dify Knowledge/Chatflow APIs and `AdminSetting` JSON for optional admin CRUD.
+- cross-module communication: `CleanedDocument` metadata and publication records; tool Chatflows receive typed Start inputs and `sys.query`, while the service owns opaque session mapping and retention.
 
 ## 7. Shared Code Policy
 - Stable shared capabilities: `CleanedDocument`, strategy registry, Markdown/DOCX loading, chunking, Dify metadata projection and publication compensation.
@@ -64,8 +64,8 @@ Only describe boundaries that actually exist.
 ## 9. Data / Consistency
 - Persistence ownership: existing cleaning tables and Dify document IDs.
 - Transaction boundaries: local cleaning state is committed before/around external publication according to the existing compensating workflow; Dify metadata is verified before success.
-- Migration rules: no database migration; new Dify metadata fields are created idempotently and type conflicts fail closed.
-- Tool-examples configuration is stored transactionally in `AdminSetting` under a kind-scoped key; Dify DSL variables and workflows are unchanged.
+- Migration rules: tool-session tables are added only through the Alembic migration; old tool-example settings are deleted by exact key during that migration; new Dify metadata fields remain idempotent and type conflicts fail closed.
+- Tool-examples configuration remains transactionally stored in `AdminSetting` under a kind-scoped key; moments/writing use advanced-chat DSLs with typed Start variables and Dify `conversation_id`, while business DSL and tables remain unchanged.
 - Concurrency/idempotency: one activity document per cleaned output; same-name updates replace the previous Dify document through existing publication replacement; source deletion remains explicit.
 
 ## 10. Errors / Observability / Sensitive Data
@@ -75,8 +75,8 @@ Only describe boundaries that actually exist.
 - Logs and reports contain counts, codes and hashes only; never API keys, raw activity正文 or protected identifiers.
 
 ## 11. Test Architecture
-- Unit seam: activity parser, status/metadata projection, Chatflow evidence formatter and tool-examples catalog service.
-- Integration seam: existing cleaning worker with mocked Dify Knowledge API and strategy discovery/upload contract; FastAPI tool-example CRUD and auth contract.
+- Unit seam: activity parser, status/metadata projection, Chatflow evidence formatter, tool-examples catalog service and tool-session service.
+- Integration seam: existing cleaning worker with mocked Dify Knowledge API and strategy discovery/upload contract; FastAPI tool-session/CRUD and auth contracts with mocked Dify Chatflow SSE.
 - Contract/system/e2e: jx isolated Dify import/publish/run, followed by formal Chatflow release and test-page full chain.
 - Test data: synthetic status/link cases plus `Other/活动.md` only in isolated validation; sample is not seeded into the formal Dataset.
 
@@ -109,4 +109,4 @@ Point to 2–4 modules new code should emulate.
 
 ## 15. Architecture Decisions / ADR links
 
-- Feature contracts: `docs/features/recent-activity/SPEC.md` and `IMPLEMENTATION.md`; `docs/features/tool-examples/SPEC.md` and `IMPLEMENTATION.md`.
+- Feature contracts: `docs/features/recent-activity/SPEC.md` and `IMPLEMENTATION.md`; `docs/features/tool-examples/SPEC.md` and `IMPLEMENTATION.md`; `docs/features/tool-conversation-generation/SPEC.md` and `IMPLEMENTATION.md`.

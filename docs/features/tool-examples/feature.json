@@ -68,7 +68,7 @@
     {
       "id": "examples-api",
       "title": "用户读取与管理员 CRUD API",
-      "status": "done",
+      "status": "in_progress",
       "paths": [
         "ai_management/api/routers/tools.py"
       ],
@@ -79,7 +79,7 @@
         "AC-005"
       ],
       "optional": false,
-      "updated_at": "2026-08-17T08:55:50+08:00"
+      "updated_at": "2026-08-26T14:28:10+08:00"
     },
     {
       "id": "examples-admin-api",
@@ -149,7 +149,7 @@
         "AC-006"
       ],
       "optional": false,
-      "updated_at": "2026-08-24T12:54:01+08:00",
+      "updated_at": "2026-08-26T14:28:10+08:00",
       "last_change_summary": "新增 feedback、knowledge、interaction 三条朋友圈案例，保留旧案例和排序；通过本地案例回归及 jx 测试页五类真实生成回归后，按精确 Dify Workflow 运行记录完成测试数据清理。",
       "last_changed_at": "2026-08-24T21:34:06+08:00"
     }
@@ -179,6 +179,6 @@
     "changelog_fingerprint": "b459c1e69b6eb7dc0fc7bcac3c16757fd0bad0ec48750acc609786f73461f35d"
   },
   "created_at": "2026-08-17T02:18:13+08:00",
-  "updated_at": "2026-08-24T21:43:13+08:00",
+  "updated_at": "2026-08-26T14:28:10+08:00",
   "last_abandon_reason": "独立复核修正完成，重新建立以当前修正工作树为基线的治理周期"
 }

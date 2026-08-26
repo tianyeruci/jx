@@ -437,6 +437,20 @@ def test_formal_release_restores_preexisting_ocr_worker_on_early_failure():
     assert 'docker compose -f docker-compose.ai.yml up -d ai-ocr-worker' in restore
 
 
+def test_formal_release_downgrades_migrations_before_old_image_rollback():
+    release = _source("scripts/jx_deploy_release.sh")
+    rollback = release[release.index("rollback()") : release.index("trap rollback EXIT")]
+
+    assert 'PREVIOUS_ALEMBIC_REVISION=""' in release
+    assert 'alembic-before-upgrade.txt' in release
+    assert 'PREVIOUS_ALEMBIC_REVISION="$(grep -Eo' in release
+    assert release.index('alembic-before-upgrade.txt') < release.index('upsert_env AI_IMAGE "$CORE_IMAGE"')
+    assert 'if test "$MIGRATIONS_APPLIED" -eq 1; then' in rollback
+    assert 'alembic downgrade "$PREVIOUS_ALEMBIC_REVISION"' in rollback
+    assert 'old image restore is intentionally skipped' in rollback
+    assert 'test "$MIGRATIONS_APPLIED" -eq 0 || test "$MIGRATION_ROLLBACK_OK" -eq 1' in rollback
+
+
 def test_conversion_markdown_is_configurable_persistent_and_expiring():
     config = _source("ai_management/config.py")
     compose = _source("docker-compose.ai.yml")

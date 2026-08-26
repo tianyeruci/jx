@@ -47,6 +47,8 @@ EXPECTED_TABLES = {
     "learning_route_progress",
     "model_cleaning_task",
     "system_event_log",
+    "tool_conversation",
+    "tool_message",
 }
 
 REDIS_PATTERNS = (

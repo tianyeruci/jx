@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -27,7 +25,6 @@ from ...services.tool_examples import (
     create_example,
     delete_example,
     list_examples,
-    restore_defaults,
     update_example,
 )
 
@@ -70,13 +67,6 @@ def admin_delete_tool_example(
 ) -> dict[str, bool]:
     delete_example(session, kind, example_id)
     return {"deleted": True}
-
-
-@router.post("/tools/{kind}/examples/restore-defaults")
-def admin_restore_tool_examples(
-    kind: str, session: Session = Depends(get_session)
-) -> dict[str, list[dict[str, Any]]]:
-    return {"items": restore_defaults(session, kind)}
 
 
 @router.get("/settings/retention")

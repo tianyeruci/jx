@@ -577,39 +577,77 @@ def _tool_examples(user_id: str, kind: str) -> list[dict[str, Any]]:
 
 def tool_tab(user_id: str, kind: str) -> None:
     labels = {"moments": "朋友圈顾问", "writing": "日常写作"}
+    type_options = {
+        "moments": [("sales", "销售型朋友圈"), ("seeding", "种草型朋友圈"), ("polish", "润色")],
+        "writing": [("polish", "文章润色"), ("expand", "文章扩充")],
+    }
     st.subheader(labels[kind])
     stop_key = f"{kind}_stop_id"
     if stop_key not in st.session_state:
         st.session_state[stop_key] = ""
-    examples = _tool_examples(user_id, kind)
-    selected_request = None
-    if examples:
-        st.markdown("#### 可直接使用的案例")
-        columns = st.columns(min(3, len(examples)))
-        for index, example in enumerate(examples):
-            with columns[index % len(columns)]:
-                st.markdown(f"**{example.get('title', '未命名')}**")
-                st.caption(str(example.get("description") or ""))
-                st.code(str(example.get("request") or ""), language="text")
-                if st.button("使用此案例", key=f"{kind}_example_{example.get('id')}"):
-                    selected_request = str(example.get("request") or "")
-        if selected_request is not None:
-            st.session_state[f"{kind}_input"] = selected_request
-    else:
-        st.caption("当前没有启用案例，仍可手动输入。")
+    try:
+        current = api_json(
+            "GET", f"/internal/v1/tools/{kind}/conversations/current", user_id=user_id
+        )
+    except httpx.HTTPError as exc:
+        st.error(f"会话读取失败：{exc}")
+        return
+    conversation_id = current.get("conversation_id") if isinstance(current, dict) else None
+    if not conversation_id:
+        labels_for_type = [label for _, label in type_options[kind]]
+        selected_label = st.selectbox("请选择创作类型", labels_for_type, key=f"{kind}_type_select")
+        selected_type = dict((label, value) for value, label in type_options[kind])[selected_label]
+        output_format = "article"
+        if kind == "writing":
+            output_format = st.selectbox(
+                "成稿格式",
+                ["article", "wechat_public_account"],
+                format_func=lambda x: "文章" if x == "article" else "公众号",
+            )
+        if st.button("开始新会话", key=f"{kind}_create_conversation"):
+            try:
+                api_json(
+                    "POST",
+                    f"/internal/v1/tools/{kind}/conversations",
+                    user_id=user_id,
+                    json={"type": selected_type, "output_format": output_format},
+                )
+                st.rerun()
+            except httpx.HTTPError as exc:
+                st.error(str(exc))
+        st.info("请选择类型后开始。")
+        return
+    st.caption(f"当前类型：{current.get('type')} · {current.get('guide') or ''}")
+    if st.button("开启新会话", key=f"{kind}_reset_conversation"):
+        try:
+            api_json(
+                "POST",
+                f"/internal/v1/tools/{kind}/conversations/{conversation_id}/reset",
+                user_id=user_id,
+            )
+            st.rerun()
+        except httpx.HTTPError as exc:
+            st.error(str(exc))
     prompt = st.text_area(
         "输入",
-        "请帮我写一段介绍本周学习收获的内容。",
+        "",
         key=f"{kind}_input",
     )
-    run_requested = selected_request is not None or st.button("运行", key=f"{kind}_run")
+    run_requested = st.button("生成成稿", key=f"{kind}_run")
     if run_requested:
         output = st.empty()
         started = time.perf_counter()
         try:
             result = stream_post(
                 f"/internal/v1/tools/{kind}/run",
-                {"inputs": {"request": prompt}},
+                {
+                    "conversation_id": conversation_id,
+                    "inputs": {
+                        "request": prompt,
+                        "type": current.get("type"),
+                        **({"format": current.get("output_format")} if kind == "writing" else {}),
+                    },
+                },
                 user_id,
                 output,
             )
@@ -739,14 +777,6 @@ def admin_tool_examples_panel() -> None:
                 st.rerun()
             except httpx.HTTPError as exc:
                 st.error(str(exc))
-    if st.button("恢复缺失默认案例", key=f"admin_example_restore_{kind}"):
-        try:
-            st.session_state[f"admin_examples_{kind}"] = api_json(
-                "POST", f"/internal/v1/admin/tools/{kind}/examples/restore-defaults", admin=True
-            )
-            st.rerun()
-        except httpx.HTTPError as exc:
-            st.error(str(exc))
 
 
 def cleaning_tab() -> None:

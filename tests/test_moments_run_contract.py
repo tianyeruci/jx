@@ -23,18 +23,19 @@ def test_request_only_moments_run_keeps_existing_sse_contract(service_db, monkey
         def __init__(self, *args):
             type(self).init_args = args
 
-        def stream_workflow(self, *, inputs, user):
-            self.calls.append({"inputs": inputs, "user": user})
-            yield {"event": "workflow_started", "task_id": "task-contract", "data": {}}
+        def stream_chat(self, *, query, user, conversation_id, inputs):
+            self.calls.append(
+                {"query": query, "user": user, "conversation_id": conversation_id, "inputs": inputs}
+            )
             yield {
-                "event": "text_chunk",
+                "event": "message",
                 "task_id": "task-contract",
-                "data": {"text": "概括性朋友圈内容"},
+                "data": {"answer": "概括性朋友圈内容"},
             }
             yield {
-                "event": "workflow_finished",
+                "event": "message_end",
                 "task_id": "task-contract",
-                "data": {"outputs": {"text": "概括性朋友圈内容"}},
+                "data": {"conversation_id": "dify-contract"},
             }
 
     monkeypatch.setattr(tools, "DifyAppClient", FakeDifyClient)
@@ -52,7 +53,6 @@ def test_request_only_moments_run_keeps_existing_sse_contract(service_db, monkey
     assert event_names == [
         "event: request_started",
         "event: status",
-        "event: status",
         "event: answer_delta",
         "event: message_end",
     ]
@@ -64,16 +64,17 @@ def test_request_only_moments_run_keeps_existing_sse_contract(service_db, monkey
         settings.dify_url,
         settings.dify_moments_app_api_key,
     )
-    assert FakeDifyClient.calls[0] == {
-        "inputs": {
-            "request": "围绕一个主题写一条朋友圈",
-            "source_material": "",
-            "audience": "",
-            "tone": "",
-            "constraints": "",
-            "admin_output_style": expected_style,
-        },
-        "user": dify_user("moments-contract-test"),
+    assert FakeDifyClient.calls[0]["query"] == "围绕一个主题写一条朋友圈"
+    assert FakeDifyClient.calls[0]["conversation_id"] == ""
+    assert FakeDifyClient.calls[0]["user"] == dify_user("moments-contract-test")
+    assert FakeDifyClient.calls[0]["inputs"] == {
+        "request": "围绕一个主题写一条朋友圈",
+        "source_material": "",
+        "audience": "",
+        "tone": "",
+        "constraints": "",
+        "type": "sales",
+        "admin_output_style": expected_style,
     }
 
 
@@ -87,9 +88,11 @@ def test_moments_run_preserves_supplied_source_material(service_db, monkeypatch)
         def __init__(self, *_args):
             pass
 
-        def stream_workflow(self, *, inputs, user):
-            self.calls.append({"inputs": inputs, "user": user})
-            yield {"event": "workflow_finished", "task_id": "task-source", "data": {}}
+        def stream_chat(self, *, query, user, conversation_id, inputs):
+            self.calls.append(
+                {"query": query, "user": user, "conversation_id": conversation_id, "inputs": inputs}
+            )
+            yield {"event": "message_end", "task_id": "task-source", "data": {}}
 
     monkeypatch.setattr(tools, "DifyAppClient", FakeDifyClient)
     with TestClient(app) as client:
@@ -109,7 +112,6 @@ def test_moments_run_preserves_supplied_source_material(service_db, monkeypatch)
     assert [line for line in response.text.splitlines() if line.startswith("event:")] == [
         "event: request_started",
         "event: status",
-        "event: status",
         "event: message_end",
     ]
     assert len(FakeDifyClient.calls) == 1
@@ -121,5 +123,6 @@ def test_moments_run_preserves_supplied_source_material(service_db, monkeypatch)
         "audience": "",
         "tone": "",
         "constraints": "",
+        "type": "sales",
         "admin_output_style": expected_style,
     }

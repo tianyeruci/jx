@@ -95,6 +95,11 @@ DEFAULT_EXAMPLES: dict[str, list[dict[str, Any]]] = {
     ],
 }
 
+# Legacy examples are intentionally no longer exposed or restored.  The
+# constant remains as a compatibility symbol for imports from older tooling,
+# but its catalog is empty after the one-time data cleanup.
+DEFAULT_EXAMPLES = {"moments": [], "writing": []}
+
 
 def validate_kind(kind: str) -> str:
     if kind not in TOOL_KINDS:
@@ -130,7 +135,7 @@ def _get_setting(session: Session, kind: str) -> AdminSetting | None:
 def _stored_items(session: Session, kind: str) -> tuple[list[dict[str, Any]], bool]:
     row = _get_setting(session, kind)
     if row is None:
-        return _copy_items(DEFAULT_EXAMPLES[kind]), False
+        return [], False
     value = row.value if isinstance(row.value, dict) else {}
     items = value.get("items")
     return (_copy_items(items) if isinstance(items, list) else []), True
@@ -278,12 +283,3 @@ def delete_example(session: Session, kind: str, example_id: str) -> None:
     if len(remaining) == len(items):
         raise ServiceError("NOT_FOUND", "案例不存在", 404, False)
     _save(session, kind, remaining)
-
-
-def restore_defaults(session: Session, kind: str) -> list[dict[str, Any]]:
-    validate_kind(kind)
-    items, _ = _stored_items(session, kind)
-    ids = {str(item.get("id")) for item in items}
-    items.extend(_copy_items([item for item in DEFAULT_EXAMPLES[kind] if item["id"] not in ids]))
-    _save(session, kind, items)
-    return _sort(items)

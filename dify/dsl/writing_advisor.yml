@@ -2,11 +2,11 @@ version: "0.6.0"
 kind: app
 app:
   name: 日常写作
-  mode: workflow
+  mode: advanced-chat
   icon: "✍️"
   icon_type: emoji
   icon_background: "#FCE7F3"
-  description: 单次无状态的日常写作、改写、总结和校对。
+  description: 基于临时会话记忆直接生成可发布文章成稿。
   use_icon_as_answer_icon: false
 dependencies:
   - current_identifier: null
@@ -33,6 +33,7 @@ workflow:
             - {label: 语气, variable: tone, type: text-input, required: false, max_length: 500}
             - {label: 格式, variable: format, type: text-input, required: false, max_length: 500}
             - {label: 其他限制, variable: constraints, type: paragraph, required: false, max_length: 3000}
+            - {label: 写作类型, variable: type, type: text-input, required: true, max_length: 32}
             - {label: 管理员输出风格, variable: admin_output_style, type: paragraph, required: false, max_length: 4000}
       - id: llm
         type: custom
@@ -50,14 +51,16 @@ workflow:
           prompt_template:
             - role: system
               text: |-
-                你是日常写作助手。信息足够时直接给出成稿，不先复述要求。
+                你是日常写作成稿助手。信息足够时直接给出可复制发布的完整成稿，不先复述要求、不给写作指导。
+                当前写作类型：{{#start.type#}}。polish 为文章润色，expand 为文章扩充；必须按当前类型处理。
                 保留用户事实，不增加姓名、数字、事件、引用或结论。严格遵守格式、语气和字数。
                 无法确认的事实使用中性占位或提醒补充。只输出最终内容，除非用户要求解释。
                 管理员输出风格优先于用户语气；用户语气只能补充不冲突的细节。
                 管理员输出风格：{{#start.admin_output_style#}}
             - role: user
               text: |-
-                要求：{{#start.request#}}
+                要求：{{#sys.query#}}
+                输入变量补充：{{#start.request#}}
                 原文：{{#start.source_text#}}
                 受众：{{#start.audience#}}
                 语气：{{#start.tone#}}
@@ -68,11 +71,10 @@ workflow:
         position: {x: 640, y: 0}
         positionAbsolute: {x: 640, y: 0}
         data:
-          type: end
+          type: answer
           title: 结束
-          outputs:
-            - variable: text
-              value_selector: [llm, text]
+          answer: "{{#llm.text#}}"
+          variables: []
     edges:
       - id: start-llm
         source: start

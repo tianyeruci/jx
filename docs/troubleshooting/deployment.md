@@ -359,4 +359,16 @@
 - 验证：2026-08-19 日志清理后第一次恢复遗漏 profile，容器短暂退出；补充 `--profile test` 后 Core/UI/OCR/Worker/Scheduler 与两个 methodology Worker 均为 `running`，容器内 ready 为 `ready`。
 - 预防：停服脚本把“当前运行服务快照、profile、恢复结果、容器内健康检查”作为一个原子恢复门禁；使用 merged compose 时 profile 与服务名必须来自同一份快照。
 - 证据：[20260819 日志清理报告](../../var/reports/20260819-clear-system-event-logs/README.md)。
+
+## DEPLOY-030：迁移提交后的旧镜像回滚必须先降级数据库
+
+- 适用：完整 release 在 `alembic upgrade head` 成功后，Compose/ready 门禁失败并触发 `scripts/jx_deploy_release.sh` 回滚。
+- 触发：旧回滚镜像由 `Dockerfile.offline` 静态复制迁移目录；数据库已进入新 revision 时，旧镜像不认识该 revision。仅保留宿主机迁移文件不能修复已经构建的旧镜像，下一次基线的 `alembic current` 也可能被阻断。
+- 根因：应用镜像和数据库迁移版本不是同一可回滚对象；前向迁移提交后直接恢复旧 `.env`/旧镜像，会形成“数据库前进、应用代码回退”的不兼容组合。
+- 解决：发布前用当时运行的镜像记录实际 Alembic revision；迁移成功后若回滚，保持新 Compose/新镜像作为 migration runner，先执行 `alembic downgrade <pre-release-revision>`，成功后才恢复旧 `.env` 和服务。降级失败或前置 revision 未知时跳过旧镜像恢复并写入 rollback 日志，避免制造不可解析状态。
+- 非解决：只恢复宿主机 `migrations/versions`、猜测“上一版减一”、在旧容器里执行新 revision 的 downgrade、或忽略 downgrade 失败后继续启动旧镜像。
+- 验证：`bash -n scripts/jx_deploy_release.sh` 与 `tests/test_cleaning_release_contract.py` 通过；独立复核确认脚本包含 revision 捕获、精确 downgrade 和旧镜像恢复门控。正常发布 `toolconv-20260826-135020` 的数据库 head 为 `m9d0e1f2g3h4`，ready 与服务同源检查通过，未触发回滚。
+- 预防：每次完整 release 报告同时保存 `alembic-before-upgrade.txt`、`pre-release-alembic-revision.txt` 与 `alembic-current.txt`；需要做失败回滚演练时必须验证“回滚后旧容器 `alembic current`”和“下一次发布基线”均可解析当前 revision。
+- 证据：`scripts/jx_deploy_release.sh`、`tests/test_cleaning_release_contract.py`、`var/reports/tool-conversation-initial-20260826/issues.jsonl`、jx 发布报告 `/opt/ai-management/var/reports/v2/toolconv-20260826-135020-deploy`。
+- 最后验证：2026-08-26。
 - 最后验证：2026-08-19。

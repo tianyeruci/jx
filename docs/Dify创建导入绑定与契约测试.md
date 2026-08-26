@@ -41,15 +41,15 @@
 
 ## 当前功能修改索引（2026-08-16，优先于历史记录）
 
-以下结论以当前使用的商业顾问 DSL `dify/商业顾问（当前使用版本）.yml`、两个 Workflow DSL 和 jx-now 适配代码为准。
+以下结论以当前使用的商业顾问 DSL `dify/商业顾问（当前使用版本）.yml`、两个 Chatflow DSL 和 jx-now 适配代码为准。
 
 | 功能 | 当前来源 | 修改位置与注意事项 |
 | --- | --- | --- |
 | 商业顾问打开页面的推荐问题 | Dify App 的 `suggested_questions` 参数，经 `entry.py` 的 `/parameters` 读取 | 推荐问题应聚焦经营咨询或咨询案例，不得引导课程推荐或学习路线。问题文案在 Dify App 参数或 `dify/商业顾问（当前使用版本）.yml` 修改；改本地 DSL 后仍须导入、保存、发布并重新核对 `/parameters`，不能只改本地文件后宣称线上已更新。 |
 | 商业顾问回答后的推荐问题 | Dify 的 `suggested_questions_after_answer.enabled` 开关和 Dify 消息上下文 | 当前 DSL 只打开了该开关；jx-now 没有把 Dify 的回答后推荐问题接口转发给小程序/测试页。因此要改变生成逻辑，应在 Dify App 的回答后推荐问题能力中修改并单独验收，不能只改 `suggested_questions`；如要让本项目展示，还需要新增受控 API/SSE 字段，这不在本次计划内。 |
 | 商业顾问检索与回答 | `general_knowledge`、`case_knowledge`、活动检索节点、结果聚合、`combined_response_general` | 普通、案例和活动检索都绑定同一 `general` Dataset，三条路径互斥；普通检索排除 `consulting_case`/`event`，案例只取 `consulting_case`，活动只取 `event` 并按动态状态/时间条件过滤；聚合、证据压缩后只调用一个主 LLM。不得恢复课程检索、推荐决策 JSON、课程卡片或课程/路线 SSE。 |
-| 朋友圈顾问、日常写作界面引导语 | Dify App 的 `opening_statement` 参数，经 `entry.py` 的 `/parameters` 读取 | `dify/dsl/moments_advisor.yml` 和 `dify/dsl/writing_advisor.yml` 是 Workflow DSL，当前只定义 Start→LLM→End 图，没有可供 `entry-config` 读取的 `opening_statement`；用户看到的引导语应在对应 Dify App 的界面/参数设置中修改并发布。不要把引导语只写进 LLM Prompt，否则不会成为入口配置。 |
-| 朋友圈顾问、日常写作输出 | 两个 Workflow DSL 的 LLM Prompt | 朋友圈修改 `dify/dsl/moments_advisor.yml` 的 `llm` 节点；日常写作修改 `dify/dsl/writing_advisor.yml` 的 `llm` 节点。当前 Start→LLM→End 结构已经足够，不需要为界面引导语或商业顾问的分段回答增加节点；修改 DSL 后需重新导入、保存、发布并分别验收。案例目录是 jx 运行时 `AdminSetting` 配置，完整 `request` 作为既有输入传入，不复制到 DSL；只增删改案例时不需要重新发布 Dify。 |
+| 朋友圈顾问、日常写作界面引导语 | jx 工具会话接口和测试页 | 两个工具首次进入由 jx 返回类型菜单，选型后返回固定引导语；不再展示旧案例或依赖 `opening_statement`。 |
+| 朋友圈顾问、日常写作输出 | 两个 Chatflow DSL 的 LLM Prompt | `dify/dsl/moments_advisor.yml` 与 `dify/dsl/writing_advisor.yml` 为 `advanced-chat`，Start 变量包含 `type`，服务端通过 `/chat-messages` 传入 `conversation_id`。修改 DSL 后必须重新导入、保存、发布并分别验收；案例目录清空后仅保留管理员 CRUD。 |
 
 ### 商业顾问首屏固定问题配置
 
@@ -111,8 +111,8 @@ test_data/knowledge/通用知识库测试资料.md
 | 应用 | 文件 | 类型 |
 |---|---|---|
 | 商业顾问 | `dify/商业顾问（当前使用版本）.yml` | Chatflow / advanced-chat |
-| 朋友圈顾问 | `dify/dsl/moments_advisor.yml` | Workflow |
-| 日常写作 | `dify/dsl/writing_advisor.yml` | Workflow |
+| 朋友圈顾问 | `dify/dsl/moments_advisor.yml` | advanced-chat Chatflow |
+| 日常写作 | `dify/dsl/writing_advisor.yml` | advanced-chat Chatflow |
 | 摘要画像 | `dify/dsl/summary_profile.yml` | Workflow |
 
 DSL 记录 Tongyi 插件和 `qwen-plus`。如果目标环境插件版本不同：

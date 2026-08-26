@@ -33,6 +33,8 @@ from ...models import (
     ExternalDeletionTask,
     ModelCleaningTask,
     SystemEventLog,
+    ToolConversation,
+    ToolMessage,
 )
 from ...services.admin_settings import get_history_retention_days
 from ...services.bailian_cleanup import (
@@ -56,6 +58,89 @@ _EXTERNAL_DELETION_BATCH_LIMIT = 200
 _EXTERNAL_DELETION_FETCH_LIMIT = 1000
 _EXTERNAL_DELETION_PER_KIND_QUOTA = 50
 _EXTERNAL_DELETION_MAX_AUTO_ATTEMPTS = 3
+
+
+@celery_app.task(name="ai_management.cleanup_tool_conversations")
+def _cleanup_tool_conversations() -> dict[str, int]:
+    """Remove closed moments/writing sessions and their exact Dify records.
+
+    This task is deliberately separate from the business history retention
+    task.  A failed remote delete is retained as an exact retry item while the
+    local session is still removed, so a second midnight run is idempotent.
+    """
+    deleted = 0
+    queued = 0
+    with SessionLocal() as session:
+        rows = session.scalars(
+            select(ToolConversation).where(ToolConversation.status == "closed")
+        ).all()
+        for row in rows:
+            if row.dify_conversation_id:
+                try:
+                    key = (
+                        settings.dify_moments_app_api_key
+                        if row.kind == "moments"
+                        else settings.dify_writing_app_api_key
+                    )
+                    DifyAppClient(settings.dify_url, key).delete_conversation(
+                        row.dify_conversation_id, f"u_{row.user_hash[:40]}"
+                    )
+                except Exception as exc:
+                    exists = session.scalar(
+                        select(ExternalDeletionTask).where(
+                            ExternalDeletionTask.kind == "dify_tool_conversation",
+                            ExternalDeletionTask.external_id == row.dify_conversation_id,
+                        )
+                    )
+                    if exists is None:
+                        session.add(
+                            ExternalDeletionTask(
+                                kind="dify_tool_conversation",
+                                external_id=row.dify_conversation_id,
+                                payload={"kind": row.kind, "user": f"u_{row.user_hash[:40]}"},
+                                last_error=str(exc)[:1000],
+                            )
+                        )
+                        queued += 1
+            session.delete(row)
+            deleted += 1
+        # Keep the latest active session mapping for continuity, but never
+        # retain local message正文 across the midnight boundary.
+        active_rows = session.scalars(
+            select(ToolConversation).where(ToolConversation.status == "active")
+        ).all()
+        for row in active_rows:
+            session.query(ToolMessage).filter(ToolMessage.conversation_id == row.id).delete()
+        # Reset requests remove the local mapping immediately and leave an
+        # exact external-deletion item.  Process those tool-only items in the
+        # same midnight window so Dify memory follows the local retention
+        # boundary instead of waiting for the business 02:00 maintenance.
+        pending = session.scalars(
+            select(ExternalDeletionTask).where(
+                ExternalDeletionTask.kind == "dify_tool_conversation"
+            )
+        ).all()
+        for task in pending:
+            payload = task.payload or {}
+            tool_kind = str(payload.get("kind") or "")
+            if tool_kind not in {"moments", "writing"}:
+                task.last_error = "工具会话删除任务缺少合法 kind"
+                continue
+            key = (
+                settings.dify_moments_app_api_key
+                if tool_kind == "moments"
+                else settings.dify_writing_app_api_key
+            )
+            try:
+                DifyAppClient(settings.dify_url, key).delete_conversation(
+                    task.external_id, str(payload.get("user") or "")
+                )
+            except Exception as exc:
+                task.last_error = str(exc)[:1000]
+                continue
+            session.delete(task)
+        session.commit()
+    return {"deleted": deleted, "queued": queued}
 
 
 def _model_task_cleanup_file_ids(task: ModelCleaningTask) -> set[str]:
@@ -508,15 +593,27 @@ def _cleanup_history() -> None:
 
 
 def _retry_external_deletions() -> None:
-    client = DifyAppClient(settings.dify_url, settings.dify_business_app_api_key)
     with SessionLocal() as session:
         _reconcile_model_cleanup_work(session)
         tasks = _select_fair_external_deletion_tasks(session)
         for task in tasks:
             try:
                 if task.kind == "dify_conversation":
+                    client = DifyAppClient(settings.dify_url, settings.dify_business_app_api_key)
                     client.delete_conversation(
                         task.external_id, str(task.payload.get("user") or "")
+                    )
+                elif task.kind == "dify_tool_conversation":
+                    tool_kind = str((task.payload or {}).get("kind") or "")
+                    if tool_kind not in {"moments", "writing"}:
+                        raise RuntimeError("工具会话删除任务缺少合法 kind")
+                    key = (
+                        settings.dify_moments_app_api_key
+                        if tool_kind == "moments"
+                        else settings.dify_writing_app_api_key
+                    )
+                    DifyAppClient(settings.dify_url, key).delete_conversation(
+                        task.external_id, str((task.payload or {}).get("user") or "")
                     )
                 elif task.kind == "dify_document":
                     dataset_id = str(task.payload.get("dataset_id") or "")
@@ -1092,6 +1189,7 @@ def nightly_maintenance() -> dict[str, bool]:
 
 
 __all__ = [
+    "_cleanup_tool_conversations",
     "_cleanup_files_and_stale_tasks",
     "_cleanup_conversion_markdown",
     "_cleanup_history",
