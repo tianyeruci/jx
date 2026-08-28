@@ -9,7 +9,6 @@
 | moments-ip-methodology | 朋友圈顾问 IP 方法论 Prompt 与案例增量 | engineering-change | stale_requirements | standard | 0/4 | stale | 2026-08-26T14:28:05+08:00 |
 | qwen-batch-cleaning | 千问 Batch 清洗策略验证与轮询修复 | engineering-change | stale_requirements | high | 0/8 | stale | 2026-08-26T14:28:09+08:00 |
 | recent-activity | 最近活动清洗与商业顾问 Chatflow 接入 | feature | stale_requirements | high | 0/4 | current | 2026-08-26T14:28:11+08:00 |
-| tool-conversation-generation | 朋友圈顾问与日常写作会话记忆及直接生成 | feature | stale_requirements | high | 0/7 | current | 2026-08-26T14:28:12+08:00 |
 | tool-examples | 朋友圈与日常写作可配置案例目录 | feature | done | standard | 3/7 | stale | 2026-08-26T14:28:10+08:00 |
 
 ## Functional Module Progress
@@ -44,18 +43,6 @@
 | cleaning-publication | in_progress | AC-002, AC-004 | 共享清理生命周期在取消异常时保留精确远端引用并可由 maintenance 重建；recent_activity 业务语义未改变。 | `ai_management/workers/tasks/cleaning.py`<br>`knowledge_cleaner/dify.py` |
 | activity-chatflow | verified | AC-005, AC-006, AC-007 | 活动查询现在按自然表达识别列表与命名详情；详情走无时间窗口状态检索并支持第1至第5个序号；列表默认10条逐行输出名称、时间、状态，ACTIVITY_MAX_RESULTS可配置；最近活动保持实时Qwen。Dify发布后验证了最近/最新/全部活动与命名详情SSE形状。 | `dify/商业顾问（当前使用版本）.yml`<br>`tests/test_dify_activity_contract.py`<br>`dify/商业顾问_统一修复版_Dify-1.13.3.yml`<br>`tests/test_business_advisor_unified_dsl.py` |
 | activity-validation-docs | verified | AC-008 | 本次文档清洗修复未改变 recent_activity 语义、实现边界或 DSL；仅同步共享工作树的治理指纹。 | `docs/features/recent-activity/**`<br>`ai_management.zip` |
-
-### tool-conversation-generation — 朋友圈顾问与日常写作会话记忆及直接生成
-
-| Module | Status | Acceptance | Last change | Owned paths |
-|---|---|---|---|---|
-| tool-conversation-models | in_progress | AC-001, AC-005 | - | `ai_management/models.py`<br>`ai_management/schemas.py`<br>`migrations/versions/*tool_conversation*.py` |
-| tool-conversation-api | in_progress | AC-001, AC-002, AC-003 | - | `ai_management/api/routers/tools.py`<br>`ai_management/dify.py` |
-| tool-conversation-services | in_progress | AC-001, AC-007 | - | `ai_management/services/tool_conversations.py`<br>`ai_management/services/tool_examples.py` |
-| tool-conversation-maintenance | in_progress | AC-005 | - | `ai_management/workers/tasks/maintenance.py`<br>`ai_management/workers/celery_app.py` |
-| tool-conversation-ui | in_progress | AC-006 | - | `ai_management/test_ui.py` |
-| tool-conversation-dsl | in_progress | AC-002, AC-004 | - | `dify/dsl/*.yml` |
-| tool-conversation-tests | in_progress | AC-001, AC-007 | - | `tests/test_tool_conversations.py` |
 
 ### tool-examples — 朋友圈与日常写作可配置案例目录
 

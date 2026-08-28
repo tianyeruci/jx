@@ -107,3 +107,23 @@
 - 预防：新增真实测试前只核对变量是否存在；测试报告只保留变量名、计数和脱敏摘要，不输出值。
 - 证据：[验证记录](../../Other/event_rag_cleaner/VALIDATION.md:5)。
 - 最后验证：2026-08-16。
+
+## DEV-010：Windows 升级后若 `code_mode_host` 被重新打开，会让 Desktop 新任务回到脆弱路由
+
+- 适用：Windows 上的 Codex Desktop / 本地 CLI 共用 `C:\Users\Free\.codex\config.toml`，且升级后新任务通过 `functions.exec` 进入工具层。
+- 触发：升级后所有新任务在真正启动 PowerShell、`apply_patch` 或网页检索前，就统一报 `code-mode host is disabled`；而 `mcp__codex_app` 这类直连任务管理工具仍可用。
+- 根因：Windows 侧稳定执行通道依赖 `[features].unified_exec = true`；若升级把 `[features].code_mode_host` 重新置回 `true`，Desktop 会优先暴露/协商 Code Mode 主机路由，新任务因此偏离历史上已验证的 Windows 稳定组合，并再次触发 host 路由兼容故障。
+- 解决：全局配置保持以下组合作为 Windows 基线，并在修改后完整退出再重开 Desktop：
+  ```toml
+  [features]
+  unified_exec = true
+  code_mode_host = false
+
+  [features.code_mode]
+  enabled = false
+  ```
+- 非解决：只重建 runtime 缓存、只重装 PowerShell、只新建任务，或只切换模型；这些操作都不能纠正已经偏离的全局路由配置。
+- 验证：`codex features list` 中应同时看到 `unified_exec true`、`code_mode_host false`、`code_mode false`；随后新会话需要再次成功执行最小本地命令，例如 `Get-Location`。
+- 预防：每次 Desktop 升级后优先检查 `config.toml` 是否仍保留上述 3 个开关组合；若发现 `code_mode_host = true`，先恢复基线再做业务任务。
+- 证据：[Codex 会话工具故障：完整链路复盘与修复（2026-07-28）](../Codex会话工具报错复盘与修复-2026-07-28.md)、[OpenAI Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)、[ChatGPT & Codex changelog](https://learn.chatgpt.com/docs/changelog)。
+- 最后验证：2026-08-27。

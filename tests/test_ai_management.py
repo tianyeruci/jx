@@ -2121,6 +2121,8 @@ def test_dsl_and_gold_data_are_complete():
 def test_test_page_exposes_all_documented_management_entry_points():
     source = Path("ai_management/test_ui.py").read_text(encoding="utf-8")
     compile(source, "ai_management/test_ui.py", "exec")
+    assert 'st.text_area("问题", "请帮我判断当前经营最该优先解决什么？")' in source
+    assert "我想系统学习AI工具，应该从哪门课程开始？" not in source
     required_path_fragments = (
         "/health/live",
         "/health/ready",

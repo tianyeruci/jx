@@ -2401,3 +2401,18 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改前：发布脚本只在迁移提交后保留宿主机迁移文件，未记录发布前数据库 head，也未在旧镜像恢复前降级数据库。
 - 修改后：`scripts/jx_deploy_release.sh` 在切换前记录实际 Alembic revision；迁移后失败先用新镜像精确 downgrade，降级失败则跳过旧镜像恢复；同步 jx 并加入发布契约测试。
 - 验证：jx 受控演练报告 `/opt/ai-management/var/reports/v2/toolconv-20260826-135020-deploy/rollback-rehearsal.txt` 显示 `m9 → l8`、上一版镜像解析 `l8`、`l8 → m9`、当前 `m9` 和 ready 均通过；本地 `bash -n`、focused 发布/工具会话测试通过。另记录一次 Dify 连续追问未稳定复述具体事实的模型语义观察，不将其宣称为代码故障。
+
+### 文档修改记录（2026-08-27 jx Chatflow App Key 配置重建）
+
+- 修改原因：用户已在 jx 服务器 `.env` 更新 DSL/Chatflow 访问 API Key，需要让运行中的服务读取新配置并记录可复用操作边界。
+- 修改前：只读预检发现 `DIFY_MOMENTS_APP_API_KEY` 的 `.env` 指纹与运行中的 `api/worker/scheduler` 不一致；其余三个 Chatflow App Key 与运行容器一致。未输出任何密钥明文。
+- 修改后：备份 `.env` 至 `/opt/ai-management/backups/20260827-112757-chatflow-env`，按 DEPLOY-013 仅强制重建 `api`、`worker`、`scheduler`；未重建 wheel/镜像，未修改 Dify、数据库、Redis、上传卷或其他服务。Compose 的 orphan warning 保留，未执行 `--remove-orphans`。
+- 验证：三服务均运行在 `jx-now-ai-management:toolconv-20260826-135020`；`DIFY_MOMENTS_APP_API_KEY` 的 `.env` 与三个容器指纹均为 `d8dc3f3c460d`；`/health/ready` 返回 ready 且 database、redis、dify_apps_configured、dify_knowledge_configured、dify_reachable 均为 true；朋友圈应用 `/parameters` 返回 HTTP 200。
+- 防复发：Key-only 变更不要运行 `scripts/jx_quick_deploy.sh`、不要制作/上传 zip，也不要使用 `docker compose restart`；直接按部署手册第 0.1 节备份 `.env` 并 `--force-recreate api worker scheduler`。当前没有独立 Key 同步脚本；本次治理 Release approval 因现有工作树门禁未通过而未记录，不影响本次已授权的最小配置重建。
+
+### 文档修改记录（2026-08-27 测试页默认问题 UI-only 发布）
+
+- 修改原因：用户反馈公网测试页商业顾问仍显示旧默认问题“我想系统学习AI工具，应该从哪门课程开始？”。核对确认该问题来自 `ai_management/test_ui.py` 的测试页硬编码默认值，不来自 Dify 商业顾问入口参数。
+- 修改前：线上 `test-ui` 使用 `jx-now-ai-management-ui:toolconv-20260826-135020`，商业顾问问题框仍为旧默认问题；API、Worker、Scheduler 和 OCR 服务处于既有运行版本。
+- 修改后：本地测试页默认问题改为“请帮我判断当前经营最该优先解决什么？”，并通过 UI-only 镜像 `jx-now-ai-management-ui:ui-only-20260827-171024-c33b41689351` 切换线上 `test-ui`。仅更新 `.env` 的 `AI_UI_IMAGE`，API、Worker、模型 Worker、发布 Worker、Scheduler 未重建；数据库、Redis、Dify、上传卷、OCR 配置和 OCR 服务均未改动。旧 UI 镜像和 `.env` 备份保留，回滚点为 `/opt/ai-management/backups/ui-only-20260827-171024-c33b41689351-predeploy`。
+- 验证：本地与 Nginx 公网测试页均返回 HTTP 200；真实浏览器商业顾问页默认问题已为新文案，控制台错误/警告为 0；API 容器 `/health/ready` 返回 200；线上 `test-ui` 容器源码包含新默认问题。发布证据为 `/opt/ai-management/var/reports/v2/ui-only-20260827-171024-c33b41689351-ui-only`。未发布或修改商业顾问 Dify DSL，Dify 入口推荐问题仍需按 Dify 导入/保存/发布流程单独更新。

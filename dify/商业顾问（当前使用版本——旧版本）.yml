@@ -1,0 +1,1307 @@
+app:
+  description: ''
+  icon: 🧭
+  icon_background: '#E4FBCC'
+  icon_type: emoji
+  mode: advanced-chat
+  name: 商业顾问
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier:
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/tongyi:0.2.4@72bdf0d70a10b1b9f64746ccd1bd792397598f4536872b310e77532af02ad6a6
+    version:
+kind: app
+version: 0.6.0
+workflow:
+  conversation_variables: []
+  environment_variables:
+  - description: 活动列表展示上限；缺省为 10，允许在 Dify 环境配置中调整。
+    id: 5d9bb08d-f403-4c94-9f6d-5dc7c64a9cb5
+    name: ACTIVITY_MAX_RESULTS
+    selector:
+    - env
+    - ACTIVITY_MAX_RESULTS
+    value: '10'
+    value_type: string
+  features:
+    file_upload:
+      allowed_file_extensions: []
+      allowed_file_types: []
+      allowed_file_upload_methods: []
+      enabled: false
+      fileUploadConfig:
+        attachment_image_file_size_limit: 2
+        audio_file_size_limit: 50
+        batch_count_limit: 2
+        file_size_limit: 128
+        file_upload_limit: 20
+        image_file_batch_limit: 10
+        image_file_size_limit: 10
+        single_chunk_attachment_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: 你好，我可以协助分析经营、营销、产品和管理等商业问题。
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions:
+    - 如何判断当前获客渠道是否值得继续投入？
+    - 我的产品转化率下降，应该先排查什么？
+    - 请帮我分析一个小团队的经营优先级。
+    suggested_questions_after_answer:
+      enabled: true
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: code
+      id: start-to-quick-intent
+      selected: false
+      source: start
+      sourceHandle: source
+      target: quick_intent
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: if-else
+      id: quick-intent-to-quick-route
+      selected: false
+      source: quick_intent
+      sourceHandle: source
+      target: quick_route
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: answer
+      id: quick-route-true-to-quick-answer
+      selected: false
+      source: quick_route
+      sourceHandle: 'true'
+      target: quick_answer
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: answer
+      id: quick-route-false-to-progress-answer
+      selected: false
+      source: quick_route
+      sourceHandle: 'false'
+      target: progress_answer
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: answer
+        targetType: code
+      id: progress-answer-to-activity-intent
+      selected: false
+      source: progress_answer
+      sourceHandle: source
+      target: activity_intent
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: if-else
+      id: activity-intent-to-activity-route
+      selected: false
+      source: activity_intent
+      sourceHandle: source
+      target: activity_route
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: code
+      id: activity-route-true-to-activity-window
+      selected: false
+      source: activity_route
+      sourceHandle: 'true'
+      target: activity_window
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: if-else
+      id: activity-window-to-activity-status-route
+      selected: false
+      source: activity_window
+      sourceHandle: source
+      target: activity_status_route
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: knowledge-retrieval
+      id: activity-status-normal-to-activity-knowledge
+      selected: false
+      source: activity_status_route
+      sourceHandle: normal
+      target: activity_knowledge
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: knowledge-retrieval
+      id: activity-status-status-to-activity-status-knowledge
+      selected: false
+      source: activity_status_route
+      sourceHandle: status
+      target: activity_status_knowledge
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: if-else
+      id: activity-route-false-to-case-route
+      selected: false
+      source: activity_route
+      sourceHandle: 'false'
+      target: case_route
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: knowledge-retrieval
+        targetType: variable-aggregator
+      id: activity-knowledge-to-activity-retrieval-aggregate
+      selected: false
+      source: activity_knowledge
+      sourceHandle: source
+      target: activity_retrieval_aggregate
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: knowledge-retrieval
+        targetType: variable-aggregator
+      id: activity-status-knowledge-to-activity-retrieval-aggregate
+      selected: false
+      source: activity_status_knowledge
+      sourceHandle: source
+      target: activity_retrieval_aggregate
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: variable-aggregator
+        targetType: code
+      id: activity-retrieval-aggregate-to-activity-results
+      selected: false
+      source: activity_retrieval_aggregate
+      sourceHandle: source
+      target: activity_results
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: answer
+      id: activity-results-to-activity-answer
+      selected: false
+      source: activity_results
+      sourceHandle: source
+      target: activity_answer
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: knowledge-retrieval
+      id: case-route-false-to-general-knowledge
+      selected: false
+      source: case_route
+      sourceHandle: 'false'
+      target: general_knowledge
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: knowledge-retrieval
+      id: case-route-true-to-case-knowledge
+      selected: false
+      source: case_route
+      sourceHandle: 'true'
+      target: case_knowledge
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: variable-aggregator
+        targetType: code
+      id: advisor-retrieval-aggregate-to-evidence-compact
+      selected: false
+      source: advisor_retrieval_aggregate
+      sourceHandle: source
+      target: general_evidence_compact
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: knowledge-retrieval
+        targetType: variable-aggregator
+      id: general-knowledge-to-advisor-retrieval-aggregate
+      selected: false
+      source: general_knowledge
+      sourceHandle: source
+      target: advisor_retrieval_aggregate
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: knowledge-retrieval
+        targetType: variable-aggregator
+      id: case-knowledge-to-advisor-retrieval-aggregate
+      selected: false
+      source: case_knowledge
+      sourceHandle: source
+      target: advisor_retrieval_aggregate
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: llm
+      id: evidence-compact-to-business-answer
+      selected: false
+      source: general_evidence_compact
+      sourceHandle: source
+      target: combined_response_general
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: answer
+      id: business-answer-to-answer-general
+      selected: false
+      source: combined_response_general
+      sourceHandle: source
+      target: answer_general
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        desc: AI管理服务每轮注入已验证的上下文和输出风格；不再注入课程、路线或本地会话标识。
+        selected: false
+        title: 开始
+        type: start
+        variables:
+        - label: 历史摘要
+          max_length: 12000
+          required: false
+          type: paragraph
+          variable: conversation_summary
+        - label: 最近对话
+          max_length: 24000
+          required: false
+          type: paragraph
+          variable: recent_history_text
+        - label: 用户画像JSON
+          max_length: 12000
+          required: false
+          type: paragraph
+          variable: profile_json
+        - label: 商业回答输出风格
+          max_length: 4000
+          required: false
+          type: paragraph
+          variable: business_output_style
+      height: 224
+      id: start
+      position:
+        x: 0
+        y: 360
+      positionAbsolute:
+        x: 0
+        y: 360
+      selected: false
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import re
+
+          def main(query: str) -> dict:
+              raw = str(query or "").strip()
+              normalized = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]", "", raw.lower())
+              if not raw:
+                  return {"should_direct": "true", "direct_response": "请告诉我你想分析的经营、营销、产品或管理问题。"}
+              human_terms = ("转人工", "找人工", "人工客服", "人工咨询", "联系顾问", "找顾问", "联系老师", "老师微信", "顾问微信", "客服微信")
+              decline_terms = ("不用人工", "不找人工", "不需要人工", "无需人工", "不要转人工")
+              if not any(item in raw for item in decline_terms) and (normalized in {"人工", "老师", "顾问", "客服", "微信"} or any(item in raw for item in human_terms)):
+                  return {"should_direct": "true", "direct_response": "这个问题需要人工顾问进一步确认，请通过页面中的人工咨询入口联系我们。"}
+              greetings = {"你好", "您好", "hi", "hello", "嗨", "哈喽", "早上好", "下午好", "晚上好", "你是谁", "你能做什么", "你会什么", "在吗"}
+              thanks = {"谢谢", "感谢", "多谢", "thankyou", "thanks", "thx", "谢谢你", "非常感谢"}
+              goodbyes = {"再见", "拜拜", "bye", "goodbye", "下次见", "回头见", "先这样"}
+              if normalized in greetings:
+                  return {"should_direct": "true", "direct_response": "你好，我可以协助分析经营、营销、产品和管理等商业问题。"}
+              if normalized in thanks:
+                  return {"should_direct": "true", "direct_response": "不客气。你可以继续告诉我想解决的商业问题。"}
+              if normalized in goodbyes:
+                  return {"should_direct": "true", "direct_response": "好的，随时欢迎你再来咨询商业问题。"}
+              case_terms = ("相关案例", "类似案例", "相似案例", "同类案例", "真实案例", "案例参考", "案例经验", "类似经验", "同类经验")
+              activity_entity_terms = ("活动", "会议", "沙龙", "工作坊", "训练营", "直播", "峰会", "论坛", "分享会", "交流会", "私董会", "公开课", "实战营", "成长营", "体验营", "训练班", "专场", "圆桌", "大会", "日程", "聚会", "场次", "安排", "排期", "联谊")
+              activity_entity = any(item in raw for item in activity_entity_terms)
+              reference_terms = ("这个活动", "该活动", "这个会议", "该会议", "第一个", "第1个", "第二个", "第2个", "第三个", "第3个", "第四个", "第4个", "第五个", "第5个", "第一个活动", "第一个会议", "上述活动", "刚才的活动")
+              activity_name_marker = any(item in raw for item in ("营", "大会", "专场", "圆桌", "沙龙", "峰会", "工作坊", "训练", "活动", "会议", "直播", "公开课"))
+              activity_reference = activity_entity or any(item in raw for item in reference_terms) or activity_name_marker
+              listing_terms = ("最近", "近期", "最新", "有哪些", "有什么", "可以参加", "本月", "接下来", "所有", "全部", "历史", "已结束", "安排", "日程", "排期", "聚会", "场次", "联谊")
+              detail_terms = ("详情", "详细", "介绍", "地点", "在哪里", "形式", "具体")
+              registration_terms = ("报名链接", "报名方式", "报名入口", "报名地址", "怎么报名", "如何报名")
+              status_terms = ("延期", "改期", "取消", "完成", "已结束")
+              analysis_terms = ("如何", "怎么", "策略", "方法", "影响", "挽回", "复盘", "提升", "提高", "优化", "建议", "分析", "转化")
+              normalized_for_registration = normalized.rstrip("?？。！! ")
+              registration_request = any(item in raw for item in registration_terms) or normalized_for_registration.endswith("报名")
+              is_detail_request = (activity_reference or activity_name_marker) and (any(item in raw for item in detail_terms) or registration_request or any(item in raw for item in reference_terms))
+              is_analysis_request = any(item in raw for item in analysis_terms) and not is_detail_request
+              is_case_request = any(item in raw for item in case_terms)
+              normalized_activity_only = normalized in {"活动", "会议", "最近活动", "近期活动", "最新活动", "所有活动", "全部活动"}
+              is_activity_request = activity_reference and not is_analysis_request and not is_case_request and (
+                  normalized_activity_only
+                  or
+                  any(item in raw for item in listing_terms)
+                  or any(item in raw for item in status_terms)
+                  or is_detail_request
+              )
+              return {
+                  "should_direct": "false",
+                  "direct_response": "",
+                  "is_case_request": "true" if is_case_request else "false",
+                  "is_activity_request": "true" if is_activity_request else "false",
+              }
+        code_language: python3
+        desc: 固定问候、礼貌用语和明确人工请求不调用模型；其余问题进入一次检索和一次主回答，只有明确案例请求才检索咨询会议案例。
+        outputs:
+          direct_response:
+            children:
+            type: string
+          should_direct:
+            children:
+            type: string
+          is_case_request:
+            children:
+            type: string
+          is_activity_request:
+            children:
+            type: string
+        selected: false
+        title: 固定意图与人工请求识别
+        type: code
+        variables:
+        - value_selector:
+          - sys
+          - query
+          variable: query
+      height: 111
+      id: quick_intent
+      position:
+        x: 300
+        y: 410
+      positionAbsolute:
+        x: 300
+        y: 410
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        desc: 聚合正常活动或取消/延期活动检索结果，避免结果节点直接引用互斥分支的未执行输出。
+        output_type: array[object]
+        selected: false
+        title: 活动检索结果聚合
+        type: variable-aggregator
+        variables:
+        - - activity_knowledge
+          - result
+        - - activity_status_knowledge
+          - result
+      height: 131
+      id: activity_retrieval_aggregate
+      position:
+        x: 2580
+        y: 300
+      positionAbsolute:
+        x: 2580
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          def main(is_activity_request: str, query: str) -> dict:
+              return {"is_activity_request": "true" if is_activity_request == "true" else "false"}
+        code_language: python3
+        desc: 只把明确活动/会议意图送入活动检索，普通商业问题继续原有案例/通用分支。
+        outputs:
+          is_activity_request:
+            children:
+            type: string
+        selected: false
+        title: 活动意图识别
+        type: code
+        variables:
+        - value_selector:
+          - quick_intent
+          - is_activity_request
+          variable: is_activity_request
+        - value_selector:
+          - sys
+          - query
+          variable: query
+      height: 95
+      id: activity_intent
+      position:
+        x: 1320
+        y: 300
+      positionAbsolute:
+        x: 1320
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: explicit-activity-request
+            value: 'true'
+            varType: string
+            variable_selector:
+            - activity_intent
+            - is_activity_request
+          id: 'true'
+          logical_operator: and
+        desc: 明确活动意图才进入活动检索，否则保持普通/案例行为。
+        selected: false
+        title: 是否检索活动
+        type: if-else
+      height: 191
+      id: activity_route
+      position:
+        x: 1540
+        y: 300
+      positionAbsolute:
+        x: 1540
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          from datetime import datetime, timedelta, timezone
+
+          def main(query: str, configured_activity_max_results="10") -> dict:
+              now = datetime.now(timezone(timedelta(hours=8)))
+              query = str(query or "")
+              activity_entity_terms = ("活动", "会议", "沙龙", "工作坊", "训练营", "直播", "峰会", "论坛", "分享会", "交流会", "私董会", "公开课", "实战营", "成长营", "体验营", "训练班", "专场", "圆桌", "大会", "日程", "聚会", "场次", "安排", "排期", "联谊")
+              detail_terms = ("详情", "详细", "介绍", "地点", "在哪里", "形式", "怎么报名", "如何报名", "报名链接", "报名方式", "报名入口", "报名地址", "具体")
+              reference_terms = ("这个活动", "该活动", "这个会议", "该会议", "第一个", "第1个", "第二个", "第2个", "第三个", "第3个", "第四个", "第4个", "第五个", "第5个", "上述活动", "刚才的活动")
+              normalized_query = "".join(ch for ch in query.lower() if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+              registration_request = any(item in query for item in ("报名链接", "报名方式", "报名入口", "报名地址", "怎么报名", "如何报名")) or normalized_query.rstrip("?？。！! ").endswith("报名")
+              activity_name_marker = any(item in query for item in ("营", "大会", "专场", "圆桌", "沙龙", "峰会", "工作坊", "训练", "活动", "会议", "直播", "公开课"))
+              specific_activity_marker = any(item in query for item in ("营", "大会", "专场", "圆桌", "沙龙", "峰会", "工作坊", "公开课"))
+              generic_query_terms = detail_terms + ("最近", "近期", "最新", "所有", "全部", "历史", "活动", "会议", "训练", "直播", "日程", "聚会", "场次", "报名", "延期", "改期", "取消", "完成", "已结束", "正常", "状态", "有哪些", "有什么", "可以参加", "本月", "接下来", "的")
+              remaining_name = query
+              for term in generic_query_terms:
+                  remaining_name = remaining_name.replace(term, "")
+              remaining_name = "".join(ch for ch in remaining_name if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+              specific_activity_reference = any(item in query for item in reference_terms) or specific_activity_marker or bool(remaining_name)
+              detail_mode = (any(item in query for item in activity_entity_terms) or any(item in query for item in reference_terms) or activity_name_marker) and (any(item in query for item in detail_terms) or registration_request or any(item in query for item in reference_terms))
+              detail_specific = detail_mode and specific_activity_reference
+              all_mode = any(word in query for word in ("所有", "全部", "历史"))
+              requested_status = "detail" if detail_specific else ("cancelled" if "取消" in query else ("completed" if any(word in query for word in ("完成", "已结束")) else ("postponed" if any(word in query for word in ("延期", "改期")) else ("all" if all_mode else "normal"))))
+              window_start = now - timedelta(days=30) if all_mode else now
+              try:
+                  configured_limit = int(float(str(configured_activity_max_results or "10").strip()))
+              except (TypeError, ValueError):
+                  configured_limit = 10
+              activity_max_results = max(1, min(20, configured_limit))
+              return {
+                  "start_ts": int(window_start.timestamp()),
+                  "end_ts": int((now + timedelta(days=30)).timestamp()),
+                  "requested_status": requested_status,
+                  "activity_max_results": activity_max_results,
+              }
+        code_language: python3
+        desc: 生成中国时区的动态活动状态和三十天时间窗口；活动列表默认最多 10 条，供 Knowledge Retrieval 先过滤。
+        outputs:
+          end_ts:
+            children:
+            type: number
+          requested_status:
+            children:
+            type: string
+          activity_max_results:
+            children:
+            type: number
+          start_ts:
+            children:
+            type: number
+        selected: false
+        title: 活动动态筛选条件
+        type: code
+        variables:
+        - value_selector:
+          - sys
+          - query
+          variable: query
+        - value_selector:
+          - env
+          - ACTIVITY_MAX_RESULTS
+          variable: configured_activity_max_results
+      height: 95
+      id: activity_window
+      position:
+        x: 1800
+        y: 220
+      positionAbsolute:
+        x: 1800
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        cases:
+        - case_id: normal
+          conditions:
+          - comparison_operator: is
+            id: activity-normal
+            value: normal
+            varType: string
+            variable_selector:
+            - activity_window
+            - requested_status
+          id: normal
+          logical_operator: and
+        - case_id: status
+          conditions:
+          - comparison_operator: is not
+            id: activity-status
+            value: normal
+            varType: string
+            variable_selector:
+            - activity_window
+            - requested_status
+          id: status
+          logical_operator: and
+        desc: 正常活动使用动态时间区间；取消、延期和指定活动详情走状态检索，详情不受近期窗口限制。
+        selected: false
+        title: 活动状态路由
+        type: if-else
+      height: 191
+      id: activity_status_route
+      position:
+        x: 2060
+        y: 220
+      positionAbsolute:
+        x: 2060
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        dataset_ids:
+        - hs0Hyxg1MA28xHAG6dBkv6lVjZQP4KXYRTZU4WwQeu8C3HUI4H3dpyslaUiJ1FmP
+        desc: 活动检索由 Dify 动态 metadata 条件先过滤 event、状态和进行中/未来三十天区间，结果节点再去重排序。
+        metadata_filtering_mode: manual
+        metadata_filtering_conditions:
+          conditions:
+          - comparison_operator: is
+            name: record_type
+            value: event
+          - comparison_operator: is not
+            name: event_status
+            value: __none__
+          - comparison_operator: ≥
+            name: event_end_ts
+            value: '{{#activity_window.start_ts#}}'
+          - comparison_operator: ≤
+            name: event_start_ts
+            value: '{{#activity_window.end_ts#}}'
+          logical_operator: and
+        multiple_retrieval_config:
+          reranking_enable: true
+          reranking_mode: reranking_model
+          reranking_model:
+            model: qwen3-rerank
+            provider: langgenius/tongyi/tongyi
+          score_threshold: 0.2
+          top_k: 50
+        query_attachment_selector: []
+        query_variable_selector:
+        - sys
+        - query
+        retrieval_mode: multiple
+        selected: false
+        title: 最近活动检索
+        type: knowledge-retrieval
+      height: 133
+      id: activity_knowledge
+      position:
+        x: 1800
+        y: 220
+      positionAbsolute:
+        x: 1800
+        y: 220
+      selected: false
+      type: custom
+      width: 242
+    - data:
+        dataset_ids:
+        - hs0Hyxg1MA28xHAG6dBkv6lVjZQP4KXYRTZU4WwQeu8C3HUI4H3dpyslaUiJ1FmP
+        desc: 取消、延期和指定活动详情先由 Dify metadata 条件筛选状态；延期未定活动不伪造时间，详情可检索历史活动。
+        metadata_filtering_mode: manual
+        metadata_filtering_conditions:
+          conditions:
+          - comparison_operator: is
+            name: record_type
+            value: event
+          - comparison_operator: is not
+            name: event_status
+            value: __none__
+          logical_operator: and
+        multiple_retrieval_config:
+          reranking_enable: true
+          reranking_mode: reranking_model
+          reranking_model:
+            model: qwen3-rerank
+            provider: langgenius/tongyi/tongyi
+          score_threshold: 0.2
+          top_k: 50
+        query_attachment_selector: []
+        query_variable_selector:
+        - sys
+        - query
+        retrieval_mode: multiple
+        selected: false
+        title: 取消延期活动检索
+        type: knowledge-retrieval
+      height: 133
+      id: activity_status_knowledge
+      position:
+        x: 2320
+        y: 400
+      positionAbsolute:
+        x: 2320
+        y: 400
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+          from datetime import datetime, timezone, timedelta
+
+          def number(value):
+              if isinstance(value, (int, float)) and not isinstance(value, bool): return float(value)
+              try: return float(str(value).strip())
+              except Exception: return None
+
+          def main(results, query: str, start_ts, end_ts, requested_status: str, activity_max_results=10) -> dict:
+              start = number(start_ts) or 0
+              end = number(end_ts) or 0
+              query_text = str(query or "")
+              requested_status = str(requested_status or "normal")
+              all_mode = requested_status == "all" or any(word in query_text for word in ("所有", "全部", "历史"))
+              list_terms = ("最近", "近期", "最新", "有哪些", "有什么", "可以参加", "本月", "接下来", "所有", "全部", "历史", "已结束")
+              detail_terms = ("详情", "详细", "介绍", "地点", "在哪里", "形式", "怎么报名", "报名链接", "报名方式", "报名入口", "报名地址", "具体")
+              reference_terms = ("这个活动", "该活动", "这个会议", "该会议", "第一个", "第1个", "第二个", "第2个", "第三个", "第3个", "第四个", "第4个", "第五个", "第5个", "第一个活动", "第一个会议", "上述活动", "刚才的活动")
+              activity_entity_terms = ("活动", "会议", "沙龙", "工作坊", "训练营", "直播", "峰会", "论坛", "分享会", "交流会", "私董会", "公开课", "实战营", "成长营", "体验营", "训练班", "专场", "圆桌", "大会", "日程", "聚会", "场次", "安排", "排期", "联谊")
+              normalized_query = "".join(ch for ch in query_text.lower() if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+              specific_activity_marker = any(term in query_text for term in ("营", "大会", "专场", "圆桌", "沙龙", "峰会", "工作坊", "公开课"))
+              ordinal_phrase = "第" in query_text and "个" in query_text
+              specific_activity_reference = any(term in query_text for term in reference_terms) or specific_activity_marker or ordinal_phrase
+              list_mode = requested_status != "detail" and (any(term in query_text for term in list_terms) or normalized_query in {"活动", "会议", "最近活动", "近期活动", "最新活动", "所有活动", "全部活动"})
+              detail_mode = requested_status == "detail" or (not list_mode and specific_activity_reference and (any(term in query_text for term in detail_terms) or any(term in query_text for term in reference_terms)))
+              limit = max(1, min(20, int(number(activity_max_results) or 10)))
+              selected = {}
+              all_results = []
+              for batch in (results,):
+                  if isinstance(batch, list): all_results.extend(batch)
+              for item in all_results:
+                  metadata = item.get("metadata", {}) if isinstance(item, dict) else {}
+                  raw = metadata.get("doc_metadata", metadata)
+                  if isinstance(raw, str):
+                      try: raw = json.loads(raw)
+                      except Exception: raw = {}
+                  if isinstance(raw, list):
+                      raw = {entry.get("name"): entry.get("value") for entry in raw if isinstance(entry, dict) and entry.get("name")}
+                  if not isinstance(raw, dict) or raw.get("record_type") != "event": continue
+                  event_status = raw.get("event_status")
+                  detail_request = requested_status == "detail"
+                  if not detail_request and requested_status in {"cancelled", "postponed", "completed"} and event_status != requested_status: continue
+                  if not detail_request and not all_mode and requested_status in {"recent", "normal"} and event_status not in {"normal", "postponed"}: continue
+                  timestamp = number(raw.get("event_start_ts"))
+                  event_end = number(raw.get("event_end_ts"))
+                  if timestamp is None or event_end is None:
+                      if not (detail_request or (all_mode and event_status == "postponed")):
+                          continue
+                  if detail_request:
+                      pass
+                  elif all_mode:
+                      if event_end is not None and timestamp is not None and (event_end < start or timestamp > end): continue
+                  elif event_end <= start or timestamp > end: continue
+                  event_id = str(raw.get("event_id") or item.get("document_name") or "")
+                  selected[event_id] = (timestamp, raw, item)
+              def order(value):
+                  timestamp, metadata, _ = value
+                  event_end = number(metadata.get("event_end_ts"))
+                  if timestamp is None or event_end is None: return (1, float("inf"), str(metadata.get("event_id", "")))
+                  if timestamp <= start <= event_end: return (0, timestamp, str(metadata.get("event_id", "")))
+                  if timestamp > start: return (1, timestamp, str(metadata.get("event_id", "")))
+                  return (2, -event_end, str(metadata.get("event_id", "")))
+              ordered_all = sorted(selected.values(), key=order)
+              if detail_mode:
+                  normalized_query_for_match = "".join(ch for ch in query_text.lower() if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+                  ordinal_request = any(term in query_text for term in reference_terms) or ordinal_phrase
+                  def item_title(value):
+                      _, metadata, item = value
+                      return str(metadata.get("source_title") or item.get("title") or item.get("document_name") or "")
+                  if ordinal_request:
+                      ordinal_map = {"第一个": 1, "第1个": 1, "第二个": 2, "第2个": 2, "第三个": 3, "第3个": 3, "第四个": 4, "第4个": 4, "第五个": 5, "第5个": 5}
+                      requested_ordinal = next((number for term, number in ordinal_map.items() if term in query_text), None)
+                      if requested_ordinal is None:
+                          ordinal_start = query_text.find("第") + 1
+                          ordinal_end = query_text.find("个", ordinal_start)
+                          token = query_text[ordinal_start:ordinal_end] if ordinal_end > ordinal_start else ""
+                          chinese_digits = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+                          if token.isdigit():
+                              requested_ordinal = int(token)
+                          elif "十" in token:
+                              tens, _, ones = token.partition("十")
+                              requested_ordinal = (chinese_digits.get(tens, 1) if tens else 1) * 10 + (chinese_digits.get(ones, 0) if ones else 0)
+                          elif token in chinese_digits:
+                              requested_ordinal = chinese_digits[token]
+                      ordered = ordered_all[requested_ordinal - 1:requested_ordinal] if requested_ordinal and requested_ordinal > 0 else []
+                  else:
+                      named = [value for value in ordered_all if "".join(ch for ch in item_title(value).lower() if ch.isalnum() or "\u4e00" <= ch <= "\u9fff") in normalized_query_for_match]
+                      ordered = (named or ordered_all[:1])[:1]
+              else:
+                  ordered = ordered_all[:limit]
+              status_text = "所有" if requested_status == "all" else {"normal": "正常", "recent": "最近", "cancelled": "取消", "postponed": "延期", "completed": "已完成", "detail": "活动"}.get(requested_status, "活动")
+              def display_time(timestamp, event_status):
+                  if event_status == "postponed" and timestamp is None:
+                      return "延期未定"
+                  if timestamp is None:
+                      return "时间未定"
+                  value = datetime.fromtimestamp(timestamp, timezone(timedelta(hours=8)))
+                  date_text = f"{value.year}年{value.month}月{value.day}日"
+                  return f"{date_text} {value:%H:%M}" if value.hour or value.minute else date_text
+              lines = []
+              for timestamp, metadata, item in ordered:
+                  title = metadata.get("source_title") or item.get("title") or item.get("document_name") or "活动"
+                  status = metadata.get("source_status") or metadata.get("event_status") or ""
+                  time_text = display_time(timestamp, metadata.get("event_status"))
+                  summary = str(metadata.get("activity_summary") or "").strip()
+                  status = {"normal": "正常", "cancelled": "取消", "postponed": "延期", "completed": "已完成"}.get(str(metadata.get("event_status") or ""), str(metadata.get("source_status") or metadata.get("event_status") or ""))
+                  if metadata.get("event_status") == "postponed" and timestamp is None:
+                      time_text = "延期未定"
+                  if not detail_mode:
+                      line = f"{title}｜{time_text}｜{status}"
+                  else:
+                      line = f"{title}（{status}，{time_text}，{metadata.get('delivery_mode', '')}，{metadata.get('city', '')}）"
+                      if summary: line += f"\n简介：{summary}"
+                      link = metadata.get("registration_url")
+                      deadline = number(metadata.get("registration_deadline_ts"))
+                      if event_status in {"normal", "postponed"} and isinstance(link, str) and link.startswith(("http://", "https://")) and (deadline is None or deadline >= datetime.now(timezone(timedelta(hours=8))).timestamp()): line += f"\n报名链接：{link}"
+                  lines.append(line)
+              empty_text = "当前没有符合条件的活动。" if requested_status == "detail" else f"当前没有符合条件的{status_text}活动。"
+              return {"activity_text": "\n".join(lines) or empty_text}
+        code_language: python3
+        desc: 从 doc_metadata 读取动态筛选后的活动，按状态阶段和时间排序、去重并受 activity_max_results 限制；列表仅显示名称、时间、状态，明确活动详情请求才显示详情字段。
+        outputs:
+          activity_text:
+            children:
+            type: string
+        selected: false
+        title: 活动结果排序与去重
+        type: code
+        variables:
+        - value_selector:
+          - activity_retrieval_aggregate
+          - output
+          variable: results
+        - value_selector:
+          - sys
+          - query
+          variable: query
+        - value_selector:
+          - activity_window
+          - start_ts
+          variable: start_ts
+        - value_selector:
+          - activity_window
+          - end_ts
+          variable: end_ts
+        - value_selector:
+          - activity_window
+          - requested_status
+          variable: requested_status
+        - value_selector:
+          - activity_window
+          - activity_max_results
+          variable: activity_max_results
+      height: 95
+      id: activity_results
+      position:
+        x: 2060
+        y: 220
+      positionAbsolute:
+        x: 2060
+        y: 220
+      sourcePosition: right
+      targetPosition: left
+      selected: false
+      type: custom
+      width: 242
+    - data:
+        answer: '{{#activity_results.activity_text#}}'
+        desc: 输出活动结果；没有报名链接时不补充链接。
+        selected: false
+        title: 活动回答
+        type: answer
+        variables: []
+      height: 130
+      id: activity_answer
+      position:
+        x: 2320
+        y: 220
+      positionAbsolute:
+        x: 2320
+        y: 220
+      sourcePosition: right
+      targetPosition: left
+      selected: false
+      type: custom
+      width: 242
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: quick-direct
+            value: 'true'
+            varType: string
+            variable_selector:
+            - quick_intent
+            - should_direct
+          id: 'true'
+          logical_operator: and
+        desc: 固定场景直接结束；其余商业问题进入检索。
+        selected: false
+        title: 是否直接回复
+        type: if-else
+      height: 191
+      id: quick_route
+      position:
+        x: 640
+        y: 400
+      positionAbsolute:
+        x: 640
+        y: 400
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        answer: '{{#quick_intent.direct_response#}}'
+        desc: 零模型回复固定场景。
+        selected: false
+        title: 固定场景直接回复
+        type: answer
+        variables: []
+      height: 146
+      id: quick_answer
+      position:
+        x: 980
+        y: 220
+      positionAbsolute:
+        x: 980
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: explicit-case-request
+            value: 'true'
+            varType: string
+            variable_selector:
+            - quick_intent
+            - is_case_request
+          id: 'true'
+          logical_operator: and
+        desc: 仅在用户明确索要相关、类似或真实案例时检索咨询会议案例；其余问题硬排除案例资料。
+        selected: false
+        title: 是否检索咨询案例
+        type: if-else
+      height: 191
+      id: case_route
+      position:
+        x: 1320
+        y: 500
+      positionAbsolute:
+        x: 1320
+        y: 500
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        answer: '正在结合你的情况进行分析，请稍候……'
+        desc: 在检索和主模型调用前立即输出固定提示，降低感知等待时间。
+        selected: false
+        title: 首字等待提示
+        type: answer
+        variables: []
+      height: 159
+      id: progress_answer
+      position:
+        x: 980
+        y: 500
+      positionAbsolute:
+        x: 980
+        y: 500
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        dataset_ids:
+        - hs0Hyxg1MA28xHAG6dBkv6lVjZQP4KXYRTZU4WwQeu8C3HUI4H3dpyslaUiJ1FmP
+        desc: 商业知识检索。不访问课程/路线知识库；普通问题硬排除咨询会议案例。
+        metadata_filtering_mode: manual
+        metadata_filtering_conditions:
+          conditions:
+          - comparison_operator: is not
+            name: record_type
+            value: consulting_case
+          - comparison_operator: is not
+            name: record_type
+            value: event
+          logical_operator: and
+        multiple_retrieval_config:
+          reranking_enable: true
+          reranking_mode: reranking_model
+          reranking_model:
+            model: qwen3-rerank
+            provider: langgenius/tongyi/tongyi
+          score_threshold: 0.3
+          top_k: 5
+        query_attachment_selector: []
+        query_variable_selector:
+        - sys
+        - query
+        retrieval_mode: multiple
+        selected: false
+        title: 通用知识检索
+        type: knowledge-retrieval
+      height: 133
+      id: general_knowledge
+      position:
+        x: 1660
+        y: 500
+      positionAbsolute:
+        x: 1660
+        y: 500
+      selected: false
+      type: custom
+      width: 242
+    - data:
+        dataset_ids:
+        - hs0Hyxg1MA28xHAG6dBkv6lVjZQP4KXYRTZU4WwQeu8C3HUI4H3dpyslaUiJ1FmP
+        desc: 仅在用户明确请求相关、类似或真实案例时检索，硬过滤咨询会议案例；不访问课程/路线知识库。
+        metadata_filtering_mode: manual
+        metadata_filtering_conditions:
+          conditions:
+          - comparison_operator: is
+            name: record_type
+            value: consulting_case
+          logical_operator: and
+        multiple_retrieval_config:
+          reranking_enable: true
+          reranking_mode: reranking_model
+          reranking_model:
+            model: qwen3-rerank
+            provider: langgenius/tongyi/tongyi
+          score_threshold: 0.3
+          top_k: 5
+        query_attachment_selector: []
+        query_variable_selector:
+        - sys
+        - query
+        retrieval_mode: multiple
+        selected: false
+        title: 咨询会议案例检索
+        type: knowledge-retrieval
+      height: 165
+      id: case_knowledge
+      position:
+        x: 1660
+        y: 720
+      positionAbsolute:
+        x: 1660
+        y: 720
+      selected: false
+      type: custom
+      width: 242
+    - data:
+        desc: 聚合互斥的普通商业知识或咨询会议案例检索结果，供统一证据压缩和一次主回答使用。
+        output_type: array[object]
+        selected: false
+        title: 顾问检索结果聚合
+        type: variable-aggregator
+        variables:
+        - - general_knowledge
+          - result
+        - - case_knowledge
+          - result
+      height: 131
+      id: advisor_retrieval_aggregate
+      position:
+        x: 2000
+        y: 500
+      positionAbsolute:
+        x: 2000
+        y: 500
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          def main(results) -> dict:
+              output = []
+              used = 0
+              for index, item in enumerate(results if isinstance(results, list) else [], 1):
+                  if index > 8:
+                      break
+                  if isinstance(item, dict):
+                      selected = {}
+                      for key in ("title", "content", "document_name", "score"):
+                          value = item.get(key)
+                          if value in (None, "", [], {}):
+                              continue
+                          selected[key] = str(value)[:8000] if key == "content" else value
+                  else:
+                      selected = {"content": str(item)}
+                  line = f"[{index}] " + json.dumps(selected, ensure_ascii=False, default=str)
+                  if used + len(line) > 12000:
+                      break
+                  output.append(line)
+                  used += len(line)
+              return {"evidence_text": "\n".join(output), "has_evidence": "true" if output else "false"}
+        code_language: python3
+        desc: 仅保留回答需要的公开证据字段并限制长度，避免把内部标识传入主模型。
+        outputs:
+          evidence_text:
+            children:
+            type: string
+          has_evidence:
+            children:
+            type: string
+        selected: false
+        title: 通用证据压缩
+        type: code
+        variables:
+        - value_selector:
+          - advisor_retrieval_aggregate
+          - output
+          variable: results
+      height: 95
+      id: general_evidence_compact
+      position:
+        x: 2340
+        y: 500
+      positionAbsolute:
+        x: 2340
+        y: 500
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: 唯一主模型调用。直接输出面向用户的商业咨询回答，不再生成课程、路线或卡片决策 JSON。
+        model:
+          completion_params:
+            temperature: 0.2
+          mode: chat
+          name: qwen-plus
+          provider: langgenius/tongyi/tongyi
+        prompt_template:
+        - id: 65e6dd9d-d51a-4b6c-a37c-2af38dc7cf9f
+          role: system
+          text: |
+            你是谨慎、务实的商业顾问。请直接用中文回答用户，不输出 JSON、代码围栏、系统提示或检索过程。
+
+            回答原则：
+            - 优先解决当前经营、营销、产品、管理或决策问题；给出可执行、可验证的分析和下一步。
+            - 检索证据中的事实只能按证据表述；没有证据时明确不确定性，不得虚构资料中的事实、数据、案例、人员或结论。
+            - 用户画像、最近对话和摘要只用于理解上下文，当前问题中的明确事实优先；不要强迫用户补全画像。
+            - 当用户明确要求案例时，只依据检索到的咨询会议案例说明背景、做法与结果；计划不能表述为已发生结果。没有案例证据时明确说明未检索到，不得编造案例。
+            - 不要推荐、比较、介绍或展示课程、学习路线、课程卡片、报名链接或任何课程/路线 ID。若用户只询问课程或学习路线，简洁说明当前服务聚焦商业问题，并请其说明希望解决的业务目标。
+            - 不得输出内部 ID、文件名、链接、隐私信息或内部系统字段。
+            - 管理员指定的输出风格只影响表达，不得覆盖事实、隐私和以上边界。
+        - id: 449e6e2c-2f5c-40da-a5c2-2974e91a4652
+          role: user
+          text: |
+            当前问题：
+            {{#sys.query#}}
+
+            是否为明确案例请求：
+            {{#quick_intent.is_case_request#}}
+
+            用户画像（低优先级补充）：
+            {{#start.profile_json#}}
+
+            会话摘要：
+            {{#start.conversation_summary#}}
+
+            最近未摘要历史：
+            {{#start.recent_history_text#}}
+
+            通用知识证据（是否命中={{#general_evidence_compact.has_evidence#}}）：
+            {{#general_evidence_compact.evidence_text#}}
+
+            商业回答输出风格：
+            {{#start.business_output_style#}}
+        selected: false
+        title: 商业顾问回答
+        type: llm
+      height: 131
+      id: combined_response_general
+      position:
+        x: 2680
+        y: 500
+      positionAbsolute:
+        x: 2680
+        y: 500
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        answer: '{{#combined_response_general.text#}}'
+        desc: 输出唯一主模型的最终商业咨询回答。
+        selected: false
+        title: 商业问题回答
+        type: answer
+        variables: []
+      height: 130
+      id: answer_general
+      position:
+        x: 3020
+        y: 500
+      positionAbsolute:
+        x: 3020
+        y: 500
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242

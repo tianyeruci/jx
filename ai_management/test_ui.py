@@ -509,7 +509,7 @@ def business_tab(user_id: str) -> None:
                 )
                 st.success("已删除")
     with col2:
-        question = st.text_area("问题", "我想系统学习AI工具，应该从哪门课程开始？")
+        question = st.text_area("问题", "请帮我判断当前经营最该优先解决什么？")
         if st.button("发送", type="primary"):
             st.caption("即时提示")
             progress_output = st.empty()
