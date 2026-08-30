@@ -264,12 +264,16 @@ class DifyKnowledgeClient:
     def ensure_metadata_fields(self) -> dict[str, str]:
         response = self._request("GET", f"datasets/{self.dataset_id}/metadata")
         existing = response.get("doc_metadata") or response.get("data") or []
-        result = {str(item.get("name")): str(item.get("id")) for item in existing if item.get("name")}
+        result = {
+            str(item.get("name")): str(item.get("id")) for item in existing if item.get("name")
+        }
         for name in METADATA_FIELDS:
             if name in result:
                 continue
             created = self._request(
-                "POST", f"datasets/{self.dataset_id}/metadata", json={"type": "string", "name": name}
+                "POST",
+                f"datasets/{self.dataset_id}/metadata",
+                json={"type": "string", "name": name},
             )
             item = created.get("doc_metadata") or created.get("data") or created
             field_id = str(item.get("id") or "")
@@ -278,18 +282,23 @@ class DifyKnowledgeClient:
             result[name] = field_id
         return result
 
-    def set_metadata(self, document_id: str, record: dict[str, Any], field_ids: dict[str, str]) -> None:
+    def set_metadata(
+        self, document_id: str, record: dict[str, Any], field_ids: dict[str, str]
+    ) -> None:
         values = metadata_values(record)
         metadata_list = [
-            {"id": field_ids[name], "name": name, "value": values[name]}
-            for name in METADATA_FIELDS
+            {"id": field_ids[name], "name": name, "value": values[name]} for name in METADATA_FIELDS
         ]
         self._request(
             "POST",
             f"datasets/{self.dataset_id}/documents/metadata",
             json={
                 "operation_data": [
-                    {"document_id": document_id, "metadata_list": metadata_list, "partial_update": False}
+                    {
+                        "document_id": document_id,
+                        "metadata_list": metadata_list,
+                        "partial_update": False,
+                    }
                 ]
             },
         )
@@ -339,7 +348,9 @@ class DifyKnowledgeClient:
         *,
         field_types: Mapping[str, str] | None = None,
     ) -> None:
-        requested_types = {str(name): str(value).lower() for name, value in (field_types or {}).items()}
+        requested_types = {
+            str(name): str(value).lower() for name, value in (field_types or {}).items()
+        }
         metadata_list = [
             {
                 "id": field_ids[name],
@@ -358,7 +369,11 @@ class DifyKnowledgeClient:
             f"datasets/{self.dataset_id}/documents/metadata",
             json={
                 "operation_data": [
-                    {"document_id": document_id, "metadata_list": metadata_list, "partial_update": False}
+                    {
+                        "document_id": document_id,
+                        "metadata_list": metadata_list,
+                        "partial_update": False,
+                    }
                 ]
             },
         )
@@ -495,17 +510,27 @@ class DifyKnowledgeClient:
             if exc.response.status_code != 404:
                 raise
 
-    def iter_documents(self, *, page_size: int = 100) -> Iterator[dict[str, Any]]:
+    def iter_documents(
+        self, *, page_size: int = 100, max_pages: int = 1000, max_items: int = 100000
+    ) -> Iterator[dict[str, Any]]:
         page = 1
+        yielded = 0
         while True:
+            if page > max_pages:
+                raise RuntimeError("Dify文档分页超过最大页数")
             response = self.list_documents(page=page, limit=page_size)
             data = response.get("data") or []
             if isinstance(data, dict):
                 data = data.get("data") or data.get("documents") or []
             if not isinstance(data, list):
                 raise RuntimeError("Dify文档列表响应格式无效")
+            if not data and response.get("has_more"):
+                raise RuntimeError("Dify文档分页返回空页但仍声明有后续数据")
             for item in data:
                 if isinstance(item, dict):
+                    yielded += 1
+                    if yielded > max_items:
+                        raise RuntimeError("Dify文档数量超过最大限制")
                     yield item
             has_more = bool(response.get("has_more"))
             if isinstance(response.get("data"), dict):
@@ -564,9 +589,7 @@ class DifyKnowledgeClient:
         if reranking is not None:
             model.update(reranking)
         payload: dict[str, Any] = {"query": query, "retrieval_model": model}
-        response = self._request(
-            "POST", f"datasets/{self.dataset_id}/retrieve", json=payload
-        )
+        response = self._request("POST", f"datasets/{self.dataset_id}/retrieve", json=payload)
         records = response.get("records") or []
         if not isinstance(records, list):
             raise RuntimeError("Dify检索响应的records不是数组")
@@ -665,7 +688,9 @@ def _content_checksum(text: str, record: dict[str, Any]) -> str:
         "text": text,
         "metadata": metadata_values(record),
     }
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -708,7 +733,9 @@ def _load_manifest_snapshot(output_path: Path) -> tuple[list[ManifestDocument], 
         if not isinstance(record, dict):
             raise ValueError(f"清洗清单第{line_number}行必须是JSON对象")
         if str(record.get("disposition") or record.get("review_status") or "") not in {
-            "保留", "keep", "approved"
+            "保留",
+            "keep",
+            "approved",
         }:
             continue
         if not record.get("markdown_path"):
@@ -801,7 +828,9 @@ def publish_clean_output(
     known_identities = set(desired) | set(state_docs)
     for remote in client.iter_documents():
         identity = _remote_metadata(remote).get("doc_id", "")
-        if (identity in known_identities or identity.startswith(MANAGED_ID_PREFIX)) and _enabled(remote):
+        if (identity in known_identities or identity.startswith(MANAGED_ID_PREFIX)) and _enabled(
+            remote
+        ):
             remote_by_identity.setdefault(identity, []).append(remote)
 
     for item in documents:
@@ -812,9 +841,7 @@ def publish_clean_output(
         remote_ids = [str(doc.get("id") or "") for doc in remote_versions if doc.get("id")]
         previous_id = str(previous.get("document_id") or "")
         unchanged = (
-            previous.get("checksum") == item.checksum
-            and previous_id
-            and previous_id in remote_ids
+            previous.get("checksum") == item.checksum and previous_id and previous_id in remote_ids
         )
         if unchanged:
             obsolete = [doc_id for doc_id in remote_ids if doc_id != previous_id]
@@ -864,7 +891,9 @@ def publish_clean_output(
                     client.disable_document(new_id)
                     result.compensated += 1
                 except Exception as compensation_exc:
-                    _record_failure(state, item.identity, "compensation_disable_new", compensation_exc)
+                    _record_failure(
+                        state, item.identity, "compensation_disable_new", compensation_exc
+                    )
         _write_publish_state(state_path, compatibility_state_path, state)
 
     # Reconcile deletions from the current snapshot.  Sources removed from the

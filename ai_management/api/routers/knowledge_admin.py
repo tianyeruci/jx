@@ -4,6 +4,7 @@ import csv
 import io
 import json
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
@@ -16,6 +17,7 @@ from knowledge_cleaner.dify import DifyKnowledgeClient
 from ...cache import cache
 from ...cleaning import (
     STRATEGY_REGISTRY,
+    _reject_disabled_course_write,
     cleaning_batch_cache_key,
     create_cleaning_batch,
     get_cleaning_batch,
@@ -60,6 +62,20 @@ _BASES = {
     "general": {"name": "通用知识库"},
     "course": {"name": "课程知识库"},
 }
+
+
+async def _read_upload_bounded(upload: UploadFile, limit: int) -> bytes:
+    chunks: list[bytes] = []
+    size = 0
+    while True:
+        chunk = await upload.read(min(1024 * 1024, limit - size + 1))
+        if not chunk:
+            break
+        size += len(chunk)
+        if size > limit:
+            raise ServiceError("PAYLOAD_TOO_LARGE", "上传文件超过大小限制", 413, False)
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _dataset_id(kb_code: str) -> str:
@@ -157,7 +173,7 @@ def _serialize_document(
 def _documents(kb_code: str) -> list[dict[str, Any]]:
     client = _client(kb_code)
     try:
-        return list(client.iter_documents())
+        return list(client.iter_documents(max_pages=1000, max_items=100000))
     except Exception as exc:
         raise ServiceError("DIFY_UNAVAILABLE", "读取知识库文档失败", 502, True) from exc
     finally:
@@ -894,7 +910,9 @@ async def import_catalog_review_workbook(
     _dataset_id(kb_code)
     from ...catalog_review import import_catalog_review
 
-    content = await review_file.read()
+    content = await _read_upload_bounded(
+        review_file, get_settings().catalog_review_max_mb * 1024 * 1024
+    )
     try:
         result = import_catalog_review(
             session,
@@ -929,6 +947,10 @@ def retry_upload_file(
     payload = get_cleaning_batch(batch_id, session)
     if payload["knowledge_base_code"] != kb_code:
         raise ServiceError("VALIDATION_ERROR", "上传批次不属于该知识库", 404, False)
+    _reject_disabled_course_write(
+        strategy_code=str(payload.get("strategy_code") or ""),
+        knowledge_base_code=kb_code,
+    )
     return retry_cleaning_file(batch_id, file_id, session)
 
 
@@ -983,6 +1005,10 @@ def retry_upload_item(
     payload = get_cleaning_batch(batch_id, session)
     if payload["knowledge_base_code"] != kb_code:
         raise ServiceError("VALIDATION_ERROR", "上传批次不属于该知识库", 404, False)
+    _reject_disabled_course_write(
+        strategy_code=str(payload.get("strategy_code") or ""),
+        knowledge_base_code=kb_code,
+    )
     return retry_cleaning_item(batch_id, file_id, item_id, session)
 
 
@@ -1005,6 +1031,10 @@ async def review_upload_item(
     payload = get_cleaning_batch(batch_id, session)
     if payload["knowledge_base_code"] != kb_code:
         raise ServiceError("VALIDATION_ERROR", "上传批次不属于该知识库", 404, False)
+    _reject_disabled_course_write(
+        strategy_code=str(payload.get("strategy_code") or ""),
+        knowledge_base_code=kb_code,
+    )
     try:
         parsed = CleaningReviewDecisionRequest(
             action=action,
@@ -1016,7 +1046,16 @@ async def review_upload_item(
         raise ServiceError("VALIDATION_ERROR", "复核参数无效", 422, False) from exc
     markdown_text = None
     if markdown_file is not None:
-        markdown_text = (await markdown_file.read()).decode("utf-8-sig")
+        try:
+            markdown_text = (
+                await _read_upload_bounded(
+                    markdown_file, get_settings().review_markdown_max_mb * 1024 * 1024
+                )
+            ).decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise ServiceError(
+                "VALIDATION_ERROR", "复核 Markdown 必须使用 UTF-8 编码", 422, False
+            ) from exc
     return review_cleaning_item(
         batch_id,
         file_id,
@@ -1198,21 +1237,38 @@ def delete_uploaded_source(
     client = _client(kb_code) if ids else None
     try:
         for document_id in sorted(ids):
-            client.delete_document(document_id)
+            try:
+                client.delete_document(document_id)
+            except Exception as exc:
+                if not (getattr(getattr(exc, "response", None), "status_code", None) == 404):
+                    raise
+            for item in file_row.documents:
+                if item.dify_document_id == document_id:
+                    item.remote_deleted_at = datetime.now(timezone.utc)
+                    item.dify_document_id = None
+            for item in file_row.publication_shards:
+                if item.dify_document_id == document_id:
+                    item.remote_deleted_at = datetime.now(timezone.utc)
+                    item.dify_document_id = None
+            session.commit()
     except Exception as exc:
         raise ServiceError("DIFY_UNAVAILABLE", "源文件仍有知识库文档未删除", 502, True) from exc
     finally:
         if client is not None:
             client.close()
     deleted_at = datetime.now(timezone.utc)
-    for item in file_row.documents:
-        if item.dify_document_id:
-            item.remote_deleted_at = deleted_at
-            item.dify_document_id = None
-    for item in file_row.publication_shards:
-        if item.dify_document_id:
-            item.remote_deleted_at = deleted_at
-        item.dify_document_id = None
+    root = get_settings().upload_root.resolve()
+    storage_name = str(file_row.storage_filename or "")
+    storage_path = Path(storage_name)
+    if "\x00" in storage_name or storage_path.is_absolute() or ".." in storage_path.parts:
+        raise ServiceError("CLEANING_FAILED", "源文件路径不安全，未标记为完成", 500, True)
+    target = (root / str(file_row.batch_id) / storage_path).resolve(strict=False)
+    try:
+        if not target.is_relative_to(root):
+            raise ValueError("源文件路径越出上传目录")
+        target.unlink(missing_ok=True)
+    except (OSError, ValueError) as exc:
+        raise ServiceError("CLEANING_FAILED", "源文件删除失败，未标记为完成", 500, True) from exc
     file_row.dedupe_released_at = deleted_at
     file_row.source_deleted_at = deleted_at
     file_row.status = "excluded"

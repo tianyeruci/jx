@@ -644,8 +644,6 @@ def tool_tab(user_id: str, kind: str) -> None:
                     "conversation_id": conversation_id,
                     "inputs": {
                         "request": prompt,
-                        "type": current.get("type"),
-                        **({"format": current.get("output_format")} if kind == "writing" else {}),
                     },
                 },
                 user_id,

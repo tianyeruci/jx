@@ -678,11 +678,15 @@ def filter_recent_activities(
         if event_status not in statuses:
             continue
         start_value = row.get("event_start_ts")
+        if isinstance(start_value, bool) or not isinstance(start_value, (int, float)):
+            continue
         # Legacy metadata may omit end time for a point-in-time activity; the
         # point remains eligible at the exact boundary while new documents
         # always carry a concrete end timestamp.
-        end_value = row.get("event_end_ts", start_value + 1)
-        if not isinstance(start_value, (int, float)) or not isinstance(end_value, (int, float)):
+        end_value = row.get("event_end_ts")
+        if end_value is None:
+            end_value = start_value + 1
+        if isinstance(end_value, bool) or not isinstance(end_value, (int, float)):
             continue
         if include_all or include_status == "all":
             intersects = end_value >= past_ts and start_value <= future_ts

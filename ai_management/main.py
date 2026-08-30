@@ -27,6 +27,7 @@ from .db import create_schema
 from .errors import ServiceError
 from .security import user_hash
 from .services.observability import record_event
+from .services.observability.events import safe_exception_message, safe_exception_traceback
 from .services.observability.logging_config import configure_logging
 
 configure_logging()
@@ -97,11 +98,15 @@ async def request_id_middleware(request: Request, call_next):
             component="api",
             event_code="UNHANDLED_EXCEPTION",
             status="failed",
-            message=f"{type(exc).__name__}: {str(exc)[:800]}",
+            message=safe_exception_message(exc),
             request_id=request.state.request_id,
             resource_type="http_request",
             resource_id=request.url.path,
-            details={"method": request.method, "exception_type": type(exc).__name__},
+            details={
+                "method": request.method,
+                "exception_type": type(exc).__name__,
+                "traceback": safe_exception_traceback(exc),
+            },
             duration_ms=duration_ms,
         )
         raise
@@ -109,8 +114,7 @@ async def request_id_middleware(request: Request, call_next):
     raw_user_id = request.headers.get("X-User-Id")
     anonymous = user_hash(raw_user_id) if raw_user_id else ""
     logger.info(
-        "request_accepted request_id=%s method=%s path=%s status=%s "
-        "accept_ms=%s user_hash=%s",
+        "request_accepted request_id=%s method=%s path=%s status=%s accept_ms=%s user_hash=%s",
         request.state.request_id,
         request.method,
         request.url.path,
@@ -126,6 +130,9 @@ def create_app() -> FastAPI:
         title="jx-now AI Management Service",
         version="0.2.1",
         lifespan=lifespan,
+        docs_url=None if get_settings().app_env == "production" else "/docs",
+        redoc_url=None if get_settings().app_env == "production" else "/redoc",
+        openapi_url=None if get_settings().app_env == "production" else "/openapi.json",
     )
     application.add_exception_handler(ServiceError, service_error_handler)
     application.middleware("http")(request_id_middleware)
@@ -150,4 +157,7 @@ app = create_app()
 def run() -> None:
     import uvicorn
 
-    uvicorn.run("ai_management.main:app", host="0.0.0.0", port=8000, reload=False)
+    settings = get_settings()
+    uvicorn.run(
+        "ai_management.main:app", host=settings.bind_host, port=settings.bind_port, reload=False
+    )

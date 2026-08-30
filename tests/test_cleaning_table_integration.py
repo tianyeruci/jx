@@ -57,4 +57,3 @@ def test_consultation_pdf_result_cleans_markdown_after_conversion(monkeypatch, t
     assert documents[0].disposition == "awaiting_model"
     audit = documents[0].audit["pdf_conversion"]
     assert audit["markdown_table_cleaning"]["tables_converted"] == 1
-

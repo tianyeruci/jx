@@ -11,6 +11,7 @@
 5. metadata 既写审计 JSON，也可通过 Dify Knowledge API 写入真正的 Document Metadata。
 6. 默认使用 qwen3.7-plus，关闭思考模式，严格 JSON Schema + Pydantic + 业务语义校验。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -22,8 +23,9 @@ import random
 import re
 import sys
 import time
-from dataclasses import dataclass, asdict
-from datetime import datetime, time as dt_time
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from datetime import time as dt_time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -191,7 +193,14 @@ class ParsedTime:
 
 
 class QwenCallError(RuntimeError):
-    def __init__(self, message: str, *, retryable: bool = False, status_code: Optional[int] = None, request_id: str = ""):
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        status_code: Optional[int] = None,
+        request_id: str = "",
+    ):
         super().__init__(message)
         self.retryable = retryable
         self.status_code = status_code
@@ -207,14 +216,26 @@ def enrichment_json_schema() -> Dict[str, Any]:
             "event_type": {"type": "string", "enum": sorted(EVENT_TYPES)},
             "problems": {"type": "array", "items": {"type": "string"}},
             "topics": {"type": "array", "items": {"type": "string", "enum": sorted(TOPICS)}},
-            "industries": {"type": "array", "items": {"type": "string", "enum": sorted(INDUSTRIES)}},
-            "business_stages": {"type": "array", "items": {"type": "string", "enum": sorted(BUSINESS_STAGES)}},
+            "industries": {
+                "type": "array",
+                "items": {"type": "string", "enum": sorted(INDUSTRIES)},
+            },
+            "business_stages": {
+                "type": "array",
+                "items": {"type": "string", "enum": sorted(BUSINESS_STAGES)},
+            },
             "retrieval_summary": {"type": "string"},
             "search_phrases": {"type": "array", "items": {"type": "string"}},
         },
         "required": [
-            "target_audience", "event_type", "problems", "topics", "industries",
-            "business_stages", "retrieval_summary", "search_phrases",
+            "target_audience",
+            "event_type",
+            "problems",
+            "topics",
+            "industries",
+            "business_stages",
+            "retrieval_summary",
+            "search_phrases",
         ],
         "additionalProperties": False,
     }
@@ -241,10 +262,46 @@ _HARD_FACT_PATTERNS: List[re.Pattern[str]] = [
     re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)"),
 ]
 _COMMON_CITIES = [
-    "北京", "上海", "天津", "重庆", "广州", "深圳", "杭州", "南京", "苏州", "成都", "武汉",
-    "西安", "长沙", "郑州", "青岛", "厦门", "福州", "济南", "合肥", "宁波", "东莞", "佛山",
-    "珠海", "无锡", "昆明", "南昌", "沈阳", "大连", "哈尔滨", "长春", "石家庄", "太原",
-    "南宁", "海口", "贵阳", "乌鲁木齐", "兰州", "银川", "西宁", "呼和浩特",
+    "北京",
+    "上海",
+    "天津",
+    "重庆",
+    "广州",
+    "深圳",
+    "杭州",
+    "南京",
+    "苏州",
+    "成都",
+    "武汉",
+    "西安",
+    "长沙",
+    "郑州",
+    "青岛",
+    "厦门",
+    "福州",
+    "济南",
+    "合肥",
+    "宁波",
+    "东莞",
+    "佛山",
+    "珠海",
+    "无锡",
+    "昆明",
+    "南昌",
+    "沈阳",
+    "大连",
+    "哈尔滨",
+    "长春",
+    "石家庄",
+    "太原",
+    "南宁",
+    "海口",
+    "贵阳",
+    "乌鲁木齐",
+    "兰州",
+    "银川",
+    "西宁",
+    "呼和浩特",
 ]
 
 
@@ -284,10 +341,12 @@ class QwenClient:
         self.batch_file_base_url = os.getenv(
             "QWEN_BATCH_FILE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
         ).rstrip("/")
-        self.timeout = float(os.getenv(
-            "QWEN_BATCH_TIMEOUT_SECONDS" if mode == "batch_chat" else "QWEN_TIMEOUT_SECONDS",
-            "1800" if mode == "batch_chat" else "180",
-        ))
+        self.timeout = float(
+            os.getenv(
+                "QWEN_BATCH_TIMEOUT_SECONDS" if mode == "batch_chat" else "QWEN_TIMEOUT_SECONDS",
+                "1800" if mode == "batch_chat" else "180",
+            )
+        )
         self.max_retries = max(1, int(os.getenv("QWEN_MAX_RETRIES", "3")))
         self.max_tokens = int(os.getenv("QWEN_MAX_TOKENS", "2500"))
         self.semantic_repair_retries = max(0, int(os.getenv("QWEN_SEMANTIC_REPAIR_RETRIES", "1")))
@@ -300,7 +359,9 @@ class QwenClient:
             raise RuntimeError("未设置 BAILIAN_API_KEY")
         return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
-    def _build_payload(self, system: str, user: str, schema_name: str, schema: Dict[str, Any]) -> Dict[str, Any]:
+    def _build_payload(
+        self, system: str, user: str, schema_name: str, schema: Dict[str, Any]
+    ) -> Dict[str, Any]:
         return {
             "model": self.model,
             "messages": [
@@ -324,7 +385,9 @@ class QwenClient:
     def _retryable_status(status: int) -> bool:
         return status in {408, 409, 429} or status >= 500
 
-    def _post_json_with_retry(self, url: str, payload: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+    def _post_json_with_retry(
+        self, url: str, payload: Dict[str, Any], timeout: float
+    ) -> Dict[str, Any]:
         headers = self._headers()
         last_error: Optional[Exception] = None
         for attempt in range(1, self.max_retries + 1):
@@ -337,7 +400,7 @@ class QwenClient:
                 if not resp.ok:
                     retryable = self._retryable_status(resp.status_code)
                     err = QwenCallError(
-                        f"Qwen HTTP {resp.status_code}: {resp.text[:800]}",
+                        f"Qwen HTTP {resp.status_code}",
                         retryable=retryable,
                         status_code=resp.status_code,
                         request_id=request_id,
@@ -347,10 +410,19 @@ class QwenClient:
                     last_error = err
                     retry_after = resp.headers.get("Retry-After", "")
                     try:
-                        sleep_s = float(retry_after) if retry_after else min(2 ** attempt + random.random(), 60)
+                        sleep_s = (
+                            float(retry_after)
+                            if retry_after
+                            else min(2**attempt + random.random(), 60)
+                        )
                     except ValueError:
-                        sleep_s = min(2 ** attempt + random.random(), 60)
-                    logging.warning("Qwen 临时错误，第 %s/%s 次，%.1fs 后重试: %s", attempt, self.max_retries, sleep_s, err)
+                        sleep_s = min(2**attempt + random.random(), 60)
+                    logging.warning(
+                        "Qwen 临时错误，第 %s/%s 次，%.1fs 后重试",
+                        attempt,
+                        self.max_retries,
+                        sleep_s,
+                    )
                     time.sleep(sleep_s)
                     continue
                 return resp.json()
@@ -360,8 +432,14 @@ class QwenClient:
                 last_error = exc
                 if attempt >= self.max_retries:
                     break
-                sleep_s = min(2 ** attempt + random.random(), 60)
-                logging.warning("Qwen 网络/超时错误，第 %s/%s 次，%.1fs 后重试: %s", attempt, self.max_retries, sleep_s, exc)
+                sleep_s = min(2**attempt + random.random(), 60)
+                logging.warning(
+                    "Qwen 网络/超时错误，第 %s/%s 次，%.1fs 后重试: %s",
+                    attempt,
+                    self.max_retries,
+                    sleep_s,
+                    exc,
+                )
                 time.sleep(sleep_s)
             except requests.RequestException as exc:
                 # 其它本地/协议错误不盲目重试。
@@ -370,7 +448,9 @@ class QwenClient:
                 raise QwenCallError(f"Qwen 响应不是合法 JSON: {exc}", retryable=False) from exc
         raise QwenCallError(f"Qwen 网络调用最终失败: {last_error}", retryable=True)
 
-    def _chat_structured(self, system: str, user: str, schema_name: str, schema: Dict[str, Any]) -> Dict[str, Any]:
+    def _chat_structured(
+        self, system: str, user: str, schema_name: str, schema: Dict[str, Any]
+    ) -> Dict[str, Any]:
         if self.mock:
             raise RuntimeError("mock 模式不应调用真实 _chat_structured")
         payload = self._build_payload(system, user, schema_name, schema)
@@ -381,9 +461,14 @@ class QwenClient:
             choice = data["choices"][0]
             finish_reason = choice.get("finish_reason")
             if finish_reason == "length":
-                raise QwenCallError("Qwen 输出因 max_tokens 截断；请提高 QWEN_MAX_TOKENS 或缩小单活动输入", retryable=False)
+                raise QwenCallError(
+                    "Qwen 输出因 max_tokens 截断；请提高 QWEN_MAX_TOKENS 或缩小单活动输入",
+                    retryable=False,
+                )
             if finish_reason not in (None, "stop"):
-                raise QwenCallError(f"Qwen 非正常结束: finish_reason={finish_reason}", retryable=False)
+                raise QwenCallError(
+                    f"Qwen 非正常结束: finish_reason={finish_reason}", retryable=False
+                )
             content = choice["message"]["content"]
             if not isinstance(content, str) or not content.strip():
                 raise QwenCallError("Qwen 返回空内容", retryable=False)
@@ -411,7 +496,9 @@ class QwenClient:
         finally:
             self.mode = old_mode
 
-    def build_enrichment_messages(self, facts: EventFacts, repair_error: str = "") -> Tuple[str, str]:
+    def build_enrichment_messages(
+        self, facts: EventFacts, repair_error: str = ""
+    ) -> Tuple[str, str]:
         # 只向模型提供完成语义任务所需证据；硬事实不参与 AI 生成，减少污染与误改风险。
         evidence = {
             "活动名称": facts.name,
@@ -481,12 +568,24 @@ class QwenClient:
                 last_validation_error = str(exc)
                 if repair_idx >= self.semantic_repair_retries:
                     raise RuntimeError(f"Qwen 结果业务/结构校验最终失败: {exc}") from exc
-                logging.warning("Qwen 结果未通过校验，执行定向修复 %s/%s: %s", repair_idx + 1, self.semantic_repair_retries, exc)
+                logging.warning(
+                    "Qwen 结果未通过校验，执行定向修复 %s/%s: %s",
+                    repair_idx + 1,
+                    self.semantic_repair_retries,
+                    exc,
+                )
         raise RuntimeError("Qwen 语义增强未获得有效结果")
 
-    def _batch_api_request(self, method: str, path: str, *, json_body: Optional[Dict[str, Any]] = None,
-                           files: Optional[Dict[str, Any]] = None, data: Optional[Dict[str, Any]] = None,
-                           timeout: float = 180.0) -> requests.Response:
+    def _batch_api_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: Optional[Dict[str, Any]] = None,
+        files: Optional[Dict[str, Any]] = None,
+        data: Optional[Dict[str, Any]] = None,
+        timeout: float = 180.0,
+    ) -> requests.Response:
         if not self.api_key:
             raise RuntimeError("未设置 BAILIAN_API_KEY")
         url = f"{self.batch_file_base_url}{path}"
@@ -499,13 +598,22 @@ class QwenClient:
             if attempt > 1:
                 self.retry_count += 1
             try:
-                resp = requests.request(method, url, headers=headers, json=json_body, files=files, data=data, timeout=timeout)
+                resp = requests.request(
+                    method,
+                    url,
+                    headers=headers,
+                    json=json_body,
+                    files=files,
+                    data=data,
+                    timeout=timeout,
+                )
                 if resp.ok:
                     return resp
                 retryable = self._retryable_status(resp.status_code)
                 err = QwenCallError(
-                    f"Qwen Batch File HTTP {resp.status_code}: {resp.text[:800]}",
-                    retryable=retryable, status_code=resp.status_code,
+                    f"Qwen Batch File HTTP {resp.status_code}",
+                    retryable=retryable,
+                    status_code=resp.status_code,
                     request_id=resp.headers.get("x-request-id", ""),
                 )
                 if not retryable or attempt >= self.max_retries:
@@ -517,8 +625,13 @@ class QwenClient:
                 last_error = exc
                 if attempt >= self.max_retries:
                     break
-            sleep_s = min(2 ** attempt + random.random(), 60)
-            logging.warning("Qwen Batch File 临时错误，第 %s/%s 次，%.1fs 后重试: %s", attempt, self.max_retries, sleep_s, last_error)
+            sleep_s = min(2**attempt + random.random(), 60)
+            logging.warning(
+                "Qwen Batch File 临时错误，第 %s/%s 次，%.1fs 后重试",
+                attempt,
+                self.max_retries,
+                sleep_s,
+            )
             time.sleep(sleep_s)
         raise QwenCallError(f"Qwen Batch File 调用最终失败: {last_error}", retryable=True)
 
@@ -551,7 +664,9 @@ class QwenClient:
         except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"Batch 子任务响应解析失败: {exc}") from exc
 
-    def enrich_many_batch_file(self, items: List[Tuple[str, EventFacts]], base_dir: Path) -> Dict[str, AIEnrichment]:
+    def enrich_many_batch_file(
+        self, items: List[Tuple[str, EventFacts]], base_dir: Path
+    ) -> Dict[str, AIEnrichment]:
         """真正的 Batch File：JSONL 上传 -> 创建异步任务 -> 轮询 -> 下载结果。"""
         if self.mock:
             return {cid: self.enrich(facts) for cid, facts in items}
@@ -562,19 +677,25 @@ class QwenClient:
         input_path = job_dir / "input.jsonl"
         with input_path.open("w", encoding="utf-8") as f:
             for cid, facts in items:
-                f.write(json.dumps(self.build_batch_input_line(cid, facts), ensure_ascii=False) + "\n")
+                f.write(
+                    json.dumps(self.build_batch_input_line(cid, facts), ensure_ascii=False) + "\n"
+                )
 
         with input_path.open("rb") as fh:
             upload = self._batch_api_request(
-                "POST", "/files", files={"file": (input_path.name, fh, "application/jsonl")},
-                data={"purpose": "batch"}, timeout=self.timeout,
+                "POST",
+                "/files",
+                files={"file": (input_path.name, fh, "application/jsonl")},
+                data={"purpose": "batch"},
+                timeout=self.timeout,
             ).json()
         input_file_id = upload.get("id")
         if not input_file_id:
             raise RuntimeError(f"Batch File 上传响应缺少 id: {upload}")
 
         batch = self._batch_api_request(
-            "POST", "/batches",
+            "POST",
+            "/batches",
             json_body={
                 "input_file_id": input_file_id,
                 "endpoint": "/v1/chat/completions",
@@ -586,34 +707,48 @@ class QwenClient:
         batch_id = batch.get("id")
         if not batch_id:
             raise RuntimeError(f"创建 Batch 响应缺少 id: {batch}")
-        (job_dir / "job_created.json").write_text(json.dumps(batch, ensure_ascii=False, indent=2), encoding="utf-8")
+        (job_dir / "job_created.json").write_text(
+            json.dumps(batch, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
         poll_seconds = max(1.0, float(os.getenv("QWEN_BATCH_POLL_SECONDS", "10")))
         max_wait = max(60.0, float(os.getenv("QWEN_BATCH_MAX_WAIT_SECONDS", "86400")))
         started = time.monotonic()
         terminal = {"completed", "failed", "expired", "cancelled"}
         while True:
-            batch = self._batch_api_request("GET", f"/batches/{batch_id}", timeout=self.timeout).json()
+            batch = self._batch_api_request(
+                "GET", f"/batches/{batch_id}", timeout=self.timeout
+            ).json()
             status = str(batch.get("status", ""))
             if status in terminal:
                 break
             if time.monotonic() - started > max_wait:
-                raise RuntimeError(f"Batch File 等待超过 QWEN_BATCH_MAX_WAIT_SECONDS，batch_id={batch_id}")
+                raise RuntimeError(
+                    f"Batch File 等待超过 QWEN_BATCH_MAX_WAIT_SECONDS，batch_id={batch_id}"
+                )
             logging.info("Batch File %s 状态=%s，继续等待", batch_id, status or "unknown")
             time.sleep(poll_seconds)
-        (job_dir / "job_final.json").write_text(json.dumps(batch, ensure_ascii=False, indent=2), encoding="utf-8")
+        (job_dir / "job_final.json").write_text(
+            json.dumps(batch, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         if batch.get("status") != "completed":
-            raise RuntimeError(f"Batch File 未成功完成: status={batch.get('status')} batch_id={batch_id}")
+            raise RuntimeError(
+                f"Batch File 未成功完成: status={batch.get('status')} batch_id={batch_id}"
+            )
 
         output_file_id = batch.get("output_file_id")
         if not output_file_id:
             raise RuntimeError(f"Batch File completed 但缺少 output_file_id: {batch}")
-        output_text = self._batch_api_request("GET", f"/files/{output_file_id}/content", timeout=self.timeout).text
+        output_text = self._batch_api_request(
+            "GET", f"/files/{output_file_id}/content", timeout=self.timeout
+        ).text
         output_path = job_dir / "output.jsonl"
         output_path.write_text(output_text, encoding="utf-8")
         error_file_id = batch.get("error_file_id")
         if error_file_id:
-            error_text = self._batch_api_request("GET", f"/files/{error_file_id}/content", timeout=self.timeout).text
+            error_text = self._batch_api_request(
+                "GET", f"/files/{error_file_id}/content", timeout=self.timeout
+            ).text
             (job_dir / "error.jsonl").write_text(error_text, encoding="utf-8")
 
         facts_by_id = {cid: facts for cid, facts in items}
@@ -635,7 +770,12 @@ class QwenClient:
         for cid in missing_ids:
             failures.setdefault(cid, "Batch 输出中没有有效结果")
 
-        if failures and os.getenv("QWEN_BATCH_FALLBACK_REALTIME", "true").lower() in {"1", "true", "yes", "on"}:
+        if failures and os.getenv("QWEN_BATCH_FALLBACK_REALTIME", "true").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
             logging.warning("Batch File 有 %s 个子任务失败，按配置逐条回退实时 API", len(failures))
             fallback = QwenClient(mode="realtime", mock=False)
             for cid in list(failures):
@@ -647,11 +787,14 @@ class QwenClient:
             self.call_count += fallback.call_count
             self.retry_count += fallback.retry_count
 
-        (job_dir / "failures.json").write_text(json.dumps(failures, ensure_ascii=False, indent=2), encoding="utf-8")
+        (job_dir / "failures.json").write_text(
+            json.dumps(failures, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         # 不让单个 Batch 子任务污染其余结果；调用方按 event_id 分别记录失败。
         for cid, msg in failures.items():
             logging.error("Batch 子任务失败 event_id=%s: %s", cid, msg)
         return results
+
 
 def clean_value(v: str) -> str:
     v = (v or "").strip()
@@ -726,7 +869,10 @@ def infer_delivery_mode(mode_raw: str, location: str) -> str:
 def is_uncertain_location(location: str) -> bool:
     """只有纯粹的待定/未公布占位语不能作为线下地点事实。"""
     value = clean_value(location).lower()
-    return bool(re.fullmatch(r"(?:待定|待公布|待确认|另行通知|稍后公布|暂无|未知|tbd)", value, re.I))
+    return bool(
+        re.fullmatch(r"(?:待定|待公布|待确认|另行通知|稍后公布|暂无|未知|tbd)", value, re.I)
+    )
+
 
 def extract_city(location: str, delivery_mode: str) -> str:
     if not location or delivery_mode == "online":
@@ -738,10 +884,46 @@ def extract_city(location: str, delivery_mode: str) -> str:
         return m.group(1).removesuffix("市")
     # 常见直辖市/城市简写。只从地点原文中取，不生成新城市。
     common = [
-        "北京", "上海", "天津", "重庆", "广州", "深圳", "杭州", "南京", "苏州", "成都", "武汉",
-        "西安", "长沙", "郑州", "青岛", "厦门", "福州", "济南", "合肥", "宁波", "东莞", "佛山",
-        "珠海", "无锡", "昆明", "南昌", "沈阳", "大连", "哈尔滨", "长春", "石家庄", "太原",
-        "南宁", "海口", "贵阳", "乌鲁木齐", "兰州", "银川", "西宁", "呼和浩特"
+        "北京",
+        "上海",
+        "天津",
+        "重庆",
+        "广州",
+        "深圳",
+        "杭州",
+        "南京",
+        "苏州",
+        "成都",
+        "武汉",
+        "西安",
+        "长沙",
+        "郑州",
+        "青岛",
+        "厦门",
+        "福州",
+        "济南",
+        "合肥",
+        "宁波",
+        "东莞",
+        "佛山",
+        "珠海",
+        "无锡",
+        "昆明",
+        "南昌",
+        "沈阳",
+        "大连",
+        "哈尔滨",
+        "长春",
+        "石家庄",
+        "太原",
+        "南宁",
+        "海口",
+        "贵阳",
+        "乌鲁木齐",
+        "兰州",
+        "银川",
+        "西宁",
+        "呼和浩特",
     ]
     for city in common:
         if city in loc:
@@ -761,7 +943,20 @@ def normalize_source_status(raw: str) -> str:
         return "full"
     if any(k in x for k in ["报名截止", "停止报名", "关闭报名"]):
         return "registration_closed"
-    if any(k in x for k in ["正常", "报名", "进行中", "已开营", "开放", "可报名", "即将开始", "未开始", "待开营"]):
+    if any(
+        k in x
+        for k in [
+            "正常",
+            "报名",
+            "进行中",
+            "已开营",
+            "开放",
+            "可报名",
+            "即将开始",
+            "未开始",
+            "待开营",
+        ]
+    ):
         return "active"
     return "unknown"
 
@@ -855,7 +1050,9 @@ ISO_DT_RE = re.compile(
 )
 
 
-def _dt_from_match(m: re.Match[str], tz: ZoneInfo, end_of_day_if_no_time: bool = False) -> Tuple[datetime, bool]:
+def _dt_from_match(
+    m: re.Match[str], tz: ZoneInfo, end_of_day_if_no_time: bool = False
+) -> Tuple[datetime, bool]:
     y, mo, d = int(m.group("y")), int(m.group("m")), int(m.group("d"))
     h = m.groupdict().get("h")
     mi = m.groupdict().get("mi")
@@ -868,13 +1065,20 @@ def _dt_from_match(m: re.Match[str], tz: ZoneInfo, end_of_day_if_no_time: bool =
 
 
 def parse_event_time(raw: str, timezone: str = DEFAULT_TZ) -> ParsedTime:
-    text = clean_value(raw).replace("至", "—").replace("到", "—").replace("~", "—").replace("～", "—").replace("–", "—")
+    text = (
+        clean_value(raw)
+        .replace("至", "—")
+        .replace("到", "—")
+        .replace("~", "—")
+        .replace("～", "—")
+        .replace("–", "—")
+    )
     tz = ZoneInfo(timezone)
     first = CHINESE_DT_RE.search(text) or ISO_DT_RE.search(text)
     if not first:
         raise ValueError("活动时间必须包含明确的年、月、日")
     start, start_has_time = _dt_from_match(first, tz, end_of_day_if_no_time=False)
-    remainder = text[first.end():].strip()
+    remainder = text[first.end() :].strip()
     remainder = re.sub(r"^[\s—-]+", "", remainder)
 
     if not remainder:
@@ -896,7 +1100,10 @@ def parse_event_time(raw: str, timezone: str = DEFAULT_TZ) -> ParsedTime:
         return ParsedTime(start, end, start_has_time, end_has_time, raw)
 
     # 2) 同年：8月23日 [HH:MM]
-    m2 = re.search(r"(?P<m>\d{1,2})\s*月\s*(?P<d>\d{1,2})\s*日?(?:\s*(?P<h>\d{1,2})\s*[:：]\s*(?P<mi>\d{2}))?", remainder)
+    m2 = re.search(
+        r"(?P<m>\d{1,2})\s*月\s*(?P<d>\d{1,2})\s*日?(?:\s*(?P<h>\d{1,2})\s*[:：]\s*(?P<mi>\d{2}))?",
+        remainder,
+    )
     if m2:
         has_time = m2.group("h") is not None
         h = int(m2.group("h")) if has_time else 23
@@ -1003,7 +1210,9 @@ def audit_facts(facts: EventFacts) -> Dict[str, Any]:
     return data
 
 
-def metadata_for_event(facts: EventFacts, ai: AIEnrichment, pt: ParsedTime, event_id: str, timezone: str = DEFAULT_TZ) -> Dict[str, Any]:
+def metadata_for_event(
+    facts: EventFacts, ai: AIEnrichment, pt: ParsedTime, event_id: str, timezone: str = DEFAULT_TZ
+) -> Dict[str, Any]:
     meta: Dict[str, Any] = {
         "record_type": "event",
         "event_id": event_id,
@@ -1033,7 +1242,9 @@ def render_markdown(facts: EventFacts, ai: AIEnrichment, pt: ParsedTime, event_i
     problem_md = "\n".join(f"- {x}" for x in problems) if problems else "- 未提供"
     phrases_md = "\n".join(f"- {x}" for x in ai.search_phrases)
 
-    mode_label = {"online": "线上", "offline": "线下", "hybrid": "线上+线下"}.get(facts.delivery_mode, facts.delivery_mode)
+    mode_label = {"online": "线上", "offline": "线下", "hybrid": "线上+线下"}.get(
+        facts.delivery_mode, facts.delivery_mode
+    )
     facts_lines = [
         f"- 活动类型：{ai.event_type}",
         f"- 活动时间：{facts.time_raw}",
@@ -1051,7 +1262,8 @@ def render_markdown(facts: EventFacts, ai: AIEnrichment, pt: ParsedTime, event_i
     ]
     facts_lines.extend(f"- {k}：{v}" for k, v in optional if v)
 
-    return f"""# {facts.name}
+    return (
+        f"""# {facts.name}
 
 {child}
 
@@ -1088,7 +1300,9 @@ def render_markdown(facts: EventFacts, ai: AIEnrichment, pt: ParsedTime, event_i
 ## 用户可能的检索表达
 
 {phrases_md}
-""".strip() + "\n"
+""".strip()
+        + "\n"
+    )
 
 
 DIFY_METADATA_TYPES: Dict[str, str] = {
@@ -1115,7 +1329,9 @@ class DifyClient:
         self.dataset_id = os.getenv("DIFY_DATASET_ID", "")
         self.timeout = float(os.getenv("DIFY_TIMEOUT_SECONDS", "60"))
         if not (self.base and self.api_key and self.dataset_id):
-            raise RuntimeError("启用 --upload-dify 时必须设置 DIFY_API_BASE / DIFY_API_KEY / DIFY_DATASET_ID")
+            raise RuntimeError(
+                "启用 --upload-dify 时必须设置 DIFY_API_BASE / DIFY_API_KEY / DIFY_DATASET_ID"
+            )
 
     @property
     def headers(self) -> Dict[str, str]:
@@ -1125,7 +1341,7 @@ class DifyClient:
         url = f"{self.base}{path}"
         resp = requests.request(method, url, headers=self.headers, timeout=self.timeout, **kwargs)
         if not resp.ok:
-            raise RuntimeError(f"Dify HTTP {resp.status_code} {path}: {resp.text[:1000]}")
+            raise RuntimeError(f"Dify HTTP {resp.status_code} {path}")
         if not resp.text.strip():
             return {}
         return resp.json()
@@ -1194,7 +1410,9 @@ class DifyClient:
             "process_rule": self.hierarchical_process_rule(),
         }
         return self._request(
-            "POST", f"/datasets/{self.dataset_id}/documents/{document_id}/update-by-text", json=payload
+            "POST",
+            f"/datasets/{self.dataset_id}/documents/{document_id}/update-by-text",
+            json=payload,
         )
 
     def set_document_metadata(
@@ -1261,7 +1479,9 @@ class RunLogger:
             },
         )
 
-    def error(self, facts: Optional[EventFacts], error: Exception, stage: str, source_file: str = "") -> None:
+    def error(
+        self, facts: Optional[EventFacts], error: Exception, stage: str, source_file: str = ""
+    ) -> None:
         self.summary["events_failed"] += 1
         self.jsonl(
             self.errors_path,
@@ -1280,7 +1500,9 @@ class RunLogger:
             self.summary["qwen_calls"] = qwen.call_count
             self.summary["qwen_retries"] = qwen.retry_count
         self.summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
-        self.summary_path.write_text(json.dumps(self.summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.summary_path.write_text(
+            json.dumps(self.summary, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
 
 def find_input_files(base_dir: Path) -> List[Path]:
@@ -1377,14 +1599,20 @@ def finalize_event(
 
     manifest_path = base_dir / "output" / "manifest.jsonl"
     with manifest_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps({
-            "event_id": event_id,
-            "event_name": facts.name,
-            "source_ref": facts.source_file,
-            "markdown": str(md_path),
-            "metadata": str(meta_path),
-            "schema_version": SCHEMA_VERSION,
-        }, ensure_ascii=False) + "\n")
+        f.write(
+            json.dumps(
+                {
+                    "event_id": event_id,
+                    "event_name": facts.name,
+                    "source_ref": facts.source_file,
+                    "markdown": str(md_path),
+                    "metadata": str(meta_path),
+                    "schema_version": SCHEMA_VERSION,
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
 
     runlog.summary["events_cleaned"] += 1
 
@@ -1433,17 +1661,28 @@ def process_one_event(
     missing, pt = validate_required(facts, timezone)
     if missing or pt is None:
         runlog.skipped(facts, missing)
-        logging.warning("跳过活动 #%s %s: %s", facts.source_index, facts.name or "<无名称>", ", ".join(missing))
+        logging.warning(
+            "跳过活动 #%s %s: %s", facts.source_index, facts.name or "<无名称>", ", ".join(missing)
+        )
         return
 
     event_id = stable_event_id(facts.name, pt.start, facts.business_event_id)
     ai = qwen.enrich(facts)
     finalize_event(
-        facts=facts, ai=ai, pt=pt, event_id=event_id,
-        base_dir=base_dir, timezone=timezone, runlog=runlog,
-        dify=dify, dify_fields=dify_fields, state=state, state_path=state_path,
+        facts=facts,
+        ai=ai,
+        pt=pt,
+        event_id=event_id,
+        base_dir=base_dir,
+        timezone=timezone,
+        runlog=runlog,
+        dify=dify,
+        dify_fields=dify_fields,
+        state=state,
+        state_path=state_path,
         qwen_mode=qwen.mode,
     )
+
 
 def run(args: argparse.Namespace) -> int:
     base_dir = Path(args.base_dir).resolve()
@@ -1498,7 +1737,9 @@ def run(args: argparse.Namespace) -> int:
         blocks = split_by_activity_name(text)
         if not blocks:
             try:
-                logging.info("未发现标准‘活动名称：’边界，使用 Qwen 兜底切分: %s", source_identifier)
+                logging.info(
+                    "未发现标准‘活动名称：’边界，使用 Qwen 兜底切分: %s", source_identifier
+                )
                 blocks = qwen.split_events(text)
             except Exception as exc:
                 runlog.error(None, exc, "split_events", source_identifier)
@@ -1512,7 +1753,9 @@ def run(args: argparse.Namespace) -> int:
                 missing, pt = validate_required(facts, args.timezone)
                 if missing or pt is None:
                     runlog.skipped(facts, missing)
-                    logging.warning("跳过活动 #%s %s: %s", idx, facts.name or "<无名称>", ", ".join(missing))
+                    logging.warning(
+                        "跳过活动 #%s %s: %s", idx, facts.name or "<无名称>", ", ".join(missing)
+                    )
                     continue
                 event_id = stable_event_id(facts.name, pt.start, facts.business_event_id)
                 batch_items.append((event_id, facts, pt))
@@ -1539,7 +1782,9 @@ def run(args: argparse.Namespace) -> int:
         by_id: Dict[str, Tuple[EventFacts, ParsedTime]] = {}
         for event_id, facts, pt in batch_items:
             if event_id in by_id:
-                logging.warning("发现重复 event_id=%s，Batch 中保留后出现的活动: %s", event_id, facts.name)
+                logging.warning(
+                    "发现重复 event_id=%s，Batch 中保留后出现的活动: %s", event_id, facts.name
+                )
             by_id[event_id] = (facts, pt)
         batch_job_failed = False
         try:
@@ -1559,13 +1804,23 @@ def run(args: argparse.Namespace) -> int:
             if ai is None:
                 if not batch_job_failed:
                     # 子任务失败细节已写 batch_jobs/failures.json；这里为活动级日志留明确出口。
-                    runlog.error(facts, RuntimeError("Batch File 未获得有效 AI 结果"), "batch_file_result")
+                    runlog.error(
+                        facts, RuntimeError("Batch File 未获得有效 AI 结果"), "batch_file_result"
+                    )
                 continue
             try:
                 finalize_event(
-                    facts=facts, ai=ai, pt=pt, event_id=event_id,
-                    base_dir=base_dir, timezone=args.timezone, runlog=runlog,
-                    dify=dify, dify_fields=dify_fields, state=state, state_path=state_path,
+                    facts=facts,
+                    ai=ai,
+                    pt=pt,
+                    event_id=event_id,
+                    base_dir=base_dir,
+                    timezone=args.timezone,
+                    runlog=runlog,
+                    dify=dify,
+                    dify_fields=dify_fields,
+                    state=state,
+                    state_path=state_path,
                     qwen_mode="batch_file",
                 )
             except Exception as exc:
@@ -1575,6 +1830,7 @@ def run(args: argparse.Namespace) -> int:
     runlog.finish(qwen)
     logging.info("完成: %s", json.dumps(runlog.summary, ensure_ascii=False))
     return 0
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="老板活动 Markdown RAG 清洗器")
@@ -1587,8 +1843,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="realtime",
         help="realtime=实时API；batch_chat=单请求同步排队端点；batch_file=真正JSONL异步批处理",
     )
-    p.add_argument("--upload-dify", action="store_true", help="清洗后创建/更新 Dify 文档并写入 Document Metadata")
-    p.add_argument("--mock-ai", action="store_true", help="仅用于本地结构测试，不调用千问；生产不要使用")
+    p.add_argument(
+        "--upload-dify",
+        action="store_true",
+        help="清洗后创建/更新 Dify 文档并写入 Document Metadata",
+    )
+    p.add_argument(
+        "--mock-ai", action="store_true", help="仅用于本地结构测试，不调用千问；生产不要使用"
+    )
     return p
 
 

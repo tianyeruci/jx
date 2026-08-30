@@ -1737,7 +1737,33 @@ def validate_uploaded_file(path: Path, suffix: str, content_type: str | None) ->
     if suffix in {".docx", ".xlsx"}:
         try:
             with zipfile.ZipFile(path) as archive:
-                names = set(archive.namelist())
+                settings = get_settings()
+                infos = archive.infolist()
+                if len(infos) > settings.ooxml_max_entries:
+                    raise ValueError("OOXML压缩包条目数超过限制")
+                total_size = 0
+                for info in infos:
+                    name = info.filename
+                    if (
+                        "\x00" in name
+                        or PurePath(name).is_absolute()
+                        or ".." in PurePath(name).parts
+                    ):
+                        raise ValueError("OOXML压缩包包含非法路径")
+                    if info.file_size > settings.ooxml_max_entry_mb * 1024 * 1024:
+                        raise ValueError("OOXML压缩包单条目未压缩大小超过限制")
+                    total_size += info.file_size
+                    if total_size > settings.ooxml_max_total_uncompressed_mb * 1024 * 1024:
+                        raise ValueError("OOXML压缩包总未压缩大小超过限制")
+                    if info.file_size and info.compress_size == 0:
+                        raise ValueError("OOXML压缩包包含异常压缩条目")
+                    if (
+                        info.file_size
+                        and info.file_size / max(info.compress_size, 1)
+                        > settings.ooxml_max_compression_ratio
+                    ):
+                        raise ValueError("OOXML压缩包压缩比超过限制")
+                names = {info.filename for info in infos}
                 required = "word/document.xml" if suffix == ".docx" else "xl/workbook.xml"
                 if "[Content_Types].xml" not in names or required not in names:
                     raise ValueError(f"{suffix.upper()[1:]}内部结构无效")
@@ -2299,9 +2325,38 @@ async def create_cleaning_batch(
             True,
         )
     try:
-        parsed_metadata = json.loads(common_metadata or "{}")
+        raw_metadata = (common_metadata or "{}").encode("utf-8")
+        if len(raw_metadata) > get_settings().common_metadata_max_bytes:
+            raise ValueError("公共 Metadata 超过大小限制")
+        parsed_metadata = json.loads(
+            raw_metadata, parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value))
+        )
         if not isinstance(parsed_metadata, dict):
             raise ValueError
+        limits = get_settings()
+        key_count = 0
+
+        def validate_metadata(value: Any, depth: int = 0) -> None:
+            nonlocal key_count
+            if depth > limits.common_metadata_max_depth:
+                raise ValueError("公共 Metadata 嵌套层级超过限制")
+            if isinstance(value, dict):
+                key_count += len(value)
+                if key_count > limits.common_metadata_max_keys:
+                    raise ValueError("公共 Metadata 字段数量超过限制")
+                for key, item in value.items():
+                    if len(str(key)) > 128:
+                        raise ValueError("公共 Metadata 字段名过长")
+                    validate_metadata(item, depth + 1)
+            elif isinstance(value, list):
+                if len(value) > limits.common_metadata_max_list_items:
+                    raise ValueError("公共 Metadata 列表项超过限制")
+                for item in value:
+                    validate_metadata(item, depth + 1)
+            elif isinstance(value, str) and len(value) > limits.common_metadata_max_string_chars:
+                raise ValueError("公共 Metadata 字符串过长")
+
+        validate_metadata(parsed_metadata)
     except ValueError as exc:
         raise ServiceError(
             "VALIDATION_ERROR", "公共 Metadata 必须是 JSON 对象", 422, False

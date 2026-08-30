@@ -312,6 +312,10 @@ class CleaningFile(Base, TimestampMixin):
     error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     replace_document_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     outcome: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     source_expires_at: Mapped[datetime | None] = mapped_column(
@@ -422,6 +426,10 @@ class ModelCleaningTask(Base, TimestampMixin):
     actual_usage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     cleanup_status: Mapped[str] = mapped_column(String(32), default="not_started")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     last_error: Mapped[str] = mapped_column(Text, default="")
 
     batch: Mapped[CleaningBatch] = relationship(back_populates="model_tasks")
@@ -471,6 +479,11 @@ class ExternalDeletionTask(Base, TimestampMixin):
         DateTime(timezone=True), default=utcnow, index=True
     )
     last_error: Mapped[str] = mapped_column(Text, default="")
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    __table_args__ = (UniqueConstraint("kind", "external_id", name="uq_external_deletion_kind_id"),)
 
 
 class ToolConversation(Base, TimestampMixin):

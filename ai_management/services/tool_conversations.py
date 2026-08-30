@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import timezone
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -10,6 +11,7 @@ from ..cache import cache
 from ..errors import ServiceError
 from ..models import ExternalDeletionTask, ToolConversation, ToolMessage
 from ..security import user_hash
+from ..timeutil import BUSINESS_TIMEZONE, business_today
 
 KINDS = {"moments": {"sales", "seeding", "polish"}, "writing": {"polish", "expand"}}
 GUIDES = {
@@ -41,13 +43,38 @@ def validate_type(kind: str, value: str) -> str:
 
 
 def _current(session: Session, user_id: str, kind: str) -> ToolConversation | None:
-    return session.scalar(
+    row = session.scalar(
         select(ToolConversation).where(
             ToolConversation.user_hash == user_hash(user_id),
             ToolConversation.kind == validate_kind(kind),
             ToolConversation.status == "active",
         )
     )
+    if row is None or row.last_active_at is None:
+        return row
+    last_active = row.last_active_at
+    if last_active.tzinfo is None:
+        last_active = last_active.replace(tzinfo=timezone.utc)
+    if last_active.astimezone(BUSINESS_TIMEZONE).date() >= business_today():
+        return row
+    if row.dify_conversation_id:
+        exists = session.scalar(
+            select(ExternalDeletionTask).where(
+                ExternalDeletionTask.kind == "dify_tool_conversation",
+                ExternalDeletionTask.external_id == row.dify_conversation_id,
+            )
+        )
+        if exists is None:
+            session.add(
+                ExternalDeletionTask(
+                    kind="dify_tool_conversation",
+                    external_id=row.dify_conversation_id,
+                    payload={"kind": kind, "user": f"u_{row.user_hash[:40]}"},
+                )
+            )
+    session.delete(row)
+    session.commit()
+    return None
 
 
 def public(row: ToolConversation | None) -> dict:
@@ -113,8 +140,6 @@ def reset(session: Session, user_id: str, kind: str, conversation_id: str | None
         row = _current(session, user_id, kind)
         if conversation_id and (row is None or row.id != conversation_id):
             raise ServiceError("NOT_FOUND", "会话不存在或无权访问", 404, False)
-        previous_type = row.tool_type if row else None
-        previous_format = row.output_format if row else "article"
         if row:
             row.status = "closed"
             session.query(ToolMessage).filter(ToolMessage.conversation_id == row.id).delete()
@@ -131,13 +156,6 @@ def reset(session: Session, user_id: str, kind: str, conversation_id: str | None
                 )
             session.delete(row)
             session.commit()
-        # Keep the selected mode when the user asks for a new conversation.  A
-        # subsequent first-entry flow can still choose a mode when no prior mode
-        # exists (for example after a database reset).
-        if previous_type:
-            return create(session, user_id, kind, previous_type, previous_format) | {
-                "message": "已开启新会话"
-            }
         return {
             "message": "已开启新会话",
             "conversation_id": None,
@@ -150,14 +168,4 @@ def reset(session: Session, user_id: str, kind: str, conversation_id: str | None
 
 def is_reset_intent(value: str) -> bool:
     normalized = re.sub(r"[\s。！？!?；;，,、]+$", "", value.strip())
-    if normalized in RESET_PHRASES:
-        return True
-    # Accept short, unambiguous natural-language variants while keeping
-    # ordinary requests such as “开始写一篇新文章” on the generation path.
-    normalized = re.sub(r"^(?:(?:请|麻烦|帮我|我想|我要)\s*)+", "", normalized)
-    return bool(
-        re.fullmatch(
-            r"(?:重新|新)?(?:开启|开始|新建|创建|重开)(?:一个|一段|新的)?(?:新)?(?:对话|会话)",
-            normalized,
-        )
-    )
+    return normalized in RESET_PHRASES

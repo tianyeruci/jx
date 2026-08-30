@@ -60,7 +60,12 @@ def ready(session: Session = Depends(get_session)) -> JSONResponse:
                 {"reachable": dify_reachable},
                 ttl=30,
             )
-    ok = database_ok and (redis_ok or settings.app_env != "production") and configured
+    ok = (
+        database_ok
+        and (redis_ok or settings.app_env != "production")
+        and configured
+        and dify_reachable
+    )
     return JSONResponse(
         status_code=200 if ok else 503,
         content={

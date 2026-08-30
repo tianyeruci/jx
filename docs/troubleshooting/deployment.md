@@ -359,6 +359,7 @@
 - 验证：2026-08-19 日志清理后第一次恢复遗漏 profile，容器短暂退出；补充 `--profile test` 后 Core/UI/OCR/Worker/Scheduler 与两个 methodology Worker 均为 `running`，容器内 ready 为 `ready`。
 - 预防：停服脚本把“当前运行服务快照、profile、恢复结果、容器内健康检查”作为一个原子恢复门禁；使用 merged compose 时 profile 与服务名必须来自同一份快照。
 - 证据：[20260819 日志清理报告](../../var/reports/20260819-clear-system-event-logs/README.md)。
+- 最后验证：2026-08-19。
 
 ## DEPLOY-030：迁移提交后的旧镜像回滚必须先降级数据库
 
@@ -372,3 +373,15 @@
 - 证据：`scripts/jx_deploy_release.sh`、`tests/test_cleaning_release_contract.py`、`var/reports/tool-conversation-initial-20260826/issues.jsonl`、jx 发布报告 `/opt/ai-management/var/reports/v2/toolconv-20260826-135020-deploy`。
 - 最后验证：2026-08-26。
 - 最后验证：2026-08-19。
+
+## DEPLOY-031：历史错误迁移文件名必须在 Alembic 扫描前精确替换
+
+- 适用：jx 完整发布包含工具会话迁移，且服务器曾使用旧文件名保存同一 revision。
+- 触发：发布阶段出现 `Revision m9d0e1f2g3h4 is present more than once` 或 `Multiple head revisions are present`，迁移在提交前失败。
+- 根因：服务器历史文件 `k7b8c9d0e1f2_tool_conversations.py` 与正式文件声明了相同 revision；仅上传正式文件而不处理旧文件会让 Alembic 扫描到重复 revision。
+- 解决：发布脚本只针对已知旧文件名执行备份和删除，并将 stage 中的旧文件精确安装为正式文件名 `m9d0e1f2g3h4_tool_conversations.py`；迁移成功后保留正式文件，失败且未提交时恢复旧文件。禁止使用通配符清理 migrations。
+- 非解决：删除整个 `migrations/versions`、跳过 `alembic upgrade`、只改文件名但不备份，或在迁移提交后直接恢复无法解析新 revision 的旧镜像。
+- 验证：本地 `bash -n scripts/jx_deploy_release.sh` 与 `tests/test_cleaning_release_contract.py` 通过；jx release `toolconv-20260830-155349-contractfix2` 从 `m9d0e1f2g3h4` 升级到唯一 head `n0e1f2g3h4i5`，发布报告无回滚标记，服务 ready。
+- 预防：发布前检查远端 migration revision 唯一性；对 legacy/formal 文件名使用显式常量和精确路径；保留迁移前数据库 revision 与可恢复备份。
+- 证据：`var/reports/tool-conversation-initial-20260826/issues.jsonl`；jx `/opt/ai-management/var/reports/v2/toolconv-20260830-155349-contractfix2-deploy`。
+- 最后验证：2026-08-30。

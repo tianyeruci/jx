@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ai_management.cache import cache
@@ -250,6 +251,41 @@ def test_health_live_is_still_public(service_db) -> None:
         response = client.get("/health/live")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+@pytest.mark.parametrize("reachable, expected_status", [(True, 200), (False, 503)])
+def test_health_ready_requires_reachable_configured_dify(
+    service_db, monkeypatch, reachable, expected_status
+) -> None:
+    import ai_management.api.routers.health as health
+
+    settings = health.get_settings()
+    monkeypatch.setattr(settings, "dify_general_dataset_id", "general-test")
+    monkeypatch.setattr(settings, "dify_course_dataset_id", "course-test")
+    monkeypatch.setattr(health.DifyAppClient, "parameters", lambda self: {})
+    health.cache.set_json("ai:health:dify", {"reachable": reachable}, ttl=30)
+    with TestClient(app) as client:
+        response = client.get("/health/ready")
+    assert response.status_code == expected_status
+    assert response.json()["dify_reachable"] is reachable
+
+
+def test_health_ready_dify_timeout_is_not_ready(service_db, monkeypatch) -> None:
+    import ai_management.api.routers.health as health
+
+    settings = health.get_settings()
+    monkeypatch.setattr(settings, "dify_general_dataset_id", "general-test")
+    monkeypatch.setattr(settings, "dify_course_dataset_id", "course-test")
+    health.cache.delete("ai:health:dify")
+
+    def timeout(_self):
+        raise TimeoutError("test timeout")
+
+    monkeypatch.setattr(health.DifyAppClient, "parameters", timeout)
+    with TestClient(app) as client:
+        response = client.get("/health/ready")
+    assert response.status_code == 503
+    assert response.json()["status"] == "not_ready"
 
 
 def test_openapi_declares_sse_and_course_redirect_contracts() -> None:

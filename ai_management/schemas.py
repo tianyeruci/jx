@@ -56,12 +56,13 @@ class MomentsInputs(BaseModel):
     audience: str = Field(default="", max_length=500)
     tone: str = Field(default="", max_length=500)
     constraints: str = Field(default="", max_length=3000)
-    type: Literal["sales", "seeding", "polish"] = "sales"
 
 
 class MomentsRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     inputs: MomentsInputs
-    conversation_id: str | None = Field(default=None, min_length=1, max_length=36)
+    conversation_id: str = Field(min_length=1, max_length=36)
 
 
 class WritingInputs(BaseModel):
@@ -71,15 +72,14 @@ class WritingInputs(BaseModel):
     source_text: str = Field(default="", max_length=30000)
     audience: str = Field(default="", max_length=500)
     tone: str = Field(default="", max_length=500)
-    format: str = Field(default="", max_length=500)
     constraints: str = Field(default="", max_length=3000)
-    type: Literal["polish", "expand"] = "polish"
 
 
 class WritingRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     inputs: WritingInputs
-    conversation_id: str | None = Field(default=None, min_length=1, max_length=36)
-    output_format: Literal["article", "wechat_public_account"] = "article"
+    conversation_id: str = Field(min_length=1, max_length=36)
 
 
 class ToolConversationCreateRequest(BaseModel):

@@ -40,10 +40,19 @@ def test_request_only_moments_run_keeps_existing_sse_contract(service_db, monkey
 
     monkeypatch.setattr(tools, "DifyAppClient", FakeDifyClient)
     with TestClient(app) as client:
+        created = client.post(
+            "/internal/v1/tools/moments/conversations",
+            headers=HEADERS,
+            json={"type": "sales"},
+        )
+        assert created.status_code == 200
         response = client.post(
             "/internal/v1/tools/moments/run",
             headers=HEADERS,
-            json={"inputs": {"request": "围绕一个主题写一条朋友圈"}},
+            json={
+                "conversation_id": created.json()["conversation_id"],
+                "inputs": {"request": "围绕一个主题写一条朋友圈"},
+            },
         )
 
     assert response.status_code == 200
@@ -96,14 +105,21 @@ def test_moments_run_preserves_supplied_source_material(service_db, monkeypatch)
 
     monkeypatch.setattr(tools, "DifyAppClient", FakeDifyClient)
     with TestClient(app) as client:
+        created = client.post(
+            "/internal/v1/tools/moments/conversations",
+            headers=HEADERS,
+            json={"type": "sales"},
+        )
+        assert created.status_code == 200
         response = client.post(
             "/internal/v1/tools/moments/run",
             headers=HEADERS,
             json={
+                "conversation_id": created.json()["conversation_id"],
                 "inputs": {
                     "request": "把素材改成朋友圈",
                     "source_material": "客户明确说希望减少重复确认。",
-                }
+                },
             },
         )
 

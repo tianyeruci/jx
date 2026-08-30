@@ -26,12 +26,21 @@ from ai_management.workers.tasks.maintenance import _cleanup_history, _flush_cli
 
 
 def test_tool_inputs_follow_dify_contract():
-    moments = MomentsRunRequest(inputs={"request": "写一条朋友圈", "tone": "克制"})
+    moments = MomentsRunRequest(
+        conversation_id="local-moments",
+        inputs={"request": "写一条朋友圈", "tone": "克制"},
+    )
     assert moments.inputs.request == "写一条朋友圈"
-    writing = WritingRunRequest(inputs={"request": "改写", "source_text": "原文"})
+    writing = WritingRunRequest(
+        conversation_id="local-writing",
+        inputs={"request": "改写", "source_text": "原文"},
+    )
     assert writing.inputs.source_text == "原文"
     with pytest.raises(ValidationError):
-        MomentsRunRequest(inputs={"request": "写作", "unknown": "value"})
+        MomentsRunRequest(
+            conversation_id="local-moments",
+            inputs={"request": "写作", "unknown": "value"},
+        )
 
 
 def test_context_uses_cursor_and_bounded_recent_messages(service_db):

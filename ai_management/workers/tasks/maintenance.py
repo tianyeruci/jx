@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -60,6 +61,52 @@ _EXTERNAL_DELETION_PER_KIND_QUOTA = 50
 _EXTERNAL_DELETION_MAX_AUTO_ATTEMPTS = 3
 
 
+def _cleanup_model_review_artifacts() -> dict[str, int]:
+    root = (settings.audit_root / "model-review").resolve()
+    if not root.is_dir():
+        return {"deleted": 0, "bytes": 0}
+    cutoff = datetime.now(timezone.utc) - timedelta(days=settings.model_review_retention_days)
+    with SessionLocal() as session:
+        active = {
+            str(item.id)
+            for item in session.scalars(
+                select(CleaningDocument.id).where(CleaningDocument.status == "review_required")
+            )
+        }
+    candidates: list[tuple[Path, int, bool]] = []
+    for path in root.iterdir():
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+            data = json.loads(path.read_text(encoding="utf-8"))
+            ids = {
+                str(entry.get("document_id"))
+                for entry in data.get("entries", [])
+                if isinstance(entry, dict)
+            }
+            protected = bool(ids & active)
+            candidates.append((path, stat.st_size, protected))
+            if not protected and datetime.fromtimestamp(stat.st_mtime, timezone.utc) < cutoff:
+                path.unlink()
+        except (OSError, ValueError, UnicodeError):
+            logger.warning("model review artifact skipped due to invalid or inaccessible content")
+    remaining = [(p, size, protected) for p, size, protected in candidates if p.exists()]
+    total = sum(size for _, size, _ in remaining)
+    for path, size, protected in sorted(remaining, key=lambda item: item[0].stat().st_mtime):
+        if total <= settings.model_review_max_bytes or protected:
+            continue
+        try:
+            path.unlink()
+            total -= size
+        except OSError:
+            logger.warning("model review artifact quota cleanup skipped")
+    return {
+        "deleted": len(candidates) - len([item for item in remaining if item[0].exists()]),
+        "bytes": total,
+    }
+
+
 @celery_app.task(name="ai_management.cleanup_tool_conversations")
 def _cleanup_tool_conversations() -> dict[str, int]:
     """Remove closed moments/writing sessions and their exact Dify records.
@@ -72,7 +119,7 @@ def _cleanup_tool_conversations() -> dict[str, int]:
     queued = 0
     with SessionLocal() as session:
         rows = session.scalars(
-            select(ToolConversation).where(ToolConversation.status == "closed")
+            select(ToolConversation).where(ToolConversation.status == "closed").limit(200)
         ).all()
         for row in rows:
             if row.dify_conversation_id:
@@ -107,7 +154,7 @@ def _cleanup_tool_conversations() -> dict[str, int]:
         # Keep the latest active session mapping for continuity, but never
         # retain local message正文 across the midnight boundary.
         active_rows = session.scalars(
-            select(ToolConversation).where(ToolConversation.status == "active")
+            select(ToolConversation).where(ToolConversation.status == "active").limit(200)
         ).all()
         for row in active_rows:
             session.query(ToolMessage).filter(ToolMessage.conversation_id == row.id).delete()
@@ -359,9 +406,9 @@ def _reconcile_cleaning_pipeline() -> dict[str, int]:
                 _apply_source_markdown_fallback(
                     document,
                     batch.strategy_code,
-                    source_markdown,
-                    source_metadata,
-                    source_chunking,
+                    source_markdown=source_markdown,
+                    source_metadata=source_metadata,
+                    source_chunking=source_chunking,
                 )
                 fallback_count += 1
             else:
@@ -698,22 +745,29 @@ def _retry_external_deletions() -> None:
 
 
 def _flush_clicks() -> None:
+    with cache.lock("ai:maintenance:click-flush", ttl=300) as lock_state:
+        if not lock_state:
+            return
+        _flush_clicks_locked()
+
+
+def _flush_clicks_locked() -> None:
     dirty = cache.dirty_click_counters()
-    processed: list[tuple[str, str]] = []
+    processed: list[tuple[str, str, int | None]] = []
     with SessionLocal() as session:
         known_courses = set(session.scalars(select(Course.course_id)))
         for day_text, course_id in dirty:
             try:
                 target_day = date.fromisoformat(day_text)
             except ValueError:
-                processed.append((day_text, course_id))
+                processed.append((day_text, course_id, None))
                 continue
             if course_id not in known_courses:
-                processed.append((day_text, course_id))
+                processed.append((day_text, course_id, None))
                 continue
-            clicks, users = cache.click_counts(course_id, day_text)
+            clicks, users, version = cache.click_snapshot(course_id, day_text)
             if not clicks and not users:
-                processed.append((day_text, course_id))
+                processed.append((day_text, course_id, version))
                 continue
             row = session.scalar(
                 select(CourseClickDaily).where(
@@ -726,10 +780,10 @@ def _flush_clicks() -> None:
                 session.add(row)
             row.clicks = clicks
             row.unique_users = users
-            processed.append((day_text, course_id))
+            processed.append((day_text, course_id, version))
         session.commit()
-    for day_text, course_id in processed:
-        cache.mark_click_counter_flushed(day_text, course_id)
+    for day_text, course_id, version in processed:
+        cache.mark_click_counter_flushed(day_text, course_id, version)
 
 
 def _cleanup_files_and_stale_tasks() -> None:
@@ -737,6 +791,7 @@ def _cleanup_files_and_stale_tasks() -> None:
     failed_cutoff = now - timedelta(hours=settings.failed_file_retention_hours)
     stale_cutoff = now - timedelta(hours=1)
     status_cutoff = now - timedelta(days=settings.cleaning_status_retention_days)
+    requeue: list[tuple[str, str]] = []
     with SessionLocal() as session:
         stale = list(
             session.scalars(
@@ -749,10 +804,7 @@ def _cleanup_files_and_stale_tasks() -> None:
         for row in stale:
             if row.attempts < 2:
                 row.status = "pending"
-                if Path(row.original_filename).suffix.lower() == ".pdf":
-                    process_ocr_cleaning_file.apply_async(args=[row.id], queue="ai_ocr")
-                else:
-                    process_cleaning_file.apply_async(args=[row.id], queue="ai_cleaning")
+                requeue.append((str(row.id), row.original_filename))
             else:
                 row.status = "failed"
                 row.error_code = "CLEANING_FAILED"
@@ -788,6 +840,20 @@ def _cleanup_files_and_stale_tasks() -> None:
         for batch in expired_batches:
             session.delete(batch)
         session.commit()
+    for file_id, original_filename in requeue:
+        try:
+            if Path(original_filename).suffix.lower() == ".pdf":
+                process_ocr_cleaning_file.apply_async(args=[file_id], queue="ai_ocr")
+            else:
+                process_cleaning_file.apply_async(args=[file_id], queue="ai_cleaning")
+        except Exception:
+            logger.exception("stale cleaning file requeue failed", extra={"file_id": file_id})
+            with SessionLocal() as session:
+                row = session.get(CleaningFile, file_id)
+                if row is not None and row.status == "pending":
+                    row.error_code = "CLEANING_REQUEUE_FAILED"
+                    row.error_message = "清洗任务重新入队失败，等待下次维护重试"
+                    session.commit()
 
     for folder in settings.upload_root.resolve().glob("*"):
         if folder.is_dir() and not any(folder.iterdir()):
@@ -1153,6 +1219,7 @@ def nightly_maintenance() -> dict[str, bool]:
         ("external_deletions", _retry_external_deletions),
         ("clicks", _flush_clicks),
         ("files", _cleanup_files_and_stale_tasks),
+        ("model_review_artifacts", _cleanup_model_review_artifacts),
         ("model_watchdog", _terminalize_stale_model_tasks),
         ("conversion_markdown", _cleanup_conversion_markdown),
         ("system_event_logs", _cleanup_system_event_logs),

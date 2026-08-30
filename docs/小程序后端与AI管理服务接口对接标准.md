@@ -373,6 +373,8 @@ X-User-Id: <稳定用户ID>
 ```
 说明：该接口成功返回时，字段以当前 Dify 返回为准，不建议前端对返回体做强绑定。
 ### 3.9 朋友圈顾问
+
+> **当前接口修订（2026-08-30）**：调用 `/run` 前必须先创建工具会话；请求体必须包含顶层本地 `conversation_id`。`inputs` 不得包含 `conversation_id`、`type`、`format` 或 `output_format`，顶层未知字段返回 `422`。以下本节旧的无会话示例仅作历史参考，现行完整请求以《小程序后端与 AI 管理服务接口对接交互版本（修改后接口影响版）》为准。
 ```http
 POST /internal/v1/tools/moments/run
 ```
@@ -407,6 +409,8 @@ GET /internal/v1/tools/moments/examples
 ```
 请求头同上。返回当前启用的朋友圈案例；每项包含 `id`、`title`、`description`、完整 `request`、`enabled` 和 `sort_order`。用户点击案例后，应将完整 `request` 作为既有 `/run` 接口的 `inputs.request` 发送，其他输入字段按现有链路传递。
 ### 3.10 日常写作
+
+> **当前接口修订（2026-08-30）**：先调用 `/internal/v1/tools/writing/conversations` 创建并选择 `type`/`output_format`，再将返回的本地 `conversation_id` 放到 `/run` 顶层；`inputs.format`、`inputs.type` 和 `inputs.output_format` 均不再接受。以下旧示例中的 `format` 字段已废止。
 ```http
 POST /internal/v1/tools/writing/run
 ```

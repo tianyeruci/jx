@@ -20,8 +20,17 @@ MIGRATION_FILES=(
   "h4e5f6a7b8c9_expand_cleaning_batch_status.py"
   "i5f6a7b8c9d0_upload_dedupe_tombstones.py"
   "j6a7b8c9d0e1_course_collections.py"
-  "k7b8c9d0e1f2_tool_conversations.py"
+  "k7b8c9d0e1f2_consultation_methodology_registry.py"
+  "m9d0e1f2g3h4_tool_conversations.py"
+  "l8c9d0e1f2g3_consultation_promotion_backfill.py"
+  "n0e1f2g3h4i5_task_leases_external_unique.py"
 )
+# Historical jx releases placed the tool-conversations migration under this
+# filename while declaring the same revision as the formal filename below.
+# Keep this exact compatibility path isolated; do not use a wildcard because
+# unrelated migration files must never be moved or deleted by a release.
+LEGACY_TOOL_CONVERSATIONS_MIGRATION="k7b8c9d0e1f2_tool_conversations.py"
+FORMAL_TOOL_CONVERSATIONS_MIGRATION="m9d0e1f2g3h4_tool_conversations.py"
 CORE_IMAGE="jx-now-ai-management:$RELEASE_ID"
 UI_IMAGE="jx-now-ai-management-ui:$RELEASE_ID"
 OCR_IMAGE="jx-now-ai-management-ocr:$RELEASE_ID"
@@ -60,7 +69,12 @@ test -f "$STAGE_DIR/$WHEEL_FILE"
 test -f "$STAGE_DIR/$OPENPYXL_WHEEL"
 test -f "$STAGE_DIR/$ET_XMLFILE_WHEEL"
 for migration in "${MIGRATION_FILES[@]}"; do
-  test -f "$STAGE_DIR/$migration"
+  if test "$migration" = "$FORMAL_TOOL_CONVERSATIONS_MIGRATION"; then
+    test -f "$STAGE_DIR/$FORMAL_TOOL_CONVERSATIONS_MIGRATION" || \
+      test -f "$STAGE_DIR/$LEGACY_TOOL_CONVERSATIONS_MIGRATION"
+  else
+    test -f "$STAGE_DIR/$migration"
+  fi
 done
 test -f "$STAGE_DIR/docker-compose.ai.yml"
 test -f "$STAGE_DIR/docker-compose.ui.yml"
@@ -176,6 +190,12 @@ rollback() {
         rm -f -- "migrations/versions/$migration"
       fi
     done
+    if test -f "$BACKUP_DIR/$LEGACY_TOOL_CONVERSATIONS_MIGRATION.before-release"; then
+      cp -a "$BACKUP_DIR/$LEGACY_TOOL_CONVERSATIONS_MIGRATION.before-release" \
+        "migrations/versions/$LEGACY_TOOL_CONVERSATIONS_MIGRATION"
+    else
+      rm -f -- "migrations/versions/$LEGACY_TOOL_CONVERSATIONS_MIGRATION"
+    fi
   fi
   for unit in jx-ocr-autoscaler.service jx-ocr-autoscaler.timer; do
     if test -f "$BACKUP_DIR/$unit.before-release"; then
@@ -218,11 +238,24 @@ for unit in jx-ocr-autoscaler.service jx-ocr-autoscaler.timer; do
     cp -a "/etc/systemd/system/$unit" "$BACKUP_DIR/$unit.before-release"
   fi
 done
+# Remove the exact historical duplicate before Alembic scans the directory.
+# The formal file is installed below and remains after a successful release.
+if test -f "migrations/versions/$LEGACY_TOOL_CONVERSATIONS_MIGRATION"; then
+  cp -a "migrations/versions/$LEGACY_TOOL_CONVERSATIONS_MIGRATION" \
+    "$BACKUP_DIR/$LEGACY_TOOL_CONVERSATIONS_MIGRATION.before-release"
+  rm -f -- "migrations/versions/$LEGACY_TOOL_CONVERSATIONS_MIGRATION"
+fi
 install -m 0644 "$STAGE_DIR/$WHEEL_FILE" "wheelhouse/$WHEEL_FILE"
 install -m 0644 "$STAGE_DIR/$OPENPYXL_WHEEL" "wheelhouse/$OPENPYXL_WHEEL"
 install -m 0644 "$STAGE_DIR/$ET_XMLFILE_WHEEL" "wheelhouse/$ET_XMLFILE_WHEEL"
 for migration in "${MIGRATION_FILES[@]}"; do
-  install -m 0644 "$STAGE_DIR/$migration" "migrations/versions/$migration"
+  if test "$migration" = "$FORMAL_TOOL_CONVERSATIONS_MIGRATION" && \
+    test ! -f "$STAGE_DIR/$migration"; then
+    install -m 0644 "$STAGE_DIR/$LEGACY_TOOL_CONVERSATIONS_MIGRATION" \
+      "migrations/versions/$migration"
+  else
+    install -m 0644 "$STAGE_DIR/$migration" "migrations/versions/$migration"
+  fi
 done
 install -m 0644 "$STAGE_DIR/docker-compose.ai.yml" docker-compose.ai.yml
 install -m 0644 "$STAGE_DIR/docker-compose.ui.yml" docker-compose.ui.yml

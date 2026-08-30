@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...cache import cache
@@ -14,6 +15,7 @@ from ...config import get_settings
 from ...db import get_session
 from ...dify import DifyAppClient
 from ...errors import ServiceError
+from ...models import ToolConversation
 from ...schemas import MomentsRunRequest, ToolConversationCreateRequest, WritingRunRequest
 from ...security import dify_user, require_internal_token, require_user_id
 from ...services.style_settings import get_style_prompt
@@ -202,7 +204,29 @@ def _chat_stream(
         # The route resolves the ORM row before StreamingResponse starts. A
         # prior request may have committed the Dify ID in the meantime, so
         # refresh inside the lock before the first Chatflow call.
-        session.refresh(row)
+        # Reset can win the race after the route resolved ``row`` but before
+        # this generator acquires the lock. Re-query inside the lock so a
+        # deleted session becomes a deterministic SSE 404 instead of HTTP 500.
+        fresh = session.scalar(
+            select(ToolConversation).where(
+                ToolConversation.id == row.id,
+                ToolConversation.user_hash == row.user_hash,
+                ToolConversation.kind == row.kind,
+                ToolConversation.status == "active",
+            )
+        )
+        if fresh is None:
+            yield emit(
+                "error",
+                {
+                    "code": "NOT_FOUND",
+                    "message": "会话不存在或无权访问",
+                    "request_id": request_id,
+                    "retryable": False,
+                },
+            )
+            return
+        row = fresh
         for item in client.stream_chat(
             query=query,
             user=anonymous_user,
@@ -294,9 +318,6 @@ def run_moments(
             media_type="text/event-stream",
             headers=SSE_HEADERS,
         )
-    if not payload.conversation_id:
-        created = create(session, raw_user_id, "moments", payload.inputs.type)
-        payload = payload.model_copy(update={"conversation_id": created["conversation_id"]})
     row = owned(session, raw_user_id, "moments", payload.conversation_id)
     settings = get_settings()
     client = DifyAppClient(settings.dify_url, settings.dify_moments_app_api_key)
@@ -334,15 +355,6 @@ def run_writing(
             media_type="text/event-stream",
             headers=SSE_HEADERS,
         )
-    if not payload.conversation_id:
-        created = create(
-            session,
-            raw_user_id,
-            "writing",
-            payload.inputs.type,
-            payload.output_format,
-        )
-        payload = payload.model_copy(update={"conversation_id": created["conversation_id"]})
     row = owned(session, raw_user_id, "writing", payload.conversation_id)
     settings = get_settings()
     client = DifyAppClient(settings.dify_url, settings.dify_writing_app_api_key)

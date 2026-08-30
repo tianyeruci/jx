@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     admin_api_token: str = "development-admin-token"
     user_hmac_secret: str = "development-user-hmac-secret"
     public_base_url: str = "http://127.0.0.1:8000"
+    bind_host: str = "127.0.0.1"
+    bind_port: int = Field(default=8000, ge=1, le=65535)
 
     database_url: str = "sqlite:///./ai_management.db"
     redis_url: str = "redis://127.0.0.1:6379/5"
@@ -47,9 +49,7 @@ class Settings(BaseSettings):
     cleaning_batch_candidate_threshold: int = Field(default=100, ge=1, le=50_000)
     cleaning_batch_token_threshold: int = Field(default=200_000, ge=1)
     cleaning_batch_max_requests: int = Field(default=40_000, ge=1, le=50_000)
-    cleaning_batch_max_bytes: int = Field(
-        default=400 * 1024 * 1024, ge=1024, le=500 * 1024 * 1024
-    )
+    cleaning_batch_max_bytes: int = Field(default=400 * 1024 * 1024, ge=1024, le=500 * 1024 * 1024)
     # Batch is opt-in.  New deployments and test runs use the bounded
     # realtime worker unless an operator explicitly enables Bailian Batch;
     # an existing task keeps the mode stored on its record.
@@ -111,6 +111,17 @@ class Settings(BaseSettings):
     max_upload_file_mb: int = Field(default=200, ge=1, le=200)
     max_upload_files: int = Field(default=10, ge=1, le=100)
     max_upload_batch_mb: int = Field(default=500, ge=1)
+    ooxml_max_entries: int = Field(default=4096, ge=1, le=100_000)
+    ooxml_max_total_uncompressed_mb: int = Field(default=512, ge=1, le=4096)
+    ooxml_max_entry_mb: int = Field(default=256, ge=1, le=2048)
+    ooxml_max_compression_ratio: int = Field(default=200, ge=1, le=10_000)
+    common_metadata_max_bytes: int = Field(default=64 * 1024, ge=1024, le=1024 * 1024)
+    common_metadata_max_depth: int = Field(default=6, ge=1, le=32)
+    common_metadata_max_keys: int = Field(default=128, ge=1, le=10_000)
+    common_metadata_max_list_items: int = Field(default=256, ge=1, le=10_000)
+    common_metadata_max_string_chars: int = Field(default=8192, ge=1, le=1_000_000)
+    catalog_review_max_mb: int = Field(default=50, ge=1, le=512)
+    review_markdown_max_mb: int = Field(default=20, ge=1, le=512)
     max_active_cleaning_batches: int = Field(default=5, ge=1, le=1000)
     cleaning_worker_concurrency: int = Field(default=4, ge=1, le=32)
     # OCR is deliberately opt-in.  The page limit only applies to scanned
@@ -145,6 +156,10 @@ class Settings(BaseSettings):
     upload_root: Path = Path("var/uploads")
     cleaned_root: Path = Path("var/cleaned")
     audit_root: Path = Path("var/audit")
+    model_review_retention_days: int = Field(default=30, ge=1, le=3650)
+    model_review_max_bytes: int = Field(
+        default=512 * 1024 * 1024, ge=1 * 1024 * 1024, le=10 * 1024 * 1024 * 1024
+    )
     build_version: str = "development"
 
     @property
@@ -175,20 +190,25 @@ class Settings(BaseSettings):
     def validate_production_secrets(self) -> "Settings":
         if (self.cleanup_hour, self.cleanup_minute) != (2, 0):
             raise ValueError("课程目录夜间刷新必须为 Asia/Shanghai 02:00")
+        non_loopback = self.bind_host not in {"127.0.0.1", "::1", "localhost"}
+        if non_loopback and (
+            self.internal_api_token.startswith("development-")
+            or self.admin_api_token.startswith("development-")
+            or self.user_hmac_secret.startswith("development-")
+            or min(
+                len(self.internal_api_token), len(self.admin_api_token), len(self.user_hmac_secret)
+            )
+            < 32
+        ):
+            raise ValueError("非回环监听必须使用长度至少32的高熵认证配置")
         if self.app_env != "production":
             return self
         if self.save_conversion_markdown:
             raise ValueError("生产环境禁止保存转换前策略 Markdown")
         missing: list[str] = []
-        if (
-            self.internal_api_token.startswith("development-")
-            or len(self.internal_api_token) < 32
-        ):
+        if self.internal_api_token.startswith("development-") or len(self.internal_api_token) < 32:
             missing.append("INTERNAL_API_TOKEN")
-        if (
-            self.user_hmac_secret.startswith("development-")
-            or len(self.user_hmac_secret) < 32
-        ):
+        if self.user_hmac_secret.startswith("development-") or len(self.user_hmac_secret) < 32:
             missing.append("USER_HMAC_SECRET")
         if self.admin_api_token.startswith("development-") or len(self.admin_api_token) < 32:
             missing.append("ADMIN_API_TOKEN")

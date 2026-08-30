@@ -77,7 +77,12 @@ def stop_business_chat(
     raw_user_id: str = Depends(require_user_id),
 ) -> dict[str, Any]:
     settings = get_settings()
-    cache.set_json(f"ai:business-task-stopped:{task_id}", True, ttl=600)
+    current_hash = user_hash(raw_user_id)
+    mapping = cache.get_json(f"ai:business-task:{task_id}")
+    if not isinstance(mapping, dict) or mapping.get("user_hash") != current_hash:
+        raise ServiceError("TASK_NOT_FOUND", "生成任务不存在", 404, False)
+    stop_key = f"ai:business-task-stopped:{task_id}:{current_hash}"
+    cache.set_json(stop_key, True, ttl=600)
     try:
         result = DifyAppClient(
             settings.dify_url,
@@ -97,7 +102,7 @@ def stop_business_chat(
         )
         return result
     except Exception:
-        cache.delete(f"ai:business-task-stopped:{task_id}")
+        cache.delete(stop_key)
         raise
 
 

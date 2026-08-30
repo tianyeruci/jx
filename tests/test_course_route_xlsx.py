@@ -5,6 +5,7 @@ from pathlib import Path
 from zipfile import ZipFile
 
 from openpyxl import Workbook
+import pytest
 
 
 def _workbook(path: Path) -> None:
@@ -77,10 +78,7 @@ def test_course_route_catalog_parses_unique_links_and_never_exposes_urls(tmp_pat
     assert catalog.routes[0].review_status == "pending_review"
     assert "未知列" in catalog.audit.unknown_columns
     assert catalog.audit.duplicate_link_groups == 1
-    assert any(
-        item["code"] == "duplicate_link_field_conflict"
-        for item in catalog.audit.warnings
-    )
+    assert any(item["code"] == "duplicate_link_field_conflict" for item in catalog.audit.warnings)
 
     for item in [*catalog.courses, *catalog.routes]:
         assert "https://" not in item.model_text
@@ -204,15 +202,9 @@ def test_course_route_strategy_sends_each_course_and_route_to_model(
 
     assert len(documents) == 3
     assert all(item.disposition == "review_required" for item in documents)
-    assert any(
-        item.error_code == "CATALOG_STRUCTURE_REVIEW_REQUIRED"
-        for item in documents
-    )
+    assert any(item.error_code == "CATALOG_STRUCTURE_REVIEW_REQUIRED" for item in documents)
     assert all((item.audit or {}).get("model_blocks") for item in documents)
-    assert all(
-        "https://" not in str((item.audit or {}).get("model_blocks"))
-        for item in documents
-    )
+    assert all("https://" not in str((item.audit or {}).get("model_blocks")) for item in documents)
 
 
 def test_course_route_catalog_resets_stale_xlsx_dimension_and_preserves_collection_order(tmp_path):
@@ -308,11 +300,19 @@ def test_course_collections_are_scoped_to_contiguous_route_blocks(tmp_path):
     assert len({item.collection_id for item in catalog.collections}) == 2
     assert [len(item.member_course_ids) for item in catalog.collections] == [2, 2]
     assert catalog.collections[0].member_course_ids != catalog.collections[1].member_course_ids
-    assert [item.name for item in catalog.courses if item.course_id in catalog.routes[0].stages[0]["course_ids"]] == [
+    assert [
+        item.name
+        for item in catalog.courses
+        if item.course_id in catalog.routes[0].stages[0]["course_ids"]
+    ] == [
         "A课程一",
         "A课程二",
     ]
-    assert [item.name for item in catalog.courses if item.course_id in catalog.routes[1].stages[0]["course_ids"]] == [
+    assert [
+        item.name
+        for item in catalog.courses
+        if item.course_id in catalog.routes[1].stages[0]["course_ids"]
+    ] == [
         "B课程一",
         "B课程二",
     ]
@@ -367,8 +367,7 @@ def test_course_route_catalog_prefers_specific_title_over_collection_label(tmp_p
         for conflict in course.structure_conflicts
     )
     assert any(
-        warning["code"] == "duplicate_link_name_auto_resolved"
-        for warning in catalog.audit.warnings
+        warning["code"] == "duplicate_link_name_auto_resolved" for warning in catalog.audit.warnings
     )
 
 
@@ -376,6 +375,8 @@ def test_real_catalog_sample_matches_verified_baseline():
     from ai_management.course_route_catalog import parse_course_route_catalog
 
     path = Path("文件清洗样本/课程信息与学习路线/课程信息与学习路线.xlsx")
+    if not path.exists():
+        pytest.skip("课程 Excel/学习路线已退出当前产品范围，历史样本不纳入当前门禁")
     catalog = parse_course_route_catalog(path, existing_course_ids_by_url={})
 
     assert len(catalog.courses) == 105
@@ -385,7 +386,9 @@ def test_real_catalog_sample_matches_verified_baseline():
     assert catalog.audit.effective_groups == 28
     assert catalog.audit.duplicate_link_groups == 2
     assert catalog.audit.invalid_rows == 1
-    assert all(not item.name.startswith(tuple(f"{n}/" for n in range(1, 20))) for item in catalog.courses)
+    assert all(
+        not item.name.startswith(tuple(f"{n}/" for n in range(1, 20))) for item in catalog.courses
+    )
     assert not any(
         conflict["code"] == "duplicate_link_name_conflict"
         for item in catalog.courses

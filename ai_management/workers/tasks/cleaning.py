@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import uuid
 from contextlib import ExitStack
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from knowledge_cleaner.dify import DifyKnowledgeClient
@@ -1162,6 +1164,31 @@ def process_cleaning_file(self, file_id: str) -> bool:
             )
             if row is None or row.status not in {"pending", "processing"}:
                 return False
+            now = datetime.now(timezone.utc)
+            token = uuid.uuid4().hex
+            claimed = session.execute(
+                update(CleaningFile)
+                .where(CleaningFile.id == file_id)
+                .where(CleaningFile.status.in_(["pending", "processing"]))
+                .where(
+                    (CleaningFile.lease_expires_at.is_(None))
+                    | (CleaningFile.lease_expires_at < now)
+                )
+                .values(
+                    lease_token=token,
+                    lease_expires_at=now + timedelta(minutes=30),
+                    status="processing",
+                    attempts=CleaningFile.attempts + 1,
+                )
+            ).rowcount
+            if claimed != 1:
+                return False
+            session.expire(row)
+            row = session.scalar(
+                select(CleaningFile)
+                .where(CleaningFile.id == file_id)
+                .options(selectinload(CleaningFile.batch), selectinload(CleaningFile.documents))
+            )
             batch = row.batch
             if (
                 batch.knowledge_base_code == "course"
@@ -1197,7 +1224,6 @@ def process_cleaning_file(self, file_id: str) -> bool:
             row.status = "processing"
             row.outcome = "processing"
             row.stage = "cleaning"
-            row.attempts += 1
             row.error_code = None
             row.error_message = None
             for existing in list(row.documents):

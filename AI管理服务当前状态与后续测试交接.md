@@ -1,6 +1,22 @@
 # AI 管理服务当前状态与后续测试交接
 
-> 更新时间：2026-08-26
+## 0.81 2026-08-30 工具会话契约修复版 jx 发布与测试页验收（当前最新）
+
+- 本地最新 wheel 已重新构建并以 SHA-256 `6b2c6697f0f629bcac969849f39c29aef0bcbfbea52ea746fa9ea96cb23f7ce3` 发布。
+- jx 完整发布 `toolconv-20260830-155349-contractfix2` 已成功完成，报告位于 `/opt/ai-management/var/reports/v2/toolconv-20260830-155349-contractfix2-deploy`，发布前备份位于 `/opt/ai-management/backups/toolconv-20260830-155349-contractfix2-predeploy`。
+- 远端历史重复 migration 文件已按精确兼容逻辑处理；Alembic 从 `m9d0e1f2g3h4` 成功升级至唯一 head `n0e1f2g3h4i5`，本次报告无 `rollback-status.txt`。
+- API、普通 Worker、Realtime/Batch Worker、Publication Worker、Scheduler 和 test-ui 均已切换到本次 release；API 容器内 `/health/ready` 返回 `status=ready`，database、Redis、Dify 均为 `true`。
+- 使用本机已登录 Chrome 测试页完成：朋友圈 reset 后重新选型、种草型会话创建、朋友圈 SSE 生成、日常写作会话创建与文章生成、写作 reset 后重新选型；商业顾问入口正常加载，未修改商业顾问数据或 DSL。
+- 测试页浏览器控制台仅出现 Streamlit `WebSocket onclose` warning，未出现页面 error；该警告不影响页面和 SSE 验收。
+- 课程 Excel、课程推荐和学习路线未纳入本轮测试；未执行相关上传或数据写入。
+
+### 本节变更记录
+
+- 修改原因：记录最新工具会话契约修复版在 jx 的正式发布、迁移升级、服务切换和测试页真实验收结果。
+- 修改前：顶部最新记录为 2026-08-26 版本，无法区分 2026-08-30 失败尝试与最终成功发布。
+- 修改后：明确记录最终 release、wheel 指纹、备份、唯一 migration head、服务 ready、测试覆盖和非阻塞浏览器 warning；不写入密钥、Token、正文或真实用户标识。
+
+> 更新时间：2026-08-30
 > 用途：保存最新线上事实、回滚点、数据状态和开放事项。新任务先读 `AGENTS.md` 与 `docs/README.md`，再按功能域读取本文顶部最新状态。  
 > 本文不是需求或设计基线；权威顺序以 `docs/V2决策记录.md` 和 `docs/README.md` 为准。第 1～8 节为历史过程记录，不再作为当前执行指令。
 
@@ -2415,4 +2431,10 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改原因：用户反馈公网测试页商业顾问仍显示旧默认问题“我想系统学习AI工具，应该从哪门课程开始？”。核对确认该问题来自 `ai_management/test_ui.py` 的测试页硬编码默认值，不来自 Dify 商业顾问入口参数。
 - 修改前：线上 `test-ui` 使用 `jx-now-ai-management-ui:toolconv-20260826-135020`，商业顾问问题框仍为旧默认问题；API、Worker、Scheduler 和 OCR 服务处于既有运行版本。
 - 修改后：本地测试页默认问题改为“请帮我判断当前经营最该优先解决什么？”，并通过 UI-only 镜像 `jx-now-ai-management-ui:ui-only-20260827-171024-c33b41689351` 切换线上 `test-ui`。仅更新 `.env` 的 `AI_UI_IMAGE`，API、Worker、模型 Worker、发布 Worker、Scheduler 未重建；数据库、Redis、Dify、上传卷、OCR 配置和 OCR 服务均未改动。旧 UI 镜像和 `.env` 备份保留，回滚点为 `/opt/ai-management/backups/ui-only-20260827-171024-c33b41689351-predeploy`。
+
+### 文档修改记录（2026-08-30 新版小程序接口交付文档）
+
+- 修改原因：按项目级 `AGENTS.md` 文档同步规则，生成可直接交给小程序后端的附件风格接口文档，并补充附件旧契约与当前契约的逐项对比。
+- 修改前：仅有当前接口交互版本和 jx 验收记录，缺少与外部附件 `变动.md` 同版式的独立交付稿及迁移差异清单。
+- 修改后：新增 `docs/变动-新版接口文档-20260830.md` 和 `docs/变动.md-新版对比说明-20260830.md`；新版文档明确顶层 `conversation_id`、带 ID reset、字段校验、SSE、状态码和 jx 联通结果；对比文档标明旧写法的失效原因与小程序改造清单。文档检查、接口契约测试和索引检查均通过，未写入密钥、Token 或敏感数据。
 - 验证：本地与 Nginx 公网测试页均返回 HTTP 200；真实浏览器商业顾问页默认问题已为新文案，控制台错误/警告为 0；API 容器 `/health/ready` 返回 200；线上 `test-ui` 容器源码包含新默认问题。发布证据为 `/opt/ai-management/var/reports/v2/ui-only-20260827-171024-c33b41689351-ui-only`。未发布或修改商业顾问 Dify DSL，Dify 入口推荐问题仍需按 Dify 导入/保存/发布流程单独更新。

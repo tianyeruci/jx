@@ -5,6 +5,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from .events import safe_exception_traceback
+
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
@@ -28,7 +30,7 @@ class JsonFormatter(logging.Formatter):
             if value not in (None, ""):
                 payload[key] = value
         if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)[:8000]
+            payload["exception"] = safe_exception_traceback(record.exc_info[1], limit=8000)
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 

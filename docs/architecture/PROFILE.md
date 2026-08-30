@@ -1,6 +1,6 @@
 # Architecture Profile
 
-> Status: CURRENT  
+> Status: CURRENT
 > 当前架构事实文件；只描述已存在的项目边界和本 Feature 允许的增量。
 
 ## 1. Evidence

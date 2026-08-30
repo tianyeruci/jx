@@ -95,8 +95,11 @@ POST /internal/v1/tools/{task_id}/stop
 
 请求：
 
+> 本节旧版示例曾允许在 `inputs` 中携带类型/格式；该旧契约已废止。请以本文新增的顶层 `conversation_id` 规则和交付版接口文档为准。
+
 ```json
 {
+  "conversation_id": "<本服务创建接口返回的本地会话ID>",
   "inputs": {
     "request": "写一段本周学习复盘",
     "tone": "自然"
@@ -104,9 +107,9 @@ POST /internal/v1/tools/{task_id}/stop
 }
 ```
 
-创建会话请求为 `{\"type\":\"sales|seeding|polish|expand\",\"output_format\":\"article|wechat_public_account\"}`（按工具限制取值）。run 请求还需传服务端返回的本地 `conversation_id`，inputs 包含对应 `type`，写作可带 `format`；服务端将其映射到 Dify Chatflow 的 `conversation_id`。两个工具不创建商业历史、画像、课程事件或商业顾问数据。
+创建会话请求为 `{\"type\":\"sales|seeding|polish|expand\",\"output_format\":\"article|wechat_public_account\"}`（按工具限制取值）。服务端将会话中的类型和成稿格式映射到 Dify Chatflow。两个工具不创建商业历史、画像、课程事件或商业顾问数据。
 
-`GET /internal/v1/tools/{kind}/examples` 现在返回空目录（旧案例已按需求清除）；管理员仍可在 `/internal/v1/admin/tools/{kind}/examples` 下使用双 Token CRUD 新增案例，不再提供 restore-defaults。输入精确“新对话”等短语时，SSE 直接返回“已开启新会话”，不调用 Dify。
+`GET /internal/v1/tools/{kind}/examples` 现在返回空目录（旧案例已按需求清除）；管理员仍可在 `/internal/v1/admin/tools/{kind}/examples` 下使用双 Token CRUD 新增案例，不再提供 restore-defaults。调用 `/run` 前必须先创建会话并把本地 `conversation_id` 放在请求体顶层；`inputs` 不得传 `conversation_id`、`type`、`format` 或 `output_format`，顶层未知字段返回 `422 extra_forbidden`。输入精确“新对话”“开启新对话”“开始新对话”“新建对话”“重新开始对话”“重新开启对话”“重开对话”（允许首尾空白和句末标点）时，SSE 直接返回“已开启新会话”，不调用 Dify；其它相似表达按普通内容处理。
 
 ## 入口配置
 

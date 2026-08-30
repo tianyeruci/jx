@@ -7,11 +7,11 @@ app:
   name: 商业顾问
   use_icon_as_answer_icon: false
 dependencies:
-- current_identifier: null
+- current_identifier:
   type: marketplace
   value:
     marketplace_plugin_unique_identifier: langgenius/tongyi:0.2.4@72bdf0d70a10b1b9f64746ccd1bd792397598f4536872b310e77532af02ad6a6
-    version: null
+    version:
 kind: app
 version: 0.6.0
 workflow:
@@ -49,7 +49,7 @@ workflow:
         - local_file
         - remote_url
       number_limits: 3
-    opening_statement: 你好，把你的产品方案、定价、权益或产品文案发给我，给你打磨优化。
+    opening_statement: 你好，我可以协助分析经营、营销、产品和管理等商业问题。
     retriever_resource:
       enabled: true
     sensitive_word_avoidance:
@@ -57,9 +57,9 @@ workflow:
     speech_to_text:
       enabled: false
     suggested_questions:
-    - 帮我打磨这套产品、定价和权益。
-    - 这套产品文案和卖点应该怎么优化？
-    - 请帮我判断当前经营最该优先解决什么？
+    - 如何判断当前获客渠道是否值得继续投入？
+    - 我的产品转化率下降，应该先排查什么？
+    - 请帮我分析一个小团队的经营优先级。
     suggested_questions_after_answer:
       enabled: true
     text_to_speech:
@@ -125,11 +125,11 @@ workflow:
         isInLoop: false
         sourceType: answer
         targetType: code
-      id: progress-answer-to-offer-route
+      id: progress-answer-to-activity-intent
       selected: false
       source: progress_answer
       sourceHandle: source
-      target: offer_route
+      target: activity_intent
       targetHandle: target
       type: custom
       zIndex: 0
@@ -354,113 +354,9 @@ workflow:
       targetHandle: target
       type: custom
       zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: if-else
-        targetType: knowledge-retrieval
-      id: offer-route-true-methodology
-      selected: false
-      source: offer_route
-      sourceHandle: 'true'
-      target: offer_methodology_knowledge
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: knowledge-retrieval
-        targetType: variable-aggregator
-      id: offer-methodology-aggregate
-      selected: false
-      source: offer_methodology_knowledge
-      sourceHandle: source
-      target: offer_retrieval_aggregate
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: if-else
-        targetType: knowledge-retrieval
-      id: offer-route-true-case
-      selected: false
-      source: offer_route
-      sourceHandle: 'true'
-      target: offer_case_knowledge
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: knowledge-retrieval
-        targetType: variable-aggregator
-      id: offer-case-aggregate
-      selected: false
-      source: offer_case_knowledge
-      sourceHandle: source
-      target: offer_retrieval_aggregate
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: variable-aggregator
-        targetType: code
-      id: offer-aggregate-compact
-      selected: false
-      source: offer_retrieval_aggregate
-      sourceHandle: source
-      target: offer_evidence_compact
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: code
-        targetType: llm
-      id: offer-compact-response
-      selected: false
-      source: offer_evidence_compact
-      sourceHandle: source
-      target: offer_response
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: llm
-        targetType: answer
-      id: offer-response-answer
-      selected: false
-      source: offer_response
-      sourceHandle: source
-      target: offer_answer
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
-        sourceType: if-else
-        targetType: code
-      id: offer-route-false-activity
-      selected: false
-      source: offer_route
-      sourceHandle: 'false'
-      target: activity_intent
-      targetHandle: target
-      type: custom
-      zIndex: 0
     nodes:
     - data:
-        desc: AI管理服务每轮注入已验证的上下文和输出风格。
+        desc: AI管理服务每轮注入已验证的上下文和输出风格；不再注入课程、路线或本地会话标识。
         selected: false
         title: 开始
         type: start
@@ -485,7 +381,7 @@ workflow:
           required: false
           type: paragraph
           variable: business_output_style
-      height: 246
+      height: 224
       id: start
       position:
         x: 0
@@ -497,59 +393,71 @@ workflow:
       type: custom
       width: 242
     - data:
-        code: "import re\n\n\ndef main(query: str) -> dict:\n    raw = str(query or \"\").strip()\n\n    normalized = re.sub(\n\
-          \        r\"[^0-9a-zA-Z\\u4e00-\\u9fff]\",\n        \"\",\n        raw.lower()\n    )\n\n    if not raw:\n     \
-          \   return {\n            \"should_direct\": \"true\",\n            \"direct_response\": \"请告诉我你想分析的经营、营销、产品或管理问题。\"\
-          ,\n            \"is_case_request\": \"false\",\n            \"is_activity_request\": \"false\",\n            \"\
-          is_offer_optimization_request\": \"false\"\n        }\n\n\n    human_terms = (\n        \"转人工\",\n        \"找人工\"\
-          ,\n        \"人工客服\",\n        \"人工咨询\",\n        \"联系顾问\",\n        \"找顾问\",\n        \"联系老师\",\n        \"老师微信\"\
-          ,\n        \"顾问微信\",\n        \"客服微信\"\n    )\n\n    decline_terms = (\n        \"不用人工\",\n        \"不找人工\",\n \
-          \       \"不需要人工\",\n        \"无需人工\",\n        \"不要转人工\"\n    )\n\n\n    if (\n        not any(item in raw for item\
-          \ in decline_terms)\n        and\n        (\n            normalized in {\n                \"人工\",\n            \
-          \    \"老师\",\n                \"顾问\",\n                \"客服\",\n                \"微信\"\n            }\n        \
-          \    or any(item in raw for item in human_terms)\n        )\n    ):\n        return {\n            \"should_direct\"\
-          : \"true\",\n            \"direct_response\":\n                \"这个问题需要人工顾问进一步确认，请通过页面中的人工咨询入口联系我们。\",\n       \
-          \     \"is_case_request\": \"false\",\n            \"is_activity_request\": \"false\",\n            \"is_offer_optimization_request\"\
-          : \"false\"\n        }\n\n\n    greetings = {\n        \"你好\",\n        \"您好\",\n        \"hi\",\n        \"hello\"\
-          ,\n        \"嗨\",\n        \"哈喽\",\n        \"早上好\",\n        \"下午好\",\n        \"晚上好\",\n        \"你是谁\",\n   \
-          \     \"你能做什么\",\n        \"你会什么\",\n        \"在吗\"\n    }\n\n\n    thanks = {\n        \"谢谢\",\n        \"感谢\"\
-          ,\n        \"多谢\",\n        \"thankyou\",\n        \"thanks\",\n        \"thx\",\n        \"谢谢你\",\n        \"非常感谢\"\
-          \n    }\n\n\n    goodbyes = {\n        \"再见\",\n        \"拜拜\",\n        \"bye\",\n        \"goodbye\",\n      \
-          \  \"下次见\",\n        \"回头见\",\n        \"先这样\"\n    }\n\n\n    if normalized in greetings:\n        return {\n \
-          \           \"should_direct\": \"true\",\n            \"direct_response\":\n                \"你好，把你的产品方案、定价、权益或产品文案发给我，给你打磨优化。\"\
-          ,\n            \"is_case_request\": \"false\",\n            \"is_activity_request\": \"false\",\n            \"\
-          is_offer_optimization_request\": \"false\"\n        }\n\n\n    if normalized in thanks:\n        return {\n    \
-          \        \"should_direct\": \"true\",\n            \"direct_response\":\n                \"不客气。你可以继续告诉我想解决的商业问题。\"\
-          ,\n            \"is_case_request\": \"false\",\n            \"is_activity_request\": \"false\",\n            \"\
-          is_offer_optimization_request\": \"false\"\n        }\n\n\n    if normalized in goodbyes:\n        return {\n  \
-          \          \"should_direct\": \"true\",\n            \"direct_response\":\n                \"好的，随时欢迎你再来咨询商业问题。\"\
-          ,\n            \"is_case_request\": \"false\",\n            \"is_activity_request\": \"false\",\n            \"\
-          is_offer_optimization_request\": \"false\"\n        }\n\n\n    offer_terms = (\n        \"产品\", \"服务\", \"方案\",\
-          \ \"套餐\", \"权益\", \"会员\",\n        \"报价\", \"价格\", \"定价\", \"收费\", \"项目\", \"课程\"\n    )\n    optimize_terms = (\n\
-          \        \"优化\", \"调整\", \"打磨\", \"设计\", \"升级\",\n        \"重构\", \"改进\", \"重新定位\", \"包装\", \"规划\"\n    )\n    case_terms\
-          \ = (\n        \"案例\", \"参考案例\", \"类似案例\", \"成功案例\",\n        \"有没有做过\", \"之前怎么解决\"\n    )\n    is_offer = any(x\
-          \ in raw for x in offer_terms) and any(x in raw for x in optimize_terms)\n    is_offer = is_offer or (any(x in raw\
-          \ for x in (\"价格\", \"定价\", \"收费\", \"报价\")) and any(x in raw for x in offer_terms))\n    is_case = any(x in raw\
-          \ for x in case_terms)\n\n    return {\n        \"should_direct\": \"false\",\n        \"direct_response\": \"\"\
-          ,\n        \"is_case_request\": \"true\" if is_case else \"false\",\n        \"is_activity_request\": \"false\"\
-          ,\n        \"is_offer_optimization_request\": \"true\" if is_offer else \"false\"\n    }"
+        code: |
+          import re
+
+          def main(query: str) -> dict:
+              raw = str(query or "").strip()
+              normalized = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]", "", raw.lower())
+              if not raw:
+                  return {"should_direct": "true", "direct_response": "请告诉我你想分析的经营、营销、产品或管理问题。"}
+              human_terms = ("转人工", "找人工", "人工客服", "人工咨询", "联系顾问", "找顾问", "联系老师", "老师微信", "顾问微信", "客服微信")
+              decline_terms = ("不用人工", "不找人工", "不需要人工", "无需人工", "不要转人工")
+              if not any(item in raw for item in decline_terms) and (normalized in {"人工", "老师", "顾问", "客服", "微信"} or any(item in raw for item in human_terms)):
+                  return {"should_direct": "true", "direct_response": "这个问题需要人工顾问进一步确认，请通过页面中的人工咨询入口联系我们。"}
+              greetings = {"你好", "您好", "hi", "hello", "嗨", "哈喽", "早上好", "下午好", "晚上好", "你是谁", "你能做什么", "你会什么", "在吗"}
+              thanks = {"谢谢", "感谢", "多谢", "thankyou", "thanks", "thx", "谢谢你", "非常感谢"}
+              goodbyes = {"再见", "拜拜", "bye", "goodbye", "下次见", "回头见", "先这样"}
+              if normalized in greetings:
+                  return {"should_direct": "true", "direct_response": "你好，我可以协助分析经营、营销、产品和管理等商业问题。"}
+              if normalized in thanks:
+                  return {"should_direct": "true", "direct_response": "不客气。你可以继续告诉我想解决的商业问题。"}
+              if normalized in goodbyes:
+                  return {"should_direct": "true", "direct_response": "好的，随时欢迎你再来咨询商业问题。"}
+              case_terms = ("相关案例", "类似案例", "相似案例", "同类案例", "真实案例", "案例参考", "案例经验", "类似经验", "同类经验")
+              activity_entity_terms = ("活动", "会议", "沙龙", "工作坊", "训练营", "直播", "峰会", "论坛", "分享会", "交流会", "私董会", "公开课", "实战营", "成长营", "体验营", "训练班", "专场", "圆桌", "大会", "日程", "聚会", "场次", "安排", "排期", "联谊")
+              activity_entity = any(item in raw for item in activity_entity_terms)
+              reference_terms = ("这个活动", "该活动", "这个会议", "该会议", "第一个", "第1个", "第二个", "第2个", "第三个", "第3个", "第四个", "第4个", "第五个", "第5个", "第一个活动", "第一个会议", "上述活动", "刚才的活动")
+              activity_name_marker = any(item in raw for item in ("营", "大会", "专场", "圆桌", "沙龙", "峰会", "工作坊", "训练", "活动", "会议", "直播", "公开课"))
+              activity_reference = activity_entity or any(item in raw for item in reference_terms) or activity_name_marker
+              listing_terms = ("最近", "近期", "最新", "有哪些", "有什么", "可以参加", "本月", "接下来", "所有", "全部", "历史", "已结束", "安排", "日程", "排期", "聚会", "场次", "联谊")
+              detail_terms = ("详情", "详细", "介绍", "地点", "在哪里", "形式", "具体")
+              registration_terms = ("报名链接", "报名方式", "报名入口", "报名地址", "怎么报名", "如何报名")
+              status_terms = ("延期", "改期", "取消", "完成", "已结束")
+              analysis_terms = ("如何", "怎么", "策略", "方法", "影响", "挽回", "复盘", "提升", "提高", "优化", "建议", "分析", "转化")
+              normalized_for_registration = normalized.rstrip("?？。！! ")
+              registration_request = any(item in raw for item in registration_terms) or normalized_for_registration.endswith("报名")
+              is_detail_request = (activity_reference or activity_name_marker) and (any(item in raw for item in detail_terms) or registration_request or any(item in raw for item in reference_terms))
+              is_analysis_request = any(item in raw for item in analysis_terms) and not is_detail_request
+              is_case_request = any(item in raw for item in case_terms)
+              normalized_activity_only = normalized in {"活动", "会议", "最近活动", "近期活动", "最新活动", "所有活动", "全部活动"}
+              is_activity_request = activity_reference and not is_analysis_request and not is_case_request and (
+                  normalized_activity_only
+                  or
+                  any(item in raw for item in listing_terms)
+                  or any(item in raw for item in status_terms)
+                  or is_detail_request
+              )
+              return {
+                  "should_direct": "false",
+                  "direct_response": "",
+                  "is_case_request": "true" if is_case_request else "false",
+                  "is_activity_request": "true" if is_activity_request else "false",
+              }
         code_language: python3
         desc: 固定问候、礼貌用语和明确人工请求不调用模型；其余问题进入一次检索和一次主回答，只有明确案例请求才检索咨询会议案例。
         outputs:
           direct_response:
-            children: null
-            type: string
-          is_activity_request:
-            children: null
-            type: string
-          is_case_request:
-            children: null
+            children:
             type: string
           should_direct:
-            children: null
+            children:
             type: string
-          is_offer_optimization_request:
-            children: null
+          is_case_request:
+            children:
+            type: string
+          is_activity_request:
+            children:
             type: string
         selected: false
         title: 固定意图与人工请求识别
@@ -559,7 +467,7 @@ workflow:
           - sys
           - query
           variable: query
-      height: 127
+      height: 111
       id: quick_intent
       position:
         x: 300
@@ -583,7 +491,7 @@ workflow:
           - result
         - - activity_status_knowledge
           - result
-      height: 194
+      height: 131
       id: activity_retrieval_aggregate
       position:
         x: 2580
@@ -597,13 +505,14 @@ workflow:
       type: custom
       width: 242
     - data:
-        code: "def main(is_activity_request: str, query: str) -> dict:\n    return {\"is_activity_request\": \"true\" if is_activity_request\
-          \ == \"true\" else \"false\"}\n"
+        code: |
+          def main(is_activity_request: str, query: str) -> dict:
+              return {"is_activity_request": "true" if is_activity_request == "true" else "false"}
         code_language: python3
         desc: 只把明确活动/会议意图送入活动检索，普通商业问题继续原有案例/通用分支。
         outputs:
           is_activity_request:
-            children: null
+            children:
             type: string
         selected: false
         title: 活动意图识别
@@ -620,12 +529,12 @@ workflow:
       height: 95
       id: activity_intent
       position:
-        x: 860.5748989275105
-        y: 325.54885015850476
+        x: 1320
+        y: 300
       positionAbsolute:
-        x: 860.5748989275105
-        y: 325.54885015850476
-      selected: true
+        x: 1320
+        y: 300
+      selected: false
       sourcePosition: right
       targetPosition: left
       type: custom
@@ -661,48 +570,55 @@ workflow:
       type: custom
       width: 242
     - data:
-        code: "from datetime import datetime, timedelta, timezone\n\ndef main(query: str, configured_activity_max_results=\"\
-          10\") -> dict:\n    now = datetime.now(timezone(timedelta(hours=8)))\n    query = str(query or \"\")\n    activity_entity_terms\
-          \ = (\"活动\", \"会议\", \"沙龙\", \"工作坊\", \"训练营\", \"直播\", \"峰会\", \"论坛\", \"分享会\", \"交流会\", \"私董会\", \"公开课\", \"实战营\"\
-          , \"成长营\", \"体验营\", \"训练班\", \"专场\", \"圆桌\", \"大会\", \"日程\", \"聚会\", \"场次\", \"安排\", \"排期\", \"联谊\")\n    detail_terms\
-          \ = (\"详情\", \"详细\", \"介绍\", \"地点\", \"在哪里\", \"形式\", \"怎么报名\", \"如何报名\", \"报名链接\", \"报名方式\", \"报名入口\", \"报名地址\"\
-          , \"具体\")\n    reference_terms = (\"这个活动\", \"该活动\", \"这个会议\", \"该会议\", \"第一个\", \"第1个\", \"第二个\", \"第2个\", \"第三个\"\
-          , \"第3个\", \"第四个\", \"第4个\", \"第五个\", \"第5个\", \"上述活动\", \"刚才的活动\")\n    normalized_query = \"\".join(ch for ch\
-          \ in query.lower() if ch.isalnum() or \"\\u4e00\" <= ch <= \"\\u9fff\")\n    registration_request = any(item in\
-          \ query for item in (\"报名链接\", \"报名方式\", \"报名入口\", \"报名地址\", \"怎么报名\", \"如何报名\")) or normalized_query.rstrip(\"\
-          ?？。！! \").endswith(\"报名\")\n    activity_name_marker = any(item in query for item in (\"营\", \"大会\", \"专场\", \"\
-          圆桌\", \"沙龙\", \"峰会\", \"工作坊\", \"训练\", \"活动\", \"会议\", \"直播\", \"公开课\"))\n    specific_activity_marker = any(item\
-          \ in query for item in (\"营\", \"大会\", \"专场\", \"圆桌\", \"沙龙\", \"峰会\", \"工作坊\", \"公开课\"))\n    generic_query_terms\
-          \ = detail_terms + (\"最近\", \"近期\", \"最新\", \"所有\", \"全部\", \"历史\", \"活动\", \"会议\", \"训练\", \"直播\", \"日程\", \"聚会\"\
-          , \"场次\", \"报名\", \"延期\", \"改期\", \"取消\", \"完成\", \"已结束\", \"正常\", \"状态\", \"有哪些\", \"有什么\", \"可以参加\", \"本月\", \"\
-          接下来\", \"的\")\n    remaining_name = query\n    for term in generic_query_terms:\n        remaining_name = remaining_name.replace(term,\
-          \ \"\")\n    remaining_name = \"\".join(ch for ch in remaining_name if ch.isalnum() or \"\\u4e00\" <= ch <= \"\\\
-          u9fff\")\n    specific_activity_reference = any(item in query for item in reference_terms) or specific_activity_marker\
-          \ or bool(remaining_name)\n    detail_mode = (any(item in query for item in activity_entity_terms) or any(item in\
-          \ query for item in reference_terms) or activity_name_marker) and (any(item in query for item in detail_terms) or\
-          \ registration_request or any(item in query for item in reference_terms))\n    detail_specific = detail_mode and\
-          \ specific_activity_reference\n    all_mode = any(word in query for word in (\"所有\", \"全部\", \"历史\"))\n    requested_status\
-          \ = \"detail\" if detail_specific else (\"cancelled\" if \"取消\" in query else (\"completed\" if any(word in query\
-          \ for word in (\"完成\", \"已结束\")) else (\"postponed\" if any(word in query for word in (\"延期\", \"改期\")) else (\"\
-          all\" if all_mode else \"normal\"))))\n    window_start = now - timedelta(days=30) if all_mode else now\n    try:\n\
-          \        configured_limit = int(float(str(configured_activity_max_results or \"10\").strip()))\n    except (TypeError,\
-          \ ValueError):\n        configured_limit = 10\n    activity_max_results = max(1, min(20, configured_limit))\n  \
-          \  return {\n        \"start_ts\": int(window_start.timestamp()),\n        \"end_ts\": int((now + timedelta(days=30)).timestamp()),\n\
-          \        \"requested_status\": requested_status,\n        \"activity_max_results\": activity_max_results,\n    }\n"
+        code: |
+          from datetime import datetime, timedelta, timezone
+
+          def main(query: str, configured_activity_max_results="10") -> dict:
+              now = datetime.now(timezone(timedelta(hours=8)))
+              query = str(query or "")
+              activity_entity_terms = ("活动", "会议", "沙龙", "工作坊", "训练营", "直播", "峰会", "论坛", "分享会", "交流会", "私董会", "公开课", "实战营", "成长营", "体验营", "训练班", "专场", "圆桌", "大会", "日程", "聚会", "场次", "安排", "排期", "联谊")
+              detail_terms = ("详情", "详细", "介绍", "地点", "在哪里", "形式", "怎么报名", "如何报名", "报名链接", "报名方式", "报名入口", "报名地址", "具体")
+              reference_terms = ("这个活动", "该活动", "这个会议", "该会议", "第一个", "第1个", "第二个", "第2个", "第三个", "第3个", "第四个", "第4个", "第五个", "第5个", "上述活动", "刚才的活动")
+              normalized_query = "".join(ch for ch in query.lower() if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+              registration_request = any(item in query for item in ("报名链接", "报名方式", "报名入口", "报名地址", "怎么报名", "如何报名")) or normalized_query.rstrip("?？。！! ").endswith("报名")
+              activity_name_marker = any(item in query for item in ("营", "大会", "专场", "圆桌", "沙龙", "峰会", "工作坊", "训练", "活动", "会议", "直播", "公开课"))
+              specific_activity_marker = any(item in query for item in ("营", "大会", "专场", "圆桌", "沙龙", "峰会", "工作坊", "公开课"))
+              generic_query_terms = detail_terms + ("最近", "近期", "最新", "所有", "全部", "历史", "活动", "会议", "训练", "直播", "日程", "聚会", "场次", "报名", "延期", "改期", "取消", "完成", "已结束", "正常", "状态", "有哪些", "有什么", "可以参加", "本月", "接下来", "的")
+              remaining_name = query
+              for term in generic_query_terms:
+                  remaining_name = remaining_name.replace(term, "")
+              remaining_name = "".join(ch for ch in remaining_name if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+              specific_activity_reference = any(item in query for item in reference_terms) or specific_activity_marker or bool(remaining_name)
+              detail_mode = (any(item in query for item in activity_entity_terms) or any(item in query for item in reference_terms) or activity_name_marker) and (any(item in query for item in detail_terms) or registration_request or any(item in query for item in reference_terms))
+              detail_specific = detail_mode and specific_activity_reference
+              all_mode = any(word in query for word in ("所有", "全部", "历史"))
+              requested_status = "detail" if detail_specific else ("cancelled" if "取消" in query else ("completed" if any(word in query for word in ("完成", "已结束")) else ("postponed" if any(word in query for word in ("延期", "改期")) else ("all" if all_mode else "normal"))))
+              window_start = now - timedelta(days=30) if all_mode else now
+              try:
+                  configured_limit = int(float(str(configured_activity_max_results or "10").strip()))
+              except (TypeError, ValueError):
+                  configured_limit = 10
+              activity_max_results = max(1, min(20, configured_limit))
+              return {
+                  "start_ts": int(window_start.timestamp()),
+                  "end_ts": int((now + timedelta(days=30)).timestamp()),
+                  "requested_status": requested_status,
+                  "activity_max_results": activity_max_results,
+              }
         code_language: python3
         desc: 生成中国时区的动态活动状态和三十天时间窗口；活动列表默认最多 10 条，供 Knowledge Retrieval 先过滤。
         outputs:
-          activity_max_results:
-            children: null
-            type: number
           end_ts:
-            children: null
+            children:
             type: number
           requested_status:
-            children: null
+            children:
             type: string
+          activity_max_results:
+            children:
+            type: number
           start_ts:
-            children: null
+            children:
             type: number
         selected: false
         title: 活动动态筛选条件
@@ -716,7 +632,7 @@ workflow:
           - env
           - ACTIVITY_MAX_RESULTS
           variable: configured_activity_max_results
-      height: 111
+      height: 95
       id: activity_window
       position:
         x: 1800
@@ -757,7 +673,7 @@ workflow:
         selected: false
         title: 活动状态路由
         type: if-else
-      height: 279
+      height: 191
       id: activity_status_route
       position:
         x: 2060
@@ -774,6 +690,7 @@ workflow:
         dataset_ids:
         - hs0Hyxg1MA28xHAG6dBkv6lVjZQP4KXYRTZU4WwQeu8C3HUI4H3dpyslaUiJ1FmP
         desc: 活动检索由 Dify 动态 metadata 条件先过滤 event、状态和进行中/未来三十天区间，结果节点再去重排序。
+        metadata_filtering_mode: manual
         metadata_filtering_conditions:
           conditions:
           - comparison_operator: is
@@ -789,7 +706,6 @@ workflow:
             name: event_start_ts
             value: '{{#activity_window.end_ts#}}'
           logical_operator: and
-        metadata_filtering_mode: manual
         multiple_retrieval_config:
           reranking_enable: true
           reranking_mode: reranking_model
@@ -806,7 +722,7 @@ workflow:
         selected: false
         title: 最近活动检索
         type: knowledge-retrieval
-      height: 149
+      height: 133
       id: activity_knowledge
       position:
         x: 1800
@@ -821,6 +737,7 @@ workflow:
         dataset_ids:
         - hs0Hyxg1MA28xHAG6dBkv6lVjZQP4KXYRTZU4WwQeu8C3HUI4H3dpyslaUiJ1FmP
         desc: 取消、延期和指定活动详情先由 Dify metadata 条件筛选状态；延期未定活动不伪造时间，详情可检索历史活动。
+        metadata_filtering_mode: manual
         metadata_filtering_conditions:
           conditions:
           - comparison_operator: is
@@ -830,7 +747,6 @@ workflow:
             name: event_status
             value: __none__
           logical_operator: and
-        metadata_filtering_mode: manual
         multiple_retrieval_config:
           reranking_enable: true
           reranking_mode: reranking_model
@@ -847,7 +763,7 @@ workflow:
         selected: false
         title: 取消延期活动检索
         type: knowledge-retrieval
-      height: 149
+      height: 133
       id: activity_status_knowledge
       position:
         x: 2320
@@ -861,89 +777,130 @@ workflow:
       type: custom
       width: 242
     - data:
-        code: "import json\nfrom datetime import datetime, timezone, timedelta\n\ndef number(value):\n    if isinstance(value,\
-          \ (int, float)) and not isinstance(value, bool): return float(value)\n    try: return float(str(value).strip())\n\
-          \    except Exception: return None\n\ndef main(results, query: str, start_ts, end_ts, requested_status: str, activity_max_results=10)\
-          \ -> dict:\n    start = number(start_ts) or 0\n    end = number(end_ts) or 0\n    query_text = str(query or \"\"\
-          )\n    requested_status = str(requested_status or \"normal\")\n    all_mode = requested_status == \"all\" or any(word\
-          \ in query_text for word in (\"所有\", \"全部\", \"历史\"))\n    list_terms = (\"最近\", \"近期\", \"最新\", \"有哪些\", \"有什么\"\
-          , \"可以参加\", \"本月\", \"接下来\", \"所有\", \"全部\", \"历史\", \"已结束\")\n    detail_terms = (\"详情\", \"详细\", \"介绍\", \"地点\"\
-          , \"在哪里\", \"形式\", \"怎么报名\", \"报名链接\", \"报名方式\", \"报名入口\", \"报名地址\", \"具体\")\n    reference_terms = (\"这个活动\", \"\
-          该活动\", \"这个会议\", \"该会议\", \"第一个\", \"第1个\", \"第二个\", \"第2个\", \"第三个\", \"第3个\", \"第四个\", \"第4个\", \"第五个\", \"第5个\"\
-          , \"第一个活动\", \"第一个会议\", \"上述活动\", \"刚才的活动\")\n    activity_entity_terms = (\"活动\", \"会议\", \"沙龙\", \"工作坊\", \"训练营\"\
-          , \"直播\", \"峰会\", \"论坛\", \"分享会\", \"交流会\", \"私董会\", \"公开课\", \"实战营\", \"成长营\", \"体验营\", \"训练班\", \"专场\", \"圆桌\"\
-          , \"大会\", \"日程\", \"聚会\", \"场次\", \"安排\", \"排期\", \"联谊\")\n    normalized_query = \"\".join(ch for ch in query_text.lower()\
-          \ if ch.isalnum() or \"\\u4e00\" <= ch <= \"\\u9fff\")\n    specific_activity_marker = any(term in query_text for\
-          \ term in (\"营\", \"大会\", \"专场\", \"圆桌\", \"沙龙\", \"峰会\", \"工作坊\", \"公开课\"))\n    ordinal_phrase = \"第\" in query_text\
-          \ and \"个\" in query_text\n    specific_activity_reference = any(term in query_text for term in reference_terms)\
-          \ or specific_activity_marker or ordinal_phrase\n    list_mode = requested_status != \"detail\" and (any(term in\
-          \ query_text for term in list_terms) or normalized_query in {\"活动\", \"会议\", \"最近活动\", \"近期活动\", \"最新活动\", \"所有活动\"\
-          , \"全部活动\"})\n    detail_mode = requested_status == \"detail\" or (not list_mode and specific_activity_reference\
-          \ and (any(term in query_text for term in detail_terms) or any(term in query_text for term in reference_terms)))\n\
-          \    limit = max(1, min(20, int(number(activity_max_results) or 10)))\n    selected = {}\n    all_results = []\n\
-          \    for batch in (results,):\n        if isinstance(batch, list): all_results.extend(batch)\n    for item in all_results:\n\
-          \        metadata = item.get(\"metadata\", {}) if isinstance(item, dict) else {}\n        raw = metadata.get(\"\
-          doc_metadata\", metadata)\n        if isinstance(raw, str):\n            try: raw = json.loads(raw)\n          \
-          \  except Exception: raw = {}\n        if isinstance(raw, list):\n            raw = {entry.get(\"name\"): entry.get(\"\
-          value\") for entry in raw if isinstance(entry, dict) and entry.get(\"name\")}\n        if not isinstance(raw, dict)\
-          \ or raw.get(\"record_type\") != \"event\": continue\n        event_status = raw.get(\"event_status\")\n       \
-          \ detail_request = requested_status == \"detail\"\n        if not detail_request and requested_status in {\"cancelled\"\
-          , \"postponed\", \"completed\"} and event_status != requested_status: continue\n        if not detail_request and\
-          \ not all_mode and requested_status in {\"recent\", \"normal\"} and event_status not in {\"normal\", \"postponed\"\
-          }: continue\n        timestamp = number(raw.get(\"event_start_ts\"))\n        event_end = number(raw.get(\"event_end_ts\"\
-          ))\n        if timestamp is None or event_end is None:\n            if not (detail_request or (all_mode and event_status\
-          \ == \"postponed\")):\n                continue\n        if detail_request:\n            pass\n        elif all_mode:\n\
-          \            if event_end is not None and timestamp is not None and (event_end < start or timestamp > end): continue\n\
-          \        elif event_end <= start or timestamp > end: continue\n        event_id = str(raw.get(\"event_id\") or item.get(\"\
-          document_name\") or \"\")\n        selected[event_id] = (timestamp, raw, item)\n    def order(value):\n        timestamp,\
-          \ metadata, _ = value\n        event_end = number(metadata.get(\"event_end_ts\"))\n        if timestamp is None\
-          \ or event_end is None: return (1, float(\"inf\"), str(metadata.get(\"event_id\", \"\")))\n        if timestamp\
-          \ <= start <= event_end: return (0, timestamp, str(metadata.get(\"event_id\", \"\")))\n        if timestamp > start:\
-          \ return (1, timestamp, str(metadata.get(\"event_id\", \"\")))\n        return (2, -event_end, str(metadata.get(\"\
-          event_id\", \"\")))\n    ordered_all = sorted(selected.values(), key=order)\n    if detail_mode:\n        normalized_query_for_match\
-          \ = \"\".join(ch for ch in query_text.lower() if ch.isalnum() or \"\\u4e00\" <= ch <= \"\\u9fff\")\n        ordinal_request\
-          \ = any(term in query_text for term in reference_terms) or ordinal_phrase\n        def item_title(value):\n    \
-          \        _, metadata, item = value\n            return str(metadata.get(\"source_title\") or item.get(\"title\"\
-          ) or item.get(\"document_name\") or \"\")\n        if ordinal_request:\n            ordinal_map = {\"第一个\": 1, \"\
-          第1个\": 1, \"第二个\": 2, \"第2个\": 2, \"第三个\": 3, \"第3个\": 3, \"第四个\": 4, \"第4个\": 4, \"第五个\": 5, \"第5个\": 5}\n    \
-          \        requested_ordinal = next((number for term, number in ordinal_map.items() if term in query_text), None)\n\
-          \            if requested_ordinal is None:\n                ordinal_start = query_text.find(\"第\") + 1\n       \
-          \         ordinal_end = query_text.find(\"个\", ordinal_start)\n                token = query_text[ordinal_start:ordinal_end]\
-          \ if ordinal_end > ordinal_start else \"\"\n                chinese_digits = {\"零\": 0, \"一\": 1, \"二\": 2, \"两\"\
-          : 2, \"三\": 3, \"四\": 4, \"五\": 5, \"六\": 6, \"七\": 7, \"八\": 8, \"九\": 9}\n                if token.isdigit():\n\
-          \                    requested_ordinal = int(token)\n                elif \"十\" in token:\n                    tens,\
-          \ _, ones = token.partition(\"十\")\n                    requested_ordinal = (chinese_digits.get(tens, 1) if tens\
-          \ else 1) * 10 + (chinese_digits.get(ones, 0) if ones else 0)\n                elif token in chinese_digits:\n \
-          \                   requested_ordinal = chinese_digits[token]\n            ordered = ordered_all[requested_ordinal\
-          \ - 1:requested_ordinal] if requested_ordinal and requested_ordinal > 0 else []\n        else:\n            named\
-          \ = [value for value in ordered_all if \"\".join(ch for ch in item_title(value).lower() if ch.isalnum() or \"\\\
-          u4e00\" <= ch <= \"\\u9fff\") in normalized_query_for_match]\n            ordered = (named or ordered_all[:1])[:1]\n\
-          \    else:\n        ordered = ordered_all[:limit]\n    status_text = \"所有\" if requested_status == \"all\" else\
-          \ {\"normal\": \"正常\", \"recent\": \"最近\", \"cancelled\": \"取消\", \"postponed\": \"延期\", \"completed\": \"已完成\"\
-          , \"detail\": \"活动\"}.get(requested_status, \"活动\")\n    def display_time(timestamp, event_status):\n        if\
-          \ event_status == \"postponed\" and timestamp is None:\n            return \"延期未定\"\n        if timestamp is None:\n\
-          \            return \"时间未定\"\n        value = datetime.fromtimestamp(timestamp, timezone(timedelta(hours=8)))\n\
-          \        date_text = f\"{value.year}年{value.month}月{value.day}日\"\n        return f\"{date_text} {value:%H:%M}\"\
-          \ if value.hour or value.minute else date_text\n    lines = []\n    for timestamp, metadata, item in ordered:\n\
-          \        title = metadata.get(\"source_title\") or item.get(\"title\") or item.get(\"document_name\") or \"活动\"\n\
-          \        status = metadata.get(\"source_status\") or metadata.get(\"event_status\") or \"\"\n        time_text =\
-          \ display_time(timestamp, metadata.get(\"event_status\"))\n        summary = str(metadata.get(\"activity_summary\"\
-          ) or \"\").strip()\n        status = {\"normal\": \"正常\", \"cancelled\": \"取消\", \"postponed\": \"延期\", \"completed\"\
-          : \"已完成\"}.get(str(metadata.get(\"event_status\") or \"\"), str(metadata.get(\"source_status\") or metadata.get(\"\
-          event_status\") or \"\"))\n        if metadata.get(\"event_status\") == \"postponed\" and timestamp is None:\n \
-          \           time_text = \"延期未定\"\n        if not detail_mode:\n            line = f\"{title}｜{time_text}｜{status}\"\
-          \n        else:\n            line = f\"{title}（{status}，{time_text}，{metadata.get('delivery_mode', '')}，{metadata.get('city',\
-          \ '')}）\"\n            if summary: line += f\"\\n简介：{summary}\"\n            link = metadata.get(\"registration_url\"\
-          )\n            deadline = number(metadata.get(\"registration_deadline_ts\"))\n            if event_status in {\"\
-          normal\", \"postponed\"} and isinstance(link, str) and link.startswith((\"http://\", \"https://\")) and (deadline\
-          \ is None or deadline >= datetime.now(timezone(timedelta(hours=8))).timestamp()): line += f\"\\n报名链接：{link}\"\n\
-          \        lines.append(line)\n    empty_text = \"当前没有符合条件的活动。\" if requested_status == \"detail\" else f\"当前没有符合条件的{status_text}活动。\"\
-          \n    return {\"activity_text\": \"\\n\".join(lines) or empty_text}\n"
+        code: |
+          import json
+          from datetime import datetime, timezone, timedelta
+
+          def number(value):
+              if isinstance(value, (int, float)) and not isinstance(value, bool): return float(value)
+              try: return float(str(value).strip())
+              except Exception: return None
+
+          def main(results, query: str, start_ts, end_ts, requested_status: str, activity_max_results=10) -> dict:
+              start = number(start_ts) or 0
+              end = number(end_ts) or 0
+              query_text = str(query or "")
+              requested_status = str(requested_status or "normal")
+              all_mode = requested_status == "all" or any(word in query_text for word in ("所有", "全部", "历史"))
+              list_terms = ("最近", "近期", "最新", "有哪些", "有什么", "可以参加", "本月", "接下来", "所有", "全部", "历史", "已结束")
+              detail_terms = ("详情", "详细", "介绍", "地点", "在哪里", "形式", "怎么报名", "报名链接", "报名方式", "报名入口", "报名地址", "具体")
+              reference_terms = ("这个活动", "该活动", "这个会议", "该会议", "第一个", "第1个", "第二个", "第2个", "第三个", "第3个", "第四个", "第4个", "第五个", "第5个", "第一个活动", "第一个会议", "上述活动", "刚才的活动")
+              activity_entity_terms = ("活动", "会议", "沙龙", "工作坊", "训练营", "直播", "峰会", "论坛", "分享会", "交流会", "私董会", "公开课", "实战营", "成长营", "体验营", "训练班", "专场", "圆桌", "大会", "日程", "聚会", "场次", "安排", "排期", "联谊")
+              normalized_query = "".join(ch for ch in query_text.lower() if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+              specific_activity_marker = any(term in query_text for term in ("营", "大会", "专场", "圆桌", "沙龙", "峰会", "工作坊", "公开课"))
+              ordinal_phrase = "第" in query_text and "个" in query_text
+              specific_activity_reference = any(term in query_text for term in reference_terms) or specific_activity_marker or ordinal_phrase
+              list_mode = requested_status != "detail" and (any(term in query_text for term in list_terms) or normalized_query in {"活动", "会议", "最近活动", "近期活动", "最新活动", "所有活动", "全部活动"})
+              detail_mode = requested_status == "detail" or (not list_mode and specific_activity_reference and (any(term in query_text for term in detail_terms) or any(term in query_text for term in reference_terms)))
+              limit = max(1, min(20, int(number(activity_max_results) or 10)))
+              selected = {}
+              all_results = []
+              for batch in (results,):
+                  if isinstance(batch, list): all_results.extend(batch)
+              for item in all_results:
+                  metadata = item.get("metadata", {}) if isinstance(item, dict) else {}
+                  raw = metadata.get("doc_metadata", metadata)
+                  if isinstance(raw, str):
+                      try: raw = json.loads(raw)
+                      except Exception: raw = {}
+                  if isinstance(raw, list):
+                      raw = {entry.get("name"): entry.get("value") for entry in raw if isinstance(entry, dict) and entry.get("name")}
+                  if not isinstance(raw, dict) or raw.get("record_type") != "event": continue
+                  event_status = raw.get("event_status")
+                  detail_request = requested_status == "detail"
+                  if not detail_request and requested_status in {"cancelled", "postponed", "completed"} and event_status != requested_status: continue
+                  if not detail_request and not all_mode and requested_status in {"recent", "normal"} and event_status not in {"normal", "postponed"}: continue
+                  timestamp = number(raw.get("event_start_ts"))
+                  event_end = number(raw.get("event_end_ts"))
+                  if timestamp is None or event_end is None:
+                      if not (detail_request or (all_mode and event_status == "postponed")):
+                          continue
+                  if detail_request:
+                      pass
+                  elif all_mode:
+                      if event_end is not None and timestamp is not None and (event_end < start or timestamp > end): continue
+                  elif event_end <= start or timestamp > end: continue
+                  event_id = str(raw.get("event_id") or item.get("document_name") or "")
+                  selected[event_id] = (timestamp, raw, item)
+              def order(value):
+                  timestamp, metadata, _ = value
+                  event_end = number(metadata.get("event_end_ts"))
+                  if timestamp is None or event_end is None: return (1, float("inf"), str(metadata.get("event_id", "")))
+                  if timestamp <= start <= event_end: return (0, timestamp, str(metadata.get("event_id", "")))
+                  if timestamp > start: return (1, timestamp, str(metadata.get("event_id", "")))
+                  return (2, -event_end, str(metadata.get("event_id", "")))
+              ordered_all = sorted(selected.values(), key=order)
+              if detail_mode:
+                  normalized_query_for_match = "".join(ch for ch in query_text.lower() if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+                  ordinal_request = any(term in query_text for term in reference_terms) or ordinal_phrase
+                  def item_title(value):
+                      _, metadata, item = value
+                      return str(metadata.get("source_title") or item.get("title") or item.get("document_name") or "")
+                  if ordinal_request:
+                      ordinal_map = {"第一个": 1, "第1个": 1, "第二个": 2, "第2个": 2, "第三个": 3, "第3个": 3, "第四个": 4, "第4个": 4, "第五个": 5, "第5个": 5}
+                      requested_ordinal = next((number for term, number in ordinal_map.items() if term in query_text), None)
+                      if requested_ordinal is None:
+                          ordinal_start = query_text.find("第") + 1
+                          ordinal_end = query_text.find("个", ordinal_start)
+                          token = query_text[ordinal_start:ordinal_end] if ordinal_end > ordinal_start else ""
+                          chinese_digits = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+                          if token.isdigit():
+                              requested_ordinal = int(token)
+                          elif "十" in token:
+                              tens, _, ones = token.partition("十")
+                              requested_ordinal = (chinese_digits.get(tens, 1) if tens else 1) * 10 + (chinese_digits.get(ones, 0) if ones else 0)
+                          elif token in chinese_digits:
+                              requested_ordinal = chinese_digits[token]
+                      ordered = ordered_all[requested_ordinal - 1:requested_ordinal] if requested_ordinal and requested_ordinal > 0 else []
+                  else:
+                      named = [value for value in ordered_all if "".join(ch for ch in item_title(value).lower() if ch.isalnum() or "\u4e00" <= ch <= "\u9fff") in normalized_query_for_match]
+                      ordered = (named or ordered_all[:1])[:1]
+              else:
+                  ordered = ordered_all[:limit]
+              status_text = "所有" if requested_status == "all" else {"normal": "正常", "recent": "最近", "cancelled": "取消", "postponed": "延期", "completed": "已完成", "detail": "活动"}.get(requested_status, "活动")
+              def display_time(timestamp, event_status):
+                  if event_status == "postponed" and timestamp is None:
+                      return "延期未定"
+                  if timestamp is None:
+                      return "时间未定"
+                  value = datetime.fromtimestamp(timestamp, timezone(timedelta(hours=8)))
+                  date_text = f"{value.year}年{value.month}月{value.day}日"
+                  return f"{date_text} {value:%H:%M}" if value.hour or value.minute else date_text
+              lines = []
+              for timestamp, metadata, item in ordered:
+                  title = metadata.get("source_title") or item.get("title") or item.get("document_name") or "活动"
+                  status = metadata.get("source_status") or metadata.get("event_status") or ""
+                  time_text = display_time(timestamp, metadata.get("event_status"))
+                  summary = str(metadata.get("activity_summary") or "").strip()
+                  status = {"normal": "正常", "cancelled": "取消", "postponed": "延期", "completed": "已完成"}.get(str(metadata.get("event_status") or ""), str(metadata.get("source_status") or metadata.get("event_status") or ""))
+                  if metadata.get("event_status") == "postponed" and timestamp is None:
+                      time_text = "延期未定"
+                  if not detail_mode:
+                      line = f"{title}｜{time_text}｜{status}"
+                  else:
+                      line = f"{title}（{status}，{time_text}，{metadata.get('delivery_mode', '')}，{metadata.get('city', '')}）"
+                      if summary: line += f"\n简介：{summary}"
+                      link = metadata.get("registration_url")
+                      deadline = number(metadata.get("registration_deadline_ts"))
+                      if event_status in {"normal", "postponed"} and isinstance(link, str) and link.startswith(("http://", "https://")) and (deadline is None or deadline >= datetime.now(timezone(timedelta(hours=8))).timestamp()): line += f"\n报名链接：{link}"
+                  lines.append(line)
+              empty_text = "当前没有符合条件的活动。" if requested_status == "detail" else f"当前没有符合条件的{status_text}活动。"
+              return {"activity_text": "\n".join(lines) or empty_text}
         code_language: python3
         desc: 从 doc_metadata 读取动态筛选后的活动，按状态阶段和时间排序、去重并受 activity_max_results 限制；列表仅显示名称、时间、状态，明确活动详情请求才显示详情字段。
         outputs:
           activity_text:
-            children: null
+            children:
             type: string
         selected: false
         title: 活动结果排序与去重
@@ -973,7 +930,7 @@ workflow:
           - activity_window
           - activity_max_results
           variable: activity_max_results
-      height: 143
+      height: 95
       id: activity_results
       position:
         x: 2060
@@ -981,9 +938,9 @@ workflow:
       positionAbsolute:
         x: 2060
         y: 220
-      selected: false
       sourcePosition: right
       targetPosition: left
+      selected: false
       type: custom
       width: 242
     - data:
@@ -993,7 +950,7 @@ workflow:
         title: 活动回答
         type: answer
         variables: []
-      height: 146
+      height: 130
       id: activity_answer
       position:
         x: 2320
@@ -1001,9 +958,9 @@ workflow:
       positionAbsolute:
         x: 2320
         y: 220
-      selected: false
       sourcePosition: right
       targetPosition: left
+      selected: false
       type: custom
       width: 242
     - data:
@@ -1043,7 +1000,7 @@ workflow:
         title: 固定场景直接回复
         type: answer
         variables: []
-      height: 130
+      height: 146
       id: quick_answer
       position:
         x: 980
@@ -1073,7 +1030,7 @@ workflow:
         selected: false
         title: 是否检索咨询案例
         type: if-else
-      height: 207
+      height: 191
       id: case_route
       position:
         x: 1320
@@ -1087,7 +1044,7 @@ workflow:
       type: custom
       width: 242
     - data:
-        answer: 正在结合你的情况进行分析，请稍候……
+        answer: '正在结合你的情况进行分析，请稍候……'
         desc: 在检索和主模型调用前立即输出固定提示，降低感知等待时间。
         selected: false
         title: 首字等待提示
@@ -1109,7 +1066,8 @@ workflow:
     - data:
         dataset_ids:
         - hs0Hyxg1MA28xHAG6dBkv6lVjZQP4KXYRTZU4WwQeu8C3HUI4H3dpyslaUiJ1FmP
-        desc: 商业知识检索；普通问题硬排除咨询会议案例。
+        desc: 商业知识检索。不访问课程/路线知识库；普通问题硬排除咨询会议案例。
+        metadata_filtering_mode: manual
         metadata_filtering_conditions:
           conditions:
           - comparison_operator: is not
@@ -1119,7 +1077,6 @@ workflow:
             name: record_type
             value: event
           logical_operator: and
-        metadata_filtering_mode: manual
         multiple_retrieval_config:
           reranking_enable: true
           reranking_mode: reranking_model
@@ -1150,14 +1107,14 @@ workflow:
     - data:
         dataset_ids:
         - hs0Hyxg1MA28xHAG6dBkv6lVjZQP4KXYRTZU4WwQeu8C3HUI4H3dpyslaUiJ1FmP
-        desc: 仅在用户明确请求相关、类似或真实案例时检索，硬过滤咨询会议案例。
+        desc: 仅在用户明确请求相关、类似或真实案例时检索，硬过滤咨询会议案例；不访问课程/路线知识库。
+        metadata_filtering_mode: manual
         metadata_filtering_conditions:
           conditions:
           - comparison_operator: is
             name: record_type
             value: consulting_case
           logical_operator: and
-        metadata_filtering_mode: manual
         multiple_retrieval_config:
           reranking_enable: true
           reranking_mode: reranking_model
@@ -1174,7 +1131,7 @@ workflow:
         selected: false
         title: 咨询会议案例检索
         type: knowledge-retrieval
-      height: 149
+      height: 165
       id: case_knowledge
       position:
         x: 1660
@@ -1196,7 +1153,7 @@ workflow:
           - result
         - - case_knowledge
           - result
-      height: 194
+      height: 131
       id: advisor_retrieval_aggregate
       position:
         x: 2000
@@ -1210,23 +1167,38 @@ workflow:
       type: custom
       width: 242
     - data:
-        code: "import json\n\ndef main(results) -> dict:\n    output = []\n    used = 0\n    for index, item in enumerate(results\
-          \ if isinstance(results, list) else [], 1):\n        if index > 8:\n            break\n        if isinstance(item,\
-          \ dict):\n            selected = {}\n            for key in (\"title\", \"content\", \"document_name\", \"score\"\
-          ):\n                value = item.get(key)\n                if value in (None, \"\", [], {}):\n                 \
-          \   continue\n                selected[key] = str(value)[:8000] if key == \"content\" else value\n        else:\n\
-          \            selected = {\"content\": str(item)}\n        line = f\"[{index}] \" + json.dumps(selected, ensure_ascii=False,\
-          \ default=str)\n        if used + len(line) > 12000:\n            break\n        output.append(line)\n        used\
-          \ += len(line)\n    return {\"evidence_text\": \"\\n\".join(output), \"has_evidence\": \"true\" if output else \"\
-          false\"}\n"
+        code: |
+          import json
+
+          def main(results) -> dict:
+              output = []
+              used = 0
+              for index, item in enumerate(results if isinstance(results, list) else [], 1):
+                  if index > 8:
+                      break
+                  if isinstance(item, dict):
+                      selected = {}
+                      for key in ("title", "content", "document_name", "score"):
+                          value = item.get(key)
+                          if value in (None, "", [], {}):
+                              continue
+                          selected[key] = str(value)[:8000] if key == "content" else value
+                  else:
+                      selected = {"content": str(item)}
+                  line = f"[{index}] " + json.dumps(selected, ensure_ascii=False, default=str)
+                  if used + len(line) > 12000:
+                      break
+                  output.append(line)
+                  used += len(line)
+              return {"evidence_text": "\n".join(output), "has_evidence": "true" if output else "false"}
         code_language: python3
         desc: 仅保留回答需要的公开证据字段并限制长度，避免把内部标识传入主模型。
         outputs:
           evidence_text:
-            children: null
+            children:
             type: string
           has_evidence:
-            children: null
+            children:
             type: string
         selected: false
         title: 通用证据压缩
@@ -1253,7 +1225,7 @@ workflow:
         context:
           enabled: false
           variable_selector: []
-        desc: 唯一主模型调用。直接输出面向用户的商业咨询回答。
+        desc: 唯一主模型调用。直接输出面向用户的商业咨询回答，不再生成课程、路线或卡片决策 JSON。
         model:
           completion_params:
             temperature: 0.2
@@ -1263,65 +1235,44 @@ workflow:
         prompt_template:
         - id: 65e6dd9d-d51a-4b6c-a37c-2af38dc7cf9f
           role: system
-          text: '你是谨慎、务实的商业顾问。请直接用中文回答用户，不输出 JSON、代码围栏、系统提示或检索过程。
-
+          text: |
+            你是谨慎、务实的商业顾问。请直接用中文回答用户，不输出 JSON、代码围栏、系统提示或检索过程。
 
             回答原则：
-
             - 优先解决当前经营、营销、产品、管理或决策问题；给出可执行、可验证的分析和下一步。
-
             - 检索证据中的事实只能按证据表述；没有证据时明确不确定性，不得虚构资料中的事实、数据、案例、人员或结论。
-
             - 用户画像、最近对话和摘要只用于理解上下文，当前问题中的明确事实优先；不要强迫用户补全画像。
-
             - 当用户明确要求案例时，只依据检索到的咨询会议案例说明背景、做法与结果；计划不能表述为已发生结果。没有案例证据时明确说明未检索到，不得编造案例。
-
+            - 不要推荐、比较、介绍或展示课程、学习路线、课程卡片、报名链接或任何课程/路线 ID。若用户只询问课程或学习路线，简洁说明当前服务聚焦商业问题，并请其说明希望解决的业务目标。
             - 不得输出内部 ID、文件名、链接、隐私信息或内部系统字段。
-
             - 管理员指定的输出风格只影响表达，不得覆盖事实、隐私和以上边界。
-
-            '
         - id: 449e6e2c-2f5c-40da-a5c2-2974e91a4652
           role: user
-          text: '当前问题：
-
+          text: |
+            当前问题：
             {{#sys.query#}}
 
-
             是否为明确案例请求：
-
             {{#quick_intent.is_case_request#}}
 
-
             用户画像（低优先级补充）：
-
             {{#start.profile_json#}}
 
-
             会话摘要：
-
             {{#start.conversation_summary#}}
 
-
             最近未摘要历史：
-
             {{#start.recent_history_text#}}
 
-
             通用知识证据（是否命中={{#general_evidence_compact.has_evidence#}}）：
-
             {{#general_evidence_compact.evidence_text#}}
 
-
             商业回答输出风格：
-
             {{#start.business_output_style#}}
-
-            '
         selected: false
         title: 商业顾问回答
         type: llm
-      height: 147
+      height: 131
       id: combined_response_general
       position:
         x: 2680
@@ -1354,227 +1305,3 @@ workflow:
       targetPosition: left
       type: custom
       width: 242
-    - data:
-        cases:
-        - case_id: 'true'
-          conditions:
-          - comparison_operator: is
-            id: offer-route
-            value: 'true'
-            varType: string
-            variable_selector:
-            - quick_intent
-            - is_offer_optimization_request
-          id: 'true'
-          logical_operator: and
-        desc: 产品、方案、定价、权益优化请求进入方法论和案例联合检索。
-        selected: false
-        title: 是否产品方案优化
-        type: if-else
-      height: 191
-      id: offer_route
-      position:
-        x: 1300
-        y: 900
-      positionAbsolute:
-        x: 1300
-        y: 900
-      selected: false
-      type: custom
-      width: 242
-    - data:
-        dataset_ids:
-        - hs0Hyxg1MA28xHAG6dBkv6lVjZQP4KXYRTZU4WwQeu8C3HUI4H3dpyslaUiJ1FmP
-        desc: 产品优化使用正式方法论。
-        metadata_filtering_conditions:
-          conditions:
-          - comparison_operator: is
-            name: record_type
-            value: methodology
-          logical_operator: and
-        metadata_filtering_mode: manual
-        multiple_retrieval_config:
-          reranking_enable: true
-          reranking_mode: reranking_model
-          reranking_model:
-            model: qwen3-rerank
-            provider: langgenius/tongyi/tongyi
-          score_threshold: 0.3
-          top_k: 5
-        query_attachment_selector: []
-        query_variable_selector:
-        - sys
-        - query
-        retrieval_mode: multiple
-        selected: false
-        title: 产品优化方法论检索
-        type: knowledge-retrieval
-      height: 149
-      id: offer_methodology_knowledge
-      position:
-        x: 1700
-        y: 850
-      positionAbsolute:
-        x: 1700
-        y: 850
-      selected: false
-      type: custom
-      width: 242
-    - data:
-        dataset_ids:
-        - hs0Hyxg1MA28xHAG6dBkv6lVjZQP4KXYRTZU4WwQeu8C3HUI4H3dpyslaUiJ1FmP
-        desc: 产品优化自动参考咨询案例。
-        metadata_filtering_conditions:
-          conditions:
-          - comparison_operator: is
-            name: record_type
-            value: consulting_case
-          logical_operator: and
-        metadata_filtering_mode: manual
-        multiple_retrieval_config:
-          reranking_enable: true
-          reranking_mode: reranking_model
-          reranking_model:
-            model: qwen3-rerank
-            provider: langgenius/tongyi/tongyi
-          score_threshold: 0.3
-          top_k: 5
-        query_attachment_selector: []
-        query_variable_selector:
-        - sys
-        - query
-        retrieval_mode: multiple
-        selected: false
-        title: 产品优化案例检索
-        type: knowledge-retrieval
-      height: 149
-      id: offer_case_knowledge
-      position:
-        x: 1700
-        y: 1050
-      positionAbsolute:
-        x: 1700
-        y: 1050
-      selected: false
-      type: custom
-      width: 242
-    - data:
-        desc: 聚合方法论和案例。
-        output_type: array[object]
-        selected: false
-        title: 产品优化检索结果聚合
-        type: variable-aggregator
-        variables:
-        - - offer_methodology_knowledge
-          - result
-        - - offer_case_knowledge
-          - result
-      height: 194
-      id: offer_retrieval_aggregate
-      position:
-        x: 2050
-        y: 950
-      positionAbsolute:
-        x: 2050
-        y: 950
-      selected: false
-      type: custom
-      width: 242
-    - data:
-        code: "import json\ndef main(results):\n    output=[]\n    for i,item in enumerate(results if isinstance(results,list)\
-          \ else [],1):\n        if i>8: break\n        if isinstance(item,dict):\n            output.append(f\"[{i}] \"+json.dumps({k:item.get(k)\
-          \ for k in (\"title\",\"content\",\"document_name\",\"score\") if item.get(k) not in (None,\"\")},ensure_ascii=False))\n\
-          \    text=\"\\n\".join(output)\n    return {\"offer_evidence_text\":text,\"has_evidence\":\"true\" if text else\
-          \ \"false\"}\n"
-        code_language: python3
-        desc: 压缩产品优化检索证据。
-        outputs:
-          offer_evidence_text:
-            children: null
-            type: string
-          has_evidence:
-            children: null
-            type: string
-        selected: false
-        title: 产品优化证据压缩
-        type: code
-        variables:
-        - value_selector:
-          - offer_retrieval_aggregate
-          - output
-          variable: results
-      height: 95
-      id: offer_evidence_compact
-      position:
-        x: 2400
-        y: 950
-      positionAbsolute:
-        x: 2400
-        y: 950
-      selected: false
-      type: custom
-      width: 242
-    - data:
-        context:
-          enabled: false
-          variable_selector: []
-        desc: 产品方案优化专用模型。
-        model:
-          completion_params:
-            temperature: 0.2
-          mode: chat
-          name: qwen-plus
-          provider: langgenius/tongyi/tongyi
-        prompt_template:
-        - id: offer-system
-          role: system
-          text: 你是商业产品设计顾问。基于用户输入、方法论和案例，帮助用户打磨产品、定价、权益和商业方案。输出：1当前诊断 2问题 3定位优化 4产品结构优化 5定价优化 6权益设计 7推荐成品方案 8验证建议。案例只能借鉴，不得虚构。信息不足时先要求补充。
-        - id: offer-user
-          role: user
-          text: '当前问题：
-
-            {{#sys.query#}}
-
-
-            检索证据：
-
-            {{#offer_evidence_compact.offer_evidence_text#}}'
-        selected: false
-        title: 产品方案优化回答
-        type: llm
-      height: 147
-      id: offer_response
-      position:
-        x: 2750
-        y: 950
-      positionAbsolute:
-        x: 2750
-        y: 950
-      selected: false
-      type: custom
-      width: 242
-    - data:
-        answer: '{{#offer_response.text#}}'
-        desc: 输出产品优化结果。
-        selected: false
-        title: 产品方案优化回答输出
-        type: answer
-        variables: []
-      height: 130
-      id: offer_answer
-      position:
-        x: 3100
-        y: 950
-      positionAbsolute:
-        x: 3100
-        y: 950
-      selected: false
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 242
-    viewport:
-      x: -1051.2818997847057
-      y: -205.75743454764097
-      zoom: 1.7613317124183914
-  rag_pipeline_variables: []

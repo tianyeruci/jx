@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from ai_management.course_route_catalog import parse_course_route_catalog
 from ai_management.courses import (
     infer_recommendation_decision,
@@ -14,8 +16,11 @@ from ai_management.schemas import RecommendationDecision
 
 
 def test_real_catalog_exposes_33_bounded_collections_and_keeps_agent_writing_separate():
+    sample = Path("文件清洗样本/课程信息与学习路线/课程信息与学习路线.xlsx")
+    if not sample.exists():
+        pytest.skip("课程 Excel/学习路线已退出当前产品范围，历史样本不纳入当前门禁")
     catalog = parse_course_route_catalog(
-        Path("文件清洗样本/课程信息与学习路线/课程信息与学习路线.xlsx"),
+        sample,
         existing_course_ids_by_url={},
     )
     assert len(catalog.courses) == 105
@@ -269,15 +274,29 @@ def test_dify_direct_candidates_require_raw_retrieval_course_evidence(service_db
     with service_db() as session:
         session.add_all(
             [
-                Course(course_id="evidence-a", name="证据A", direction="AI", description="A", official_url="https://example.com/a"),
-                Course(course_id="evidence-b", name="证据B", direction="AI", description="B", official_url="https://example.com/b"),
+                Course(
+                    course_id="evidence-a",
+                    name="证据A",
+                    direction="AI",
+                    description="A",
+                    official_url="https://example.com/a",
+                ),
+                Course(
+                    course_id="evidence-b",
+                    name="证据B",
+                    direction="AI",
+                    description="B",
+                    official_url="https://example.com/b",
+                ),
             ]
         )
         session.commit()
         rebuild_snapshot(session)
         result = validate_recommendation(
             session,
-            RecommendationDecision(intent="direct_course", candidate_course_ids=["evidence-a", "evidence-b"]),
+            RecommendationDecision(
+                intent="direct_course", candidate_course_ids=["evidence-a", "evidence-b"]
+            ),
             user_hash="u",
             query="推荐课程",
             retrieved_course_ids={"evidence-b"},

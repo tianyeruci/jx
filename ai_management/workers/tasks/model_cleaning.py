@@ -8,12 +8,12 @@ import re
 import tempfile
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import object_session, selectinload
 
 from knowledge_cleaner.chunking import prepare_chunks
@@ -2350,8 +2350,28 @@ def process_realtime_model_task(self, task_id: str) -> bool:
             batch = session.get(CleaningBatch, task.batch_id)
             if batch is None:
                 return False
-            task.status = "running"
-            task.attempts += 1
+            now = datetime.now(timezone.utc)
+            token = uuid.uuid4().hex
+            claimed = session.execute(
+                update(ModelCleaningTask)
+                .where(ModelCleaningTask.id == task_id)
+                .where(ModelCleaningTask.status.in_(["queued", "running"]))
+                .where(
+                    (ModelCleaningTask.lease_expires_at.is_(None))
+                    | (ModelCleaningTask.lease_expires_at < now)
+                )
+                .values(
+                    status="running",
+                    attempts=ModelCleaningTask.attempts + 1,
+                    lease_token=token,
+                    lease_expires_at=now + timedelta(minutes=30),
+                )
+            ).rowcount
+            if claimed != 1:
+                return False
+            task = session.get(ModelCleaningTask, task_id)
+            if task is None:
+                return False
             session.commit()
             counts = {"succeeded": 0, "excluded": 0, "review": 0, "failed": 0}
             usage = {"input_tokens": 0, "output_tokens": 0}

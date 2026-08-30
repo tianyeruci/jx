@@ -710,3 +710,25 @@ This is a semantic change log, not a copy of Git diff.
 - **Validation:** Pending
 - **Changed paths:**
   - `AI管理服务当前状态与后续测试交接.md`
+
+## 2026-08-30T16:04:32+08:00 — 工具会话 run 顶层 conversation_id、reset 后重新选型、并发安全和精确迁移兼容已发布到 jx；测试页验证朋友圈与日常写作 SSE/重置链路，商业顾问隔离不变。
+
+- **Purpose:** 工具会话 run 顶层 conversation_id、reset 后重新选型、并发安全和精确迁移兼容已发布到 jx；测试页验证朋友圈与日常写作 SSE/重置链路，商业顾问隔离不变。
+- **Affected modules:**
+  - `examples-contracts — 案例请求响应契约`
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** jx 仍运行 2026-08-26 工具会话版本，最新契约修复未发布。
+- **After:** jx release toolconv-20260830-155349-contractfix2 已成功，迁移 head n0e1f2g3h4i5，测试页关键链路通过。
+- **Impact / Notes:** None
+- **Validation:** gov quality；Chrome 测试页朋友圈/日常写作会话验收；jx ready
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/schemas.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+  - `tests/test_v2_hardening.py`

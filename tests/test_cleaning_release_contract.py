@@ -29,7 +29,7 @@ def test_miniapp_interface_document_is_frozen_for_internal_cleaning_changes():
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     # The contract text freezes event/payload semantics and the approved
     # private-port-8000 policy for knowledge-base management routes.
-    assert digest == "87c51e92ad8f0e0aacb0db48d9a38ade44348d667625adf133766461e99a3ae0"
+    assert digest == "c27dfd18d9b37c27518fa434a68315a1fbd9b3a808fd187d63009bdcb1741946"
 
 
 def test_remote_cleaning_acceptance_uses_anonymous_names_and_covers_new_flow():
@@ -41,8 +41,18 @@ def test_remote_cleaning_acceptance_uses_anonymous_names_and_covers_new_flow():
     assert "course_route_catalog" in source
     assert "model-tasks/" in source
     assert "publication_shards" in source
-    assert "source_name" not in source[source.index("def _expected_remote_name") : source.index("class AcceptanceRunner")]
-    assert "split: bool = False" in source[source.index("def _expected_remote_name") : source.index("class AcceptanceRunner")]
+    assert (
+        "source_name"
+        not in source[
+            source.index("def _expected_remote_name") : source.index("class AcceptanceRunner")
+        ]
+    )
+    assert (
+        "split: bool = False"
+        in source[
+            source.index("def _expected_remote_name") : source.index("class AcceptanceRunner")
+        ]
+    )
     assert "_remote_name_matches_strategy_contract" in source
     assert "details_count=len(details)" in source
     assert "STORAGE_MARKDOWN_TABLE_RETAINED" in source
@@ -106,8 +116,18 @@ def test_remote_acceptance_checks_batch_submission_without_reporting_provider_id
     assert "run_batch_submission_case" in source
     assert "_wait_for_batch_submission" in source
     assert "REMOTE_PROVENANCE_FIELDS" in source
-    assert '"source_filename"' not in source[source.index("REMOTE_PROVENANCE_FIELDS") : source.index("REMOTE_ALLOWED_FIELDS")]
-    assert '"source_sha256"' not in source[source.index("REMOTE_PROVENANCE_FIELDS") : source.index("REMOTE_ALLOWED_FIELDS")]
+    assert (
+        '"source_filename"'
+        not in source[
+            source.index("REMOTE_PROVENANCE_FIELDS") : source.index("REMOTE_ALLOWED_FIELDS")
+        ]
+    )
+    assert (
+        '"source_sha256"'
+        not in source[
+            source.index("REMOTE_PROVENANCE_FIELDS") : source.index("REMOTE_ALLOWED_FIELDS")
+        ]
+    )
 
 
 def test_jx_release_scripts_manage_all_cleaning_workers_and_exact_upload_targets():
@@ -130,7 +150,7 @@ def test_jx_release_scripts_manage_all_cleaning_workers_and_exact_upload_targets
     assert "MIGRATION_FILES" in deploy
     assert "docker-compose.ai.yml.before-release" in deploy
     assert 'cp -a .env "$BACKUP_DIR/env.backup"' in deploy
-    assert 'h4e5f6a7b8c9_expand_cleaning_batch_status.py' in deploy
+    assert "h4e5f6a7b8c9_expand_cleaning_batch_status.py" in deploy
     assert 'DIFY_PUBLISH_WINDOW_END_HOUR "24"' in deploy
     assert 'DIFY_PARENT_MAX_TOKENS "2000"' in deploy
     assert 'CLEANING_SPEC_REVISION "commercial-cleaning-v3"' in deploy
@@ -152,6 +172,37 @@ def test_jx_release_scripts_manage_all_cleaning_workers_and_exact_upload_targets
     assert "jx_reset_all_document_data.sh" in deploy
     assert "jx_reset_all_document_data.py" in deploy
     assert "find /data -mindepth 1 -delete" not in clean
+
+
+def test_jx_release_removes_and_restores_the_exact_legacy_duplicate_migration():
+    """A historical filename declared the same revision as the new formal file."""
+
+    deploy = _source("scripts/jx_deploy_release.sh")
+
+    assert 'LEGACY_TOOL_CONVERSATIONS_MIGRATION="k7b8c9d0e1f2_tool_conversations.py"' in deploy
+    assert 'FORMAL_TOOL_CONVERSATIONS_MIGRATION="m9d0e1f2g3h4_tool_conversations.py"' in deploy
+    assert '"m9d0e1f2g3h4_tool_conversations.py"' in deploy
+    assert (
+        '"k7b8c9d0e1f2_tool_conversations.py"'
+        not in deploy[
+            deploy.index("MIGRATION_FILES=(") : deploy.index(")", deploy.index("MIGRATION_FILES=("))
+        ]
+    )
+    assert '"$BACKUP_DIR/$LEGACY_TOOL_CONVERSATIONS_MIGRATION.before-release"' in deploy
+    assert 'rm -f -- "migrations/versions/$LEGACY_TOOL_CONVERSATIONS_MIGRATION"' in deploy
+    assert 'test -f "$STAGE_DIR/$FORMAL_TOOL_CONVERSATIONS_MIGRATION" || \\' in deploy
+    assert 'install -m 0644 "$STAGE_DIR/$LEGACY_TOOL_CONVERSATIONS_MIGRATION" \\' in deploy
+
+    install = deploy[
+        deploy.index("# Remove the exact historical duplicate") : deploy.index(
+            "for file in ", deploy.index("# Remove the exact historical duplicate")
+        )
+    ]
+    assert install.index("cp -a") < install.index("rm -f")
+    rollback = deploy[deploy.index("rollback()") : deploy.index("trap rollback EXIT")]
+    assert rollback.index('MIGRATIONS_APPLIED" -eq 0') < rollback.index(
+        "LEGACY_TOOL_CONVERSATIONS_MIGRATION.before-release"
+    )
 
 
 def test_formal_release_never_installs_the_legacy_business_advisor_dsl():
@@ -197,7 +248,7 @@ def test_ocr_runtime_is_separate_and_deployed_scale_to_zero():
     assert "ocr-image-id.txt" in deploy
     assert 'OCR_DEPLOYMENT_ENABLED="${JX_OCR_DEPLOYMENT_ENABLED:-false}"' in deploy
     assert "OCR deployment is paused" in deploy
-    assert 'Persistent=false' in _source("deploy/systemd/jx-ocr-autoscaler.timer")
+    assert "Persistent=false" in _source("deploy/systemd/jx-ocr-autoscaler.timer")
 
 
 def test_precise_cleanup_accepts_a_relative_private_manifest_path_safely():
@@ -226,7 +277,7 @@ def test_local_cleaning_state_reset_is_explicit_recoverable_and_never_deletes_di
     assert "RESET_LOCAL_CLEANING_STATE" in reset
     assert "FORCE_RESET_LOCAL_CLEANING_STATE" in reset
     assert "force_reset()" in reset
-    assert 'ALLOW_ACTIVE=$allow_active' in reset
+    assert "ALLOW_ACTIVE=$allow_active" in reset
     assert "active model-cleaning tasks exist; cancel provider work before force reset" in reset
     assert 'APP_DIR="/opt/ai-management"' in reset
     assert 'BACKUP_SCRIPT="$APP_DIR/scripts/jx_prebaseline_backup.sh"' in reset
@@ -246,11 +297,11 @@ def test_local_cleaning_state_reset_is_explicit_recoverable_and_never_deletes_di
     assert "TERMINAL_DOCUMENT_STATUSES" in reset
     assert "TERMINAL_MODEL_TASK_STATUSES" in reset
     assert "TERMINAL_SHARD_STATUSES" in reset
-    assert 'RESET_SERVICES_MAY_NEED_RESTART=0' in reset
+    assert "RESET_SERVICES_MAY_NEED_RESTART=0" in reset
     assert "cleanup_reset_on_exit" in reset
     assert "local services_may_need_restart" not in reset
     assert "kind = 'dify_document'" in reset
-    assert 'DELETE FROM cleaning_batch' in reset
+    assert "DELETE FROM cleaning_batch" in reset
     assert 'match="ai:cleaning:*"' in reset
     assert "flushdb" not in reset.lower()
     assert "delete_document" not in reset
@@ -335,13 +386,13 @@ def test_force_reset_has_a_separate_confirmation_and_preserves_dify_boundary():
     assert 'case "$MODE" in' in reset
     assert "plan|execute|force)" in reset
     assert '"${ALL_COMPOSE[@]}" stop \\' in reset
-    assert 'scheduler publication-worker model-batch-worker model-realtime-worker' in reset
+    assert "scheduler publication-worker model-batch-worker model-realtime-worker" in reset
     assert '"${ALL_COMPOSE[@]}" stop api' in reset
     assert 'capture_targets "$RESET_TEMP_DIR/prequiesce" 1' in reset
     assert 'capture_targets "$evidence_dir/poststop" 1' in reset
     assert 'delete_local_state "$evidence_dir/poststop" 1' in reset
     assert 'dify_delete_operations": 0' in reset
-    assert 'DifyKnowledgeClient' not in reset
+    assert "DifyKnowledgeClient" not in reset
 
 
 def test_local_cleaning_state_reset_is_routed_from_operator_documentation():
@@ -400,19 +451,15 @@ exit 7
 
     assert result.returncode == 7
     assert "unbound variable" not in result.stderr
-    assert (tmp_path / "app" / "restarted.txt").read_text(
-        encoding="utf-8"
-    ).strip() == "restarted"
+    assert (tmp_path / "app" / "restarted.txt").read_text(encoding="utf-8").strip() == "restarted"
     assert not (tmp_path / "app" / "var" / ".cleaning-local-reset.regression").exists()
 
 
 def test_cleaning_batch_status_accepts_all_runtime_states_and_has_migration():
     models = _source("ai_management/models.py")
-    migration = _source(
-        "migrations/versions/h4e5f6a7b8c9_expand_cleaning_batch_status.py"
-    )
+    migration = _source("migrations/versions/h4e5f6a7b8c9_expand_cleaning_batch_status.py")
 
-    assert 'status: Mapped[str] = mapped_column(String(32)' in models
+    assert "status: Mapped[str] = mapped_column(String(32)" in models
     assert 'revision: str = "h4e5f6a7b8c9"' in migration
     assert 'down_revision: str | None = "g3b7c9d1e5f2"' in migration
 
@@ -427,14 +474,12 @@ def test_default_production_cleaning_window_is_all_day():
 def test_formal_release_restores_preexisting_ocr_worker_on_early_failure():
     release = _source("scripts/jx_deploy_release.sh")
     restore = release[
-        release.index("restore_ocr_autoscaler_after_failure()") : release.index(
-            "rollback()"
-        )
+        release.index("restore_ocr_autoscaler_after_failure()") : release.index("rollback()")
     ]
 
-    assert 'if command -v systemctl >/dev/null 2>&1; then' in restore
+    assert "if command -v systemctl >/dev/null 2>&1; then" in restore
     assert 'if test "$OCR_WORKER_WAS_RUNNING" -eq 1; then' in restore
-    assert 'docker compose -f docker-compose.ai.yml up -d ai-ocr-worker' in restore
+    assert "docker compose -f docker-compose.ai.yml up -d ai-ocr-worker" in restore
 
 
 def test_formal_release_downgrades_migrations_before_old_image_rollback():
@@ -442,12 +487,14 @@ def test_formal_release_downgrades_migrations_before_old_image_rollback():
     rollback = release[release.index("rollback()") : release.index("trap rollback EXIT")]
 
     assert 'PREVIOUS_ALEMBIC_REVISION=""' in release
-    assert 'alembic-before-upgrade.txt' in release
+    assert "alembic-before-upgrade.txt" in release
     assert 'PREVIOUS_ALEMBIC_REVISION="$(grep -Eo' in release
-    assert release.index('alembic-before-upgrade.txt') < release.index('upsert_env AI_IMAGE "$CORE_IMAGE"')
+    assert release.index("alembic-before-upgrade.txt") < release.index(
+        'upsert_env AI_IMAGE "$CORE_IMAGE"'
+    )
     assert 'if test "$MIGRATIONS_APPLIED" -eq 1; then' in rollback
     assert 'alembic downgrade "$PREVIOUS_ALEMBIC_REVISION"' in rollback
-    assert 'old image restore is intentionally skipped' in rollback
+    assert "old image restore is intentionally skipped" in rollback
     assert 'test "$MIGRATIONS_APPLIED" -eq 0 || test "$MIGRATION_ROLLBACK_OK" -eq 1' in rollback
 
 

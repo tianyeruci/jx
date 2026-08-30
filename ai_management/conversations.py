@@ -166,7 +166,7 @@ def _persist_business_result(
                     conversation_db,
                     user_hash,
                 )
-        )
+            )
         work_session.commit()
     return recommendation, enqueue_summary
 
@@ -294,7 +294,6 @@ def prepare_business_chat(
         final_status = "completed"
         error_to_emit: ServiceError | None = None
         enqueue_summary = False
-        final_answer_to_emit = ""
         task_announced = False
         final_redactor = StreamingPublicRedactor(redaction_rules.replacements)
         final_prefix_deduper: StreamingExactPrefixDeduper | None = None
@@ -306,9 +305,7 @@ def prepare_business_chat(
         def final_deduper() -> StreamingExactPrefixDeduper:
             nonlocal final_prefix_deduper
             if final_prefix_deduper is None:
-                final_prefix_deduper = StreamingExactPrefixDeduper(
-                    "".join(progress_answer_parts)
-                )
+                final_prefix_deduper = StreamingExactPrefixDeduper("".join(progress_answer_parts))
             return final_prefix_deduper
 
         def switch_answer_phase(phase: str) -> list[bytes]:
@@ -374,6 +371,16 @@ def prepare_business_chat(
                     item.get("conversation_id") or actual_dify_conversation_id
                 )
                 if dify_task_id and not task_announced:
+                    cache.set_json(
+                        f"ai:business-task:{dify_task_id}",
+                        {
+                            "user_hash": user_hash,
+                            "dify_user": anonymous_user,
+                            "kind": "business",
+                            "transport": "sse",
+                        },
+                        ttl=600,
+                    )
                     task_announced = True
                     yield emit(
                         "status",
@@ -424,6 +431,7 @@ def prepare_business_chat(
                                 delta = final_deduper().feed(delta)
                                 if delta:
                                     answer_parts.append(delta)
+                                    yield emit("answer_delta", {"delta": delta})
                             elif answer_phase == "progress":
                                 progress_answer_parts.append(delta)
                             if delta and answer_phase == "progress":
@@ -490,6 +498,7 @@ def prepare_business_chat(
             final_delta += final_deduper().finish()
             if final_delta:
                 answer_parts.append(final_delta)
+                yield emit("answer_delta", {"delta": final_delta})
         except GeneratorExit:
             final_status = "stopped"
             if dify_task_id:
@@ -511,11 +520,10 @@ def prepare_business_chat(
                 True,
             )
         finally:
-            if dify_task_id and cache.get_json(
-                f"ai:business-task-stopped:{dify_task_id}"
-            ):
+            stop_key = f"ai:business-task-stopped:{dify_task_id}:{user_hash}"
+            if dify_task_id and cache.get_json(stop_key):
                 final_status = "stopped"
-                cache.delete(f"ai:business-task-stopped:{dify_task_id}")
+                cache.delete(stop_key)
             total_ms = int((time.monotonic() - started) * 1000)
             recommendation: dict[str, Any] = {}
             try:
@@ -533,7 +541,6 @@ def prepare_business_chat(
                     actual_dify_conversation_id=actual_dify_conversation_id,
                     anonymous_user=anonymous_user,
                 )
-                final_answer_to_emit = "".join(answer_parts)
                 # The threshold is only known after the final assistant result
                 # has been persisted.  Queue after that transaction commits so
                 # the worker never observes an incomplete conversation.
@@ -576,8 +583,6 @@ def prepare_business_chat(
                 )
                 lock_context.__exit__(None, None, None)
 
-        if final_answer_to_emit:
-            yield emit("answer_delta", {"delta": final_answer_to_emit})
         if resources:
             yield emit("retriever_resources", {"resources": resources})
         if error_to_emit:
@@ -621,9 +626,11 @@ def _decode_cursor(cursor: str | None) -> tuple[datetime, str] | None:
 
 
 def _encode_cursor(created_at: datetime, row_id: str) -> str:
-    raw = __import__("json").dumps(
-        {"created_at": created_at.isoformat(), "id": row_id}, separators=(",", ":")
-    ).encode("utf-8")
+    raw = (
+        __import__("json")
+        .dumps({"created_at": created_at.isoformat(), "id": row_id}, separators=(",", ":"))
+        .encode("utf-8")
+    )
     return urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
@@ -638,7 +645,13 @@ def list_user_conversations(
             (BusinessConversation.created_at < created_at)
             | ((BusinessConversation.created_at == created_at) & (BusinessConversation.id < row_id))
         )
-    rows = list(session.scalars(statement.order_by(BusinessConversation.created_at.desc(), BusinessConversation.id.desc()).limit(limit + 1)))
+    rows = list(
+        session.scalars(
+            statement.order_by(
+                BusinessConversation.created_at.desc(), BusinessConversation.id.desc()
+            ).limit(limit + 1)
+        )
+    )
     has_more = len(rows) > limit
     rows = rows[:limit]
     catalog_names = public_catalog_names(get_snapshot(session))
@@ -657,12 +670,19 @@ def list_user_conversations(
     ]
     return {
         "items": items,
-        "next_cursor": _encode_cursor(rows[-1].created_at, rows[-1].id) if has_more and rows else None,
+        "next_cursor": _encode_cursor(rows[-1].created_at, rows[-1].id)
+        if has_more and rows
+        else None,
     }
 
 
 def list_conversation_messages(
-    session: Session, user_hash: str, conversation_id: str, *, cursor: str | None = None, limit: int = 20
+    session: Session,
+    user_hash: str,
+    conversation_id: str,
+    *,
+    cursor: str | None = None,
+    limit: int = 20,
 ) -> dict[str, Any]:
     conversation = session.scalar(
         select(BusinessConversation).where(
@@ -680,7 +700,13 @@ def list_conversation_messages(
             (BusinessMessage.created_at > created_at)
             | ((BusinessMessage.created_at == created_at) & (BusinessMessage.id > row_id))
         )
-    messages = list(session.scalars(statement.order_by(BusinessMessage.created_at.asc(), BusinessMessage.id.asc()).limit(limit + 1)))
+    messages = list(
+        session.scalars(
+            statement.order_by(BusinessMessage.created_at.asc(), BusinessMessage.id.asc()).limit(
+                limit + 1
+            )
+        )
+    )
     has_more = len(messages) > limit
     messages = messages[:limit]
     snapshot = get_snapshot(session)
@@ -746,7 +772,9 @@ def list_conversation_messages(
     ]
     return {
         "items": items,
-        "next_cursor": _encode_cursor(messages[-1].created_at, messages[-1].id) if has_more and messages else None,
+        "next_cursor": _encode_cursor(messages[-1].created_at, messages[-1].id)
+        if has_more and messages
+        else None,
     }
 
 
@@ -763,7 +791,9 @@ def delete_user_conversation(
     )
     if conversation is None:
         raise ServiceError("CONVERSATION_NOT_FOUND", "历史对话不存在", 404, False)
-    targets = [(segment.dify_conversation_id, segment.dify_user) for segment in conversation.segments]
+    targets = [
+        (segment.dify_conversation_id, segment.dify_user) for segment in conversation.segments
+    ]
     session.delete(conversation)
     session.commit()
     client = _business_client()

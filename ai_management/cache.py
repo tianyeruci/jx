@@ -151,6 +151,7 @@ class Cache:
                         self._memory[key] = (time.time() + ttl, token)
                         acquired = True
             if redis_acquired:
+
                 def renew() -> None:
                     interval = max(1.0, ttl / 3)
                     while not renewal_stop.wait(interval):
@@ -196,6 +197,7 @@ class Cache:
         count_key = f"ai:clicks:{day}:{course_id}"
         users_key = f"ai:click-users:{day}:{course_id}"
         dirty_key = "ai:click-dirty"
+        version_key = f"ai:click-version:{day}:{course_id}"
         dirty_member = f"{day}|{course_id}"
         ttl = 60 * 60 * 24 * get_settings().click_counter_retention_days
         try:
@@ -204,6 +206,7 @@ class Cache:
                 pipe.incr(count_key)
                 pipe.sadd(users_key, user_hash)
                 pipe.sadd(dirty_key, dirty_member)
+                pipe.incr(version_key)
                 pipe.expire(count_key, ttl)
                 pipe.expire(users_key, ttl)
                 pipe.execute()
@@ -215,6 +218,8 @@ class Cache:
             users = self._memory.get(users_key, (None, set()))[1]
             self._memory[count_key] = (None, int(count) + 1)
             self._memory[users_key] = (None, set(users) | {user_hash})
+            version = int(self._memory.get(version_key, (None, 0))[1]) + 1
+            self._memory[version_key] = (None, version)
             dirty = self._memory.get(dirty_key, (None, set()))[1]
             self._memory[dirty_key] = (None, set(dirty) | {dirty_member})
 
@@ -232,6 +237,17 @@ class Cache:
                 int(self._memory.get(count_key, (None, 0))[1]),
                 len(self._memory.get(users_key, (None, set()))[1]),
             )
+
+    def click_snapshot(self, course_id: str, day: str) -> tuple[int, int, int]:
+        clicks, users = self.click_counts(course_id, day)
+        key = f"ai:click-version:{day}:{course_id}"
+        try:
+            if self.client:
+                return clicks, users, int(self.client.get(key) or 0)
+        except Exception:
+            pass
+        with self._memory_lock:
+            return clicks, users, int(self._memory.get(key, (None, 0))[1])
 
     def dirty_click_counters(self) -> list[tuple[str, str]]:
         dirty_key = "ai:click-dirty"
@@ -253,17 +269,31 @@ class Cache:
                 result.append((day, course_id))
         return sorted(result)
 
-    def mark_click_counter_flushed(self, day: str, course_id: str) -> None:
+    def mark_click_counter_flushed(
+        self, day: str, course_id: str, version: int | None = None
+    ) -> None:
         dirty_key = "ai:click-dirty"
         member = f"{day}|{course_id}"
         try:
             if self.client:
-                self.client.srem(dirty_key, member)
+                if version is None:
+                    self.client.srem(dirty_key, member)
+                else:
+                    self.client.eval(
+                        "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('srem', KEYS[2], ARGV[2]) else return 0 end",
+                        2,
+                        f"ai:click-version:{day}:{course_id}",
+                        dirty_key,
+                        str(version),
+                        member,
+                    )
         except Exception:
             pass
         with self._memory_lock:
             dirty = set(self._memory.get(dirty_key, (None, set()))[1])
-            dirty.discard(member)
+            current = int(self._memory.get(f"ai:click-version:{day}:{course_id}", (None, 0))[1])
+            if version is None or current == version:
+                dirty.discard(member)
             self._memory[dirty_key] = (None, dirty)
 
 

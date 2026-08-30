@@ -4,8 +4,33 @@ import argparse
 import json
 from pathlib import Path
 
+from alembic.config import Config
+from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
+from sqlalchemy import create_engine
+from sqlalchemy.pool import NullPool
+
+from .config import get_settings
 from .course_import import catalog_summary, load_catalog, publish_catalog
-from .db import create_schema
+
+
+def assert_schema_current() -> None:
+    """Require an already migrated database; deployment owns migrations."""
+
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    script = ScriptDirectory.from_config(config)
+    expected = script.get_current_head()
+    engine = create_engine(get_settings().database_url, poolclass=NullPool)
+    try:
+        with engine.connect() as connection:
+            actual = MigrationContext.configure(connection).get_current_revision()
+    finally:
+        engine.dispose()
+    if actual != expected:
+        raise RuntimeError(
+            f"数据库迁移版本不匹配：当前={actual or '空'}，需要={expected}；"
+            "请先通过受控部署或显式 alembic upgrade head 完成迁移"
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         result = catalog_summary(catalog)
     else:
-        create_schema()
+        assert_schema_current()
         result = publish_catalog(catalog, args.file)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
@@ -31,4 +56,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
