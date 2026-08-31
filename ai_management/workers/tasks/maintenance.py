@@ -4,8 +4,9 @@ import json
 import logging
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import selectinload
 
 from knowledge_cleaner.dify import DifyKnowledgeClient
@@ -43,6 +44,7 @@ from ...services.bailian_cleanup import (
     ensure_bailian_cleanup_tasks,
 )
 from ...services.observability.events import record_event
+from ...timeutil import normalize_beijing, now_beijing
 from ..celery_app import celery_app
 from .cleaning import (
     _finish_batch,
@@ -59,6 +61,7 @@ _EXTERNAL_DELETION_BATCH_LIMIT = 200
 _EXTERNAL_DELETION_FETCH_LIMIT = 1000
 _EXTERNAL_DELETION_PER_KIND_QUOTA = 50
 _EXTERNAL_DELETION_MAX_AUTO_ATTEMPTS = 3
+_EXTERNAL_DELETION_LEASE = timedelta(minutes=30)
 
 
 def _cleanup_model_review_artifacts() -> dict[str, int]:
@@ -109,11 +112,11 @@ def _cleanup_model_review_artifacts() -> dict[str, int]:
 
 @celery_app.task(name="ai_management.cleanup_tool_conversations")
 def _cleanup_tool_conversations() -> dict[str, int]:
-    """Remove closed moments/writing sessions and their exact Dify records.
+    """Remove local sessions and enqueue exact remote deletions.
 
-    This task is deliberately separate from the business history retention
-    task.  A failed remote delete is retained as an exact retry item while the
-    local session is still removed, so a second midnight run is idempotent.
+    Remote calls are intentionally owned by ``_retry_external_deletions``;
+    this midnight task must never become a second consumer that bypasses
+    backoff, manual intervention, or lease fencing.
     """
     deleted = 0
     queued = 0
@@ -123,32 +126,21 @@ def _cleanup_tool_conversations() -> dict[str, int]:
         ).all()
         for row in rows:
             if row.dify_conversation_id:
-                try:
-                    key = (
-                        settings.dify_moments_app_api_key
-                        if row.kind == "moments"
-                        else settings.dify_writing_app_api_key
+                exists = session.scalar(
+                    select(ExternalDeletionTask).where(
+                        ExternalDeletionTask.kind == "dify_tool_conversation",
+                        ExternalDeletionTask.external_id == row.dify_conversation_id,
                     )
-                    DifyAppClient(settings.dify_url, key).delete_conversation(
-                        row.dify_conversation_id, f"u_{row.user_hash[:40]}"
-                    )
-                except Exception as exc:
-                    exists = session.scalar(
-                        select(ExternalDeletionTask).where(
-                            ExternalDeletionTask.kind == "dify_tool_conversation",
-                            ExternalDeletionTask.external_id == row.dify_conversation_id,
+                )
+                if exists is None:
+                    session.add(
+                        ExternalDeletionTask(
+                            kind="dify_tool_conversation",
+                            external_id=row.dify_conversation_id,
+                            payload={"kind": row.kind, "user": f"u_{row.user_hash[:40]}"},
                         )
                     )
-                    if exists is None:
-                        session.add(
-                            ExternalDeletionTask(
-                                kind="dify_tool_conversation",
-                                external_id=row.dify_conversation_id,
-                                payload={"kind": row.kind, "user": f"u_{row.user_hash[:40]}"},
-                                last_error=str(exc)[:1000],
-                            )
-                        )
-                        queued += 1
+                    queued += 1
             session.delete(row)
             deleted += 1
         # Keep the latest active session mapping for continuity, but never
@@ -158,34 +150,6 @@ def _cleanup_tool_conversations() -> dict[str, int]:
         ).all()
         for row in active_rows:
             session.query(ToolMessage).filter(ToolMessage.conversation_id == row.id).delete()
-        # Reset requests remove the local mapping immediately and leave an
-        # exact external-deletion item.  Process those tool-only items in the
-        # same midnight window so Dify memory follows the local retention
-        # boundary instead of waiting for the business 02:00 maintenance.
-        pending = session.scalars(
-            select(ExternalDeletionTask).where(
-                ExternalDeletionTask.kind == "dify_tool_conversation"
-            )
-        ).all()
-        for task in pending:
-            payload = task.payload or {}
-            tool_kind = str(payload.get("kind") or "")
-            if tool_kind not in {"moments", "writing"}:
-                task.last_error = "工具会话删除任务缺少合法 kind"
-                continue
-            key = (
-                settings.dify_moments_app_api_key
-                if tool_kind == "moments"
-                else settings.dify_writing_app_api_key
-            )
-            try:
-                DifyAppClient(settings.dify_url, key).delete_conversation(
-                    task.external_id, str(payload.get("user") or "")
-                )
-            except Exception as exc:
-                task.last_error = str(exc)[:1000]
-                continue
-            session.delete(task)
         session.commit()
     return {"deleted": deleted, "queued": queued}
 
@@ -241,17 +205,16 @@ def _reconcile_model_cleanup_work(session) -> None:
 
 
 def _select_fair_external_deletion_tasks(session) -> list[ExternalDeletionTask]:
-    candidates = list(
-        session.scalars(
+    now = now_beijing()
+    candidates = [
+        task
+        for task in session.scalars(
             select(ExternalDeletionTask)
-            .where(ExternalDeletionTask.next_attempt_at <= datetime.now(timezone.utc))
-            .order_by(
-                ExternalDeletionTask.next_attempt_at,
-                ExternalDeletionTask.id,
-            )
+            .order_by(ExternalDeletionTask.next_attempt_at, ExternalDeletionTask.id)
             .limit(_EXTERNAL_DELETION_FETCH_LIMIT)
         )
-    )
+        if _utc(task.next_attempt_at) <= now
+    ]
     by_kind: dict[str, list[ExternalDeletionTask]] = {}
     for task in candidates:
         if (task.payload or {}).get("state") == "manual_intervention_required":
@@ -273,28 +236,69 @@ def _select_fair_external_deletion_tasks(session) -> list[ExternalDeletionTask]:
     return selected
 
 
+def _claim_external_deletion_task(session, task: ExternalDeletionTask) -> str | None:
+    """Atomically claim an outbox item before performing an external side effect."""
+    token = uuid4().hex
+    now = now_beijing()
+    result = session.execute(
+        update(ExternalDeletionTask)
+        .where(
+            ExternalDeletionTask.id == task.id,
+            ExternalDeletionTask.next_attempt_at <= now,
+            (ExternalDeletionTask.lease_expires_at.is_(None))
+            | (ExternalDeletionTask.lease_expires_at <= now),
+        )
+        .values(lease_token=token, lease_expires_at=now + _EXTERNAL_DELETION_LEASE),
+        execution_options={"synchronize_session": False},
+    )
+    if result.rowcount != 1:
+        session.expire(task)
+        return None
+    session.commit()
+    return token
+
+
 def _record_external_deletion_failure(
+    session,
     task: ExternalDeletionTask,
     error: str,
     *,
     delay: timedelta,
-) -> None:
-    now = datetime.now(timezone.utc)
-    task.attempts += 1
-    task.last_error = error[:1000]
+    lease_token: str,
+) -> bool:
+    now = now_beijing()
     payload = dict(task.payload or {})
-    if task.attempts >= _EXTERNAL_DELETION_MAX_AUTO_ATTEMPTS:
+    next_attempts = task.attempts + 1
+    if next_attempts >= _EXTERNAL_DELETION_MAX_AUTO_ATTEMPTS:
         payload.update(
             {
                 "state": "manual_intervention_required",
                 "blocked_at": now.isoformat(),
             }
         )
-        task.last_error = (error[:800] + "；已暂停自动重试，需人工处理")[:1000]
-        task.next_attempt_at = now + timedelta(days=3650)
+        last_error = (error[:800] + "；已暂停自动重试，需人工处理")[:1000]
+        next_attempt_at = now + timedelta(days=3650)
     else:
-        task.next_attempt_at = now + delay
-    task.payload = payload
+        last_error = error[:1000]
+        next_attempt_at = now + delay
+    result = session.execute(
+        update(ExternalDeletionTask)
+        .where(
+            ExternalDeletionTask.id == task.id,
+            ExternalDeletionTask.lease_token == lease_token,
+            ExternalDeletionTask.lease_expires_at > now,
+        )
+        .values(
+            attempts=ExternalDeletionTask.attempts + 1,
+            last_error=last_error,
+            next_attempt_at=next_attempt_at,
+            payload=payload,
+            lease_token=None,
+            lease_expires_at=None,
+        ),
+        execution_options={"synchronize_session": False},
+    )
+    return result.rowcount == 1
 
 
 def _queue_bailian_file_task(
@@ -331,7 +335,7 @@ def _reconcile_cleaning_pipeline() -> dict[str, int]:
     have been unchanged for a short window, while terminalizing an exhausted
     Dify shard and refreshing its file/batch aggregate in the same transaction.
     """
-    now = datetime.now(timezone.utc)
+    now = now_beijing()
     pending_cutoff = now - timedelta(minutes=10)
     processing_cutoff = now - timedelta(minutes=45)
     queued_documents: dict[str, str] = {}
@@ -519,7 +523,7 @@ def _reconcile_cleaning_pipeline() -> dict[str, int]:
 
 
 def _utc(value: datetime) -> datetime:
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return normalize_beijing(value)
 
 
 def _queue_deletion(
@@ -546,7 +550,7 @@ def _cleanup_history() -> None:
     skipped_ids: list[str] = []
     with SessionLocal() as session:
         retention_days = get_history_retention_days(session)
-        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        cutoff = now_beijing() - timedelta(days=retention_days)
         inactive_ids = list(
             session.scalars(
                 select(BusinessConversation.id).where(BusinessConversation.last_active_at <= cutoff)
@@ -642,8 +646,12 @@ def _cleanup_history() -> None:
 def _retry_external_deletions() -> None:
     with SessionLocal() as session:
         _reconcile_model_cleanup_work(session)
+        session.commit()
         tasks = _select_fair_external_deletion_tasks(session)
         for task in tasks:
+            lease_token = _claim_external_deletion_task(session, task)
+            if lease_token is None:
+                continue
             try:
                 if task.kind == "dify_conversation":
                     client = DifyAppClient(settings.dify_url, settings.dify_business_app_api_key)
@@ -706,9 +714,11 @@ def _retry_external_deletions() -> None:
                         )
                         if provider_status not in {"completed", "failed", "expired", "cancelled"}:
                             _record_external_deletion_failure(
+                                session,
                                 task,
                                 f"供应商 Batch 取消仍处于 {provider_status}，等待下一次终态查询",
                                 delay=timedelta(minutes=10),
+                                lease_token=lease_token,
                             )
                             continue
                         deleted_file_ids: set[str] = set()
@@ -726,13 +736,26 @@ def _retry_external_deletions() -> None:
                         clear_successful_bailian_file_tasks(session, deleted_file_ids)
                     finally:
                         model_client.close()
-                session.delete(task)
+                deleted = session.execute(
+                    delete(ExternalDeletionTask).where(
+                        ExternalDeletionTask.id == task.id,
+                        ExternalDeletionTask.lease_token == lease_token,
+                    )
+                ).rowcount
+                if deleted != 1:
+                    session.rollback()
+                    continue
             except Exception as exc:
-                _record_external_deletion_failure(
+                updated = _record_external_deletion_failure(
+                    session,
                     task,
                     str(exc),
                     delay=timedelta(days=1),
+                    lease_token=lease_token,
                 )
+                if not updated:
+                    session.rollback()
+                    continue
                 if task.payload.get("state") == "manual_intervention_required":
                     logger.error(
                         "external deletion requires manual intervention",
@@ -787,7 +810,7 @@ def _flush_clicks_locked() -> None:
 
 
 def _cleanup_files_and_stale_tasks() -> None:
-    now = datetime.now(timezone.utc)
+    now = now_beijing()
     failed_cutoff = now - timedelta(hours=settings.failed_file_retention_hours)
     stale_cutoff = now - timedelta(hours=1)
     status_cutoff = now - timedelta(days=settings.cleaning_status_retention_days)
@@ -862,7 +885,7 @@ def _cleanup_files_and_stale_tasks() -> None:
 
 def _terminalize_stale_model_tasks() -> None:
     """Requeue orphaned model work instead of turning it into human review."""
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
+    cutoff = now_beijing() - timedelta(hours=6)
     active_states = {
         "running",
         "validating",
@@ -1182,7 +1205,7 @@ def _terminalize_stale_model_tasks() -> None:
 
 
 def _cleanup_system_event_logs() -> None:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=settings.system_log_retention_days)
+    cutoff = now_beijing() - timedelta(days=settings.system_log_retention_days)
     with SessionLocal() as session:
         session.execute(
             delete(SystemEventLog).where(

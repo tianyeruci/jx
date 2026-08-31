@@ -865,3 +865,147 @@ This is a semantic change log, not a copy of Git diff.
   - `ai_management/services/bailian_cleanup.py`
   - `ai_management/workers/tasks/model_cleaning.py`
   - `tests/test_model_cleaning_workflow.py`
+
+## 2026-08-31T09:32:11+08:00 — 当前 work 分支完成北京时间归一化；ExternalDeletionTask 原子 claim 与 token 条件终态；CleaningFile、ModelCleaningTask、DifyPublicationShard 关键提交租约续期/失租保护；Chat/Workflow SSE 非预期异常 rollback 与脱敏错误；新增契约回归覆盖。
+
+- **Purpose:** 当前 work 分支完成北京时间归一化；ExternalDeletionTask 原子 claim 与 token 条件终态；CleaningFile、ModelCleaningTask、DifyPublicationShard 关键提交租约续期/失租保护；Chat/Workflow SSE 非预期异常 rollback 与脱敏错误；新增契约回归覆盖。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `jx-acceptance-docs — jx 验收与文档`
+  - `lease-fencing — 租约与 fencing`
+  - `outbox-convergence — 外部删除 outbox`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/config.py`
+  - `ai_management/dify.py`
+  - `ai_management/models.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `migrations/versions/o1f2g3h4i5j6_publication_shard_leases.py`
+  - `scripts/jx_deploy_release.sh`
+
+## 2026-08-31T09:43:10+08:00 — CleaningFile 与 ModelCleaningTask 关键中间提交增加 token 条件租约续期；新数据统一北京时间；本地治理质量、模型清洗和发布契约回归通过。
+
+- **Purpose:** CleaningFile 与 ModelCleaningTask 关键中间提交增加 token 条件租约续期；新数据统一北京时间；本地治理质量、模型清洗和发布契约回归通过。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `jx-acceptance-docs — jx 验收与文档`
+  - `lease-fencing — 租约与 fencing`
+  - `outbox-convergence — 外部删除 outbox`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/config.py`
+  - `ai_management/dify.py`
+  - `ai_management/models.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `migrations/versions/o1f2g3h4i5j6_publication_shard_leases.py`
+  - `scripts/jx_deploy_release.sh`
+
+## 2026-08-31T09:44:25+08:00 — 清洗和模型任务的关键提交在 token 且 lease 未过期时续租，失租回滚停止；发布任务中间与异常路径增加租约保护；聚焦回归通过。
+
+- **Purpose:** 清洗和模型任务的关键提交在 token 且 lease 未过期时续租，失租回滚停止；发布任务中间与异常路径增加租约保护；聚焦回归通过。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `jx-acceptance-docs — jx 验收与文档`
+  - `lease-fencing — 租约与 fencing`
+  - `outbox-convergence — 外部删除 outbox`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/config.py`
+  - `ai_management/dify.py`
+  - `ai_management/models.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `migrations/versions/o1f2g3h4i5j6_publication_shard_leases.py`
+  - `scripts/jx_deploy_release.sh`
+
+## 2026-08-31T09:56:51+08:00 — 模型任务失租时不再覆盖新 worker 的失败状态；关键提交使用 token 与未过期 lease fencing；回归测试通过。
+
+- **Purpose:** 模型任务失租时不再覆盖新 worker 的失败状态；关键提交使用 token 与未过期 lease fencing；回归测试通过。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `jx-acceptance-docs — jx 验收与文档`
+  - `lease-fencing — 租约与 fencing`
+  - `outbox-convergence — 外部删除 outbox`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/config.py`
+  - `ai_management/dify.py`
+  - `ai_management/models.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `migrations/versions/o1f2g3h4i5j6_publication_shard_leases.py`
+  - `scripts/jx_deploy_release.sh`
+
+## 2026-08-31T10:49:57+08:00 — 模型任务异常终态提交前再次执行 token+未过期 lease 条件更新，失租回滚并停止 fallback；清洗/发布任务关键提交均有 fencing。
+
+- **Purpose:** 模型任务异常终态提交前再次执行 token+未过期 lease 条件更新，失租回滚并停止 fallback；清洗/发布任务关键提交均有 fencing。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `jx-acceptance-docs — jx 验收与文档`
+  - `lease-fencing — 租约与 fencing`
+  - `outbox-convergence — 外部删除 outbox`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/config.py`
+  - `ai_management/dify.py`
+  - `ai_management/models.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `migrations/versions/o1f2g3h4i5j6_publication_shard_leases.py`
+  - `scripts/jx_deploy_release.sh`
+
+## 2026-08-31T10:58:17+08:00 — ExternalDeletionTask 成功收尾检查条件删除 rowcount，失租时回滚并跳过 stale worker 后续提交；本地质量重新验证。
+
+- **Purpose:** ExternalDeletionTask 成功收尾检查条件删除 rowcount，失租时回滚并跳过 stale worker 后续提交；本地质量重新验证。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `jx-acceptance-docs — jx 验收与文档`
+  - `lease-fencing — 租约与 fencing`
+  - `outbox-convergence — 外部删除 outbox`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/config.py`
+  - `ai_management/dify.py`
+  - `ai_management/models.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `migrations/versions/o1f2g3h4i5j6_publication_shard_leases.py`
+  - `scripts/jx_deploy_release.sh`

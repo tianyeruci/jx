@@ -111,6 +111,8 @@ POST /internal/v1/tools/{task_id}/stop
 
 `GET /internal/v1/tools/{kind}/examples` 现在返回空目录（旧案例已按需求清除）；管理员仍可在 `/internal/v1/admin/tools/{kind}/examples` 下使用双 Token CRUD 新增案例，不再提供 restore-defaults。调用 `/run` 前必须先创建会话并把本地 `conversation_id` 放在请求体顶层；`inputs` 不得传 `conversation_id`、`type`、`format` 或 `output_format`，顶层未知字段返回 `422 extra_forbidden`。输入精确“新对话”“开启新对话”“开始新对话”“新建对话”“重新开始对话”“重新开启对话”“重开对话”（允许首尾空白和句末标点）时，SSE 直接返回“已开启新会话”，不调用 Dify；其它相似表达按普通内容处理。
 
+工具 SSE 首次观察到 Dify `task_id` 后会发送 `status`（`code=task_started`，含 `task_id`）；之后发送 `answer_delta`，最后发送 `message_end`，异常发送 `error`。该 `task_id` 仅用于当前请求停止控制。
+
 ## 入口配置
 
 ```http
@@ -167,7 +169,10 @@ POST /internal/v1/admin/knowledge-bases/{kb_code}/upload-batches/{batch_id}/mode
 服务启动后可查看：
 
 - `/docs`
+- `/redoc`
 - `/openapi.json`
+
+以上 OpenAPI 调试入口仅在非生产环境启用；生产环境全部关闭（返回 404），请使用版本化接口文档和契约测试，不要依赖线上自动文档。
 
 只读管理接口还包括：
 

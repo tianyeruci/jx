@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     public_base_url: str = "http://127.0.0.1:8000"
     bind_host: str = "127.0.0.1"
     bind_port: int = Field(default=8000, ge=1, le=65535)
+    application_timezone: str = "Asia/Shanghai"
 
     database_url: str = "sqlite:///./ai_management.db"
     redis_url: str = "redis://127.0.0.1:6379/5"

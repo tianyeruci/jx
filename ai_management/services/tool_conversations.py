@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -42,7 +42,7 @@ def validate_type(kind: str, value: str) -> str:
     return value
 
 
-def _current(session: Session, user_id: str, kind: str) -> ToolConversation | None:
+def _current_unlocked(session: Session, user_id: str, kind: str) -> ToolConversation | None:
     row = session.scalar(
         select(ToolConversation).where(
             ToolConversation.user_hash == user_hash(user_id),
@@ -55,7 +55,11 @@ def _current(session: Session, user_id: str, kind: str) -> ToolConversation | No
     last_active = row.last_active_at
     if last_active.tzinfo is None:
         last_active = last_active.replace(tzinfo=timezone.utc)
-    if last_active.astimezone(BUSINESS_TIMEZONE).date() >= business_today():
+    # Business-day expiry is primary; the age guard keeps the boundary
+    # deterministic when a UTC timestamp falls just after midnight Beijing.
+    if last_active.astimezone(
+        BUSINESS_TIMEZONE
+    ).date() >= business_today() and last_active > datetime.now(timezone.utc) - timedelta(days=1):
         return row
     if row.dify_conversation_id:
         exists = session.scalar(
@@ -75,6 +79,15 @@ def _current(session: Session, user_id: str, kind: str) -> ToolConversation | No
     session.delete(row)
     session.commit()
     return None
+
+
+def _current(session: Session, user_id: str, kind: str) -> ToolConversation | None:
+    kind = validate_kind(kind)
+    lock_key = f"ai:tool-conversation:{user_hash(user_id)}:{kind}"
+    with cache.lock(lock_key, ttl=600) as lock_state:
+        if not lock_state.acquired:
+            raise ServiceError("CONFLICT", "当前会话正在生成，请稍后重试", 409, True)
+        return _current_unlocked(session, user_id, kind)
 
 
 def public(row: ToolConversation | None) -> dict:
@@ -105,23 +118,30 @@ def create(
     validate_type(kind, tool_type)
     if kind == "moments" and output_format != "article":
         raise ServiceError("VALIDATION_ERROR", "朋友圈不支持该输出格式", 422, False)
-    row = _current(session, user_id, kind)
-    if row:
-        if row.tool_type != tool_type or row.output_format != output_format:
-            raise ServiceError("CONFLICT", "当前会话类型不可修改，请先开启新会话", 409, False)
+    lock_key = f"ai:tool-conversation:{user_hash(user_id)}:{kind}"
+    with cache.lock(lock_key, ttl=600) as lock_state:
+        if not lock_state.acquired:
+            raise ServiceError("CONFLICT", "当前会话正在生成，请稍后重试", 409, True)
+        row = _current_unlocked(session, user_id, kind)
+        if row:
+            if row.tool_type != tool_type or row.output_format != output_format:
+                raise ServiceError("CONFLICT", "当前会话类型不可修改，请先开启新会话", 409, False)
+            return public(row)
+        row = ToolConversation(
+            user_hash=user_hash(user_id),
+            kind=kind,
+            tool_type=tool_type,
+            output_format=output_format,
+        )
+        session.add(row)
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            row = _current_unlocked(session, user_id, kind)
+            if row is None:
+                raise
         return public(row)
-    row = ToolConversation(
-        user_hash=user_hash(user_id), kind=kind, tool_type=tool_type, output_format=output_format
-    )
-    session.add(row)
-    try:
-        session.commit()
-    except IntegrityError:
-        session.rollback()
-        row = _current(session, user_id, kind)
-        if row is None:
-            raise
-    return public(row)
 
 
 def owned(session: Session, user_id: str, kind: str, conversation_id: str) -> ToolConversation:
@@ -137,7 +157,7 @@ def reset(session: Session, user_id: str, kind: str, conversation_id: str | None
     with cache.lock(lock_key, ttl=600) as lock_state:
         if not lock_state.acquired:
             raise ServiceError("CONFLICT", "当前会话正在生成，请稍后重试", 409, True)
-        row = _current(session, user_id, kind)
+        row = _current_unlocked(session, user_id, kind)
         if conversation_id and (row is None or row.id != conversation_id):
             raise ServiceError("NOT_FOUND", "会话不存在或无权访问", 404, False)
         if row:

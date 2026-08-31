@@ -24,6 +24,7 @@ MIGRATION_FILES=(
   "m9d0e1f2g3h4_tool_conversations.py"
   "l8c9d0e1f2g3_consultation_promotion_backfill.py"
   "n0e1f2g3h4i5_task_leases_external_unique.py"
+  "o1f2g3h4i5j6_publication_shard_leases.py"
 )
 # Historical jx releases placed the tool-conversations migration under this
 # filename while declaring the same revision as the formal filename below.

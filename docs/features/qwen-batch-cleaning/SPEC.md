@@ -97,6 +97,9 @@ Batch 只在存在活动供应商任务时继续轮询；临时网络/数据库�
 | RD-007 | 开始后续数据处理前精确删除目标策略的旧 general 数据且无需备份；删除后只处理新上传数据，结果保留 | 用户明确旧数据可删除且不需要备份；本轮新结果需人工复核 |
 | RD-008 | 发布名称始终由原始文件安全 stem + 稳定分片标识生成；同契约最终正文跨源/跨批次去重 | 可区分来源并消除重复知识；不同契约保持边界 |
 | RD-009 | 模型结果未采用保存服务端审核材料并进入 review_required；approve 才兜底入库，exclude 不入库 | 保留模型证据，阻断未经人工确认的低质量内容 |
+| RD-010 | 四类任务统一采用数据库 lease claim/heartbeat/token fencing；PublicationShard 使用唯一可空租约迁移 | 防止旧 Worker 覆盖状态和重复外部副作用 |
+| RD-011 | ExternalDeletionTask 只有一个 due/backoff/manual 感知的 outbox consumer，远端删除按 at-least-once 幂等收敛 | 防止旁路删除和脏任务堆积 |
+| RD-012 | Chat/Workflow SSE 对数据库、解析和断连异常统一 rollback、脱敏 error 和资源清理 | 保证协议完整和用户隔离 |
 
 ## 7. Acceptance Criteria
 
@@ -113,6 +116,10 @@ Batch 只在存在活动供应商任务时继续轮询；临时网络/数据库�
 | AC-009 | 模型结果未采用会保存可定位审核材料并为 review_required；未审批项无 Dify 文档，approve/exclude 行为幂等正确 |
 | AC-010 | 本地质量、聚焦回归、jx 真实验收、问题统一修复和相关文档同步完成 |
 
+| AC-011 | CleaningFile、ModelCleaningTask、DifyPublicationShard 和 ExternalDeletionTask 实现原子 claim、heartbeat、过期接管和 token+未过期条件 finalize；旧 Worker 不得修改派生状态或继续新的外部副作用 |
+| AC-012 | 所有远端删除只有一个 outbox consumer，支持 due/backoff/manual/有界公平批处理；重复入队幂等，Dify conversation/document 与 Bailian file 的 404 视为成功 |
+| AC-013 | Chat/Workflow 在数据库异常、畸形 SSE、非 ServiceError 和断连时 rollback、脱敏发出 retryable error、清理 mapping/client，且错误路径不发送成功 message_end |
+
 ## 8. Model-generated Test Intent
 
 | Acceptance | Happy path | Boundary / negative | Compatibility / safety |
@@ -127,6 +134,9 @@ Batch 只在存在活动供应商任务时继续轮询；临时网络/数据库�
 | AC-008 | 原始 stem 命名、跨源去重 | 并发/重试/分片 | 不跨契约去重 |
 | AC-009 | fallback 审核材料、approve/exclude | 审核材料缺失、重复审批 | 未审批不入库 |
 | AC-010 | 质量通过后部署 | 任一问题统一记录、修复后新批次重跑 | 文档和状态证据可追溯 |
+| AC-011 | 双 Worker claim/heartbeat/finalize | 过期接管、旧 token、DB heartbeat 失败、取消竞态 | 旧 Worker 不得修改派生状态或产生新副作用 |
+| AC-012 | outbox 单消费者按 due/backoff 收敛 | 重复入队、404、manual、poison task、并发 consumer | 不清理无关业务数据，不承诺 exactly-once |
+| AC-013 | Chat/Workflow 正常和错误 SSE | scalar/commit/IntegrityError、畸形事件、GeneratorExit、断连 | rollback、mapping/client 清理、无成功 message_end |
 
 ## 9. Artifact Plan
 

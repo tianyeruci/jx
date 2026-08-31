@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy import select
 
+from ai_management.errors import ServiceError
 from ai_management.main import app
 from ai_management.models import ExternalDeletionTask, ToolConversation
 from ai_management.schemas import MomentsRunRequest, WritingRunRequest
@@ -147,3 +149,84 @@ def test_reset_phrase_returns_sse_without_calling_dify(service_db, monkeypatch):
         )
     assert response.status_code == 200
     assert "已开启新会话" in response.text
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [None, {"user": "other", "entry": "moments_advisor", "transport": "workflow"}],
+)
+def test_tool_stop_fails_closed_without_owner_mapping(monkeypatch, mapping):
+    from ai_management.api.routers import tools
+
+    monkeypatch.setattr(tools.cache, "get_json", lambda _key: mapping)
+
+    class MustNotInstantiate:
+        def __init__(self, *_args):
+            raise AssertionError("stop must not instantiate Dify without an owned task")
+
+    monkeypatch.setattr(tools, "DifyAppClient", MustNotInstantiate)
+    with pytest.raises(ServiceError) as exc_info:
+        tools.stop_tool("task-without-owner", "current-user")
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        {"user": "u_current-user", "entry": "unknown", "transport": "chat"},
+        {"user": "u_current-user", "entry": "moments_advisor", "transport": "unknown"},
+    ],
+)
+def test_tool_stop_rejects_invalid_mapping(monkeypatch, mapping):
+    from ai_management.api.routers import tools
+
+    monkeypatch.setattr(tools.cache, "get_json", lambda _key: mapping)
+    monkeypatch.setattr(
+        tools, "DifyAppClient", lambda *_args: pytest.fail("invalid mapping called Dify")
+    )
+    with pytest.raises(ServiceError) as exc_info:
+        tools.stop_tool("task-invalid", "current-user")
+    assert exc_info.value.status_code == 404
+
+
+def test_chat_stream_records_owner_before_task_started(monkeypatch):
+    from ai_management.api.routers import tools
+
+    mapping_calls = []
+    monkeypatch.setattr(
+        tools.cache, "set_json", lambda key, value, ttl: mapping_calls.append((key, value, ttl))
+    )
+
+    class Lock:
+        acquired = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(tools.cache, "lock", lambda *_args, **_kwargs: Lock())
+
+    class Client:
+        def stream_chat(self, **_kwargs):
+            yield {"event": "message", "task_id": "task-chat", "data": {"answer": "hello"}}
+
+    row = SimpleNamespace(
+        id="local", user_hash="hash", kind="moments", status="active", dify_conversation_id=""
+    )
+    session = SimpleNamespace(scalar=lambda _query: row, commit=lambda: None)
+    events = list(
+        tools._chat_stream(
+            client=Client(),
+            row=row,
+            query="q",
+            inputs={},
+            anonymous_user="u",
+            request_id="r",
+            entry="moments_advisor",
+            session=session,
+        )
+    )
+    assert any(b'"code": "task_started"' in event for event in events)
+    assert mapping_calls[0][0] == "ai:tool-task:task-chat"

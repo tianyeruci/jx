@@ -6,7 +6,7 @@ import logging
 import uuid
 from contextlib import ExitStack
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +51,7 @@ from ...services.observability.events import (
     record_event,
     safe_exception_message,
 )
+from ...timeutil import now_beijing
 from ..celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -1152,6 +1153,26 @@ def _publish_source_file_unlocked(
     acks_late=True,
 )
 def process_cleaning_file(self, file_id: str) -> bool:
+    token = ""
+
+    def fenced_commit(session) -> None:
+        now = now_beijing()
+        lease_cutoff = now.replace(tzinfo=None)
+        owned = session.execute(
+            update(CleaningFile)
+            .where(
+                CleaningFile.id == file_id,
+                CleaningFile.lease_token == token,
+                CleaningFile.lease_expires_at > lease_cutoff,
+            )
+            .values(lease_expires_at=now + timedelta(minutes=30)),
+            execution_options={"synchronize_session": False},
+        ).rowcount
+        if owned != 1:
+            session.rollback()
+            raise RuntimeError("cleaning file lease lost")
+        session.commit()
+
     try:
         with SessionLocal() as session:
             row = session.scalar(
@@ -1164,7 +1185,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
             )
             if row is None or row.status not in {"pending", "processing"}:
                 return False
-            now = datetime.now(timezone.utc)
+            now = now_beijing()
             token = uuid.uuid4().hex
             claimed = session.execute(
                 update(CleaningFile)
@@ -1212,7 +1233,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     resource_id=file_id,
                     session=session,
                 )
-                session.commit()
+                fenced_commit(session)
                 return True
             strategy = STRATEGY_REGISTRY.get(batch.strategy_code)
             if batch.upload_mode != "raw" and strategy is None:
@@ -1229,7 +1250,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
             for existing in list(row.documents):
                 if existing.status != "succeeded":
                     session.delete(existing)
-            session.commit()
+            fenced_commit(session)
 
             if batch.upload_mode == "raw":
                 from ...cleaning import CleanedDocument, _load_markdown_like
@@ -1260,7 +1281,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 row.error_message = "清洗策略没有生成可入库正文"
                 _refresh_file_state(session, row.id, commit=False)
                 _finish_batch(session, row.batch_id)
-                session.commit()
+                fenced_commit(session)
                 record_event(
                     level="ERROR",
                     category="task",
@@ -1272,7 +1293,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     resource_id=file_id,
                     session=session,
                 )
-                session.commit()
+                fenced_commit(session)
                 return True
             if batch.strategy_code == "recent_activity":
                 duplicate_event_ids = _duplicate_activity_event_ids(
@@ -1289,7 +1310,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     )
                     _refresh_file_state(session, row.id, commit=False)
                     _finish_batch(session, row.batch_id)
-                    session.commit()
+                    fenced_commit(session)
                     return True
             if Path(row.original_filename).suffix.lower() == ".pdf":
                 _record_pdf_conversion_events(
@@ -1479,7 +1500,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     }
                 session.add(item)
                 session.flush()
-            session.commit()
+            fenced_commit(session)
 
             pending_documents = list(
                 session.scalars(
@@ -1526,7 +1547,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     item.error_code = None
                     item.error_message = None
                     item.retryable = True
-                session.commit()
+                fenced_commit(session)
                 blocking_reviews = [
                     item for item in blocking_reviews if item.status == "review_required"
                 ]
@@ -1561,7 +1582,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                         "source_atomic_original_disposition": "pending",
                     }
                 pending_documents = []
-                session.commit()
+                fenced_commit(session)
             if pending_documents:
                 ordered_ids = (
                     _course_document_publish_order(pending_documents)
@@ -1586,7 +1607,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 from .model_cleaning import _plan_post_publication, publish_dify_shard
 
                 shard_ids = _plan_post_publication(session, row.batch_id)
-                session.commit()
+                fenced_commit(session)
                 pending_shard_ids = list(
                     session.scalars(
                         select(DifyPublicationShard.id).where(
@@ -1607,7 +1628,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
             )
             _refresh_file_state(session, row.id, commit=False)
             _finish_batch(session, row.batch_id)
-            session.commit()
+            fenced_commit(session)
             if awaiting_model_documents:
                 from .model_cleaning import maybe_plan_model_task
 
@@ -1681,7 +1702,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                         **failure_context,
                     )["exception_message"]
                 _finish_batch(session, row.batch_id)
-                session.commit()
+                fenced_commit(session)
                 if retry:
                     raise self.retry(exc=exc, countdown=10, max_retries=1)
         if content_missing:
@@ -1728,7 +1749,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                         },
                         session=session,
                     )
-                    session.commit()
+                    fenced_commit(session)
         record_event(
             level="ERROR",
             category="task",

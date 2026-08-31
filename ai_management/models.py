@@ -4,7 +4,7 @@ import secrets
 import threading
 import time
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
@@ -22,6 +22,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
+from .timeutil import BUSINESS_TIMEZONE
 
 _uuid7_lock = threading.Lock()
 _uuid7_last_ms = -1
@@ -55,7 +56,9 @@ def new_id() -> str:
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    # Historical name kept for SQLAlchemy defaults; the application clock is
+    # explicitly Beijing time so every persisted timestamp has one timezone.
+    return datetime.now(BUSINESS_TIMEZONE)
 
 
 class TimestampMixin:
@@ -461,6 +464,10 @@ class DifyPublicationShard(Base, TimestampMixin):
     remote_parent_count: Mapped[int] = mapped_column(Integer, default=0)
     remote_child_count: Mapped[int] = mapped_column(Integer, default=0)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     last_error: Mapped[str] = mapped_column(Text, default="")
 
     file: Mapped[CleaningFile] = relationship(back_populates="publication_shards")

@@ -8,7 +8,7 @@
 
 ## 1. Goal / Non-goals Reference
 
-实现后端可配置案例目录，复用现有 FastAPI 路由、Pydantic 校验、异步 SQLAlchemy `AdminSetting` 和 Streamlit 测试 UI；案例卡片直接提供完整 `request` 查看；不改变 Dify DSL。
+实现后端可配置案例目录，复用现有 FastAPI 路由、Pydantic 校验、异步 SQLAlchemy `AdminSetting` 和 Streamlit 测试 UI；案例卡片直接提供完整 `request` 查看。当前分支同时包含 ToolConversation/ToolMessage 及其迁移，以及工具 DSL 的变更；本 Feature 原先“不改变 Dify DSL”的约束已与实际实现不一致。按当前 Dify 发布门禁，工具唯一已验证发布源仍是 `dify/dsl/moments_advisor.yml` 与 `dify/dsl/writing_advisor.yml`；根目录带“当前版本”的两份 DSL 尚未通过变量/Prompt 契约验证，禁止直接发布。
 
 ## 2. Repository Evidence
 
@@ -20,7 +20,7 @@
 
 ### Credible alternatives rejected
 
-不新增数据库模型和迁移，不创建通用 repository 或额外服务层；不把案例内容写进 DSL。若用户界面和管理界面都需要格式化案例，仅复用稳定的 schema/响应类型，不抽象与本功能无关的组件。
+不创建通用 repository 或额外服务层；不把案例内容写进 DSL。ToolConversation/ToolMessage 迁移属于当前工具会话实现，不应再表述为本分支“无迁移”。若用户界面和管理界面都需要格式化案例，仅复用稳定的 schema/响应类型，不抽象与本功能无关的组件。
 
 ## 4. Modules and Ownership
 
@@ -55,10 +55,10 @@ For every new shared abstraction, state its semantic owner and why sharing is st
 
 - Internal HTTP API / SDK: 新增内部用户 GET 与管理员案例 CRUD/恢复接口；接口受内部令牌边界保护，既有 `/run` 不变。
 - Events/messages: None。
-- Persistent schema/migration: 复用 `AdminSetting` JSON，无迁移。
+- Persistent schema/migration: 案例配置复用 `AdminSetting` JSON；当前分支另有 ToolConversation/ToolMessage 迁移，属于工具会话实现，不应再声称本分支“无迁移”。
 - Backward compatibility: 旧客户端忽略新增接口即可继续手动调用 `/run`；无配置时返回内置默认。
 - Security/privacy: 普通读取复用内部 Token/用户标识，管理写入复用内部 Token+Admin Token；校验不允许空/超长内容。
-- Operational behavior: 配置写入需事务提交；Dify 未变更时无需重新导入/发布 DSL。
+- Operational behavior: 配置写入需事务提交；案例不写入 DSL。工具发布必须使用已验证的 `dify/dsl/*` 源；根目录“当前版本”文件仅作待核验草稿。
 
 Use `None` explicitly where no impact exists.
 
@@ -84,7 +84,7 @@ A test seam must be agreed here before a TDD-dependent implementation begins.
 
 ## 10. Rollout / Migration / Rollback
 
-无数据库迁移。发布前先完成本地测试和接口文档；部署只在取得精确 jx 命令的 release gate 后执行。回滚代码沿用当前 jx release runbook，案例配置保留在 `AdminSetting`，不做破坏性清理；如需回滚功能，旧客户端仍可使用 `/run`。
+本 Feature 的案例目录不新增数据库迁移；但同分支的 ToolConversation/ToolMessage 已有迁移，发布前必须确认目标环境已应用对应迁移。发布前先完成本地测试和接口文档；部署只在取得精确 jx 命令的 release gate 后执行。回滚代码沿用当前 jx release runbook，案例配置保留在 `AdminSetting`，不做破坏性清理；如需回滚功能，旧客户端仍可使用 `/run`。
 
 ## 11. Escalation Triggers During Luna Implementation
 

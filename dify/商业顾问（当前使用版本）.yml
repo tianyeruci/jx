@@ -864,7 +864,7 @@ workflow:
                       ordered = ordered_all[requested_ordinal - 1:requested_ordinal] if requested_ordinal and requested_ordinal > 0 else []
                   else:
                       named = [value for value in ordered_all if "".join(ch for ch in item_title(value).lower() if ch.isalnum() or "\u4e00" <= ch <= "\u9fff") in normalized_query_for_match]
-                      ordered = (named or ordered_all[:1])[:1]
+                      ordered = named[:1]
               else:
                   ordered = ordered_all[:limit]
               status_text = "所有" if requested_status == "all" else {"normal": "正常", "recent": "最近", "cancelled": "取消", "postponed": "延期", "completed": "已完成", "detail": "活动"}.get(requested_status, "活动")
@@ -892,7 +892,7 @@ workflow:
                       if summary: line += f"\n简介：{summary}"
                       link = metadata.get("registration_url")
                       deadline = number(metadata.get("registration_deadline_ts"))
-                      if event_status in {"normal", "postponed"} and isinstance(link, str) and link.startswith(("http://", "https://")) and (deadline is None or deadline >= datetime.now(timezone(timedelta(hours=8))).timestamp()): line += f"\n报名链接：{link}"
+                      if metadata.get("event_status") in {"normal", "postponed"} and isinstance(link, str) and link.startswith(("http://", "https://")) and (deadline is None or deadline >= datetime.now(timezone(timedelta(hours=8))).timestamp()): line += f"\n报名链接：{link}"
                   lines.append(line)
               empty_text = "当前没有符合条件的活动。" if requested_status == "detail" else f"当前没有符合条件的{status_text}活动。"
               return {"activity_text": "\n".join(lines) or empty_text}

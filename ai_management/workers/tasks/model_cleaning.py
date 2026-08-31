@@ -61,10 +61,17 @@ from ...services.bailian_cleanup import (
     ensure_bailian_cleanup_tasks,
 )
 from ...services.observability import exception_details, record_event, safe_exception_message
+from ...timeutil import now_beijing
 from ..celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+class LeaseLostError(RuntimeError):
+    """Raised when a worker no longer owns its leased task row."""
+
+
 POST_STRATEGIES = {
     "wechat_public_account_cognition",
     "zsxq_post",
@@ -2339,6 +2346,25 @@ def _finish_model_task(task_id: str) -> None:
 )
 def process_realtime_model_task(self, task_id: str) -> bool:
     client: BailianClient | None = None
+    token = ""
+
+    def fenced_commit(session) -> None:
+        now = now_beijing()
+        owned = session.execute(
+            update(ModelCleaningTask)
+            .where(
+                ModelCleaningTask.id == task_id,
+                ModelCleaningTask.lease_token == token,
+                ModelCleaningTask.lease_expires_at > now.replace(tzinfo=None),
+            )
+            .values(lease_expires_at=now + timedelta(minutes=30)),
+            execution_options={"synchronize_session": False},
+        ).rowcount
+        if owned != 1:
+            session.rollback()
+            raise LeaseLostError("model cleaning task lease lost")
+        session.commit()
+
     fallback_pending_ids: list[str] = []
     fallback_shard_ids: list[str] = []
     try:
@@ -2350,7 +2376,7 @@ def process_realtime_model_task(self, task_id: str) -> bool:
             batch = session.get(CleaningBatch, task.batch_id)
             if batch is None:
                 return False
-            now = datetime.now(timezone.utc)
+            now = now_beijing()
             token = uuid.uuid4().hex
             claimed = session.execute(
                 update(ModelCleaningTask)
@@ -2369,10 +2395,11 @@ def process_realtime_model_task(self, task_id: str) -> bool:
             ).rowcount
             if claimed != 1:
                 return False
+            session.expire_all()
             task = session.get(ModelCleaningTask, task_id)
             if task is None:
                 return False
-            session.commit()
+            fenced_commit(session)
             counts = {"succeeded": 0, "excluded": 0, "review": 0, "failed": 0}
             usage = {"input_tokens": 0, "output_tokens": 0}
             for page in _iter_realtime_document_pages(session, batch.id):
@@ -2385,7 +2412,7 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                     audit = dict(document.audit_json or {})
                     audit["model_attempts"] = 1
                     document.audit_json = audit
-                    session.commit()
+                    fenced_commit(session)
                     payload: dict[str, Any] | None = None
                     try:
                         request = _request(document, batch.strategy_code)
@@ -2395,7 +2422,7 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                             model_name=task.model,
                             prompt_version=task.prompt_version,
                         )
-                        session.commit()
+                        fenced_commit(session)
                         payload, item_usage = _realtime_chat(client, request, model=task.model)
                         _apply_model_payload(
                             document,
@@ -2428,7 +2455,7 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                                 model_name=task.model,
                                 prompt_version=task.prompt_version,
                             )
-                            session.commit()
+                            fenced_commit(session)
                             payload, item_usage = _realtime_chat(client, request, model=task.model)
                             _apply_model_payload(
                                 document,
@@ -2502,7 +2529,7 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                                     prompt_version=task.prompt_version,
                                     repair_hint=repair_hint,
                                 )
-                                session.commit()
+                                fenced_commit(session)
                                 payload, item_usage = _realtime_chat(
                                     client,
                                     request,
@@ -2556,17 +2583,45 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                                 source_chunking=source_chunking,
                             )
                     _count_model_result(counts, document)
-                    session.commit()
+                    fenced_commit(session)
             task.result_counts = counts
             task.actual_usage = usage
+            fenced = session.execute(
+                update(ModelCleaningTask)
+                .where(
+                    ModelCleaningTask.id == task_id,
+                    ModelCleaningTask.lease_token == token,
+                )
+                .values(lease_token=None, lease_expires_at=None),
+                execution_options={"synchronize_session": False},
+            ).rowcount
+            if fenced != 1:
+                session.rollback()
+                return False
+            task.lease_token = None
+            task.lease_expires_at = None
             session.commit()
         _finish_model_task(task_id)
         return True
+    except LeaseLostError:
+        logger.warning("realtime model cleaning task lease lost; skipping stale worker finalize")
+        return False
     except Exception as exc:
         logger.exception("realtime model cleaning task failed")
         with SessionLocal() as session:
             task = session.get(ModelCleaningTask, task_id)
             if task is not None:
+                owned = session.scalar(
+                    select(ModelCleaningTask.id).where(
+                        ModelCleaningTask.id == task_id,
+                        ModelCleaningTask.lease_token == token,
+                        ModelCleaningTask.lease_expires_at > now_beijing().replace(tzinfo=None),
+                    )
+                )
+                if owned is None:
+                    session.rollback()
+                    logger.warning("model cleaning task lease lost; skip failure overwrite")
+                    return False
                 task.status = "failed"
                 task.last_error = safe_exception_message(exc, limit=2000)
                 batch = session.get(CleaningBatch, task.batch_id)
@@ -2603,6 +2658,22 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                     ),
                     session=session,
                 )
+                fenced = session.execute(
+                    update(ModelCleaningTask)
+                    .where(
+                        ModelCleaningTask.id == task_id,
+                        ModelCleaningTask.lease_token == token,
+                        ModelCleaningTask.lease_expires_at > now_beijing().replace(tzinfo=None),
+                    )
+                    .values(lease_token=None, lease_expires_at=None),
+                    execution_options={"synchronize_session": False},
+                ).rowcount
+                if fenced != 1:
+                    session.rollback()
+                    logger.warning("model task lease lost before failure commit")
+                    return False
+                task.lease_token = None
+                task.lease_expires_at = None
                 session.commit()
         _queue_publication_outputs(fallback_pending_ids, fallback_shard_ids)
         return False
@@ -3968,6 +4039,7 @@ def publish_dify_shard(self, shard_id: str) -> bool:
         raise self.retry(countdown=900, max_retries=None)
     client: DifyKnowledgeClient | None = None
     created_id = ""
+    lease_token = ""
     cleanup_dataset_id = ""
     replaced_document_id = ""
     compensation_failed = False
@@ -3976,7 +4048,6 @@ def publish_dify_shard(self, shard_id: str) -> bool:
             shard = session.scalar(
                 select(DifyPublicationShard)
                 .where(DifyPublicationShard.id == shard_id)
-                .with_for_update()
                 .options(
                     selectinload(DifyPublicationShard.file).selectinload(CleaningFile.batch),
                     selectinload(DifyPublicationShard.documents),
@@ -3988,6 +4059,55 @@ def publish_dify_shard(self, shard_id: str) -> bool:
             # to pending after its timeout.
             if shard is None or shard.status != "shard_pending":
                 return False
+            lease_token = uuid.uuid4().hex
+            lease_now = now_beijing()
+            claimed = session.execute(
+                update(DifyPublicationShard)
+                .where(
+                    DifyPublicationShard.id == shard_id,
+                    DifyPublicationShard.status == "shard_pending",
+                    (DifyPublicationShard.lease_expires_at.is_(None))
+                    | (DifyPublicationShard.lease_expires_at <= lease_now),
+                )
+                .values(
+                    status="shard_indexing",
+                    attempts=DifyPublicationShard.attempts + 1,
+                    lease_token=lease_token,
+                    lease_expires_at=lease_now + timedelta(minutes=30),
+                ),
+                execution_options={"synchronize_session": False},
+            ).rowcount
+            if claimed != 1:
+                return False
+            session.commit()
+            shard = session.scalar(
+                select(DifyPublicationShard)
+                .where(DifyPublicationShard.id == shard_id)
+                .options(
+                    selectinload(DifyPublicationShard.file).selectinload(CleaningFile.batch),
+                    selectinload(DifyPublicationShard.documents),
+                )
+            )
+            if shard is None:
+                return False
+
+            def fenced_commit() -> None:
+                now = now_beijing()
+                owned = session.execute(
+                    update(DifyPublicationShard)
+                    .where(
+                        DifyPublicationShard.id == shard_id,
+                        DifyPublicationShard.lease_token == lease_token,
+                        DifyPublicationShard.lease_expires_at > now.replace(tzinfo=None),
+                    )
+                    .values(lease_expires_at=now + timedelta(minutes=30)),
+                    execution_options={"synchronize_session": False},
+                ).rowcount
+                if owned != 1:
+                    session.rollback()
+                    raise LeaseLostError("publication shard lease lost")
+                session.commit()
+
             dataset_id = (
                 settings.dify_general_dataset_id
                 if shard.file.batch.knowledge_base_code == "general"
@@ -4005,12 +4125,10 @@ def publish_dify_shard(self, shard_id: str) -> bool:
             replaced_document_id = str(
                 shard_metadata.get("_replacement_document_id") or shard.dify_document_id or ""
             )
-            shard.status = "shard_indexing"
-            shard.attempts += 1
             for document in shard.documents:
                 document.status = "shard_indexing"
                 document.stage = "shard_indexing"
-            session.commit()
+            fenced_commit()
             if pending_remote_id:
                 try:
                     client.delete_document(pending_remote_id)
@@ -4027,7 +4145,7 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                     )
                     shard_metadata.pop("_pending_dify_document_id", None)
                 shard.metadata_json = shard_metadata
-                session.commit()
+                fenced_commit()
             from ...cleaning import finalize_knowledge_markdown
 
             shard.markdown = finalize_knowledge_markdown(shard.markdown)
@@ -4072,7 +4190,7 @@ def publish_dify_shard(self, shard_id: str) -> bool:
             if replaced_document_id:
                 shard_metadata["_replacement_document_id"] = replaced_document_id
             shard.metadata_json = shard_metadata
-            session.commit()
+            fenced_commit()
             client.wait_for_indexing(
                 dify_batch_id,
                 document_id=document_id,
@@ -4149,7 +4267,7 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                             last_error="替换旧 Dify 文档，等待确认删除",
                         )
                     )
-            session.commit()
+            fenced_commit()
             if replaced_document_id and replaced_document_id != document_id:
                 try:
                     client.delete_document(replaced_document_id)
@@ -4166,11 +4284,26 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                                 last_error=safe_exception_message(exc, limit=1000),
                             )
                         )
-                        session.commit()
+                        fenced_commit()
             from .cleaning import _finish_batch, _refresh_file_state
 
             _refresh_file_state(session, shard.file_id, commit=False)
             _finish_batch(session, shard.file.batch_id)
+            fenced = session.execute(
+                update(DifyPublicationShard)
+                .where(
+                    DifyPublicationShard.id == shard_id,
+                    DifyPublicationShard.lease_token == lease_token,
+                    DifyPublicationShard.lease_expires_at > now_beijing(),
+                )
+                .values(lease_token=None, lease_expires_at=None, status="succeeded")
+            ).rowcount
+            if fenced != 1:
+                session.rollback()
+                return False
+            shard.status = "succeeded"
+            shard.lease_token = None
+            shard.lease_expires_at = None
             session.commit()
         return True
     except Exception as exc:
@@ -4184,6 +4317,17 @@ def publish_dify_shard(self, shard_id: str) -> bool:
         with SessionLocal() as session:
             shard = session.get(DifyPublicationShard, shard_id)
             if shard:
+                lease_now = now_beijing().replace(tzinfo=None)
+                owned = session.scalar(
+                    select(DifyPublicationShard.id).where(
+                        DifyPublicationShard.id == shard_id,
+                        DifyPublicationShard.lease_token == lease_token,
+                        DifyPublicationShard.lease_expires_at > lease_now,
+                    )
+                )
+                if owned is None:
+                    session.rollback()
+                    return False
                 # If a new remote document was created and then failed during
                 # indexing/metadata, it was compensated above.  Restore the
                 # prior remote ID (if any) so the retry can replace it rather
@@ -4221,6 +4365,21 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 _refresh_file_state(session, shard.file_id, commit=False)
                 if batch_id:
                     _finish_batch(session, batch_id)
+                fenced = session.execute(
+                    update(DifyPublicationShard)
+                    .where(
+                        DifyPublicationShard.id == shard_id,
+                        DifyPublicationShard.lease_token == lease_token,
+                        DifyPublicationShard.lease_expires_at > now_beijing().replace(tzinfo=None),
+                    )
+                    .values(lease_token=None, lease_expires_at=None)
+                ).rowcount
+                if fenced != 1:
+                    session.rollback()
+                    logger.warning("publication shard lease lost before failure commit")
+                    return False
+                shard.lease_token = None
+                shard.lease_expires_at = None
                 session.commit()
                 record_event(
                     level="ERROR",

@@ -3353,3 +3353,75 @@ This is a semantic change log, not a copy of Git diff.
 - **Changed paths:**
   - `ai_management/cleaning.py`
   - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-31T09:32:23+08:00 — 新数据统一使用北京时间；ExternalDeletionTask 原子 claim、token 条件成功/失败收尾与幂等清理；活动替换旧文档回归通过。
+
+- **Purpose:** 新数据统一使用北京时间；ExternalDeletionTask 原子 claim、token 条件成功/失败收尾与幂等清理；活动替换旧文档回归通过。
+- **Affected modules:**
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-31T09:43:12+08:00 — 活动文档替换旧远端文档时使用幂等 ExternalDeletionTask，并通过 token 条件 claim/finalize 与北京时间 due 选择回归。
+
+- **Purpose:** 活动文档替换旧远端文档时使用幂等 ExternalDeletionTask，并通过 token 条件 claim/finalize 与北京时间 due 选择回归。
+- **Affected modules:**
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-31T09:44:27+08:00 — Dify 发布分片异常收尾校验 token 与 lease 有效性，避免旧 worker 覆盖新状态。
+
+- **Purpose:** Dify 发布分片异常收尾校验 token 与 lease 有效性，避免旧 worker 覆盖新状态。
+- **Affected modules:**
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-31T09:57:00+08:00 — 发布分片中间提交和异常收尾增加 token/lease 有效性检查，避免旧 worker 覆盖新状态。
+
+- **Purpose:** 发布分片中间提交和异常收尾增加 token/lease 有效性检查，避免旧 worker 覆盖新状态。
+- **Affected modules:**
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-31T10:50:00+08:00 — Dify 分片异常终态与补偿提交前再次执行 token+未过期 lease 条件更新，失租不覆盖新 worker。
+
+- **Purpose:** Dify 分片异常终态与补偿提交前再次执行 token+未过期 lease 条件更新，失租不覆盖新 worker。
+- **Affected modules:**
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-08-31T10:58:19+08:00 — 活动替换的远端删除任务在失租时不提交 stale worker 结果，保持新数据幂等清理。
+
+- **Purpose:** 活动替换的远端删除任务在失租时不提交 stale worker 结果，保持新数据幂等清理。
+- **Affected modules:**
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/workers/tasks/cleaning.py`

@@ -7,6 +7,7 @@ services:
     env_file: .env
     environment:
       AI_MANAGEMENT_BASE_URL: http://ai-management-api:8000
+      TZ: Asia/Shanghai
     command: streamlit run ai_management/test_ui.py --server.address 0.0.0.0 --server.port 8501 --server.baseUrlPath ai-management-test --server.headless true
     ports:
       - "127.0.0.1:8501:8501"

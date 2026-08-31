@@ -53,7 +53,7 @@
     {
       "id": "examples-contracts",
       "title": "案例请求响应契约",
-      "status": "done",
+      "status": "verified",
       "paths": [
         "ai_management/schemas.py"
       ],
@@ -63,7 +63,7 @@
         "AC-004"
       ],
       "optional": false,
-      "updated_at": "2026-08-17T08:55:50+08:00",
+      "updated_at": "2026-08-30T19:40:19+08:00",
       "last_change_summary": "工具会话 run 顶层 conversation_id、reset 后重新选型、并发安全和精确迁移兼容已发布到 jx；测试页验证朋友圈与日常写作 SSE/重置链路，商业顾问隔离不变。",
       "last_changed_at": "2026-08-30T16:04:32+08:00"
     },
@@ -81,7 +81,7 @@
         "AC-005"
       ],
       "optional": false,
-      "updated_at": "2026-08-30T15:33:19+08:00",
+      "updated_at": "2026-08-30T19:40:19+08:00",
       "last_change_summary": "工具会话 run 顶层 conversation_id、reset 后重新选型、并发安全和精确迁移兼容已发布到 jx；测试页验证朋友圈与日常写作 SSE/重置链路，商业顾问隔离不变。",
       "last_changed_at": "2026-08-30T16:04:32+08:00"
     },
@@ -102,7 +102,7 @@
     {
       "id": "examples-ui",
       "title": "测试 UI 案例展示与维护",
-      "status": "done",
+      "status": "verified",
       "paths": [
         "ai_management/test_ui.py"
       ],
@@ -111,7 +111,7 @@
         "AC-005"
       ],
       "optional": false,
-      "updated_at": "2026-08-17T08:55:50+08:00",
+      "updated_at": "2026-08-30T19:40:19+08:00",
       "last_change_summary": "工具会话 run 顶层 conversation_id、reset 后重新选型、并发安全和精确迁移兼容已发布到 jx；测试页验证朋友圈与日常写作 SSE/重置链路，商业顾问隔离不变。",
       "last_changed_at": "2026-08-30T16:04:32+08:00"
     },
@@ -133,7 +133,7 @@
         "AC-006"
       ],
       "optional": false,
-      "updated_at": "2026-08-19T18:52:56+08:00",
+      "updated_at": "2026-08-30T19:40:19+08:00",
       "last_change_summary": "工具会话 run 顶层 conversation_id、reset 后重新选型、并发安全和精确迁移兼容已发布到 jx；测试页验证朋友圈与日常写作 SSE/重置链路，商业顾问隔离不变。",
       "last_changed_at": "2026-08-30T16:04:32+08:00"
     },
@@ -155,7 +155,7 @@
         "AC-006"
       ],
       "optional": false,
-      "updated_at": "2026-08-30T15:33:19+08:00",
+      "updated_at": "2026-08-30T19:40:19+08:00",
       "last_change_summary": "工具会话 run 顶层 conversation_id、reset 后重新选型、并发安全和精确迁移兼容已发布到 jx；测试页验证朋友圈与日常写作 SSE/重置链路，商业顾问隔离不变。",
       "last_changed_at": "2026-08-30T16:04:32+08:00"
     }
@@ -183,6 +183,6 @@
     "changelog_fingerprint": "03b9c9f285637abd9a658ad090a49f705d45cefea9825dbe85297421a6beff60"
   },
   "created_at": "2026-08-17T02:18:13+08:00",
-  "updated_at": "2026-08-30T16:04:32+08:00",
+  "updated_at": "2026-08-30T19:40:19+08:00",
   "last_abandon_reason": "独立复核修正完成，重新建立以当前修正工作树为基线的治理周期"
 }

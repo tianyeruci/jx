@@ -83,6 +83,8 @@ class WritingRunRequest(BaseModel):
 
 
 class ToolConversationCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     type: str = Field(min_length=1, max_length=32)
     output_format: Literal["article", "wechat_public_account"] = "article"
 

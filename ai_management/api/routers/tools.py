@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -22,6 +21,7 @@ from ...services.style_settings import get_style_prompt
 from ...services.tool_conversations import create, current, is_reset_intent, owned, reset
 from ...services.tool_examples import list_examples
 from ...sse import SSEEmitter
+from ...timeutil import now_beijing
 
 logger = logging.getLogger(__name__)
 SSE_HEADERS = {
@@ -146,6 +146,20 @@ def _workflow_stream(
             },
         )
         return
+    except Exception:
+        if task_id:
+            cache.delete(f"ai:tool-task:{task_id}")
+        logger.exception("tool workflow stream failed request_id=%s entry=%s", request_id, entry)
+        yield emit(
+            "error",
+            {
+                "code": "UPSTREAM_ERROR",
+                "message": "生成服务暂时不可用，请稍后重试",
+                "request_id": request_id,
+                "retryable": True,
+            },
+        )
+        return
     yield emit(
         "message_end",
         {
@@ -186,6 +200,7 @@ def _chat_stream(
     yield emit("status", {"code": "generating", "message": "正在生成内容…"})
     answer = ""
     task_id = ""
+    task_announced = False
     lock_context = cache.lock(f"ai:tool-conversation:{row.user_hash}:{row.kind}", ttl=600)
     lock_state = lock_context.__enter__()
     if not lock_state.acquired:
@@ -241,6 +256,12 @@ def _chat_stream(
                     {"entry": entry, "user": anonymous_user, "transport": "chat"},
                     ttl=600,
                 )
+                if not task_announced:
+                    task_announced = True
+                    yield emit(
+                        "status",
+                        {"code": "task_started", "message": "已开始生成", "task_id": task_id},
+                    )
             event = str(item.get("event") or "")
             delta = str(data.get("answer") or data.get("text") or item.get("answer") or "")
             if event in {"message", "agent_message", "text_chunk"} and delta:
@@ -252,12 +273,12 @@ def _chat_stream(
                     or item.get("conversation_id")
                     or row.dify_conversation_id
                 )
-                row.last_active_at = datetime.now(timezone.utc)
+                row.last_active_at = now_beijing()
                 session.commit()
         # Dify owns the short-lived conversation memory.  Do not persist
         # user素材 or generated正文 locally; only keep the opaque Dify ID and
         # activity timestamp needed for retention and access control.
-        row.last_active_at = datetime.now(timezone.utc)
+        row.last_active_at = now_beijing()
         session.commit()
     except GeneratorExit:
         if task_id:
@@ -268,6 +289,7 @@ def _chat_stream(
             cache.delete(f"ai:tool-task:{task_id}")
         raise
     except ServiceError as exc:
+        session.rollback()
         if task_id:
             cache.delete(f"ai:tool-task:{task_id}")
         yield emit(
@@ -277,6 +299,21 @@ def _chat_stream(
                 "message": exc.message,
                 "request_id": request_id,
                 "retryable": exc.retryable,
+            },
+        )
+        return
+    except Exception:
+        session.rollback()
+        if task_id:
+            cache.delete(f"ai:tool-task:{task_id}")
+        logger.exception("tool chat stream failed request_id=%s entry=%s", request_id, entry)
+        yield emit(
+            "error",
+            {
+                "code": "UPSTREAM_ERROR",
+                "message": "生成服务暂时不可用，请稍后重试",
+                "request_id": request_id,
+                "retryable": True,
             },
         )
         return
@@ -387,25 +424,18 @@ def stop_tool(
     settings = get_settings()
     anonymous_user = dify_user(raw_user_id)
     mapping = cache.get_json(f"ai:tool-task:{task_id}")
-    if isinstance(mapping, dict):
-        if mapping.get("user") != anonymous_user:
-            raise ServiceError("VALIDATION_ERROR", "未找到可停止的任务", 404, False)
-        app_key = (
-            settings.dify_moments_app_api_key
-            if mapping.get("entry") == "moments_advisor"
-            else settings.dify_writing_app_api_key
-        )
-        client = DifyAppClient(settings.dify_url, app_key)
-        if mapping.get("transport") == "workflow":
-            return client.stop_workflow(task_id, anonymous_user)
-        return client.stop_chat(task_id, anonymous_user)
-    for key in (settings.dify_moments_app_api_key, settings.dify_writing_app_api_key):
-        try:
-            client = DifyAppClient(settings.dify_url, key)
-            try:
-                return client.stop_workflow(task_id, anonymous_user)
-            except Exception:
-                return client.stop_chat(task_id, anonymous_user)
-        except Exception:
-            continue
-    raise ServiceError("DIFY_UNAVAILABLE", "未找到可停止的任务", 404, False)
+    if not isinstance(mapping, dict) or mapping.get("user") != anonymous_user:
+        raise ServiceError("VALIDATION_ERROR", "未找到可停止的任务", 404, False)
+    entry = mapping.get("entry")
+    transport = mapping.get("transport")
+    if entry not in {"moments_advisor", "writing_advisor"} or transport not in {"workflow", "chat"}:
+        raise ServiceError("VALIDATION_ERROR", "未找到可停止的任务", 404, False)
+    app_key = (
+        settings.dify_moments_app_api_key
+        if entry == "moments_advisor"
+        else settings.dify_writing_app_api_key
+    )
+    client = DifyAppClient(settings.dify_url, app_key)
+    if transport == "workflow":
+        return client.stop_workflow(task_id, anonymous_user)
+    return client.stop_chat(task_id, anonymous_user)

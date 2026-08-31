@@ -62,6 +62,7 @@ def test_request_only_moments_run_keeps_existing_sse_contract(service_db, monkey
     assert event_names == [
         "event: request_started",
         "event: status",
+        "event: status",
         "event: answer_delta",
         "event: message_end",
     ]
@@ -127,6 +128,7 @@ def test_moments_run_preserves_supplied_source_material(service_db, monkeypatch)
     assert response.headers["content-type"].startswith("text/event-stream")
     assert [line for line in response.text.splitlines() if line.startswith("event:")] == [
         "event: request_started",
+        "event: status",
         "event: status",
         "event: message_end",
     ]

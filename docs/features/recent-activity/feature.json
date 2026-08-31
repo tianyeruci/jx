@@ -50,7 +50,7 @@
         "AC-004"
       ],
       "optional": false,
-      "updated_at": "2026-08-30T15:33:20+08:00",
+      "updated_at": "2026-08-30T19:40:19+08:00",
       "last_change_summary": "共享清理生命周期在取消异常时保留精确远端引用并可由 maintenance 重建；recent_activity 业务语义未改变。",
       "last_changed_at": "2026-08-21T03:37:42+08:00"
     },
@@ -67,9 +67,9 @@
         "AC-004"
       ],
       "optional": false,
-      "updated_at": "2026-08-30T15:33:20+08:00",
-      "last_change_summary": "共享清理生命周期在取消异常时保留精确远端引用并可由 maintenance 重建；recent_activity 业务语义未改变。",
-      "last_changed_at": "2026-08-21T03:37:42+08:00"
+      "updated_at": "2026-08-31T11:05:15+08:00",
+      "last_change_summary": "活动替换的远端删除任务在失租时不提交 stale worker 结果，保持新数据幂等清理。",
+      "last_changed_at": "2026-08-31T10:58:19+08:00"
     },
     {
       "id": "activity-chatflow",
@@ -87,7 +87,7 @@
         "AC-007"
       ],
       "optional": false,
-      "updated_at": "2026-08-20T03:52:20+08:00",
+      "updated_at": "2026-08-30T19:40:19+08:00",
       "last_change_summary": "活动查询现在按自然表达识别列表与命名详情；详情走无时间窗口状态检索并支持第1至第5个序号；列表默认10条逐行输出名称、时间、状态，ACTIVITY_MAX_RESULTS可配置；最近活动保持实时Qwen。Dify发布后验证了最近/最新/全部活动与命名详情SSE形状。",
       "last_changed_at": "2026-08-20T01:28:07+08:00"
     },
@@ -117,18 +117,13 @@
     }
   ],
   "documentation": {
-    "status": "stale",
-    "last_code_change_at": "2026-08-30T16:04:31+08:00",
-    "last_synced_at": "2026-08-21T03:37:42+08:00",
-    "last_sync_summary": "共享清理生命周期在取消异常时保留精确远端引用并可由 maintenance 重建；recent_activity 业务语义未改变。",
-    "pending_changed_paths": [
-      "ai_management/cleaning.py",
-      "ai_management/workers/tasks/cleaning.py",
-      "dify/商业顾问（当前使用版本）.yml",
-      "knowledge_cleaner/dify.py"
-    ],
-    "changelog_fingerprint": "6e97525135053ca093f512b2ff6efcce46e10dddd53e881c92b0e65388cbd484"
+    "status": "current",
+    "last_code_change_at": "2026-08-31T10:58:16+08:00",
+    "last_synced_at": "2026-08-31T10:58:19+08:00",
+    "last_sync_summary": "活动替换的远端删除任务在失租时不提交 stale worker 结果，保持新数据幂等清理。",
+    "pending_changed_paths": [],
+    "changelog_fingerprint": "090fd5040e3b631fd37b417b9637057f069c08452779b2556266132ebb8262fb"
   },
   "created_at": "2026-08-16T15:17:11+08:00",
-  "updated_at": "2026-08-30T16:04:31+08:00"
+  "updated_at": "2026-08-31T11:05:15+08:00"
 }

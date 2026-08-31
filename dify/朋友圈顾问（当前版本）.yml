@@ -171,6 +171,31 @@ workflow:
         title: 开始
         type: start
         variables:
+        - label: 用户请求
+          max_length: 4000
+          required: false
+          type: paragraph
+          variable: request
+        - label: 来源素材
+          max_length: 20000
+          required: false
+          type: paragraph
+          variable: source_material
+        - label: 受众
+          max_length: 1000
+          required: false
+          type: text-input
+          variable: audience
+        - label: 语气
+          max_length: 1000
+          required: false
+          type: text-input
+          variable: tone
+        - label: 约束
+          max_length: 4000
+          required: false
+          type: paragraph
+          variable: constraints
         - label: 写作类型
           max_length: 16
           required: false

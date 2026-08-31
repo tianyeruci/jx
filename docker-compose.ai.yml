@@ -5,6 +5,8 @@ services:
       context: .
       dockerfile: Dockerfile.offline
     env_file: .env
+    environment:
+      TZ: Asia/Shanghai
     command: uvicorn ai_management.main:app --host 0.0.0.0 --port 8000
     ports:
       - "${AI_BIND_ADDRESS:-127.0.0.1}:8000:8000"
@@ -23,6 +25,8 @@ services:
       context: .
       dockerfile: Dockerfile.offline
     env_file: .env
+    environment:
+      TZ: Asia/Shanghai
     command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_default,ai_cleaning --concurrency=${CLEANING_WORKER_CONCURRENCY:-4}
     volumes:
       - ai_uploads:/app/var/uploads

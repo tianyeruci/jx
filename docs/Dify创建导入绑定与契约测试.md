@@ -51,6 +51,8 @@
 | 朋友圈顾问、日常写作界面引导语 | jx 工具会话接口和测试页 | 两个工具首次进入由 jx 返回类型菜单，选型后返回固定引导语；不再展示旧案例或依赖 `opening_statement`。 |
 | 朋友圈顾问、日常写作输出 | 两个 Chatflow DSL 的 LLM Prompt | `dify/dsl/moments_advisor.yml` 与 `dify/dsl/writing_advisor.yml` 为 `advanced-chat`，Start 变量包含 `type`，服务端通过 `/chat-messages` 传入 `conversation_id`。修改 DSL 后必须重新导入、保存、发布并分别验收；案例目录清空后仅保留管理员 CRUD。 |
 
+> 发布源门禁（2026-08-30）：`dify/朋友圈顾问（当前版本）.yml` 与 `dify/日常写作（当前版本）.yml` 当前未通过 Start 变量与 LLM Prompt 契约验证，禁止直接导入或发布。当前唯一已验证的工具发布源为 `dify/dsl/moments_advisor.yml` 与 `dify/dsl/writing_advisor.yml`；“当前版本”文件保留作待核验草稿，不得据此宣称线上已更新。
+
 ### 商业顾问首屏固定问题配置
 
 当前仓库配置文件为 `dify/商业顾问（当前使用版本）.yml`，位置是 `workflow.features.suggested_questions`。固定问题必须聚焦商业经营诊断、行动建议或明确咨询案例，不能引导课程、课程集合或学习路线。

@@ -17,7 +17,7 @@
 5. 保证所有 Dify 文档保留原始文件安全 stem 前缀，并在同知识库/同策略契约范围内按最终正文跨源、跨批次去重。
 6. 模型结果未采用时保存服务端审核材料并进入 `review_required`，人工 approve 后才允许源 Markdown 兜底入库，exclude 永不入库。
 
-不新增公开 API、数据库迁移、查询期数据服务或新架构层。
+不新增公开 API、查询期数据服务或新架构层。为解决已确认的 PublicationShard 长事务外并发风险，允许且仅允许新增一份可空租约字段迁移；除该迁移外不新增数据库迁移。
 
 ## 2. Repository Evidence
 
@@ -45,6 +45,8 @@
 | strategy-contracts | `ai_management/cleaning.py`, `ai_management/activity_cleaning.py`, `knowledge_cleaner/dify.py` | AC-005, AC-008, AC-009 |
 | cleaning-contract-tests | `tests/test_model_cleaning_workflow.py`, `tests/test_large_scale_cleaning.py`, `tests/test_activity_cleaning.py`, `tests/test_release_acceptance_contract.py` | AC-004, AC-005, AC-006, AC-008, AC-009 |
 | jx-acceptance-docs | `scripts/jx_*.sh`, `docs/features/qwen-batch-cleaning/**`, `docs/features/recent-activity/**`, `var/reports/**` | AC-007, AC-010 |
+| lease-fencing | `ai_management/lease.py`, `ai_management/workers/tasks/cleaning.py`, `ai_management/workers/tasks/model_cleaning.py`, `ai_management/workers/tasks/maintenance.py`, `ai_management/models.py`, `migrations/versions/*publication_shard_leases.py` | AC-011, AC-012 |
+| tool-sse-contract | `ai_management/dify.py`, `ai_management/api/routers/tools.py`, `tests/test_tool_conversations_contract.py` | AC-013 |
 
 Shared `cleaning.py`/Dify changes must preserve existing strategy behavior and require regression coverage; do not add repository/service/DI layers.
 
@@ -62,7 +64,7 @@ Reuse: `choose_call_mode`, existing Qwen client/request builder, Prompt version/
 
 - Public API/SSE: no new fields; existing strategy discovery and answer stream remain compatible.
 - Dify environment `ACTIVITY_MAX_RESULTS` defaults to 10 and feeds the numeric `activity_max_results` output; activity Code adds semantic intent/detail behavior but no external SSE schema change.
-- Persistent schema: none.
+- Persistent schema: one additive nullable PublicationShard lease migration only; no other migrations.
 - Runtime: recent activity never schedules Batch; content strategies snapshot realtime/Batch mode at task creation.
 - Security/data: only allowlisted public Metadata crosses to Dify; old target-strategy general data is deleted without backup only after exact ownership/ID manifest validation; subsequent processing is limited to new uploads and their artifacts remain.
 
@@ -75,6 +77,9 @@ Reuse: `choose_call_mode`, existing Qwen client/request builder, Prompt version/
 | S3 Batch lifecycle | RD-005, RD-006 | AC-004, AC-005, AC-006 | `poll_batch_model_task` with provider/task fakes seam | TDD yes | threshold, transient errors, terminal stop, duplicate/missing/bad output |
 | S4 Naming/dedup/review | RD-008, RD-009 | AC-008, AC-009 | naming/publish/review service seams with DB/provider fakes | TDD yes | source stem, cross-source hash, concurrent idempotency, artifact and approval lifecycle |
 | S5 jx data/release | RD-007 | AC-007, AC-010 | manifest + real jx/Dify/Bailian seam | TDD no | pre-clean, real dual-path, retained data, DSL/SSE evidence |
+| S6 Lease/fencing | RD-010 | AC-011 | DB task seam with PostgreSQL concurrency fakes | TDD yes | claim, heartbeat, takeover, stale finalize, cancel/recovery |
+| S7 Outbox convergence | RD-011 | AC-012 | ExternalDeletionTask consumer seam | TDD yes | single consumer, idempotent enqueue, backoff/manual, 404 |
+| S8 SSE cleanup | RD-012 | AC-013 | Chat/Workflow generator seam | TDD yes | DB/parse errors, rollback, mapping cleanup, disconnect |
 
 ## 9. Canonical Quality Commands
 
@@ -102,6 +107,14 @@ Reuse: `choose_call_mode`, existing Qwen client/request builder, Prompt version/
 ## 10. Open Questions
 
 None
+
+## 11. Reliability Contract
+
+- Remote side effects are at-least-once with idempotency, precise compensation and eventual convergence; exactly-once is not promised.
+- Lease heartbeat is at most TTL/3, fails closed on database failure, and every finalize/retry/release/cancel/recovery path checks id plus token plus unexpired lease.
+- ExternalDeletionTask has one logical consumer; local cleanup only upserts outbox and never performs direct remote deletion.
+- PublicationShard uses its own lease columns from the single approved migration. If migration/schema verification fails, stop the slice before deployment.
+- Any implementation change after approval requires re-approval and current independent review.
 
 <!-- gov:implementation-approval:begin -->
 ## 13. Approval
