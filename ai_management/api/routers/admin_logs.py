@@ -12,6 +12,7 @@ from ...errors import ServiceError
 from ...models import SystemEventLog
 from ...security import require_admin_token, require_internal_token
 from ...services.observability import event_to_dict, sanitize_details
+from ...timeutil import BUSINESS_TIMEZONE
 
 router = APIRouter(
     prefix="/internal/v1/admin",
@@ -143,7 +144,10 @@ def resolve_pdf_conversion_issue(
     event.status = "resolved"
     details = dict(event.details or {})
     details["resolution"] = sanitize_details(
-        {"note": str(payload.get("note") or "")[:200], "resolved_at": datetime.now().isoformat()}
+        {
+            "note": str(payload.get("note") or "")[:200],
+            "resolved_at": datetime.now(BUSINESS_TIMEZONE).isoformat(),
+        }
     )
     event.details = sanitize_details(details)
     session.commit()

@@ -732,3 +732,45 @@ This is a semantic change log, not a copy of Git diff.
   - `tests/test_app_routing.py`
   - `tests/test_cleaning_release_contract.py`
   - `tests/test_v2_hardening.py`
+
+## 2026-08-31T14:50:27+08:00 — 仅更新项目功能索引自动区并完成质量门禁；工具会话实现与 DSL 均未改变。
+
+- **Purpose:** 仅更新项目功能索引自动区并完成质量门禁；工具会话实现与 DSL 均未改变。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** gov.ps1 quality
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-08-31T14:58:16+08:00 — 本次仅同步交接和自动索引，工具会话业务语义及 DSL 不变。
+
+- **Purpose:** 本次仅同步交接和自动索引，工具会话业务语义及 DSL 不变。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** 交接文档和自动索引未包含本次验证记录。
+- **After:** 交接文档追加验证记录，自动索引已生成。
+- **Impact / Notes:** None
+- **Validation:** gov quality 已通过。
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-08-31T15:31:19+08:00 — 本次发布仅涉及运行时区和清洗命名，工具会话及 DSL 业务语义不变。
+
+- **Purpose:** 本次发布仅涉及运行时区和清洗命名，工具会话及 DSL 业务语义不变。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** 交接文档缺少本次 jx 发布结果。
+- **After:** 交接文档追加 release、备份和脱敏验证证据。
+- **Impact / Notes:** None
+- **Validation:** jx ready 通过。
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `tests/test_cleaning_release_contract.py`

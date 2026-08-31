@@ -24,6 +24,25 @@ def test_bailian_batch_is_opt_in_when_no_environment_override(monkeypatch):
     assert settings.bailian_batch_enabled is False
 
 
+def test_runtime_defaults_to_beijing_timezone():
+    from ai_management.timeutil import BUSINESS_TIMEZONE
+
+    assert BUSINESS_TIMEZONE.key == "Asia/Shanghai"
+    env_example = _source(".env.example")
+    assert "TZ=Asia/Shanghai" in env_example
+    for dockerfile in (
+        "Dockerfile",
+        "Dockerfile.offline",
+        "Dockerfile.ui-offline",
+        "Dockerfile.ocr-offline",
+    ):
+        assert "TZ=Asia/Shanghai" in _source(dockerfile)
+
+    compose_ai = _source("docker-compose.ai.yml")
+    assert compose_ai.count("TZ: ${TZ:-Asia/Shanghai}") == 7
+    assert "TZ: ${TZ:-Asia/Shanghai}" in _source("docker-compose.ui.yml")
+
+
 def test_miniapp_interface_document_is_frozen_for_internal_cleaning_changes():
     path = ROOT / "docs/小程序后端与 AI 管理服务接口对接交互版本.md"
     digest = hashlib.sha256(path.read_bytes()).hexdigest()

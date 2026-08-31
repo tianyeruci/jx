@@ -22,6 +22,7 @@ RUN cp /opt/ocr-runtime/debs/*.deb /var/cache/apt/archives/ \
 
 ENV HOME=/app \
     RAPIDOCR_DISABLE_NETWORK=1 \
+    TZ=Asia/Shanghai \
     PDF_OCR_MODEL_ROOT=/app/var/ocr-models/rapidocr \
     PDF_OCR_MODEL_MANIFEST=/app/var/ocr-models/rapidocr/manifest.json \
     PYTHONDONTWRITEBYTECODE=1 \

@@ -118,7 +118,7 @@
     {
       "id": "examples-tests",
       "title": "案例与路由回归测试",
-      "status": "verified",
+      "status": "done",
       "paths": [
         "tests/test_tool_examples.py",
         "tests/test_app_routing.py",
@@ -133,14 +133,14 @@
         "AC-006"
       ],
       "optional": false,
-      "updated_at": "2026-08-19T18:52:56+08:00",
-      "last_change_summary": "工具会话 run 顶层 conversation_id、reset 后重新选型、并发安全和精确迁移兼容已发布到 jx；测试页验证朋友圈与日常写作 SSE/重置链路，商业顾问隔离不变。",
-      "last_changed_at": "2026-08-30T16:04:32+08:00"
+      "updated_at": "2026-08-31T15:39:11+08:00",
+      "last_change_summary": "本次发布仅涉及运行时区和清洗命名，工具会话及 DSL 业务语义不变。",
+      "last_changed_at": "2026-08-31T15:31:19+08:00"
     },
     {
       "id": "examples-docs",
       "title": "接口、索引与状态交接文档",
-      "status": "verified",
+      "status": "done",
       "paths": [
         "docs/小程序后端与 AI 管理服务接口对接交互版本.md",
         "docs/小程序后端与AI管理服务接口对接标准.md",
@@ -155,9 +155,9 @@
         "AC-006"
       ],
       "optional": false,
-      "updated_at": "2026-08-30T15:33:19+08:00",
-      "last_change_summary": "工具会话 run 顶层 conversation_id、reset 后重新选型、并发安全和精确迁移兼容已发布到 jx；测试页验证朋友圈与日常写作 SSE/重置链路，商业顾问隔离不变。",
-      "last_changed_at": "2026-08-30T16:04:32+08:00"
+      "updated_at": "2026-08-31T15:39:11+08:00",
+      "last_change_summary": "本次发布仅涉及运行时区和清洗命名，工具会话及 DSL 业务语义不变。",
+      "last_changed_at": "2026-08-31T15:31:19+08:00"
     }
   ],
   "validation_commands": [
@@ -176,13 +176,13 @@
   ],
   "documentation": {
     "status": "current",
-    "last_code_change_at": "2026-08-30T16:04:31+08:00",
-    "last_synced_at": "2026-08-30T16:04:32+08:00",
-    "last_sync_summary": "工具会话 run 顶层 conversation_id、reset 后重新选型、并发安全和精确迁移兼容已发布到 jx；测试页验证朋友圈与日常写作 SSE/重置链路，商业顾问隔离不变。",
+    "last_code_change_at": "2026-08-31T15:31:16+08:00",
+    "last_synced_at": "2026-08-31T15:31:19+08:00",
+    "last_sync_summary": "本次发布仅涉及运行时区和清洗命名，工具会话及 DSL 业务语义不变。",
     "pending_changed_paths": [],
-    "changelog_fingerprint": "03b9c9f285637abd9a658ad090a49f705d45cefea9825dbe85297421a6beff60"
+    "changelog_fingerprint": "16826cd879e0cdaffcbc0745222632a39f39fc8e174d90c226fe112335b9b82f"
   },
   "created_at": "2026-08-17T02:18:13+08:00",
-  "updated_at": "2026-08-30T16:04:32+08:00",
+  "updated_at": "2026-08-31T15:39:11+08:00",
   "last_abandon_reason": "独立复核修正完成，重新建立以当前修正工作树为基线的治理周期"
 }

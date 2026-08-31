@@ -1,5 +1,51 @@
 # AI 管理服务当前状态与后续测试交接
 
+## 0.84 2026-08-31 jx 未引用 Docker 镜像清理（当前最新）
+
+- 按用户确认并以“不影响正常使用、至少保留最近一套回滚”为约束，逐个核验无容器引用且不在当前 Compose 配置中的镜像后，删除：`jx-dify-sandbox-pdf-probe:20260804`、`jx-now-ai-management-ocr:toolconv-20260826-135020`、`redis:7-alpine`、`redis:6.2-alpine`、`alpine:3.20`。
+- 当前正式版本 `toolconv-20260830-155349-contractfix2` 与上一套完整回滚版本 `toolconv-20260830-1328-contractfix` 的 Core/UI/OCR 镜像全部保留；Certbot、Dify、数据库、Redis、Nginx、Weaviate、方法论 Worker 镜像未修改。
+- 清理后 Docker 镜像从 28 个降至 23 个，总占用约 20.19G 降至 17.88G；根分区为 295G 总计、39G 已用、244G 可用、14% 使用率。实际释放量受共享层影响，以磁盘复核为准。
+- API `/health/ready` 仍为 `status=ready`，database、Redis、Dify 均可达；全部 `ai-management` 服务保持运行，测试页 `/ai-management-test/` 返回 HTTP 200。未删除容器、数据卷、备份或 Docker Build Cache。
+
+### 本节变更记录
+
+- 修改原因：记录按用户确认清理未引用且非当前/上一套回滚镜像的结果及服务影响核验。
+- 修改前：Docker 有 28 个镜像、总占用约 20.19G，候选镜像尚未清理。
+- 修改后：保留当前与上一套完整回滚 Core/UI/OCR 镜像，删除 5 个已核验候选镜像；Docker 服务、API ready、测试页和数据资产均未受影响。
+
+> 更新时间：2026-08-31
+
+## 0.83 2026-08-31 jx Docker 构建缓存清理（当前最新）
+
+- 按用户确认执行保守清理：删除全部可回收 Docker Build Cache，并清理 1 个悬空 `<none>` 镜像；未执行 `docker system prune -a`、`docker volume prune`，未删除带标签镜像、容器、数据库/Redis/上传卷或 OCR 运行时。
+- Build Cache 从约 27.23G 降至 223.8M，Docker 报告可回收空间归零；悬空镜像清理回收约 10KB（其余空间已由构建缓存释放）。
+- 当前正式版本 `toolconv-20260830-155349-contractfix2` 的 Core/UI/OCR 镜像均保留；上一套完整回滚版本 `toolconv-20260830-1328-contractfix` 的 Core/UI/OCR 镜像均保留。
+- 清理后根分区为 295G 总计、42G 已用、242G 可用、15% 使用率。API `/health/ready` 仍为 `status=ready`，database、Redis、Dify 均可达；全部 `ai-management` 服务保持运行。
+- 资源门禁首次与清理命令同一 shell 时因进程扫描匹配命令文本而误报；随后单独运行 `bash scripts/jx_resource_guard.sh check` 通过后才执行清理。该过程未绕过实际门禁，未发现独立构建/传输进程。
+
+### 本节变更记录
+
+- 修改原因：记录按用户确认完成的 Docker 构建缓存和悬空镜像清理、回滚镜像保留及清理后的服务/磁盘核验结果。
+- 修改前：Build Cache 约 27.23G、镜像 29 个；清理范围和回滚镜像保留状态未记录。
+- 修改后：Build Cache 约 223.8M、镜像 28 个；当前与上一套完整 Core/UI/OCR 镜像保留，API ready 和服务运行态通过。
+
+> 更新时间：2026-08-31
+
+## 0.82 2026-08-31 jx 历史备份清理（当前最新）
+
+- 按用户明确确认，仅保留 `/opt/ai-management/backups/toolconv-20260830-155349-contractfix2-predeploy`，删除该目录下其余 235 个直接备份目录。
+- 删除后备份目录总占用由约 9.1G 降至约 148M；保留目录存在且大小约 148M。备份目录下剩余直接文件 7 个，未删除文件型条目。
+- 删除前后 API `/health/ready` 均为 `status=ready`，database、Redis、Dify 均可达；核心服务和 test-ui 均保持运行，未执行重启、发布、数据清理或 Docker 清理。
+- 本次删除不可逆；如需回滚，仅可使用保留的 `toolconv-20260830-155349-contractfix2-predeploy` 备份或其他独立备份来源。
+
+### 本节变更记录
+
+- 修改原因：记录按用户确认完成的 jx 历史备份删除及删除后的服务、磁盘核验结果。
+- 修改前：备份目录有 236 个直接子目录、约 9.1G，占用情况未反映本次清理。
+- 修改后：仅保留 `toolconv-20260830-155349-contractfix2-predeploy`，其余 235 个目录已删除；服务 ready、运行态和剩余备份证据已记录。
+
+> 更新时间：2026-08-31
+
 ## 0.81 2026-08-30 工具会话契约修复版 jx 发布与测试页验收（当前最新）
 
 - 本地最新 wheel 已重新构建并以 SHA-256 `6b2c6697f0f629bcac969849f39c29aef0bcbfbea52ea746fa9ea96cb23f7ce3` 发布。
@@ -2438,3 +2484,24 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改前：仅有当前接口交互版本和 jx 验收记录，缺少与外部附件 `变动.md` 同版式的独立交付稿及迁移差异清单。
 - 修改后：新增 `docs/变动-新版接口文档-20260830.md` 和 `docs/变动.md-新版对比说明-20260830.md`；新版文档明确顶层 `conversation_id`、带 ID reset、字段校验、SSE、状态码和 jx 联通结果；对比文档标明旧写法的失效原因与小程序改造清单。文档检查、接口契约测试和索引检查均通过，未写入密钥、Token 或敏感数据。
 - 验证：本地与 Nginx 公网测试页均返回 HTTP 200；真实浏览器商业顾问页默认问题已为新文案，控制台错误/警告为 0；API 容器 `/health/ready` 返回 200；线上 `test-ui` 容器源码包含新默认问题。发布证据为 `/opt/ai-management/var/reports/v2/ui-only-20260827-171024-c33b41689351-ui-only`。未发布或修改商业顾问 Dify DSL，Dify 入口推荐问题仍需按 Dify 导入/保存/发布流程单独更新。
+
+### 文档修改记录（2026-08-31 北京时间与清洗文档命名）
+
+- 修改原因：按用户确认实施新启动实例默认使用北京时间，并核对清洗策略写入知识库时保留原始上传文件名。
+- 修改前：部分镜像/Compose 服务未声明运行时 `TZ`；PDF 问题解决记录使用无时区本地时间；需要用回归测试固定 `book` 及其它内容策略的原始文件名前缀规则。
+- 修改后：四类 Dockerfile、AI/UI Compose 服务和 `.env.example` 默认 `Asia/Shanghai`；PDF `resolved_at` 显式带 `+08:00`；新增 `book` 单文档/拆分、`lead_magnet`、`standard_document` 原始文件名前缀契约测试。数据库内部 UTC 语义、历史数据及历史 Dify 文档均不变更。
+- 验证：清洗、模型清洗、活动清洗相关本地测试已执行并通过；完整质量门禁与 jx 部署待本轮统一完成。未写入密钥、正文、真实用户 ID 或敏感文件名。
+
+### 文档修改记录（2026-08-31 work0831 北京时间与清洗命名发布）
+
+- 修改原因：用户明确授权从 `work0831` 发布本次北京时间和清洗文档命名改动到 jx，并要求部署后验证实际生效。
+- 修改前：jx 核心/UI 仍运行 `toolconv-20260830-155349-contractfix2`，远端尚未包含本次 Compose、Dockerfile 和 `admin_logs.py` 改动；上一条记录中的完整质量门禁和 jx 部署仍待完成。
+- 修改后：使用保留数据的 quick deploy 完成同源 wheel/镜像重建和服务切换；release 为 `quick-20260831-152631-cae6bc82c420`，报告位于 `/opt/ai-management/var/reports/v2/quick-20260831-152631-cae6bc82c420-quick-deploy`，发布前备份位于 `/opt/ai-management/backups/quick-20260831-152631-cae6bc82c420-predeploy`。API、普通 Worker、模型 Worker、发布 Worker、Scheduler 和测试页均切换到同一 release；历史方法论 Worker 保持其独立既有镜像，未执行 orphan 清理。
+- 验证：本地 `gov.ps1 quality` 完整通过；jx `/health/ready` 返回 database、redis、Dify 配置和可达性均为 true；API 容器 `TZ=Asia/Shanghai`、业务时区为 `Asia/Shanghai`、系统偏移为 `+0800`；容器内实际代码确认 PDF `resolved_at` 使用 `datetime.now(BUSINESS_TIMEZONE)`，命名函数对合成文件名返回 `原始stem.md`、`原始stem__001.md`、`原始stem__002.md`。本轮保留数据库、Redis、上传卷、Dify 既有文档和历史数据，未更新 DSL、未直接修改 Dify 数据库、未执行 Git push。
+
+### 文档修改记录（2026-08-31 jx 已登录 Chrome 测试页回归）
+
+- 修改原因：按用户要求使用已登录的 Chrome 测试页验证刚发布的服务，并结合 jx 容器日志确认运行状态。
+- 修改前：仅完成命令行部署后健康检查，尚未从已登录测试页触发页面级诊断。
+- 修改后：在 `http://112.74.37.111/ai-management-test/` 的“文件清洗”页面确认当前默认策略显示为 `书籍 (book)`；切换到“诊断”并点击“就绪检查”，页面返回 `status=ready`，`database`、`redis`、`dify_apps_configured`、`dify_knowledge_configured`、`dify_reachable` 均为 `true`。浏览器扩展的文件选择事件未能稳定落到 Streamlit 控件，因此未重复提交上传或引入未知样本；命名规则已由容器内合成调用和本地集成测试覆盖。
+- 验证：jx 最近 20 分钟 `api`、`worker`、`publication-worker`、`test-ui` 日志未发现 `error`、`exception` 或 `failed`；未修改数据库、Redis、Dify 文档或 DSL，未执行清理操作。浏览器测试过程中没有产生新的清洗批次或外部数据写入。

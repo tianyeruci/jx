@@ -865,3 +865,149 @@ This is a semantic change log, not a copy of Git diff.
   - `ai_management/services/bailian_cleanup.py`
   - `ai_management/workers/tasks/model_cleaning.py`
   - `tests/test_model_cleaning_workflow.py`
+
+## 2026-08-31T14:50:06+08:00 — 运行时默认时区固定为 Asia/Shanghai；清洗文档沿用原始文件名 stem 与拆分序号命名，补充 book/lead_magnet/standard_document 回归测试。
+
+- **Purpose:** 运行时默认时区固定为 Asia/Shanghai；清洗文档沿用原始文件名 stem 与拆分序号命名，补充 book/lead_magnet/standard_document 回归测试。
+- **Affected modules:**
+  - N/A
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** gov.ps1 quality
+- **Changed paths:**
+  - `.env.example`
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `Dockerfile`
+  - `Dockerfile.ocr-offline`
+  - `Dockerfile.offline`
+  - `Dockerfile.ui-offline`
+  - `ai_management/api/routers/admin_logs.py`
+  - `docker-compose.ai.yml`
+  - `docker-compose.ui.yml`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_release_contract.py`
+  - `tmp/time_probe.db`
+
+## 2026-08-31T14:58:07+08:00 — 新启动容器统一 Asia/Shanghai；PDF 新解决记录显式北京时间；清洗文档保留原始文件名 stem 与拆分序号，历史数据和 DSL 不变。
+
+- **Purpose:** 新启动容器统一 Asia/Shanghai；PDF 新解决记录显式北京时间；清洗文档保留原始文件名 stem 与拆分序号，历史数据和 DSL 不变。
+- **Affected modules:**
+  - N/A
+- **Before:** 容器未统一 TZ，PDF resolved_at 无显式时区；book/其它策略缺少命名回归覆盖。
+- **After:** Dockerfile/Compose/.env.example 固定 Asia/Shanghai，resolved_at 带 +08:00，新增命名和时区契约测试。
+- **Impact / Notes:** None
+- **Validation:** gov quality 已通过；新增 focused tests 4 passed。
+- **Changed paths:**
+  - `.env.example`
+  - `.pytest-tmp-business-deploy/test_admin_knowledge_batch_sta0/01a04261-9f26-7f2e-86b4-242774e43f6d/failed.md`
+  - `.pytest-tmp-business-deploy/test_book_scope_is_trusted_and0/01a04261-ee6a-7bb5-a49b-ad466e5703f7/book.md`
+  - `.pytest-tmp-business-deploy/test_cleaning_batch_upload_rep0/01a04261-8d17-7db0-b288-79862c4a6da2/01a04261-8d2c-75c2-8668-fccfa528f972.md`
+  - `.pytest-tmp-business-deploy/test_cleaning_strategy_and_fil0/sample.md`
+  - `.pytest-tmp-business-deploy/test_cleaning_strategy_and_fil0/公众号.txt`
+  - `.pytest-tmp-business-deploy/test_cleaning_worker_enqueues_0/01a04261-dbd8-7b20-8dfd-cf44ee487e93/lead.md`
+  - `.pytest-tmp-business-deploy/test_conversion_markdown_root_0/batch-001/file-001.docx`
+  - `.pytest-tmp-business-deploy/test_conversion_markdown_toggl0/batch-001/file-001.pdf`
+  - `.pytest-tmp-business-deploy/test_course_import_generates_f0/catalog.md`
+  - `.pytest-tmp-business-deploy/test_disabled_course_worker_do0/01a04261-e169-7b91-a82b-61583f4f40a6/catalog.xlsx`
+  - `.pytest-tmp-business-deploy/test_empty_content_strategy_is0/01a04261-e7a6-7f22-8182-2daf0fb8f149/empty.md`
+  - `.pytest-tmp-business-deploy/test_uploaded_file_signature_v0/fake.md`
+  - `.pytest-tmp-business-deploy/test_uploaded_file_signature_v0/fake.pdf`
+  - `.pytest-tmp-business-deploy/test_uploaded_file_signature_v0/sample.md`
+  - `.pytest-tmp-business-deploy2/test_admin_knowledge_batch_sta0/01a04263-b0f1-75b7-a1f5-552b88757d56/failed.md`
+  - `.pytest-tmp-business-deploy2/test_book_scope_is_trusted_and0/01a04264-1725-74a9-8574-eb0300635472/book.md`
+  - `.pytest-tmp-business-deploy2/test_cleaning_batch_upload_rep0/01a04263-989b-76c8-a60c-8972514910f9/01a04263-98ac-7649-adf6-16727831c665.md`
+  - `.pytest-tmp-business-deploy2/test_cleaning_strategy_and_fil0/sample.md`
+  - `.pytest-tmp-business-deploy2/test_cleaning_strategy_and_fil0/公众号.txt`
+  - `.pytest-tmp-business-deploy2/test_cleaning_worker_enqueues_0/01a04263-f7e3-7c2d-9ec3-35d1b53ded92/lead.md`
+  - `.pytest-tmp-business-deploy2/test_conversion_markdown_root_0/batch-001/file-001.docx`
+  - `.pytest-tmp-business-deploy2/test_conversion_markdown_toggl0/batch-001/file-001.pdf`
+  - `.pytest-tmp-business-deploy2/test_course_import_generates_f0/catalog.md`
+  - `.pytest-tmp-business-deploy2/test_disabled_course_worker_do0/01a04263-ffb9-7fdc-b696-3a02981760c3/catalog.xlsx`
+  - `.pytest-tmp-business-deploy2/test_empty_content_strategy_is0/01a04264-0c8f-7def-a7f2-e1a9c31d5cb3/empty.md`
+  - `.pytest-tmp-business-deploy2/test_uploaded_file_signature_v0/fake.md`
+  - `.pytest-tmp-business-deploy2/test_uploaded_file_signature_v0/fake.pdf`
+  - `.pytest-tmp-business-deploy2/test_uploaded_file_signature_v0/sample.md`
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `Dockerfile`
+  - `Dockerfile.ocr-offline`
+  - `Dockerfile.offline`
+  - `Dockerfile.ui-offline`
+  - `ai_management/api/routers/admin_logs.py`
+  - `docker-compose.ai.yml`
+  - `docker-compose.ui.yml`
+  - `test.md`
+  - `test00.md`
+  - `test11.md`
+  - `test33.md`
+  - `test66.md`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_release_contract.py`
+  - `tmp/time_probe.db`
+  - `uv.lock`
+  - `测试.md`
+  - `测试111.md`
+  - `测试2.md`
+  - `测试66.md`
+
+## 2026-08-31T15:31:17+08:00 — work0831 的北京时间默认与原始文件名清洗命名已部署到 jx；服务健康、容器时区和远端命名函数均已核验，历史数据与 DSL 不变。
+
+- **Purpose:** work0831 的北京时间默认与原始文件名清洗命名已部署到 jx；服务健康、容器时区和远端命名函数均已核验，历史数据与 DSL 不变。
+- **Affected modules:**
+  - N/A
+- **Before:** jx 尚运行旧 toolconv 镜像，部署与真实运行态验证待完成。
+- **After:** jx 核心/UI/Worker/Scheduler 切换到 quick-20260831-152631-cae6bc82c420，ready、时区和命名契约验证通过。
+- **Impact / Notes:** None
+- **Validation:** 本地 gov quality 通过；jx ready、TZ、命名函数和 admin_logs 代码核验通过。
+- **Changed paths:**
+  - `.env.example`
+  - `.pytest-tmp-business-deploy/test_admin_knowledge_batch_sta0/01a04261-9f26-7f2e-86b4-242774e43f6d/failed.md`
+  - `.pytest-tmp-business-deploy/test_book_scope_is_trusted_and0/01a04261-ee6a-7bb5-a49b-ad466e5703f7/book.md`
+  - `.pytest-tmp-business-deploy/test_cleaning_batch_upload_rep0/01a04261-8d17-7db0-b288-79862c4a6da2/01a04261-8d2c-75c2-8668-fccfa528f972.md`
+  - `.pytest-tmp-business-deploy/test_cleaning_strategy_and_fil0/sample.md`
+  - `.pytest-tmp-business-deploy/test_cleaning_strategy_and_fil0/公众号.txt`
+  - `.pytest-tmp-business-deploy/test_cleaning_worker_enqueues_0/01a04261-dbd8-7b20-8dfd-cf44ee487e93/lead.md`
+  - `.pytest-tmp-business-deploy/test_conversion_markdown_root_0/batch-001/file-001.docx`
+  - `.pytest-tmp-business-deploy/test_conversion_markdown_toggl0/batch-001/file-001.pdf`
+  - `.pytest-tmp-business-deploy/test_course_import_generates_f0/catalog.md`
+  - `.pytest-tmp-business-deploy/test_disabled_course_worker_do0/01a04261-e169-7b91-a82b-61583f4f40a6/catalog.xlsx`
+  - `.pytest-tmp-business-deploy/test_empty_content_strategy_is0/01a04261-e7a6-7f22-8182-2daf0fb8f149/empty.md`
+  - `.pytest-tmp-business-deploy/test_uploaded_file_signature_v0/fake.md`
+  - `.pytest-tmp-business-deploy/test_uploaded_file_signature_v0/fake.pdf`
+  - `.pytest-tmp-business-deploy/test_uploaded_file_signature_v0/sample.md`
+  - `.pytest-tmp-business-deploy2/test_admin_knowledge_batch_sta0/01a04263-b0f1-75b7-a1f5-552b88757d56/failed.md`
+  - `.pytest-tmp-business-deploy2/test_book_scope_is_trusted_and0/01a04264-1725-74a9-8574-eb0300635472/book.md`
+  - `.pytest-tmp-business-deploy2/test_cleaning_batch_upload_rep0/01a04263-989b-76c8-a60c-8972514910f9/01a04263-98ac-7649-adf6-16727831c665.md`
+  - `.pytest-tmp-business-deploy2/test_cleaning_strategy_and_fil0/sample.md`
+  - `.pytest-tmp-business-deploy2/test_cleaning_strategy_and_fil0/公众号.txt`
+  - `.pytest-tmp-business-deploy2/test_cleaning_worker_enqueues_0/01a04263-f7e3-7c2d-9ec3-35d1b53ded92/lead.md`
+  - `.pytest-tmp-business-deploy2/test_conversion_markdown_root_0/batch-001/file-001.docx`
+  - `.pytest-tmp-business-deploy2/test_conversion_markdown_toggl0/batch-001/file-001.pdf`
+  - `.pytest-tmp-business-deploy2/test_course_import_generates_f0/catalog.md`
+  - `.pytest-tmp-business-deploy2/test_disabled_course_worker_do0/01a04263-ffb9-7fdc-b696-3a02981760c3/catalog.xlsx`
+  - `.pytest-tmp-business-deploy2/test_empty_content_strategy_is0/01a04264-0c8f-7def-a7f2-e1a9c31d5cb3/empty.md`
+  - `.pytest-tmp-business-deploy2/test_uploaded_file_signature_v0/fake.md`
+  - `.pytest-tmp-business-deploy2/test_uploaded_file_signature_v0/fake.pdf`
+  - `.pytest-tmp-business-deploy2/test_uploaded_file_signature_v0/sample.md`
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `Dockerfile`
+  - `Dockerfile.ocr-offline`
+  - `Dockerfile.offline`
+  - `Dockerfile.ui-offline`
+  - `ai_management-deploy-20260831.zip`
+  - `ai_management/api/routers/admin_logs.py`
+  - `docker-compose.ai.yml`
+  - `docker-compose.ui.yml`
+  - `test.md`
+  - `test00.md`
+  - `test11.md`
+  - `test33.md`
+  - `test66.md`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_release_contract.py`
+  - `tmp/time_probe.db`
+  - `uv.lock`
+  - `测试.md`
+  - `测试111.md`
+  - `测试2.md`
+  - `测试66.md`

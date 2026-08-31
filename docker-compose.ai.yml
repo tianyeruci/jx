@@ -5,6 +5,8 @@ services:
       context: .
       dockerfile: Dockerfile.offline
     env_file: .env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
     command: uvicorn ai_management.main:app --host 0.0.0.0 --port 8000
     ports:
       - "${AI_BIND_ADDRESS:-127.0.0.1}:8000:8000"
@@ -23,6 +25,8 @@ services:
       context: .
       dockerfile: Dockerfile.offline
     env_file: .env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
     command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_default,ai_cleaning --concurrency=${CLEANING_WORKER_CONCURRENCY:-4}
     volumes:
       - ai_uploads:/app/var/uploads
@@ -37,6 +41,7 @@ services:
     entrypoint: ["/app/scripts/ocr_worker_entrypoint.sh"]
     command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_ocr --concurrency=1 --prefetch-multiplier=1 --hostname=ai-ocr@%h
     environment:
+      TZ: ${TZ:-Asia/Shanghai}
       HOME: /app
       RAPIDOCR_DISABLE_NETWORK: "1"
       OMP_NUM_THREADS: ${PDF_OCR_CPU_THREADS:-2}
@@ -67,6 +72,8 @@ services:
   model-realtime-worker:
     image: ${AI_IMAGE:-jx-now-ai-management:0.2.1}
     env_file: .env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
     command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_model_realtime --concurrency=4
     volumes:
       - ai_uploads:/app/var/uploads
@@ -77,6 +84,8 @@ services:
   model-batch-worker:
     image: ${AI_IMAGE:-jx-now-ai-management:0.2.1}
     env_file: .env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
     command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_model_batch --concurrency=1
     volumes:
       - ai_uploads:/app/var/uploads
@@ -87,6 +96,8 @@ services:
   publication-worker:
     image: ${AI_IMAGE:-jx-now-ai-management:0.2.1}
     env_file: .env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
     command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_publication --concurrency=1
     volumes:
       - ai_uploads:/app/var/uploads
@@ -100,6 +111,8 @@ services:
       context: .
       dockerfile: Dockerfile.offline
     env_file: .env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
     command: celery -A ai_management.tasks.celery_app beat -l INFO
     volumes:
       - ai_uploads:/app/var/uploads

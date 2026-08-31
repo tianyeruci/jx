@@ -4,22 +4,22 @@
   "title": "千问 Batch 清洗策略验证与轮询修复",
   "kind": "engineering-change",
   "risk": "high",
-  "status": "in_progress",
+  "status": "done",
   "retired": false,
   "retired_status": null,
   "retired_at": null,
   "retire_reason": null,
   "superseded_by": [],
   "requirements_approved": true,
-  "requirements_fingerprint": "00803853fd16a4b340b5ecfc11df9ae668a54e998c00cb7bf7436fe33fbbc076",
-  "requirements_approved_at": "2026-08-20T14:37:30+08:00",
+  "requirements_fingerprint": "2eb6200ec0a60fd385dcf1525b00356560825f73c295aa147c53ef3ba7359579",
+  "requirements_approved_at": "2026-08-31T15:19:42+08:00",
   "implementation_approved": true,
-  "implementation_fingerprint": "4380e3585a99c11d3f20639b716ea269edfb16f6628791f9a264e56c4352c558",
-  "architecture_fingerprint": "7699919c10a2dfe17e7781a7bbd95ebd5824c87dbe5e9ff98da6cf62dc952e68",
-  "quality_config_fingerprint": "a6c66e4d6b3059730961a6a94504f54d60eea4cd224e72764806c5ee3a933383",
+  "implementation_fingerprint": "7067ffb3c850b2c38dc646217e51da593a53c3513aca2861ffe9b2199f9b8a4c",
+  "architecture_fingerprint": "fff6af3c5cd9cfc7e7b8d28cf1369c494e336ff347077bb917c8a679c3fa799f",
+  "quality_config_fingerprint": "235301f5f87555eaa08b1965560c87b35f7bd6e881f6d97fd19e6e52f0dfa45b",
   "feature_validation_fingerprint": "9ca2814c65f96a3297746489ade83d11eec807377f50f03f07cbb6ca75d586c7",
-  "module_plan_fingerprint": "c16754a0d60dbbb38eeb6f21eabfa619f07eab830a2584c6971f549781807b5d",
-  "implementation_approved_at": "2026-08-20T16:01:04+08:00",
+  "module_plan_fingerprint": "a56e18bd716044d3366198aaa693172557359e740b2011f2835b496b6b9abfb8",
+  "implementation_approved_at": "2026-08-31T15:19:43+08:00",
   "ready_for_luna": true,
   "prototype": {
     "decision": "not-needed",
@@ -29,9 +29,9 @@
     "artifact_fingerprint": null
   },
   "review_required": true,
-  "review_status": "pending",
-  "review_fingerprint": null,
-  "reviewed_at": "2026-08-20T13:43:29+08:00",
+  "review_status": "passed",
+  "review_fingerprint": "497f791d4d935b7139cade12c49ec962dabecb4f4348723d4116ffcdf88bde4f",
+  "reviewed_at": "2026-08-31T15:38:53+08:00",
   "modules": [
     {
       "id": "model-cleaning-policy",
@@ -47,7 +47,7 @@
         "AC-005"
       ],
       "optional": false,
-      "updated_at": "2026-08-30T15:33:18+08:00",
+      "updated_at": "2026-08-31T14:36:57+08:00",
       "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
       "last_changed_at": "2026-08-21T03:37:39+08:00"
     },
@@ -66,7 +66,7 @@
         "AC-006"
       ],
       "optional": false,
-      "updated_at": "2026-08-30T15:33:18+08:00",
+      "updated_at": "2026-08-31T14:36:57+08:00",
       "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
       "last_changed_at": "2026-08-21T03:37:39+08:00"
     },
@@ -100,7 +100,7 @@
         "AC-006"
       ],
       "optional": false,
-      "updated_at": "2026-08-20T03:52:19+08:00",
+      "updated_at": "2026-08-31T14:36:57+08:00",
       "last_change_summary": "四个内容清洗策略继续保留实时/Batch配置，最近活动固定实时；实时与Batch共用temperature 0.01、seed 1234、enable_thinking false和JSON object请求体；活动列表/详情DSL已发布并验证环境变量默认10。验收脚本补齐源树预算模块、咨询多案例子文档命名契约，Dify SSE安全证据已生成；四策略真实Batch对照仍待jx部署后按100候选阈值完成。",
       "last_changed_at": "2026-08-20T01:28:20+08:00"
     },
@@ -168,7 +168,7 @@
     {
       "id": "jx-acceptance-docs",
       "title": "jx 验收与文档",
-      "status": "not_started",
+      "status": "verified",
       "paths": [
         "scripts/jx_*.sh",
         "docs/features/qwen-batch-cleaning/**",
@@ -181,7 +181,7 @@
         "AC-010"
       ],
       "optional": false,
-      "updated_at": "2026-08-20T14:37:48+08:00",
+      "updated_at": "2026-08-31T14:36:57+08:00",
       "last_change_summary": "四个内容清洗策略继续保留实时/Batch配置，最近活动固定实时；实时与Batch共用temperature 0.01、seed 1234、enable_thinking false和JSON object请求体；活动列表/详情DSL已发布并验证环境变量默认10。验收脚本补齐源树预算模块、咨询多案例子文档命名契约，Dify SSE安全证据已生成；四策略真实Batch对照仍待jx部署后按100候选阈值完成。",
       "last_changed_at": "2026-08-20T01:28:20+08:00"
     }
@@ -195,20 +195,14 @@
     }
   ],
   "documentation": {
-    "status": "stale",
-    "last_code_change_at": "2026-08-30T16:04:31+08:00",
-    "last_synced_at": "2026-08-21T03:37:39+08:00",
-    "last_sync_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
-    "pending_changed_paths": [
-      "ai_management/cleaning.py",
-      "ai_management/config.py",
-      "ai_management/workers/tasks/model_cleaning.py",
-      "dify/商业顾问（当前使用版本）.yml",
-      "knowledge_cleaner/dify.py",
-      "scripts/jx_deploy_release.sh"
-    ],
-    "changelog_fingerprint": "7f475292796ed1d7bd55d6dcc4bddf01aa819e2df15cc034dd1aeecedb40f019"
+    "status": "current",
+    "last_code_change_at": "2026-08-31T15:31:16+08:00",
+    "last_synced_at": "2026-08-31T15:31:17+08:00",
+    "last_sync_summary": "work0831 的北京时间默认与原始文件名清洗命名已部署到 jx；服务健康、容器时区和远端命名函数均已核验，历史数据与 DSL 不变。",
+    "pending_changed_paths": [],
+    "changelog_fingerprint": "3253a1c15a9ff1b8f3658f4bb642333127cb8dc104f020c283f134fedb6274df"
   },
   "created_at": "2026-08-18T08:01:54+08:00",
-  "updated_at": "2026-08-30T16:04:31+08:00"
+  "updated_at": "2026-08-31T15:39:11+08:00",
+  "last_abandon_reason": "用户明确确认 work0831 从 work 派生并承接本次测试与 jx 发布；旧 work 工作已完成 review/文档同步但未收尾，现关闭其悬挂状态以建立当前分支治理上下文"
 }

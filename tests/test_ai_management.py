@@ -2057,11 +2057,11 @@ def test_book_scope_is_trusted_and_enqueued_without_model(service_db, monkeypatc
         storage_dir = tmp_path / batch.id
         storage_dir.mkdir(parents=True, exist_ok=True)
         file_name = "book.md"
-        content = "# 城市散步随笔\n\n这是一本关于散步和观察城市天气的随笔。记录不同季节的光线、河流、树木和街道声音，也记录一些不成体系的个人感受。"
+        content = "# 模型生成的书名\n\n这是一本关于散步和观察城市天气的随笔。记录不同季节的光线、河流、树木和街道声音，也记录一些不成体系的个人感受。"
         (storage_dir / file_name).write_text(content, encoding="utf-8")
         row = CleaningFile(
             batch_id=batch.id,
-            original_filename="城市散步随笔.md",
+            original_filename="原始上传书稿.md",
             storage_filename=file_name,
             extension=".md",
             source_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
@@ -2089,9 +2089,33 @@ def test_book_scope_is_trusted_and_enqueued_without_model(service_db, monkeypatc
         assert row.outcome == "processing"
         assert row.stage == "publishing"
         assert len(items) == 1
+        assert items[0].dify_document_name == "原始上传书稿.md"
         assert items[0].status == "pending"
         assert items[0].retryable is False
         assert queued == [items[0].id]
+
+
+def test_cleaning_names_keep_original_filename_for_all_basic_strategies(tmp_path):
+    """Visible Dify names are source identity, independent of cleaned titles."""
+
+    for strategy_code, filename, content in (
+        ("book", "原始书稿.md", "# 模型书名\n\n书籍正文"),
+        ("lead_magnet", "原始资料.md", "# 模型资料标题\n\n资料正文"),
+        ("standard_document", "原始原文.md", "# 正文标题\n\n原始正文"),
+    ):
+        path = tmp_path / filename
+        path.write_text(content, encoding="utf-8")
+        documents = STRATEGY_REGISTRY[strategy_code].clean(path, filename)
+        assert documents
+        assert dify_document_name(filename, "0" * 64, 1, split=False) == (
+            Path(filename).stem + ".md"
+        )
+
+
+def test_split_cleaning_names_keep_original_filename_prefix():
+    source_name = "原始书稿.pdf"
+    assert dify_document_name(source_name, "0" * 64, 1, split=True) == "原始书稿__001.md"
+    assert dify_document_name(source_name, "0" * 64, 2, split=True) == "原始书稿__002.md"
 
 
 def test_dsl_and_gold_data_are_complete():
