@@ -175,6 +175,7 @@ def test_dify_hierarchical_contract_and_child_verification():
 
 def test_dify_wait_for_indexing_prefers_created_document_over_transient_batch():
     calls: list[str] = []
+    heartbeats: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -197,10 +198,12 @@ def test_dify_wait_for_indexing_prefers_created_document_over_transient_batch():
             document_id="document-uuid",
             timeout_seconds=1,
             interval=0,
+            heartbeat=lambda: heartbeats.append("renewed"),
         )
     finally:
         client.close()
     assert calls == ["/v1/datasets/dataset-1/documents/document-uuid"]
+    assert heartbeats == ["renewed"]
 
 
 def test_dify_wait_for_indexing_falls_back_to_batch_on_document_lookup_404():
@@ -270,7 +273,9 @@ def test_dify_wait_for_indexing_keeps_terminal_error_semantics():
 
 
 def test_semantic_rules_keep_transferable_experience_and_exclude_securities():
-    useful = classify_text("定位复盘", "我访谈了二十位客户，调整产品以后成交率提高，并总结了三个步骤。")
+    useful = classify_text(
+        "定位复盘", "我访谈了二十位客户，调整产品以后成交率提高，并总结了三个步骤。"
+    )
     finance = classify_text("今日策略", "建议买入某个股票代码，设置仓位、止盈和止损。")
     assert useful.disposition == "keep"
     assert finance.disposition == "no_index"
@@ -311,7 +316,9 @@ def test_batch_pipeline_builds_fresh_snapshot_and_exact_deduplicates(tmp_path):
     (source / "合集 (1).md").write_text(body, encoding="utf-8")
     output = tmp_path / "output"
     result = BatchCleaningPipeline(BatchOptions(source, output)).run()
-    records = [json.loads(line) for line in (output / "manifest.jsonl").read_text("utf-8").splitlines()]
+    records = [
+        json.loads(line) for line in (output / "manifest.jsonl").read_text("utf-8").splitlines()
+    ]
     assert result.parsed_documents == 2
     assert sum(item["disposition"] == "duplicate" for item in records) == 1
     assert (output / "quality_report.json").is_file()

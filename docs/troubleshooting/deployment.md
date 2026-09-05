@@ -280,12 +280,12 @@
 ## DEPLOY-022：知识库管理接口应走私网 `8000` 直连，而非 Dify 网关
 
 - 适用：jx 的知识库上传、状态、条目、重试和复核接口由另一台内网后端调用；当前调用方为 `172.17.28.83`，jx API 私网地址为 `172.30.157.197`。
-- 触发：4.10.2～4.10.8 经 `:80` 返回 `403`，而业务聊天和入口配置等接口正常。
-- 根因：Dify Nginx 的端口 `80` 不是 ai-management 的原生监听端口。裸 `/internal/...` 会进入 Dify Web 默认路由；`/ai-service/...` 虽可转发，但上传子路径由有意保留的 `403` 规则保护，且 Docker NAT 会改变 Nginx 可见来源。因此该路径不适合作为知识库管理接口的内网通道；这不是 ai-management 加入 Dify `docker_default` 网络导致的冲突，也不是知识库接口实现或 Token 校验冲突。
-- 解决：调用方 Base URL 固定为 `http://172.30.157.197:8000`，直接调用 `/internal/v1/admin/knowledge-bases/...`；jx 保持 API 仅绑定此私网地址、`AI-MGMT-8000` 仅允许 `172.17.28.83/32`、回程经 `eth0` 私网网关。保留 Dify Nginx 的上传 `403` 规则和 ai-management 双 Token。
-- 非解决：修改或删除 Dify Nginx 上传阻断规则、通过 `:80/ai-service/` 访问管理写入接口、放宽为 Docker/VPC 网段、取消 Token、开放 API `8000` 公网端口，或直接编辑 Dify 数据库。
-- 验证：2026-08-10 jx 上 `172.30.157.197:8000` 绑定存在，`AI-MGMT-8000` 的 `172.17.28.83/32` 允许规则与精确回程路由存在；带正确双 Token、无文件的上传 POST 返回 API `422`，API `/health/ready=status=ready`。Dify Nginx 已恢复任务开始前的上传 `403` 规则。
-- 预防：内部管理写入接口与临时 Dify 网关分离；发布或联调前从调用方验证 `:8000` 连接、双 Token 和无写入 `422` 探针，并复核阿里云安全组两端的精确 `/32` 规则。
+- 触发：4.10.2～4.10.8 经 `:80` 返回 `403`，而业务聊天和入口配置等接口正常；2026-08-31 误删兼容 include 后，小程序后端进一步观察到根路径 `307 → /apps`、`/ai-service/internal/v1/*` 为 Dify HTML 404。
+- 根因：Dify Nginx 的端口 `80` 不是 ai-management 的原生监听端口。裸 `/internal/...` 会进入 Dify Web 默认路由；`/ai-service/...` 虽可转发，但上传子路径由有意保留的 `403` 规则保护，且 Docker NAT 会改变 Nginx 可见来源。因此该路径不适合作为知识库管理写入接口的长期内网通道；但现有小程序后端仍依赖 `/ai-service/` 兼容路由承载其它 AI 服务请求，在调用方完成迁移前删除该 include 会把请求错误路由到 Dify。
+- 解决：知识库管理写入接口的目标仍是 `http://172.30.157.197:8000/internal/v1/admin/knowledge-bases/...`；同时在小程序后端尚未完成真实迁移和端到端验收前，保留并监控 `/ai-service/` 兼容路由。jx 保持 API 仅绑定私网地址、`AI-MGMT-8000` 仅允许 `172.17.28.83/32`、回程经 `eth0` 私网网关；所有路径继续使用 ai-management 双 Token。
+- 非解决：修改或删除 Dify Nginx 上传阻断规则、在未取得调用方实测证据前删除 `/ai-service/` include、放宽为 Docker/VPC 网段、取消 Token、开放 API `8000` 公网端口，或直接编辑 Dify 数据库。
+- 验证：2026-08-31 jx 上 `/ai-service/internal/v1/entry-config` 无 Token 返回 AI 服务 `401` JSON，带原 Token 返回 `200` JSON；`/ai-service/docs` 不再显示 Dify 页面；测试页 `/ai-management-test/` 仍为 `404`。2026-08-10 的 `172.30.157.197:8000` 私网和上传 `422` 验证仍有效。
+- 预防：将小程序后端的实际 Base URL/路径列入发布前契约清单；只有从真实调用方完成 `/ai-service/` → `:8000` 迁移、双 Token 和无写入 `422` 探针，并复核阿里云安全组后，才允许移除兼容路由。
 - 证据：`var/reports/20260810-ai-service-upload-source-allowlist/issues.jsonl`、jx 备份 `/opt/ai-management/backups/20260810-1000-direct-8000-switch`。
 - 最后验证：2026-08-10。
 

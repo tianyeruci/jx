@@ -427,6 +427,10 @@ def _reconcile_cleaning_pipeline() -> dict[str, int]:
                 select(DifyPublicationShard)
                 .where(
                     DifyPublicationShard.status == "shard_indexing",
+                    (
+                        DifyPublicationShard.lease_expires_at.is_(None)
+                        | (DifyPublicationShard.lease_expires_at < now)
+                    ),
                     DifyPublicationShard.updated_at <= processing_cutoff,
                 )
                 .with_for_update()
@@ -441,6 +445,7 @@ def _reconcile_cleaning_pipeline() -> dict[str, int]:
                 shard.status != "shard_indexing"
                 or shard.updated_at is None
                 or _utc(shard.updated_at) > processing_cutoff
+                or (shard.lease_expires_at is not None and _utc(shard.lease_expires_at) >= now)
             ):
                 continue
             retryable = shard.attempts < 2
@@ -797,6 +802,10 @@ def _cleanup_files_and_stale_tasks() -> None:
             session.scalars(
                 select(CleaningFile).where(
                     CleaningFile.status == "processing",
+                    (
+                        CleaningFile.lease_expires_at.is_(None)
+                        | (CleaningFile.lease_expires_at < now)
+                    ),
                     CleaningFile.updated_at <= stale_cutoff,
                 )
             )
@@ -804,9 +813,13 @@ def _cleanup_files_and_stale_tasks() -> None:
         for row in stale:
             if row.attempts < 2:
                 row.status = "pending"
+                row.lease_token = None
+                row.lease_expires_at = None
                 requeue.append((str(row.id), row.original_filename))
             else:
                 row.status = "failed"
+                row.lease_token = None
+                row.lease_expires_at = None
                 row.error_code = "CLEANING_FAILED"
                 row.error_message = "Worker中断后自动重试仍未完成"
             _refresh_file_state(session, row.id, commit=False)
@@ -878,6 +891,10 @@ def _terminalize_stale_model_tasks() -> None:
                 select(ModelCleaningTask)
                 .where(
                     ModelCleaningTask.status.in_(active_states),
+                    (
+                        ModelCleaningTask.lease_expires_at.is_(None)
+                        | (ModelCleaningTask.lease_expires_at < datetime.now(timezone.utc))
+                    ),
                     ModelCleaningTask.updated_at <= cutoff,
                 )
                 .with_for_update()

@@ -66,7 +66,7 @@
         "AC-006"
       ],
       "optional": false,
-      "updated_at": "2026-08-31T14:36:57+08:00",
+      "updated_at": "2026-08-31T18:15:12+08:00",
       "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
       "last_changed_at": "2026-08-21T03:37:39+08:00"
     },
@@ -84,7 +84,7 @@
         "AC-004"
       ],
       "optional": false,
-      "updated_at": "2026-08-30T15:33:18+08:00",
+      "updated_at": "2026-08-31T18:15:12+08:00",
       "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
       "last_changed_at": "2026-08-21T03:37:39+08:00"
     },
@@ -139,7 +139,7 @@
         "AC-009"
       ],
       "optional": false,
-      "updated_at": "2026-08-30T15:33:18+08:00",
+      "updated_at": "2026-08-31T18:15:12+08:00",
       "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
       "last_changed_at": "2026-08-21T03:37:39+08:00"
     },
@@ -161,7 +161,7 @@
         "AC-009"
       ],
       "optional": false,
-      "updated_at": "2026-08-30T15:33:18+08:00",
+      "updated_at": "2026-08-31T18:15:12+08:00",
       "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
       "last_changed_at": "2026-08-21T03:37:39+08:00"
     },
@@ -195,14 +195,18 @@
     }
   ],
   "documentation": {
-    "status": "current",
-    "last_code_change_at": "2026-08-31T15:31:16+08:00",
+    "status": "stale",
+    "last_code_change_at": "2026-08-31T17:48:24+08:00",
     "last_synced_at": "2026-08-31T15:31:17+08:00",
     "last_sync_summary": "work0831 的北京时间默认与原始文件名清洗命名已部署到 jx；服务健康、容器时区和远端命名函数均已核验，历史数据与 DSL 不变。",
-    "pending_changed_paths": [],
+    "pending_changed_paths": [
+      "ai_management/workers/tasks/model_cleaning.py",
+      "knowledge_cleaner/dify.py",
+      "tests/test_model_cleaning_workflow.py"
+    ],
     "changelog_fingerprint": "3253a1c15a9ff1b8f3658f4bb642333127cb8dc104f020c283f134fedb6274df"
   },
   "created_at": "2026-08-18T08:01:54+08:00",
-  "updated_at": "2026-08-31T15:39:11+08:00",
+  "updated_at": "2026-08-31T18:15:12+08:00",
   "last_abandon_reason": "用户明确确认 work0831 从 work 派生并承接本次测试与 jx 发布；旧 work 工作已完成 review/文档同步但未收尾，现关闭其悬挂状态以建立当前分支治理上下文"
 }

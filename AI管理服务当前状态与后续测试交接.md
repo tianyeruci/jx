@@ -1,5 +1,87 @@
 # AI 管理服务当前状态与后续测试交接
 
+## 0.89 2026-09-01 本会话变更全部回滚（当前最新）
+
+- 按用户要求，将本会话对 jx 的变更恢复到会话开始前基线。Nginx 测试页和 `/ai-service/` 兼容桥接按会话前配置恢复；当前公网测试页返回 `200`，`/ai-service/internal/v1/entry-config` 无 Token 返回 AI 服务 `401`。
+- Token/密钥保持会话前原值；本会话曾临时轮换的值已恢复，并同步重建读取这些配置的 ai-management 服务。其它未变化的 Token/密钥未修改；Dify、数据库、Redis、上传数据和业务代码未修改。
+- SSH 恢复会话前有效配置：`MaxAuthTries=6`、`PermitRootLogin=yes`、`PasswordAuthentication=yes`、`X11Forwarding=yes`、`AllowTcpForwarding=yes`、`LoginGraceTime=120`；本会话新增 drop-in 已移除，`sshd -t` 和 reload 通过。
+- 本会话安装的 `fail2ban`、`auditd`、`audispd-plugins` 已停止、禁用并卸载；新增 jail、审计规则和运行时封禁已清除。`SshException: Too many authentication failures` 不是应用白名单；常见原因是 SSH 客户端一次性尝试过多本地密钥。当前已撤回本会话新增 `MaxAuthTries=3` 和 fail2ban 黑名单机制。
+- 回滚后 API live/ready、数据库、Redis、Dify 可达性均正常；Nginx 配置校验/热加载通过。回滚前快照为 `/opt/ai-management/backups/20260901-session-rollback-pre-20260901-004053`，脱敏记录保存在 `var/reports/20260901-session-rollback/rollback.jsonl`。
+
+### 本节变更记录
+
+- 修改原因：用户要求撤回本会话全部现网变更，临时恢复小程序后端依赖的原有入口和 SSH 行为，并将回滚信息记录到本地以便后续改回。
+- 修改前：本会话曾隔离测试页/桥接、临时轮换 Token、收紧 SSH、启用 fail2ban/auditd，随后出现小程序访问异常和 SSH 认证失败。
+- 修改后：远端配置和运行态恢复到会话前基线；保留回滚前快照和脱敏记录，不执行 Dify 升级，不修改项目无关代码。
+
+> 更新时间：2026-09-01
+
+## 0.88 2026-08-31 jx SSH 认证限制回滚（当前最新）
+
+- 用户补充确认报错为 `SshException: Too many authentication failures`，要求关闭本会话新增限制并恢复修改前配置。
+- 已移除本会话新增的 `/etc/ssh/sshd_config.d/99-jx-security.conf`，先备份至 `/opt/ai-management/backups/20260831-ssh-hardening-rollback/`；执行 `sshd -t` 通过并 reload `ssh`。
+- 有效 SSH 配置已恢复为修改前基线：`MaxAuthTries=6`、`PermitRootLogin=yes`、`PasswordAuthentication=yes`、`X11Forwarding=yes`、`AllowTcpForwarding=yes`、`LoginGraceTime=120`。机器 root 密码未修改，密码登录按用户要求保留。
+- 验证：直连 jx 公钥登录成功；认证限制从 `3` 恢复为 `6`，自定义 drop-in 已不存在；fail2ban 保持 disabled/inactive；AI API 私网 `172.30.157.197:8000` 的 live/ready 仍分别为 `ok/ready`，数据库、Redis、Dify 均可达。未重建业务容器，未修改 Token、Dify、数据库或 Redis。
+
+### 本节变更记录
+
+- 修改原因：修复本会话新增 `MaxAuthTries=3` 引起的 `Too many authentication failures`，并按用户要求恢复 SSH 修改前配置。
+- 修改前：自定义 SSH drop-in 限制认证次数为 3，并收紧 root、转发和 X11 设置；fail2ban 亦已停用。
+- 修改后：移除自定义 drop-in，sshd 恢复基础配置并 reload；机器密码和业务服务不变。
+
+> 更新时间：2026-08-31
+
+## 0.87 2026-08-31 jx SSH 解封与 fail2ban 回滚（当前最新）
+
+- 用户反馈 SSH 报错 `SshException: Session is being closed`，直连 jx 在 SSH 握手前被远端关闭；通过现有 `ys` 跳板仍可公钥登录 jx。
+- 核对发现本机当前公网运维出口为 `13.231.148.137`，此前新增的 fail2ban `sshd` jail 在启用后造成该入口被拦截。即使将该地址加入 `ignoreip` 并 unban，直连仍被关闭；停止 fail2ban 后直连立即恢复，根因确认是本轮新增 fail2ban 防爆破配置导致的运维入口锁定。
+- 已按最小回滚处理：停止并禁用 fail2ban，移除运行中的 nftables 封禁表；未修改 SSH 密码、未重载/重启 sshd、未重建任何业务容器，未修改 Token、Dify、数据库或 Redis。fail2ban 配置和解封前状态备份位于 `/opt/ai-management/backups/20260831-fail2ban-unblock-pre`。
+- 验证：直连 `jx` 使用现有公钥成功执行 `id -un`（root）和主机名命令；`fail2ban` 为 `disabled/inactive`，运行时 socket 与 nftables 封禁表均不存在。当前 SSH 密码状态保持用户要求的现状，root 公钥登录不受影响。
+- 后续如需重新启用防爆破，必须先确认固定运维出口或通过云控制台/跳板保留救援通道，再单独设计白名单和回归验证；本轮不再启用。
+
+### 本节变更记录
+
+- 修改原因：修复 fail2ban 启用后导致用户 SSH 连接被关闭的问题。
+- 修改前：fail2ban `sshd` jail 已启用，当前运维出口无法直连 SSH；业务 API、Worker、Nginx、Dify 未因该问题停止。
+- 修改后：fail2ban 已停止并禁用，直连 SSH 恢复；未改密码、Token、业务容器、Dify、数据库或 Redis。
+
+> 更新时间：2026-08-31
+
+## 0.86 2026-08-31 jx 按用户要求恢复测试页（当前最新）
+
+- 按用户要求恢复公网自测入口 `/ai-management-test/`；从 `/opt/ai-management/backups/20260831-security-containment-pre` 恢复 `ai-management-test.location` 及 `default.conf`/`default.conf.template` 对应 include。`/ai-service/` 兼容路由保持不变，未修改 Token、Dify、数据库、Redis 或业务代码。
+- 测试页仍由 `test-ui` 容器监听宿主机 `127.0.0.1:8501`，未开放 8501 公网端口；公网入口经既有 Nginx 80/443 路径提供。恢复前备份位于 `/opt/ai-management/backups/20260831-ai-management-test-enable-pre`。
+- 验证：公网 `http://112.74.37.111/ai-management-test/` 最终返回 HTTP `200`；`/ai-service/internal/v1/entry-config` 无 Token 返回 AI 服务 `401` JSON；API `/health/live` 为 `ok`、`/health/ready` 为 `ready`，数据库、Redis、Dify 配置和可达性均为 `true`；Nginx `-t` 通过。
+- 安全边界：测试页服务端持有内部/管理员 Token，公网自测期间不要输入真实用户资料、生产文件或正式业务数据；自测结束后应移除该入口或限制到 VPN/内网。
+
+### 本节变更记录
+
+- 修改原因：用户要求恢复 `ai-management-test` 公网入口进行自测。
+- 修改前：测试页 location/include 已移除，公网最终返回 `404`；`test-ui` 容器仍保留并监听 `127.0.0.1:8501`。
+- 修改后：仅恢复测试页 location/include，`/ai-service/`、Token、Dify、数据库、Redis 和业务代码均未改动；公网测试页返回 `200`，8501 仍未直接暴露。
+
+> 更新时间：2026-08-31
+
+## 0.85 2026-08-31 jx 安全排查与入口收敛（当前最新）
+
+- 已确认 jx 公网入口正在受到自动化攻击：过去 24 小时 SSH 失败认证约 11149 次，Nginx 约 205 条可疑扫描，目标包含环境文件、Git 配置、WordPress、CGI 路径穿越、PHPUnit 和开放代理探测。现有 4xx/401/405 响应、容器/进程/计划任务检查未发现直接成功利用证据，但由于此前未启用 `auditd`、公网 root 密码曾可用且 30 天内存在多来源成功登录，不能据此宣称主机从未失陷。
+- 已备份并移除公网测试页 `/ai-management-test/`；该路径仍返回 `404`，`test-ui` 容器保留且只监听 `127.0.0.1:8501`。本轮曾误将仍被小程序后端使用的 `/ai-service/` 桥接一并移除，导致请求落到 Dify `/apps`；现已从原备份精确恢复 `/ai-service/` location 与 include，Nginx 校验/热加载通过。恢复后未带 Token 返回 AI 服务 `401` JSON，带原 Token 的入口配置返回 `200`，不再返回 Dify HTML。原隔离备份位于 `/opt/ai-management/backups/20260831-security-containment-pre`，本次回滚前备份位于 `/opt/ai-management/backups/20260831-security-ai-service-rollback-pre`。
+- 本轮曾临时轮换 `INTERNAL_API_TOKEN` 和 `ADMIN_API_TOKEN`，收到用户确认这些 Token 属于小程序后端既有契约后，已从轮换前备份恢复原值，并强制重建读取这些配置的 API、Worker、Scheduler 和 test-ui 服务；同时核对其它 Token/密钥类配置均未发生变化。未输出 Token 明文，未修改 Dify。轮换与恢复证据分别位于 `/opt/ai-management/backups/20260831-security-token-rotate-pre` 和 `/opt/ai-management/backups/20260831-security-token-restore`。
+- SSH 已通过 `/etc/ssh/sshd_config.d/99-jx-security.conf` 收紧：root 仅允许密钥登录、关闭 X11、仅允许本地 TCP 转发、`MaxAuthTries=3`、`LoginGraceTime=30`。按用户补充要求，普通账号的 `PasswordAuthentication` 与 `KbdInteractiveAuthentication` 暂时保留；新建独立公钥连接验证成功。SSH 配置备份位于 `/opt/ai-management/backups/20260831-ssh-hardening-pre`。
+- 已安装并启用 `fail2ban` 的单一 `sshd` jail（10 分钟内 5 次失败、封禁 1 小时，并豁免当前运维出口）；启用后立即识别并封禁 3 个爆破来源。已安装并启用 `auditd`，加载 8 条最小审计规则，覆盖 SSH 配置/密钥、cron、systemd 和 Docker socket 变更。安装前配置备份位于 `/opt/ai-management/backups/20260831-ssh-defense-audit-pre`。
+- 处置后 API `/health/live` 为 `ok`，`/health/ready` 为 `ready`，数据库、Redis、Dify 配置和可达性均为 `true`；SSH、fail2ban、auditd 均为 active。Dify 仍为 `1.13.3`，按用户明确要求本轮不升级；官方安全公告覆盖该版本的风险继续作为未处理项。
+- 小程序后端目标链路仍为 `172.17.28.83 → 172.30.157.197:8000`：API 仅绑定 jx 私网地址，`AI-MGMT-8000` 只允许精确来源 `/32`，回程经 `eth0`；但防火墙 ACCEPT/DROP 计数仍为 0，缺少真实调用方请求和阿里云安全组核对，不能宣称端到端已打通。
+- 兼容烟测另发现 AI 管理知识库列表 `GET /internal/v1/admin/knowledge-bases` 在 `/ai-service/` 与 `:8000` 直连均返回 `DIFY_UNAVAILABLE` `502`；Dify 原生 dataset 列表请求本身返回 `200`。容器内路由调用 `iter_documents(max_pages=..., max_items=...)`，而运行镜像中的 `DifyKnowledgeClient.iter_documents` 仅接受 `page_size`，疑似已部署 wheel/源码包版本不一致。该问题与本次 Nginx/Token 回滚无关，暂未发布代码修复。
+- 仍需人工核对 30 天内 root 成功登录来源及历史公钥指纹归属；若有任何无法确认的记录，应按凭据可能泄露继续轮换。系统仍有待升级软件包，OCR 开关/timer 与暂停基线存在漂移；两项均未在本轮扩大处置。
+
+### 本节变更记录
+
+- 修改原因：记录用户授权的 jx 安全排查、攻击证据、入口隔离、Token 轮换、SSH 加固、防爆破与审计启用结果，并明确用户要求保留密码登录和不升级 Dify。
+- 修改前：公网测试页和临时 HTTP 桥接可达；内部/管理员 Token 可能经公开测试页使用；SSH 允许 root 密码且没有 fail2ban/auditd；小程序私网链路只有 jx 侧配置证据。
+- 修改后：公网测试页返回 404；`/ai-service/` 已恢复并指向 AI API，临时轮换的 Token 已恢复原值且运行容器已同步，root 密码登录已禁止但普通账号密码登录按用户要求保留，fail2ban/auditd 已运行；API 健康，Dify 未升级，真实小程序端到端和成功登录归属仍明确保留为待办。
+
+> 更新时间：2026-08-31
+
 ## 0.84 2026-08-31 jx 未引用 Docker 镜像清理（当前最新）
 
 - 按用户确认并以“不影响正常使用、至少保留最近一套回滚”为约束，逐个核验无容器引用且不在当前 Compose 配置中的镜像后，删除：`jx-dify-sandbox-pdf-probe:20260804`、`jx-now-ai-management-ocr:toolconv-20260826-135020`、`redis:7-alpine`、`redis:6.2-alpine`、`alpine:3.20`。
@@ -2505,3 +2587,60 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改前：仅完成命令行部署后健康检查，尚未从已登录测试页触发页面级诊断。
 - 修改后：在 `http://112.74.37.111/ai-management-test/` 的“文件清洗”页面确认当前默认策略显示为 `书籍 (book)`；切换到“诊断”并点击“就绪检查”，页面返回 `status=ready`，`database`、`redis`、`dify_apps_configured`、`dify_knowledge_configured`、`dify_reachable` 均为 `true`。浏览器扩展的文件选择事件未能稳定落到 Streamlit 控件，因此未重复提交上传或引入未知样本；命名规则已由容器内合成调用和本地集成测试覆盖。
 - 验证：jx 最近 20 分钟 `api`、`worker`、`publication-worker`、`test-ui` 日志未发现 `error`、`exception` 或 `failed`；未修改数据库、Redis、Dify 文档或 DSL，未执行清理操作。浏览器测试过程中没有产生新的清洗批次或外部数据写入。
+
+### 文档修改记录（2026-08-31 jx 安全排查与入口收敛）
+
+- 修改原因：用户要求先定位 jx 是否存在安全隐患和被攻击，并确认小程序后端内网边界；随后确认按建议继续、Dify 不升级、密码登录暂时保留。
+- 修改前：公网测试页及临时 HTTP API 桥接可达，内部/管理员 Token 未完成事件后轮换；SSH 允许 root 密码登录，未启用 fail2ban 和 auditd；攻击证据与小程序链路结论未进入顶部最新状态。
+- 修改后：测试页已备份后从公网入口移除；因确认小程序后端仍依赖 `/ai-service/`，该桥接已按原备份恢复并验证，两个 Token 已恢复原值；root 改为仅密钥，普通账号密码登录按用户要求保留；fail2ban 和 auditd 已启用并验证，API ready。Dify 1.13.3 未升级；真实调用方端到端、云安全组、历史成功登录归属、系统补丁与 OCR 漂移仍为待办。
+- 验证：外部测试页为 404；外部 `/ai-service/internal/v1/entry-config` 无 Token 为 401 JSON；服务器本机带原 Token 为 200 JSON；新 SSH 公钥连接成功；SSH、fail2ban、auditd active；8 条审计规则已加载；fail2ban 已产生封禁；API live/ready 通过且数据库、Redis、Dify 可达。脱敏证据位于 `var/reports/20260831-security-triage/issues.jsonl`。
+- 兼容烟测补充：`/ai-service/health/live`、`/health/ready`、`entry-config`、管理目录和保留设置按预期返回；知识库列表的 `502` 在两条入口复现，属于独立应用版本一致性问题。
+
+### 文档修改记录（2026-08-31 Token 契约恢复）
+
+- 修改原因：用户明确指出 `X-Internal-Token`、`X-Admin-Token` 等属于已对接的小程序后端契约，要求恢复本轮所有 Token 相关改动。
+- 修改前：服务器 `.env` 已恢复为轮换前指纹，但运行中的 API、Worker、Scheduler、test-ui 容器仍注入临时轮换值，存在配置文件与运行态不一致。
+- 修改后：以轮换前备份为准逐项核对 Token/密钥类配置；仅重建读取这些配置的 7 个 ai-management 服务，未改 Dify、数据库、Redis 或业务数据。所有核对的容器指纹均与 `.env` 一致。
+- 验证：API live/ready 通过，7 个服务均为 Up；`INTERNAL_API_TOKEN`、`ADMIN_API_TOKEN` 及其它 Token/密钥类配置的运行态指纹与当前 `.env` 一致；恢复后配置和容器状态备份位于 `/opt/ai-management/backups/20260831-security-token-restore`。
+
+### 文档修改记录（2026-08-31 测试页按用户要求恢复）
+
+- 修改原因：用户要求开放 `ai-management-test` 进行自测。
+- 修改前：测试页 location/include 已移除，公网最终返回 `404`；`/ai-service/` 兼容路由已恢复。
+- 修改后：仅恢复测试页 location/include；`/ai-service/`、Token、Dify、数据库、Redis 和业务代码均未改动。测试页仍通过 Nginx 代理，容器端口保持 `127.0.0.1:8501`。
+- 验证：公网测试页最终返回 `200`；API live/ready 通过；Nginx `-t` 与热加载通过。
+
+### 文档修改记录（2026-08-31 `/ai-service/` 兼容路由回滚）
+
+- 修改原因：小程序后端反馈 jx 根路径被重定向到 Dify `/apps`，`/ai-service/internal/v1/*` 返回 Dify HTML 404；核对确认本轮安全隔离误删了仍在使用的 `/ai-service/` Nginx include。
+- 修改前：`ai-management-api-temp.location` 及 `default.conf`/`default.conf.template` 中对应 include 已被移除，所有 `/ai-service/*` 请求落入 Dify 默认站点；公网测试页同样已隔离。
+- 修改后：仅从 `/opt/ai-management/backups/20260831-security-containment-pre` 恢复 `ai-management-api-temp.location` 和两个 include；未恢复 `/ai-management-test/`，未改 Token、Dify、数据库、Redis 或业务代码。Nginx 回滚前备份位于 `/opt/ai-management/backups/20260831-security-ai-service-rollback-pre`。
+- 验证：`nginx -t` 与热加载通过；外部 `/ai-service/internal/v1/entry-config` 无 Token 返回 AI 服务 `401` JSON；本机带原 Token 返回 `200` JSON；`/ai-management-test/` 仍为 `404`。在小程序后端完成真实迁移和端到端验收前，不得再次删除 `/ai-service/` 兼容路由。
+
+### 文档修改记录（2026-08-31 兼容烟测发现知识库列表独立 502）
+
+- 修改原因：为排除安全处置是否还造成其它小程序后端/AI 管理回归，对 `/ai-service/` 与私网 `:8000` 进行了无写入接口烟测。
+- 修改前：知识库列表接口是否正常未纳入本轮 Nginx 回滚验证，无法区分网关路由问题与应用自身问题。
+- 修改后：确认 `/ai-service/` 与 `:8000` 对 `GET /internal/v1/admin/knowledge-bases` 均返回同一 `DIFY_UNAVAILABLE` `502`；Dify 原生 dataset 请求返回 `200`，容器内确认路由与 `DifyKnowledgeClient.iter_documents` 参数签名不一致。未改代码、镜像、Dify 数据或业务数据。
+- 验证：健康、入口配置、管理目录、保留设置和未授权 `401` 均通过；知识库列表 `502` 与入口无关，记录为独立待修复问题，不通过全量回滚掩盖。
+
+### 文档修改记录（2026-08-31 高风险租约 fencing 修复）
+
+- 修改原因：独立高风险 review 发现模型任务取消、Batch recovery、Dify 补偿和分片发布中间提交存在旧 worker 越权写入风险，并发现清洗空正文双提交问题。
+- 修改前：部分 fenced UPDATE 未匹配任务状态；provider recovery 独立事务未校验调用方租约；Dify 补偿可能重复插入相同 kind/external_id；空正文和禁用策略分支存在多次提交路径；shard 中间 checkpoint 未统一 fencing。
+- 修改后：模型任务 fence 加入取消状态约束；provider recovery 传入并校验 token/expiry/status；补偿任务按唯一键幂等；空正文事件与清租约合并为单次提交；Dify shard 中间提交统一使用 shard token/状态/租约条件。现有 shard lease schema 未再新增迁移。
+- 验证：相关 focused 测试通过；完整 `gov.ps1 quality` 重新通过。测试中记录并修复一次 SQLite 无时区/有时区比较异常；未写入密钥、正文、真实用户 ID，未执行远端部署或历史数据清理。
+
+### 文档修改记录（2026-08-31 SSH fail2ban 解封）
+
+- 修改原因：用户反馈启用 fail2ban 后出现 `SshException: Session is being closed`，需要立即恢复 jx 运维登录。
+- 修改前：fail2ban `sshd` jail 处于 active，当前运维出口与白名单状态不匹配，直连 SSH 在握手前被关闭。
+- 修改后：通过跳板确认并停止、禁用 fail2ban，清除运行时封禁表；未修改密码、sshd 配置、Token、业务容器、Dify、数据库或 Redis。
+- 验证：直连 jx 公钥认证成功并执行命令；fail2ban 为 disabled/inactive，socket 和 nftables 封禁表不存在。备份位于 `/opt/ai-management/backups/20260831-fail2ban-unblock-pre`。
+
+### 文档修改记录（2026-08-31 SSH 认证限制回滚）
+
+- 修改原因：用户明确反馈 `SshException: Too many authentication failures`，要求关闭对应限制并恢复本会话修改前配置。
+- 修改前：`/etc/ssh/sshd_config.d/99-jx-security.conf` 将 `MaxAuthTries` 设为 3，并同时收紧 root、X11、TCP 转发和登录宽限时间。
+- 修改后：已备份并移除该自定义 drop-in，`sshd -t` 通过后 reload；有效配置恢复为 `MaxAuthTries=6`、`PermitRootLogin=yes`、`PasswordAuthentication=yes`、`X11Forwarding=yes`、`AllowTcpForwarding=yes`、`LoginGraceTime=120`。
+- 验证：直连 SSH 公钥认证成功；机器密码未修改，AI API 私网 live/ready 通过；未重建业务容器或修改 Token、Dify、数据库、Redis。

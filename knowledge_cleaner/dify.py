@@ -211,6 +211,8 @@ class DifyKnowledgeClient:
         document_id: str | None = None,
         timeout_seconds: int = 900,
         interval: float = 2,
+        heartbeat=None,
+        heartbeat_interval: float = 30,
     ) -> None:
         """Wait for a newly-created document to finish indexing.
 
@@ -225,7 +227,12 @@ class DifyKnowledgeClient:
         if not batch and not document_id:
             raise ValueError("等待Dify索引必须提供batch或document id")
         deadline = time.monotonic() + timeout_seconds
+        last_heartbeat = 0.0
         while time.monotonic() < deadline:
+            now = time.monotonic()
+            if heartbeat is not None and now - last_heartbeat >= heartbeat_interval:
+                heartbeat()
+                last_heartbeat = now
             data: dict[str, Any]
             if document_id:
                 try:
@@ -258,6 +265,10 @@ class DifyKnowledgeClient:
                 errors = [str(item.get("error") or "") for item in entries if item.get("error")]
                 detail = f"，{'; '.join(errors)}" if errors else ""
                 raise RuntimeError(f"Dify索引失败：{sorted(statuses)}{detail}")
+            now = time.monotonic()
+            if heartbeat is not None and now - last_heartbeat >= heartbeat_interval:
+                heartbeat()
+                last_heartbeat = now
             time.sleep(interval)
         raise TimeoutError("等待Dify索引完成超时")
 

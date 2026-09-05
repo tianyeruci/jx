@@ -84,6 +84,69 @@ PROVIDER_TERMINAL = {"completed", "failed", "expired", "cancelled"}
 _DIFY_MIN_CUSTOM_SEGMENT_CHARS = 120
 _DIFY_MIN_SOURCE_SEGMENT_CHARS = 8
 _MODEL_REVIEW_ARTIFACT_MAX_BYTES = 16 * 1024 * 1024
+_MODEL_LEASE_TTL = timedelta(minutes=30)
+
+
+def _lease_expired(value: datetime | None, now: datetime | None = None) -> bool:
+    if value is None:
+        return True
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value < (now or datetime.now(timezone.utc))
+
+
+def _renew_model_lease(session, task_id: str, token: str) -> None:
+    """Renew a task lease and fence superseded workers before side effects."""
+    now = datetime.now(timezone.utc)
+    renewed = session.execute(
+        update(ModelCleaningTask)
+        .where(ModelCleaningTask.id == task_id)
+        .where(ModelCleaningTask.lease_token == token)
+        .where(ModelCleaningTask.lease_expires_at >= now)
+        .where(ModelCleaningTask.status.not_in(("completed", "failed", "cancelled")))
+        .values(lease_expires_at=now + _MODEL_LEASE_TTL)
+    ).rowcount
+    if renewed != 1:
+        session.rollback()
+        raise RuntimeError("模型任务租约已被其他 worker 接管")
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+
+
+def _fenced_task_commit(session, task_id: str, token: str, *, clear: bool = False) -> None:
+    """Flush task changes only while this worker still owns its lease."""
+    now = datetime.now(timezone.utc)
+    values = {"lease_expires_at": None if clear else now + _MODEL_LEASE_TTL}
+    if clear:
+        values["lease_token"] = None
+    with session.no_autoflush:
+        changed = session.execute(
+            update(ModelCleaningTask)
+            .where(ModelCleaningTask.id == task_id)
+            .where(ModelCleaningTask.lease_token == token)
+            .where(ModelCleaningTask.lease_expires_at >= now)
+            .where(ModelCleaningTask.status != "cancelled")
+            .values(**values)
+        ).rowcount
+    if changed != 1:
+        session.rollback()
+        raise RuntimeError("模型任务租约已被其他 worker 接管")
+    raw_commit = session.info.get("_lease_raw_commit", session.commit)
+    raw_commit()
+
+
+def _install_task_fence(session, task_id: str, token: str) -> None:
+    """Fence every subsequent commit in a long-running worker transaction."""
+    raw_commit = session.commit
+    session.info["_lease_raw_commit"] = raw_commit
+
+    def fenced_commit() -> None:
+        _fenced_task_commit(session, task_id, token)
+
+    session.commit = fenced_commit
 
 
 def _normalized_publication_digest(markdown: str) -> str:
@@ -2339,6 +2402,7 @@ def _finish_model_task(task_id: str) -> None:
 )
 def process_realtime_model_task(self, task_id: str) -> bool:
     client: BailianClient | None = None
+    token = ""
     fallback_pending_ids: list[str] = []
     fallback_shard_ids: list[str] = []
     try:
@@ -2372,11 +2436,13 @@ def process_realtime_model_task(self, task_id: str) -> bool:
             task = session.get(ModelCleaningTask, task_id)
             if task is None:
                 return False
+            _install_task_fence(session, task_id, token)
             session.commit()
             counts = {"succeeded": 0, "excluded": 0, "review": 0, "failed": 0}
             usage = {"input_tokens": 0, "output_tokens": 0}
             for page in _iter_realtime_document_pages(session, batch.id):
                 for document in page:
+                    _renew_model_lease(session, task_id, token)
                     document.status = "model_processing"
                     document.stage = "model_running"
                     source_markdown = document.cleaned_markdown
@@ -2396,6 +2462,7 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                             prompt_version=task.prompt_version,
                         )
                         session.commit()
+                        _renew_model_lease(session, task_id, token)
                         payload, item_usage = _realtime_chat(client, request, model=task.model)
                         _apply_model_payload(
                             document,
@@ -2429,6 +2496,7 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                                 prompt_version=task.prompt_version,
                             )
                             session.commit()
+                            _renew_model_lease(session, task_id, token)
                             payload, item_usage = _realtime_chat(client, request, model=task.model)
                             _apply_model_payload(
                                 document,
@@ -2503,6 +2571,7 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                                     repair_hint=repair_hint,
                                 )
                                 session.commit()
+                                _renew_model_lease(session, task_id, token)
                                 payload, item_usage = _realtime_chat(
                                     client,
                                     request,
@@ -2556,10 +2625,11 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                                 source_chunking=source_chunking,
                             )
                     _count_model_result(counts, document)
-                    session.commit()
+                    _fenced_task_commit(session, task_id, token)
             task.result_counts = counts
             task.actual_usage = usage
-            session.commit()
+            task.status = "completed"
+            _fenced_task_commit(session, task_id, token, clear=True)
         _finish_model_task(task_id)
         return True
     except Exception as exc:
@@ -2567,6 +2637,13 @@ def process_realtime_model_task(self, task_id: str) -> bool:
         with SessionLocal() as session:
             task = session.get(ModelCleaningTask, task_id)
             if task is not None:
+                if (
+                    not token
+                    or task.lease_token != token
+                    or task.lease_expires_at is None
+                    or _lease_expired(task.lease_expires_at)
+                ):
+                    return False
                 task.status = "failed"
                 task.last_error = safe_exception_message(exc, limit=2000)
                 batch = session.get(CleaningBatch, task.batch_id)
@@ -2603,7 +2680,7 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                     ),
                     session=session,
                 )
-                session.commit()
+                _fenced_task_commit(session, task_id, token, clear=True)
         _queue_publication_outputs(fallback_pending_ids, fallback_shard_ids)
         return False
     finally:
@@ -2667,6 +2744,8 @@ def _recover_created_provider_batches(
     provider_batch_ids: list[str],
     provider_input_file_ids: list[str],
     reason: str,
+    *,
+    lease_token: str | None = None,
 ) -> bool | str:
     """Persist remote IDs after a commit failure in the create window."""
     if not provider_batch_ids:
@@ -2676,6 +2755,17 @@ def _recover_created_provider_batches(
             select(ModelCleaningTask).where(ModelCleaningTask.id == task_id).with_for_update()
         )
         if task is None:
+            return False
+        now = datetime.now(timezone.utc)
+        if lease_token is not None and (
+            task.lease_token != lease_token
+            or task.lease_expires_at is None
+            or _lease_expired(task.lease_expires_at, now)
+        ):
+            session.rollback()
+            return False
+        if task.status not in {"cancelled", "batch_uploading", "batch_running", "validating"}:
+            session.rollback()
             return False
         batch = session.get(CleaningBatch, task.batch_id)
         if task.status == "cancelled":
@@ -2715,6 +2805,7 @@ def _recover_created_provider_batches(
 )
 def submit_batch_model_task(self, task_id: str) -> bool:
     client: BailianClient | None = None
+    token = ""
     created_batch_ids: list[str] = []
     created_input_ids: list[str] = []
     fallback_pending_ids: list[str] = []
@@ -2726,6 +2817,29 @@ def submit_batch_model_task(self, task_id: str) -> bool:
             )
             if task is None or task.status not in {"approved", "batch_uploading"}:
                 return False
+            token = uuid.uuid4().hex
+            now = datetime.now(timezone.utc)
+            claimed = session.execute(
+                update(ModelCleaningTask)
+                .where(ModelCleaningTask.id == task_id)
+                .where(ModelCleaningTask.status.in_(("approved", "batch_uploading")))
+                .where(
+                    (ModelCleaningTask.lease_expires_at.is_(None))
+                    | (ModelCleaningTask.lease_expires_at < now)
+                )
+                .values(
+                    status="batch_uploading",
+                    lease_token=token,
+                    lease_expires_at=now + _MODEL_LEASE_TTL,
+                )
+            ).rowcount
+            if claimed != 1:
+                return False
+            task = session.get(ModelCleaningTask, task_id)
+            _install_task_fence(session, task_id, token)
+            # Persist the claim before validation so any early failure can
+            # still be fenced and terminalized by the exception path.
+            session.commit()
             if task.approval_fingerprint != task.candidate_fingerprint:
                 raise ValueError("候选集已变化，费用确认失效")
             batch = session.get(CleaningBatch, task.batch_id)
@@ -2753,6 +2867,7 @@ def submit_batch_model_task(self, task_id: str) -> bool:
             batch.status = "model_batch_uploading"
             session.commit()
             client = _client()
+            _renew_model_lease(session, task_id, token)
             if get_provider_batch_ids(task) or task.provider_input_file_ids:
                 task = session.scalar(
                     select(ModelCleaningTask)
@@ -2784,6 +2899,7 @@ def submit_batch_model_task(self, task_id: str) -> bool:
                 input_ids: list[str] = []
                 batch_ids: list[str] = []
                 for path in paths:
+                    _renew_model_lease(session, task_id, token)
                     task = session.scalar(
                         select(ModelCleaningTask)
                         .where(ModelCleaningTask.id == task_id)
@@ -2793,6 +2909,7 @@ def submit_batch_model_task(self, task_id: str) -> bool:
                         session.rollback()
                         return False
                     input_id = client.upload_batch_path(str(path))
+                    _renew_model_lease(session, task_id, token)
                     input_ids.append(input_id)
                     created_input_ids.append(input_id)
                     task = session.scalar(
@@ -2831,6 +2948,8 @@ def submit_batch_model_task(self, task_id: str) -> bool:
             task.provider_batch_id = batch_ids[0] if batch_ids else None
             task.status = "batch_running"
             batch.status = "model_batch_running"
+            task.lease_token = None
+            task.lease_expires_at = None
             for document in _iter_documents_for_batch(session, task.batch_id):
                 document.status = "model_processing"
                 document.stage = "model_batch_running"
@@ -2846,6 +2965,7 @@ def submit_batch_model_task(self, task_id: str) -> bool:
                     created_batch_ids,
                     created_input_ids,
                     "Batch 已在供应商创建，但本地提交失败；已恢复远端 ID 并继续轮询",
+                    lease_token=token,
                 )
             except Exception:
                 logger.exception("failed to recover provider batch IDs after commit failure")
@@ -2880,6 +3000,13 @@ def submit_batch_model_task(self, task_id: str) -> bool:
                 select(ModelCleaningTask).where(ModelCleaningTask.id == task_id).with_for_update()
             )
             if task:
+                if (
+                    not token
+                    or task.lease_token != token
+                    or task.lease_expires_at is None
+                    or _lease_expired(task.lease_expires_at)
+                ):
+                    return False
                 cancelled_task = task.status == "cancelled"
                 task.last_error = safe_exception_message(exc, limit=2000)
                 batch = session.get(CleaningBatch, task.batch_id)
@@ -2989,7 +3116,9 @@ def submit_batch_model_task(self, task_id: str) -> bool:
                             task.approval_fingerprint = ""
                             task.approved_at = None
                             batch.status = "processing"
-                session.commit()
+                task.lease_token = None
+                task.lease_expires_at = None
+                _fenced_task_commit(session, task_id, token, clear=True)
         _queue_publication_outputs(fallback_pending_ids, fallback_shard_ids)
         if replan_batch_id and not (fallback_pending_ids or fallback_shard_ids):
             maybe_plan_model_task(replan_batch_id)
@@ -3210,6 +3339,7 @@ def poll_batch_model_task(self, task_id: str) -> bool:
         lock_context.__exit__(None, None, None)
         return False
     client: BailianClient | None = None
+    token = ""
     fallback_pending_ids: list[str] = []
     fallback_shard_ids: list[str] = []
     created_repair_batch_ids: list[str] = []
@@ -3222,6 +3352,50 @@ def poll_batch_model_task(self, task_id: str) -> bool:
             )
             if task is None or task.status not in {"batch_running", "validating"}:
                 return False
+            token = uuid.uuid4().hex
+            claimed = session.execute(
+                update(ModelCleaningTask)
+                .where(ModelCleaningTask.id == task_id)
+                .where(ModelCleaningTask.status.in_(("batch_running", "validating")))
+                .where(
+                    (ModelCleaningTask.lease_expires_at.is_(None))
+                    | (ModelCleaningTask.lease_expires_at < datetime.now(timezone.utc))
+                )
+                .values(
+                    lease_token=token,
+                    lease_expires_at=datetime.now(timezone.utc) + _MODEL_LEASE_TTL,
+                )
+                .execution_options(synchronize_session=False)
+            ).rowcount
+            if claimed != 1:
+                return False
+            _renew_model_lease(session, task_id, token)
+            raw_commit = session.commit
+            session.info["_lease_raw_commit"] = raw_commit
+
+            def fenced_commit() -> None:
+                now = datetime.now(timezone.utc)
+                with session.no_autoflush:
+                    fenced = session.execute(
+                        update(ModelCleaningTask)
+                        .where(ModelCleaningTask.id == task_id)
+                        .where(ModelCleaningTask.lease_token == token)
+                        .where(ModelCleaningTask.lease_expires_at >= now)
+                        .where(ModelCleaningTask.status != "cancelled")
+                        .values(lease_expires_at=now + _MODEL_LEASE_TTL)
+                    ).rowcount
+                if fenced != 1:
+                    session.rollback()
+                    raise RuntimeError("模型任务租约已被其他 worker 接管")
+                try:
+                    raw_commit()
+                except Exception:
+                    session.rollback()
+                    raise
+
+            # Every later commit in this long polling workflow is fenced,
+            # including provider progress, fallback, retry and error paths.
+            session.commit = fenced_commit
             provider_batch_ids = get_provider_batch_ids(task)
             if not provider_batch_ids:
                 # A prior poll may have durably moved every provider Batch to
@@ -3252,6 +3426,7 @@ def poll_batch_model_task(self, task_id: str) -> bool:
             active_batch_ids: list[str] = []
             fetched_statuses: list[dict[str, Any]] = []
             for provider_batch_id in provider_batch_ids:
+                _renew_model_lease(session, task_id, token)
                 status = client.get_batch(provider_batch_id)
                 status = {**status, "provider_batch_id": provider_batch_id}
                 if str(status.get("status") or "") in PROVIDER_TERMINAL:
@@ -3303,7 +3478,11 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                     "provider_statuses": sorted(state_values),
                     "provider_request_counts": request_totals,
                 }
-                session.commit()
+                # Release between scheduled polls; the next delivery will
+                # claim a fresh token while this worker performs no more work.
+                task.lease_token = None
+                task.lease_expires_at = None
+                _fenced_task_commit(session, task_id, token, clear=True)
                 poll_batch_model_task.apply_async(
                     args=[task_id], queue="ai_model_batch", countdown=60
                 )
@@ -3422,7 +3601,9 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                         task.status = "batch_running"
                         if batch is not None:
                             batch.status = "model_batch_running"
-                        session.commit()
+                        task.lease_token = None
+                        task.lease_expires_at = None
+                        _fenced_task_commit(session, task_id, token, clear=True)
                         poll_batch_model_task.apply_async(
                             args=[task_id], queue="ai_model_batch", countdown=60
                         )
@@ -3824,7 +4005,9 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                     }
                     task.cleanup_status = "not_started"
                     task.status = "batch_running"
-                    session.commit()
+                    task.lease_token = None
+                    task.lease_expires_at = None
+                    _fenced_task_commit(session, task_id, token, clear=True)
                     _cleanup_provider_files_for_task(client, task_id, old_file_ids)
                     poll_batch_model_task.apply_async(
                         args=[task_id],
@@ -3900,6 +4083,7 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                     created_repair_batch_ids,
                     created_repair_input_ids,
                     "Batch 修复任务已在供应商创建，但本地提交失败；已恢复远端 ID 并继续轮询",
+                    lease_token=token,
                 )
             except Exception:
                 logger.exception("failed to recover repair provider batch IDs")
@@ -3931,13 +4115,18 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                     task is None
                     or task.status not in {"batch_running", "validating"}
                     or not get_provider_batch_ids(task, include_terminal=True)
+                    or not token
+                    or task.lease_token != token
+                    or _lease_expired(task.lease_expires_at)
                 ):
                     reschedule = False
                 else:
                     task.last_error = (
                         "Batch轮询暂时失败：" + safe_exception_message(exc, limit=1900)
                     )[:2000]
-                    session.commit()
+                    task.lease_token = None
+                    task.lease_expires_at = None
+                    _fenced_task_commit(session, task_id, token, clear=True)
         except Exception:
             logger.exception("failed to persist transient batch polling error")
         if reschedule:
@@ -3971,12 +4160,31 @@ def publish_dify_shard(self, shard_id: str) -> bool:
     cleanup_dataset_id = ""
     replaced_document_id = ""
     compensation_failed = False
+    token = uuid.uuid4().hex
+    lease_ttl = timedelta(minutes=30)
     try:
         with SessionLocal() as session:
+            now = datetime.now(timezone.utc)
+            claimed = session.execute(
+                update(DifyPublicationShard)
+                .where(DifyPublicationShard.id == shard_id)
+                .where(DifyPublicationShard.status == "shard_pending")
+                .where(
+                    (DifyPublicationShard.lease_expires_at.is_(None))
+                    | (DifyPublicationShard.lease_expires_at < now)
+                )
+                .values(
+                    status="shard_indexing",
+                    attempts=DifyPublicationShard.attempts + 1,
+                    lease_token=token,
+                    lease_expires_at=now + lease_ttl,
+                )
+            ).rowcount
+            if claimed != 1:
+                return False
             shard = session.scalar(
                 select(DifyPublicationShard)
                 .where(DifyPublicationShard.id == shard_id)
-                .with_for_update()
                 .options(
                     selectinload(DifyPublicationShard.file).selectinload(CleaningFile.batch),
                     selectinload(DifyPublicationShard.documents),
@@ -3986,8 +4194,62 @@ def publish_dify_shard(self, shard_id: str) -> bool:
             # must not republish a shard already being indexed; the
             # maintenance watchdog resets genuinely stale indexing rows back
             # to pending after its timeout.
-            if shard is None or shard.status != "shard_pending":
+            if shard is None:
                 return False
+
+            def renew_lease() -> None:
+                now = datetime.now(timezone.utc)
+                renewed = session.execute(
+                    update(DifyPublicationShard)
+                    .where(DifyPublicationShard.id == shard_id)
+                    .where(DifyPublicationShard.lease_token == token)
+                    .where(DifyPublicationShard.status == "shard_indexing")
+                    .where(DifyPublicationShard.lease_expires_at >= now)
+                    .values(lease_expires_at=now + lease_ttl)
+                ).rowcount
+                if renewed != 1:
+                    session.rollback()
+                    raise RuntimeError("Dify 分片租约已被其他 worker 接管")
+                session.commit()
+
+            def ensure_lease() -> None:
+                current = session.scalar(
+                    select(DifyPublicationShard.lease_token)
+                    .where(DifyPublicationShard.id == shard_id)
+                    .where(DifyPublicationShard.lease_token == token)
+                    .where(DifyPublicationShard.lease_expires_at >= datetime.now(timezone.utc))
+                )
+                if current != token:
+                    session.rollback()
+                    raise RuntimeError("Dify 分片租约已被其他 worker 接管")
+
+            # Every intermediate publication checkpoint is fenced.  This
+            # prevents a stale publisher from committing pending IDs or
+            # cleanup work after the watchdog has reassigned the shard.
+            raw_commit = session.commit
+
+            def fenced_commit() -> None:
+                current = session.get(DifyPublicationShard, shard_id)
+                if current is None:
+                    session.rollback()
+                    raise RuntimeError("Dify 分片不存在")
+                now = datetime.now(timezone.utc)
+                with session.no_autoflush:
+                    fenced = session.execute(
+                        update(DifyPublicationShard)
+                        .where(DifyPublicationShard.id == shard_id)
+                        .where(DifyPublicationShard.lease_token == token)
+                        .where(DifyPublicationShard.status == "shard_indexing")
+                        .where(DifyPublicationShard.lease_expires_at >= now)
+                        .values(lease_expires_at=now + lease_ttl)
+                    ).rowcount
+                if fenced != 1:
+                    session.rollback()
+                    raise RuntimeError("Dify 分片租约已被其他 worker 接管")
+                raw_commit()
+
+            session.commit = fenced_commit
+
             dataset_id = (
                 settings.dify_general_dataset_id
                 if shard.file.batch.knowledge_base_code == "general"
@@ -4005,8 +4267,6 @@ def publish_dify_shard(self, shard_id: str) -> bool:
             replaced_document_id = str(
                 shard_metadata.get("_replacement_document_id") or shard.dify_document_id or ""
             )
-            shard.status = "shard_indexing"
-            shard.attempts += 1
             for document in shard.documents:
                 document.status = "shard_indexing"
                 document.stage = "shard_indexing"
@@ -4078,7 +4338,9 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 document_id=document_id,
                 timeout_seconds=1800,
                 interval=2,
+                heartbeat=renew_lease,
             )
+            ensure_lease()
             structure = client.verify_document_structure(
                 document_id,
                 parent_mode="paragraph",
@@ -4107,6 +4369,7 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 document_id,
                 remote_metadata,
             )
+            ensure_lease()
             shard.dify_document_id = document_id
             shard.dify_batch_id = dify_batch_id
             shard_metadata.pop("_pending_dify_document_id", None)
@@ -4115,6 +4378,8 @@ def publish_dify_shard(self, shard_id: str) -> bool:
             shard.remote_parent_count = int(structure["parent_count"])
             shard.remote_child_count = int(structure["child_count"])
             shard.status = "succeeded"
+            shard.lease_token = None
+            shard.lease_expires_at = None
             shard.last_error = ""
             for document in shard.documents:
                 # A model task publishes one remote document per shard.  Keep
@@ -4149,6 +4414,26 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                             last_error="替换旧 Dify 文档，等待确认删除",
                         )
                     )
+            # Acquire the row lock with the token fence before flushing the
+            # terminal projection.  The conditional UPDATE is part of the
+            # same transaction, so a replacement worker cannot claim between
+            # the ownership check and this commit.
+            with session.no_autoflush:
+                fenced = session.execute(
+                    update(DifyPublicationShard)
+                    .where(DifyPublicationShard.id == shard_id)
+                    .where(DifyPublicationShard.lease_token == token)
+                    .where(DifyPublicationShard.status == "shard_indexing")
+                    .where(DifyPublicationShard.lease_expires_at >= datetime.now(timezone.utc))
+                    .values(
+                        status="succeeded",
+                        lease_token=None,
+                        lease_expires_at=None,
+                    )
+                ).rowcount
+            if fenced != 1:
+                session.rollback()
+                raise RuntimeError("Dify 分片租约已被其他 worker 接管")
             session.commit()
             if replaced_document_id and replaced_document_id != document_id:
                 try:
@@ -4184,6 +4469,39 @@ def publish_dify_shard(self, shard_id: str) -> bool:
         with SessionLocal() as session:
             shard = session.get(DifyPublicationShard, shard_id)
             if shard:
+                if compensation_failed and created_id:
+                    existing_cleanup = session.scalar(
+                        select(ExternalDeletionTask)
+                        .where(
+                            ExternalDeletionTask.kind == "dify_document",
+                            ExternalDeletionTask.external_id == created_id,
+                        )
+                        .limit(1)
+                    )
+                    if existing_cleanup is None:
+                        session.add(
+                            ExternalDeletionTask(
+                                kind="dify_document",
+                                external_id=created_id,
+                                payload={"dataset_id": cleanup_dataset_id},
+                                attempts=0,
+                                last_error="Dify 分片补偿删除失败，等待精确清理",
+                            )
+                        )
+                # A superseded worker must never overwrite the replacement's
+                # state.  It may only compensate the exact remote ID it
+                # created before losing the lease.
+                with session.no_autoflush:
+                    fenced = session.execute(
+                        update(DifyPublicationShard)
+                        .where(DifyPublicationShard.id == shard_id)
+                        .where(DifyPublicationShard.lease_token == token)
+                        .where(DifyPublicationShard.lease_expires_at >= datetime.now(timezone.utc))
+                        .values(lease_token=None, lease_expires_at=None)
+                    ).rowcount
+                if fenced != 1:
+                    session.commit()
+                    return False
                 # If a new remote document was created and then failed during
                 # indexing/metadata, it was compensated above.  Restore the
                 # prior remote ID (if any) so the retry can replace it rather
@@ -4195,20 +4513,9 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                     metadata = dict(shard.metadata_json or {})
                     metadata.pop("_pending_dify_document_id", None)
                     shard.metadata_json = metadata
-                if compensation_failed and created_id:
-                    # Keep a durable exact cleanup target when compensation
-                    # itself failed; the external-deletion worker can retry
-                    # it after this task has been marked pending/failed.
-                    session.add(
-                        ExternalDeletionTask(
-                            kind="dify_document",
-                            external_id=created_id,
-                            payload={"dataset_id": cleanup_dataset_id},
-                            attempts=0,
-                            last_error="发布异常后的 Dify 文档补偿删除失败，等待重试",
-                        )
-                    )
                 shard.status = "shard_pending" if shard.attempts < 2 else "failed"
+                shard.lease_token = None
+                shard.lease_expires_at = None
                 shard.last_error = safe_exception_message(exc, limit=2000)
                 for document in shard.documents:
                     document.status = "shard_pending" if shard.attempts < 2 else "failed"
