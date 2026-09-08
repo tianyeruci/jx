@@ -2,13 +2,6 @@
 
 This is a semantic change log, not a copy of Git diff.
 
-## 2026-08-31 — 高风险任务租约与 Dify 分片 fencing 修复
-
-- **Purpose:** 修复独立 review 发现的取消竞态、Batch recovery 越权恢复、Dify 补偿重复唯一键、空正文双提交及分片中间提交未 fencing 问题。
-- **After:** 模型任务 fenced commit 现在校验取消状态；provider batch recovery 校验调用方 token、租约有效期和允许状态；Dify 分片发布的中间 checkpoint 统一校验 shard lease；补偿删除任务按 kind/external_id 幂等插入；清洗空正文和禁用策略分支使用单次事件/租约提交。
-- **Validation:** 竞态/恢复 focused 测试通过；完整 `gov.ps1 quality` 通过。测试中发现并修复 SQLite naive/aware 时间比较问题后重跑通过。
-- **Notes:** 本次未新增或修改 migration；现有 Dify shard lease schema 变更属于此前工作树内容，若继续扩展需另行更新并重新批准实现契约。
-
 ## 2026-08-22T10:04:52+08:00 — jx 远端已备份并启用千问 Batch，核心服务完成强制重建
 
 - **Purpose:** 按用户确认把本地策略落实到 jx，并保留可定位的配置回滚点。
@@ -1018,3 +1011,42 @@ This is a semantic change log, not a copy of Git diff.
   - `测试111.md`
   - `测试2.md`
   - `测试66.md`
+
+## 2026-09-05T19:13:48+08:00 — quick发布新增iter_documents签名门禁；Batch保持开启并刷新Batch与Realtime价格快照，jx完整发布和验收通过。
+
+- **Purpose:** quick发布新增iter_documents签名门禁；Batch保持开启并刷新Batch与Realtime价格快照，jx完整发布和验收通过。
+- **Affected modules:**
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `scripts/jx_quick_deploy.sh`
+
+## 2026-09-05T19:26:16+08:00 — 本次仅知识库管理 502 的完整同源 wheel 发布和只读验收通过；Batch 保持启用，Batch/Realtime 基础价格快照已刷新，Realtime/Batch Worker 运行正常。本轮未执行四策略真实 Batch 对照，该专项验收缺口保持不变。
+
+- **Purpose:** 本次仅知识库管理 502 的完整同源 wheel 发布和只读验收通过；Batch 保持启用，Batch/Realtime 基础价格快照已刷新，Realtime/Batch Worker 运行正常。本轮未执行四策略真实 Batch 对照，该专项验收缺口保持不变。
+- **Affected modules:**
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `scripts/jx_quick_deploy.sh`
+
+## 2026-09-05T19:35:57+08:00 — 本次仅知识库管理 502 的完整同源 wheel 发布和只读验收通过；Batch/Realtime 配置与 Worker 就绪。四策略真实 Batch 对照仍未执行，专项缺口保持不变。
+
+- **Purpose:** 本次仅知识库管理 502 的完整同源 wheel 发布和只读验收通过；Batch/Realtime 配置与 Worker 就绪。四策略真实 Batch 对照仍未执行，专项缺口保持不变。
+- **Affected modules:**
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `scripts/jx_quick_deploy.sh`

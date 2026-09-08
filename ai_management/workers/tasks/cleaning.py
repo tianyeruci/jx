@@ -53,15 +53,6 @@ from ...services.observability.events import (
 )
 from ..celery_app import celery_app
 
-
-def _lease_active(value: datetime | None) -> bool:
-    if value is None:
-        return False
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value >= datetime.now(timezone.utc)
-
-
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
@@ -1161,7 +1152,6 @@ def _publish_source_file_unlocked(
     acks_late=True,
 )
 def process_cleaning_file(self, file_id: str) -> bool:
-    token = ""
     try:
         with SessionLocal() as session:
             row = session.scalar(
@@ -1193,61 +1183,6 @@ def process_cleaning_file(self, file_id: str) -> bool:
             ).rowcount
             if claimed != 1:
                 return False
-
-            raw_commit = session.commit
-
-            def fenced_commit() -> None:
-                now = datetime.now(timezone.utc)
-                clear = row.status in {
-                    "succeeded",
-                    "failed",
-                    "mixed",
-                    "review_required",
-                    "awaiting_model",
-                    "staged",
-                    "excluded",
-                }
-                values = {"lease_expires_at": None if clear else now + timedelta(minutes=30)}
-                if clear:
-                    values["lease_token"] = None
-                with session.no_autoflush:
-                    fenced = session.execute(
-                        update(CleaningFile)
-                        .where(CleaningFile.id == file_id)
-                        .where(CleaningFile.lease_token == token)
-                        .where(CleaningFile.lease_expires_at >= now)
-                        .values(**values)
-                        .execution_options(synchronize_session=False)
-                    ).rowcount
-                if fenced != 1:
-                    session.rollback()
-                    raise RuntimeError("清洗文件租约已被其他 worker 接管")
-                try:
-                    raw_commit()
-                except Exception:
-                    session.rollback()
-                    raise
-
-            # All writes after the claim, including intermediate document
-            # creation and terminal state, must be fenced by this lease.
-            session.commit = fenced_commit
-
-            def renew_lease() -> None:
-                now = datetime.now(timezone.utc)
-                renewed = session.execute(
-                    update(CleaningFile)
-                    .where(CleaningFile.id == file_id)
-                    .where(CleaningFile.lease_token == token)
-                    .where(CleaningFile.lease_expires_at >= now)
-                    .values(lease_expires_at=now + timedelta(minutes=30))
-                    .execution_options(synchronize_session=False)
-                ).rowcount
-                if renewed != 1:
-                    session.rollback()
-                    raise RuntimeError("清洗文件租约已被其他 worker 接管")
-                session.commit()
-
-            renew_lease()
             session.expire(row)
             row = session.scalar(
                 select(CleaningFile)
@@ -1277,8 +1212,6 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     resource_id=file_id,
                     session=session,
                 )
-                row.lease_token = None
-                row.lease_expires_at = None
                 session.commit()
                 return True
             strategy = STRATEGY_REGISTRY.get(batch.strategy_code)
@@ -1318,7 +1251,6 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 ]
             else:
                 assert strategy is not None
-                renew_lease()
                 cleaned_documents = strategy.clean(target, row.original_filename)
             if not cleaned_documents:
                 row.status = "failed"
@@ -1328,6 +1260,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 row.error_message = "清洗策略没有生成可入库正文"
                 _refresh_file_state(session, row.id, commit=False)
                 _finish_batch(session, row.batch_id)
+                session.commit()
                 record_event(
                     level="ERROR",
                     category="task",
@@ -1339,8 +1272,6 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     resource_id=file_id,
                     session=session,
                 )
-                row.lease_token = None
-                row.lease_expires_at = None
                 session.commit()
                 return True
             if batch.strategy_code == "recent_activity":
@@ -1632,7 +1563,6 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 pending_documents = []
                 session.commit()
             if pending_documents:
-                renew_lease()
                 ordered_ids = (
                     _course_document_publish_order(pending_documents)
                     if batch.strategy_code == "course_information"
@@ -1677,8 +1607,6 @@ def process_cleaning_file(self, file_id: str) -> bool:
             )
             _refresh_file_state(session, row.id, commit=False)
             _finish_batch(session, row.batch_id)
-            row.lease_token = None
-            row.lease_expires_at = None
             session.commit()
             if awaiting_model_documents:
                 from .model_cleaning import maybe_plan_model_task
@@ -1713,10 +1641,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
         sensitive_values: tuple[str, ...] = ()
         with SessionLocal() as session:
             row = session.get(CleaningFile, file_id)
-            owns_lease = bool(
-                row and token and row.lease_token == token and _lease_active(row.lease_expires_at)
-            )
-            if row and owns_lease:
+            if row:
                 failure_context = {
                     "file_id": row.id,
                     "batch_id": row.batch_id,
@@ -1756,20 +1681,6 @@ def process_cleaning_file(self, file_id: str) -> bool:
                         **failure_context,
                     )["exception_message"]
                 _finish_batch(session, row.batch_id)
-                with session.no_autoflush:
-                    fenced = session.execute(
-                        update(CleaningFile)
-                        .where(CleaningFile.id == file_id)
-                        .where(CleaningFile.lease_token == token)
-                        .where(CleaningFile.lease_expires_at >= datetime.now(timezone.utc))
-                        .values(lease_token=None, lease_expires_at=None)
-                        .execution_options(synchronize_session=False)
-                    ).rowcount
-                if fenced != 1:
-                    session.rollback()
-                    return False
-                row.lease_token = None
-                row.lease_expires_at = None
                 session.commit()
                 if retry:
                     raise self.retry(exc=exc, countdown=10, max_retries=1)

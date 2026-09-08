@@ -9,6 +9,7 @@ class ServiceError(Exception):
     message: str
     status_code: int = 400
     retryable: bool = False
+    diagnostic_details: dict[str, object] | None = None
 
     def __str__(self) -> str:
         return self.message
@@ -20,4 +21,3 @@ def dify_error(message: str, *, timeout: bool = False, rate_limited: bool = Fals
     if timeout:
         return ServiceError("DIFY_TIMEOUT", "AI服务响应超时，请稍后重试", 504, True)
     return ServiceError("DIFY_UNAVAILABLE", "AI服务暂时不可用，请稍后重试", 502, True)
-

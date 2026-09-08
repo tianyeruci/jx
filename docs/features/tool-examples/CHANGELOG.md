@@ -774,3 +774,45 @@ This is a semantic change log, not a copy of Git diff.
 - **Changed paths:**
   - `AI管理服务当前状态与后续测试交接.md`
   - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-05T19:14:01+08:00 — 测试页知识库读取改为受控 HTTP 错误摘要并保留 request_id，不再向页面暴露内部 URL、响应体或 Streamlit traceback；jx 真实测试页 general 三轮与 course 空列表验收通过。
+
+- **Purpose:** 测试页知识库读取改为受控 HTTP 错误摘要并保留 request_id，不再向页面暴露内部 URL、响应体或 Streamlit traceback；jx 真实测试页 general 三轮与 course 空列表验收通过。
+- **Affected modules:**
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `ai_management/test_ui.py`
+
+## 2026-09-05T19:26:28+08:00 — 测试页知识库读取的安全错误摘要和 general/course 只读验收通过；本轮未执行四策略真实 Batch 对照。滚动交接仅保留 0.85 为当前最新，旧章节移除过期当前标签。
+
+- **Purpose:** 测试页知识库读取的安全错误摘要和 general/course 只读验收通过；本轮未执行四策略真实 Batch 对照。滚动交接仅保留 0.85 为当前最新，旧章节移除过期当前标签。
+- **Affected modules:**
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `ai_management/test_ui.py`
+
+## 2026-09-05T19:36:11+08:00 — 滚动交接仅顶部 0.85 保留当前状态标签；所有旧章节移除当前最新、当前任务、当前开发状态、当前及当前网络最新后缀，实际资产文件名保持不变；测试页安全错误和知识库只读验收结论不变。
+
+- **Purpose:** 滚动交接仅顶部 0.85 保留当前状态标签；所有旧章节移除当前最新、当前任务、当前开发状态、当前及当前网络最新后缀，实际资产文件名保持不变；测试页安全错误和知识库只读验收结论不变。
+- **Affected modules:**
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `ai_management/test_ui.py`

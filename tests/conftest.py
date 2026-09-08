@@ -14,9 +14,7 @@ else:
     # A timed-out pytest process can retain SQLite's journal/lock.  Keep an
     # explicit override for debugging, but isolate the normal test session so
     # sequential or accidentally overlapping runners never share one file.
-    TEST_DATABASE_PATH = (
-        Path(tempfile.gettempdir()) / f"jx-now-test-ai-management-{os.getpid()}.db"
-    )
+    TEST_DATABASE_PATH = Path(tempfile.gettempdir()) / f"jx-now-test-ai-management-{os.getpid()}.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DATABASE_PATH.as_posix()}"
 os.environ["REDIS_URL"] = "redis://127.0.0.1:6399/15"
 os.environ["INTERNAL_API_TOKEN"] = "test-internal-token"
@@ -26,6 +24,7 @@ os.environ["DIFY_BUSINESS_APP_API_KEY"] = "test-business-key"
 os.environ["DIFY_MOMENTS_APP_API_KEY"] = "test-moments-key"
 os.environ["DIFY_WRITING_APP_API_KEY"] = "test-writing-key"
 os.environ["DIFY_SUMMARY_PROFILE_APP_API_KEY"] = "test-summary-key"
+os.environ["DIFY_KNOWLEDGE_API_KEY"] = "test-knowledge-key"
 
 
 @pytest.fixture()

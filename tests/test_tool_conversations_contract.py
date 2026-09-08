@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,6 +13,7 @@ from ai_management.schemas import MomentsRunRequest, WritingRunRequest
 from ai_management.security import user_hash
 from ai_management.services import tool_conversations
 from ai_management.services.tool_conversations import is_reset_intent
+from ai_management.timeutil import BUSINESS_TIMEZONE
 
 HEADERS = {
     "X-Internal-Token": "test-internal-token",
@@ -77,7 +78,10 @@ def test_reset_intent_does_not_accept_unapproved_variants(phrase):
 def test_current_lazily_expires_previous_beijing_day_and_queues_exact_delete(
     service_db, monkeypatch
 ):
-    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+    business_day = date(2026, 9, 8)
+    yesterday = datetime.combine(
+        business_day - timedelta(days=1), time(23, 59, 59), tzinfo=BUSINESS_TIMEZONE
+    ).astimezone(timezone.utc)
     with service_db() as session:
         row = ToolConversation(
             user_hash=user_hash("user"),
@@ -88,9 +92,7 @@ def test_current_lazily_expires_previous_beijing_day_and_queues_exact_delete(
         )
         session.add(row)
         session.commit()
-        monkeypatch.setattr(
-            tool_conversations, "business_today", lambda: (yesterday + timedelta(days=1)).date()
-        )
+        monkeypatch.setattr(tool_conversations, "business_today", lambda: business_day)
         assert tool_conversations.current(session, "user", "moments")["conversation_id"] is None
         assert session.scalar(select(ToolConversation).where(ToolConversation.id == row.id)) is None
         task = session.scalar(
@@ -100,6 +102,39 @@ def test_current_lazily_expires_previous_beijing_day_and_queues_exact_delete(
             )
         )
         assert task is not None
+
+
+def test_current_keeps_conversation_at_current_beijing_day_midnight(service_db, monkeypatch):
+    business_day = date(2026, 9, 8)
+    current_day_midnight = datetime.combine(
+        business_day, time.min, tzinfo=BUSINESS_TIMEZONE
+    ).astimezone(timezone.utc)
+    with service_db() as session:
+        row = ToolConversation(
+            user_hash=user_hash("user"),
+            kind="moments",
+            tool_type="sales",
+            dify_conversation_id="dify-current",
+            last_active_at=current_day_midnight,
+        )
+        session.add(row)
+        session.commit()
+        monkeypatch.setattr(tool_conversations, "business_today", lambda: business_day)
+
+        assert tool_conversations.current(session, "user", "moments")["conversation_id"] == row.id
+        assert (
+            session.scalar(select(ToolConversation).where(ToolConversation.id == row.id))
+            is not None
+        )
+        assert (
+            session.scalar(
+                select(ExternalDeletionTask).where(
+                    ExternalDeletionTask.kind == "dify_tool_conversation",
+                    ExternalDeletionTask.external_id == "dify-current",
+                )
+            )
+            is None
+        )
 
 
 def test_reset_route_closes_current_session_and_old_path_is_not_found(service_db):

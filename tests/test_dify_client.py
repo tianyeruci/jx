@@ -1,6 +1,8 @@
+import inspect
 import json
 
 import httpx
+import pytest
 
 from dify_client import (
     SSEDecoder,
@@ -10,6 +12,90 @@ from dify_client import (
     normalize_and_validate_inputs,
 )
 from knowledge_cleaner.dify import DifyKnowledgeClient
+
+
+def _client_for_pages(handler):
+    return DifyKnowledgeClient(
+        "http://dify.local",
+        "test-key",
+        "dataset",
+        transport=httpx.MockTransport(handler),
+    )
+
+
+def test_iter_documents_runtime_signature_accepts_paging_limits():
+    signature = inspect.signature(DifyKnowledgeClient.iter_documents)
+    signature.bind(object(), max_pages=1, max_items=1)
+
+    def old_iter(self, *, page_size=100):
+        yield {}
+
+    with pytest.raises(TypeError):
+        inspect.signature(old_iter).bind(object(), max_pages=1, max_items=1)
+
+
+def test_iter_documents_honors_max_pages_and_max_items():
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"data": [{"id": str(len(requests))}], "has_more": True},
+            request=request,
+        )
+
+    client = _client_for_pages(handler)
+    try:
+        with pytest.raises(RuntimeError, match="最大页数"):
+            list(client.iter_documents(max_pages=2))
+        assert len(requests) == 2
+    finally:
+        client.close()
+
+    client = _client_for_pages(
+        lambda request: httpx.Response(
+            200,
+            json={"data": [{"id": "1"}, {"id": "2"}], "has_more": False},
+            request=request,
+        )
+    )
+    try:
+        with pytest.raises(RuntimeError, match="最大限制"):
+            list(client.iter_documents(max_items=1))
+    finally:
+        client.close()
+
+
+def test_iter_documents_rejects_empty_page_with_has_more():
+    client = _client_for_pages(
+        lambda request: httpx.Response(
+            200,
+            json={"data": [], "has_more": True},
+            request=request,
+        )
+    )
+    try:
+        with pytest.raises(RuntimeError, match="空页"):
+            list(client.iter_documents())
+    finally:
+        client.close()
+
+
+def test_iter_documents_aggregates_multiple_pages():
+    def handler(request):
+        page = int(request.url.params["page"])
+        return httpx.Response(
+            200,
+            json={"data": [{"id": str(page)}], "has_more": page < 2},
+            request=request,
+        )
+
+    client = _client_for_pages(handler)
+    try:
+        assert [item["id"] for item in client.iter_documents()] == ["1", "2"]
+    finally:
+        client.close()
 
 
 def test_knowledge_delete_treats_missing_remote_document_as_success():

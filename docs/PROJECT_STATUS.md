@@ -7,9 +7,9 @@
 | Feature | Title | Kind | Status | Risk | Module progress | Docs | Updated |
 |---|---|---|---|---|---|---|---|
 | moments-ip-methodology | 朋友圈顾问 IP 方法论 Prompt 与案例增量 | engineering-change | stale_requirements | standard | 0/4 | current | 2026-08-30T15:33:18+08:00 |
-| qwen-batch-cleaning | 千问 Batch 清洗策略验证与轮询修复 | engineering-change | done | high | 0/8 | stale | 2026-08-31T18:15:12+08:00 |
-| recent-activity | 最近活动清洗与商业顾问 Chatflow 接入 | feature | stale_requirements | high | 0/4 | stale | 2026-08-31T18:15:15+08:00 |
-| tool-examples | 朋友圈与日常写作可配置案例目录 | feature | done | standard | 4/7 | stale | 2026-08-31T18:15:16+08:00 |
+| qwen-batch-cleaning | 千问 Batch 清洗策略验证与轮询修复 | engineering-change | done | high | 0/8 | current | 2026-09-08T02:55:46+08:00 |
+| recent-activity | 最近活动清洗与商业顾问 Chatflow 接入 | feature | stale_requirements | high | 0/4 | stale | 2026-09-08T02:55:49+08:00 |
+| tool-examples | 朋友圈与日常写作可配置案例目录 | feature | done | standard | 3/7 | current | 2026-09-08T02:55:51+08:00 |
 
 ## Functional Module Progress
 
@@ -29,11 +29,11 @@
 | model-cleaning-policy | verified | AC-001, AC-004, AC-005 | 取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。 | `ai_management/model_cleaning.py`<br>`ai_management/config.py` |
 | model-cleaning-orchestration | verified | AC-002, AC-004, AC-005, AC-006 | 取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。 | `ai_management/workers/tasks/model_cleaning.py`<br>`ai_management/services/bailian_cleanup.py` |
 | model-cleaning-contract-tests | verified | AC-001, AC-002, AC-003, AC-004 | 取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。 | `tests/test_model_cleaning_workflow.py` |
-| jx-cleaning-acceptance | verified | AC-005, AC-006 | 四个内容清洗策略继续保留实时/Batch配置，最近活动固定实时；实时与Batch共用temperature 0.01、seed 1234、enable_thinking false和JSON object请求体；活动列表/详情DSL已发布并验证环境变量默认10。验收脚本补齐源树预算模块、咨询多案例子文档命名契约，Dify SSE安全证据已生成；四策略真实Batch对照仍待jx部署后按100候选阈值完成。 | `scripts/jx_*.sh` |
-| activity-chatflow | verified | AC-001, AC-002, AC-003 | 四个内容清洗策略继续保留实时/Batch配置，最近活动固定实时；实时与Batch共用temperature 0.01、seed 1234、enable_thinking false和JSON object请求体；活动列表/详情DSL已发布并验证环境变量默认10。验收脚本补齐源树预算模块、咨询多案例子文档命名契约，Dify SSE安全证据已生成；四策略真实Batch对照仍待jx部署后按100候选阈值完成。 | `dify/商业顾问（当前使用版本）.yml`<br>`dify/商业顾问_统一修复版_Dify-1.13.3.yml`<br>`tests/test_dify_activity_contract.py`<br>`tests/test_business_advisor_unified_dsl.py` |
+| jx-cleaning-acceptance | in_progress | AC-005, AC-006 | 本次仅知识库管理 502 的完整同源 wheel 发布和只读验收通过；Batch/Realtime 配置与 Worker 就绪。四策略真实 Batch 对照仍未执行，专项缺口保持不变。 | `scripts/jx_*.sh` |
+| activity-chatflow | in_progress | AC-001, AC-002, AC-003 | 四个内容清洗策略继续保留实时/Batch配置，最近活动固定实时；实时与Batch共用temperature 0.01、seed 1234、enable_thinking false和JSON object请求体；活动列表/详情DSL已发布并验证环境变量默认10。验收脚本补齐源树预算模块、咨询多案例子文档命名契约，Dify SSE安全证据已生成；四策略真实Batch对照仍待jx部署后按100候选阈值完成。 | `dify/商业顾问（当前使用版本）.yml`<br>`dify/商业顾问_统一修复版_Dify-1.13.3.yml`<br>`tests/test_dify_activity_contract.py`<br>`tests/test_business_advisor_unified_dsl.py` |
 | strategy-contracts | verified | AC-005, AC-008, AC-009 | 取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。 | `ai_management/cleaning.py`<br>`ai_management/activity_cleaning.py`<br>`knowledge_cleaner/dify.py` |
 | cleaning-contract-tests | verified | AC-004, AC-005, AC-006, AC-008, AC-009 | 取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。 | `tests/test_model_cleaning_workflow.py`<br>`tests/test_large_scale_cleaning.py`<br>`tests/test_activity_cleaning.py`<br>`tests/test_release_acceptance_contract.py` |
-| jx-acceptance-docs | verified | AC-007, AC-008, AC-010 | 四个内容清洗策略继续保留实时/Batch配置，最近活动固定实时；实时与Batch共用temperature 0.01、seed 1234、enable_thinking false和JSON object请求体；活动列表/详情DSL已发布并验证环境变量默认10。验收脚本补齐源树预算模块、咨询多案例子文档命名契约，Dify SSE安全证据已生成；四策略真实Batch对照仍待jx部署后按100候选阈值完成。 | `scripts/jx_*.sh`<br>`docs/features/qwen-batch-cleaning/**`<br>`docs/features/recent-activity/**`<br>`var/reports/**` |
+| jx-acceptance-docs | in_progress | AC-007, AC-008, AC-010 | 本次仅知识库管理 502 的完整同源 wheel 发布和只读验收通过；Batch/Realtime 配置与 Worker 就绪。四策略真实 Batch 对照仍未执行，专项缺口保持不变。 | `scripts/jx_*.sh`<br>`docs/features/qwen-batch-cleaning/**`<br>`docs/features/recent-activity/**`<br>`var/reports/**` |
 
 ### recent-activity — 最近活动清洗与商业顾问 Chatflow 接入
 
@@ -41,7 +41,7 @@
 |---|---|---|---|---|
 | activity-cleaning | verified | AC-001, AC-002, AC-003, AC-004 | 共享清理生命周期在取消异常时保留精确远端引用并可由 maintenance 重建；recent_activity 业务语义未改变。 | `ai_management/activity_cleaning.py`<br>`ai_management/cleaning.py`<br>`Other/event_rag_cleaner/**`<br>`tests/test_activity_cleaning.py` |
 | cleaning-publication | verified | AC-002, AC-004 | 共享清理生命周期在取消异常时保留精确远端引用并可由 maintenance 重建；recent_activity 业务语义未改变。 | `ai_management/workers/tasks/cleaning.py`<br>`knowledge_cleaner/dify.py` |
-| activity-chatflow | verified | AC-005, AC-006, AC-007 | 活动查询现在按自然表达识别列表与命名详情；详情走无时间窗口状态检索并支持第1至第5个序号；列表默认10条逐行输出名称、时间、状态，ACTIVITY_MAX_RESULTS可配置；最近活动保持实时Qwen。Dify发布后验证了最近/最新/全部活动与命名详情SSE形状。 | `dify/商业顾问（当前使用版本）.yml`<br>`tests/test_dify_activity_contract.py`<br>`dify/商业顾问_统一修复版_Dify-1.13.3.yml`<br>`tests/test_business_advisor_unified_dsl.py` |
+| activity-chatflow | in_progress | AC-005, AC-006, AC-007 | 活动查询现在按自然表达识别列表与命名详情；详情走无时间窗口状态检索并支持第1至第5个序号；列表默认10条逐行输出名称、时间、状态，ACTIVITY_MAX_RESULTS可配置；最近活动保持实时Qwen。Dify发布后验证了最近/最新/全部活动与命名详情SSE形状。 | `dify/商业顾问（当前使用版本）.yml`<br>`tests/test_dify_activity_contract.py`<br>`dify/商业顾问_统一修复版_Dify-1.13.3.yml`<br>`tests/test_business_advisor_unified_dsl.py` |
 | activity-validation-docs | verified | AC-008 | 本次文档清洗修复未改变 recent_activity 语义、实现边界或 DSL；仅同步共享工作树的治理指纹。 | `docs/features/recent-activity/**`<br>`ai_management.zip` |
 
 ### tool-examples — 朋友圈与日常写作可配置案例目录
@@ -52,9 +52,9 @@
 | examples-contracts | done | AC-001, AC-003, AC-004 | 工具会话 run 顶层 conversation_id、reset 后重新选型、并发安全和精确迁移兼容已发布到 jx；测试页验证朋友圈与日常写作 SSE/重置链路，商业顾问隔离不变。 | `ai_management/schemas.py` |
 | examples-api | verified | AC-001, AC-003, AC-004, AC-005 | 工具会话 run 顶层 conversation_id、reset 后重新选型、并发安全和精确迁移兼容已发布到 jx；测试页验证朋友圈与日常写作 SSE/重置链路，商业顾问隔离不变。 | `ai_management/api/routers/tools.py` |
 | examples-admin-api | done | AC-003, AC-004 | - | `ai_management/api/routers/admin_management.py` |
-| examples-ui | done | AC-002, AC-005 | 工具会话 run 顶层 conversation_id、reset 后重新选型、并发安全和精确迁移兼容已发布到 jx；测试页验证朋友圈与日常写作 SSE/重置链路，商业顾问隔离不变。 | `ai_management/test_ui.py` |
+| examples-ui | in_progress | AC-002, AC-005 | 滚动交接仅顶部 0.85 保留当前状态标签；所有旧章节移除当前最新、当前任务、当前开发状态、当前及当前网络最新后缀，实际资产文件名保持不变；测试页安全错误和知识库只读验收结论不变。 | `ai_management/test_ui.py` |
 | examples-tests | done | AC-001, AC-003, AC-004, AC-005, AC-006 | 本次发布仅涉及运行时区和清洗命名，工具会话及 DSL 业务语义不变。 | `tests/test_tool_examples.py`<br>`tests/test_app_routing.py`<br>`tests/test_v2_hardening.py`<br>`tests/test_cleaning_release_contract.py` |
-| examples-docs | verified | AC-006 | 本次发布仅涉及运行时区和清洗命名，工具会话及 DSL 业务语义不变。 | `docs/小程序后端与 AI 管理服务接口对接交互版本.md`<br>`docs/小程序后端与AI管理服务接口对接标准.md`<br>`docs/API与SSE说明.md`<br>`docs/功能与接口索引.md`<br>`docs/README.md`<br>`docs/Dify创建导入绑定与契约测试.md`<br>`docs/architecture/PROFILE.md`<br>`AI管理服务当前状态与后续测试交接.md` |
+| examples-docs | in_progress | AC-006 | 滚动交接仅顶部 0.85 保留当前状态标签；所有旧章节移除当前最新、当前任务、当前开发状态、当前及当前网络最新后缀，实际资产文件名保持不变；测试页安全错误和知识库只读验收结论不变。 | `docs/小程序后端与 AI 管理服务接口对接交互版本.md`<br>`docs/小程序后端与AI管理服务接口对接标准.md`<br>`docs/API与SSE说明.md`<br>`docs/功能与接口索引.md`<br>`docs/README.md`<br>`docs/Dify创建导入绑定与契约测试.md`<br>`docs/architecture/PROFILE.md`<br>`AI管理服务当前状态与后续测试交接.md` |
 
 ## Status
 

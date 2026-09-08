@@ -61,6 +61,12 @@ die() {
   exit 1
 }
 
+runtime_contract_probe() {
+  local image="$1"
+  docker run --rm "$image" python -c \
+    "import inspect; from knowledge_cleaner.dify import DifyKnowledgeClient; inspect.signature(DifyKnowledgeClient.iter_documents).bind(object(), max_pages=1, max_items=1)"
+}
+
 compose() {
   docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml --profile test "$@"
 }
@@ -365,9 +371,16 @@ printf 'current_ui_image=%s\n' "$CURRENT_UI_IMAGE"
 printf 'current_ocr_image=%s\n' "$CURRENT_OCR_IMAGE"
 printf 'data_mode=%s\n' "$DATA_MODE"
 if test "$PLAN_ONLY" -eq 1; then
+  if runtime_contract_probe "$CURRENT_CORE_IMAGE" >/dev/null 2>&1; then
+    printf 'runtime_contract=ok\n'
+  else
+    printf 'runtime_contract=failed\n'
+    printf '%s\n' 'WARNING: full-wheel-deployment-required (current core has an incompatible knowledge_cleaner contract)' >&2
+  fi
   exit 0
 fi
 
+runtime_contract_probe "$CURRENT_CORE_IMAGE" || die "runtime contract failed; full-wheel-deployment-required"
 bash "$RESOURCE_GUARD" check --phase=quick-deploy
 pause_ocr_autoscaler
 
@@ -412,6 +425,7 @@ WHEEL_REPLACED=1
 bash "$RESOURCE_GUARD" run --phase=quick-core-build -- \
 docker build --pull=false -f Dockerfile.offline -t "$CORE_IMAGE" . \
   > "$REPORT_DIR/core-build.log" 2>&1
+runtime_contract_probe "$CORE_IMAGE" || die "new core runtime contract failed; refusing service switch"
 bash "$RESOURCE_GUARD" run --phase=quick-ui-build -- \
 docker build --pull=false -f Dockerfile.ui-offline -t "$UI_IMAGE" . \
   > "$REPORT_DIR/ui-build.log" 2>&1

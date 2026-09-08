@@ -1,6 +1,7 @@
 import ast
 from pathlib import Path
 
+import httpx
 import pytest
 
 test_ui = pytest.importorskip("ai_management.test_ui")
@@ -100,6 +101,129 @@ def test_load_all_cleaning_items_follows_cursor_pages(monkeypatch):
     assert result["total_count"] == 2
     assert result["next_cursor"] is None
     assert calls[1]["params"]["cursor"] == "cursor-1"
+
+
+def test_api_json_structured_error_is_actionable_without_sensitive_response_fields(monkeypatch):
+    request = httpx.Request(
+        "GET", "http://ai-management-api:8000/internal/v1/admin/knowledge-bases"
+    )
+    response = httpx.Response(
+        502,
+        json={
+            "code": "DIFY_UNAVAILABLE",
+            "message": "读取知识库文档失败",
+            "request_id": "request-42",
+            "token": "do-not-show",
+            "detail": "dataset-secret and Authorization: Bearer token-secret",
+        },
+        headers={"X-Leak": "header-secret"},
+        request=request,
+    )
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def request(self, *args, **kwargs):
+            return response
+
+    monkeypatch.setattr(test_ui.httpx, "Client", lambda **kwargs: Client())
+    with pytest.raises(httpx.HTTPStatusError) as caught:
+        test_ui.api_json("GET", "/internal/v1/admin/knowledge-bases")
+    text = str(caught.value)
+    assert "HTTP 502" in text
+    assert "DIFY_UNAVAILABLE" in text
+    assert "读取知识库文档失败" in text
+    assert "request-42" in text
+    assert "do-not-show" not in text
+    assert "header-secret" not in text
+    assert "dataset-secret" not in text
+    assert "token-secret" not in text
+
+
+@pytest.mark.parametrize("payload", [["gateway-error"], "gateway-error", 502])
+def test_api_json_rejects_non_mapping_json_errors_without_body_leak(monkeypatch, payload):
+    request = httpx.Request("GET", "http://ai-management-api:8000/failure")
+    response = httpx.Response(502, json=payload, request=request)
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def request(self, *args, **kwargs):
+            return response
+
+    monkeypatch.setattr(test_ui.httpx, "Client", lambda **kwargs: Client())
+    with pytest.raises(httpx.HTTPStatusError) as caught:
+        test_ui.api_json("GET", "/failure")
+    text = str(caught.value)
+    assert text == "GET /failure failed: HTTP 502"
+    assert "ai-management-api" not in text
+    assert "gateway-error" not in text
+
+
+def test_api_json_sanitizes_non_json_3xx_without_internal_url(monkeypatch):
+    request = httpx.Request("GET", "http://ai-management-api:8000/redirect")
+    response = httpx.Response(
+        302,
+        headers={"location": "https://sensitive.example/token"},
+        request=request,
+    )
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def request(self, *args, **kwargs):
+            return response
+
+    monkeypatch.setattr(test_ui.httpx, "Client", lambda **kwargs: Client())
+    with pytest.raises(httpx.HTTPStatusError) as caught:
+        test_ui.api_json("GET", "/redirect")
+    text = str(caught.value)
+    assert text == "GET /redirect failed: HTTP 302"
+    assert "ai-management-api" not in text
+    assert "sensitive.example" not in text
+
+
+def test_api_json_turns_invalid_success_json_into_controlled_http_error(monkeypatch):
+    request = httpx.Request("GET", "http://ai-management-api:8000/invalid-json")
+    response = httpx.Response(200, text="sensitive response body", request=request)
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def request(self, *args, **kwargs):
+            return response
+
+    monkeypatch.setattr(test_ui.httpx, "Client", lambda **kwargs: Client())
+    with pytest.raises(httpx.HTTPError) as caught:
+        test_ui.api_json("GET", "/invalid-json")
+    text = str(caught.value)
+    assert text == "GET /invalid-json failed: HTTP 200 response was not valid JSON"
+    assert "ai-management-api" not in text
+    assert "sensitive response body" not in text
+
+
+def test_management_knowledge_reads_render_controlled_http_errors():
+    source = (ROOT / "ai_management" / "test_ui.py").read_text(encoding="utf-8")
+    panel_start = source.index("with knowledge_tab:")
+    panel = source[panel_start : source.index("documents_payload", panel_start)]
+    assert panel.count("except httpx.HTTPError as exc:") >= 2
+    assert panel.count("st.error(str(exc))") >= 2
 
 
 def test_consume_sse_renders_progress_and_final_answers_separately():

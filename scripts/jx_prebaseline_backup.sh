@@ -12,13 +12,22 @@ REPORT_DIR="$APP_DIR/var/reports/v2/$RUN_ID"
 # Snapshot evidence must be produced by the same release artifact that will
 # govern the paired cleanup.  A mutable /tmp helper can otherwise silently
 # report an older schema or redaction contract.
-DATA_SCRIPT="$APP_DIR/scripts/jx_release_data.py"
+DATA_SCRIPT="${JX_RELEASE_DATA_SCRIPT:-$APP_DIR/scripts/jx_release_data.py}"
 
 cd "$APP_DIR"
 test "$(pwd -P)" = "$APP_DIR"
 test -f "$DATA_SCRIPT"
 docker inspect "$DIFY_DB_CONTAINER" "$DIFY_REDIS_CONTAINER" >/dev/null
 mkdir -p "$BACKUP_DIR" "$REPORT_DIR"
+
+for orphan in methodology-backfill-worker methodology-promotion-worker; do
+  if docker inspect "$orphan" >/dev/null 2>&1; then
+    docker inspect "$orphan" --format '{{.Name}} status={{.State.Status}} image={{.Config.Image}} id={{.Image}}' \
+      > "$BACKUP_DIR/$orphan-state.txt"
+  else
+    printf '%s\n' 'absent' > "$BACKUP_DIR/$orphan-state.txt"
+  fi
+done
 
 docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml ps \
   > "$BACKUP_DIR/compose-ps-before.txt"
@@ -61,6 +70,14 @@ docker compose -f docker-compose.ai.yml exec -T api \
   python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=30).read().decode())" \
   > "$BACKUP_DIR/health-ready-before.json"
 
+VERIFY_DB="ai_restore_check_$(printf '%s' "$RUN_ID" | tr -c '[:alnum:]' '_')"
+VERIFY_DIFY_DB="dify_restore_check_$(printf '%s' "$RUN_ID" | tr -c '[:alnum:]' '_')"
+cleanup_verify_dbs() {
+  docker exec "$DIFY_DB_CONTAINER" dropdb -U postgres --if-exists "$VERIFY_DB" >/dev/null 2>&1 || true
+  docker exec "$DIFY_DB_CONTAINER" dropdb -U postgres --if-exists "$VERIFY_DIFY_DB" >/dev/null 2>&1 || true
+}
+trap cleanup_verify_dbs EXIT
+
 cp -a docker-compose.ai.yml docker-compose.ui.yml "$BACKUP_DIR/"
 cp -a .env "$BACKUP_DIR/env.backup"
 cp -a "$DIFY_DIR/.env" "$BACKUP_DIR/dify.env.backup"
@@ -78,7 +95,6 @@ docker exec -i "$DIFY_DB_CONTAINER" pg_restore -l \
   < "$BACKUP_DIR/ai-management.dump" \
   > "$BACKUP_DIR/ai-management-contents.txt"
 
-VERIFY_DB="ai_restore_check_$(printf '%s' "$RUN_ID" | tr -c '[:alnum:]' '_')"
 docker exec "$DIFY_DB_CONTAINER" dropdb -U postgres --if-exists "$VERIFY_DB"
 docker exec "$DIFY_DB_CONTAINER" createdb -U postgres "$VERIFY_DB"
 docker exec -i "$DIFY_DB_CONTAINER" \
@@ -91,6 +107,18 @@ docker exec "$DIFY_DB_CONTAINER" \
 test "$(tr -d '[:space:]' < "$BACKUP_DIR/restore-table-count.txt")" -gt 0
 docker exec "$DIFY_DB_CONTAINER" dropdb -U postgres "$VERIFY_DB"
 
+docker exec "$DIFY_DB_CONTAINER" dropdb -U postgres --if-exists "$VERIFY_DIFY_DB"
+docker exec "$DIFY_DB_CONTAINER" createdb -U postgres "$VERIFY_DIFY_DB"
+docker exec -i "$DIFY_DB_CONTAINER" \
+  pg_restore -U postgres -d "$VERIFY_DIFY_DB" --no-owner --no-privileges \
+  < "$BACKUP_DIR/dify.dump"
+docker exec "$DIFY_DB_CONTAINER" \
+  psql -U postgres -d "$VERIFY_DIFY_DB" -Atc \
+  "select count(*) from information_schema.tables where table_schema='public';" \
+  > "$BACKUP_DIR/dify-restore-table-count.txt"
+test "$(tr -d '[:space:]' < "$BACKUP_DIR/dify-restore-table-count.txt")" -gt 0
+docker exec "$DIFY_DB_CONTAINER" dropdb -U postgres "$VERIFY_DIFY_DB"
+
 REDIS_PASSWORD="$(
   docker inspect "$DIFY_REDIS_CONTAINER" \
     --format '{{range .Config.Env}}{{println .}}{{end}}' |
@@ -100,6 +128,8 @@ test -n "$REDIS_PASSWORD"
 export REDISCLI_AUTH="$REDIS_PASSWORD"
 docker exec -e REDISCLI_AUTH "$DIFY_REDIS_CONTAINER" redis-cli -n 5 DBSIZE \
   > "$BACKUP_DIR/redis-db5-size-before.txt"
+REDIS_LASTSAVE_BEFORE="$(docker exec -e REDISCLI_AUTH "$DIFY_REDIS_CONTAINER" redis-cli LASTSAVE)"
+test "$REDIS_LASTSAVE_BEFORE" -ge 0
 docker exec -e REDISCLI_AUTH "$DIFY_REDIS_CONTAINER" redis-cli BGSAVE \
   > "$BACKUP_DIR/redis-bgsave.txt"
 for _ in $(seq 1 60); do
@@ -112,9 +142,22 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 test "$IN_PROGRESS" = "0"
+REDIS_LASTSAVE_AFTER="$(docker exec -e REDISCLI_AUTH "$DIFY_REDIS_CONTAINER" redis-cli LASTSAVE)"
+REDIS_BGSAVE_STATUS="$(docker exec -e REDISCLI_AUTH "$DIFY_REDIS_CONTAINER" redis-cli --raw INFO persistence | awk -F: '/^rdb_last_bgsave_status:/{gsub(/\r/,"",$2); print $2}')"
+test "$REDIS_BGSAVE_STATUS" = ok
+test "$REDIS_LASTSAVE_AFTER" -ge "$REDIS_LASTSAVE_BEFORE"
+printf 'rdb_bgsave_in_progress=%s\nrdb_last_bgsave_status=%s\nlastsave_before=%s\nlastsave_after=%s\n' \
+  "$IN_PROGRESS" "$REDIS_BGSAVE_STATUS" "$REDIS_LASTSAVE_BEFORE" "$REDIS_LASTSAVE_AFTER" \
+  > "$BACKUP_DIR/redis-bgsave-state.txt"
 docker cp "$DIFY_REDIS_CONTAINER:/data/dump.rdb" "$BACKUP_DIR/dify-redis-dump.rdb"
 unset REDISCLI_AUTH REDIS_PASSWORD
 test -s "$BACKUP_DIR/dify-redis-dump.rdb"
+REDIS_IMAGE="$(docker inspect "$DIFY_REDIS_CONTAINER" --format '{{.Config.Image}}')"
+test -n "$REDIS_IMAGE"
+docker run --rm --network none \
+  -v "$BACKUP_DIR:/backup:ro" \
+  "$REDIS_IMAGE" redis-check-rdb /backup/dify-redis-dump.rdb \
+  > "$BACKUP_DIR/redis-rdb-check.txt"
 
 docker volume inspect ai-management_ai_uploads \
   > "$BACKUP_DIR/uploads-volume-inspect.json"
@@ -123,6 +166,21 @@ docker run --rm \
   -v "$BACKUP_DIR:/backup" \
   alpine:3.20 tar -C /source -czf /backup/uploads.tar.gz .
 test -s "$BACKUP_DIR/uploads.tar.gz"
+tar -tzf "$BACKUP_DIR/uploads.tar.gz" > /dev/null
+printf '%s\n' 'archive_check=ok' > "$BACKUP_DIR/uploads-archive-check.txt"
+
+docker run --rm \
+  -v /opt/dify/docker/volumes/app/storage:/source:ro \
+  -v "$BACKUP_DIR:/backup" \
+  alpine:3.20 tar -C /source -czf /backup/dify-app-storage.tar.gz .
+tar -tzf "$BACKUP_DIR/dify-app-storage.tar.gz" > /dev/null
+printf '%s\n' 'archive_check=ok' > "$BACKUP_DIR/dify-app-storage-archive-check.txt"
+docker run --rm \
+  -v /opt/dify/docker/volumes/weaviate:/source:ro \
+  -v "$BACKUP_DIR:/backup" \
+  alpine:3.20 tar -C /source -czf /backup/dify-weaviate.tar.gz .
+tar -tzf "$BACKUP_DIR/dify-weaviate.tar.gz" > /dev/null
+printf '%s\n' 'archive_check=ok' > "$BACKUP_DIR/dify-weaviate-archive-check.txt"
 
 docker compose -f docker-compose.ai.yml run --rm --no-deps -T --user 0 \
   -v "$DATA_SCRIPT:/tmp/jx_release_data.py:ro" \
@@ -132,11 +190,28 @@ docker compose -f docker-compose.ai.yml run --rm --no-deps -T --user 0 \
   > "$BACKUP_DIR/prebaseline-safe-summary.json"
 
 sha256sum \
+  "$BACKUP_DIR/env.backup" \
+  "$BACKUP_DIR/dify.env.backup" \
+  "$BACKUP_DIR/docker-compose.ai.yml" \
+  "$BACKUP_DIR/docker-compose.ui.yml" \
   "$BACKUP_DIR/dify.dump" \
   "$BACKUP_DIR/ai-management.dump" \
   "$BACKUP_DIR/dify-redis-dump.rdb" \
   "$BACKUP_DIR/uploads.tar.gz" \
+  "$BACKUP_DIR/dify-app-storage.tar.gz" \
+  "$BACKUP_DIR/dify-weaviate.tar.gz" \
   "$BACKUP_DIR/prebaseline-state.safe.json" \
+  "$BACKUP_DIR/redis-rdb-check.txt" \
+  "$BACKUP_DIR/redis-bgsave-state.txt" \
+  "$BACKUP_DIR/uploads-archive-check.txt" \
+  "$BACKUP_DIR/dify-app-storage-archive-check.txt" \
+  "$BACKUP_DIR/dify-weaviate-archive-check.txt" \
+  "$BACKUP_DIR/methodology-backfill-worker-state.txt" \
+  "$BACKUP_DIR/methodology-promotion-worker-state.txt" \
+  "$BACKUP_DIR/restore-table-count.txt" \
+  "$BACKUP_DIR/dify-restore-table-count.txt" \
   > "$BACKUP_DIR/SHA256SUMS"
 sha256sum -c "$BACKUP_DIR/SHA256SUMS"
+trap - EXIT
+cleanup_verify_dbs
 printf '%s\n' "$BACKUP_DIR"

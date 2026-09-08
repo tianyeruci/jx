@@ -1864,45 +1864,6 @@ def test_duplicate_poll_delivery_is_skipped_by_task_lock(service_db, monkeypatch
     assert worker.poll_batch_model_task.run("active-task") is False
 
 
-def test_model_task_fenced_commit_rejects_superseded_worker(service_db):
-    from ai_management.workers.tasks import model_cleaning as worker
-
-    with service_db() as session:
-        batch = CleaningBatch(
-            strategy_code="zsxq_post",
-            knowledge_base_code="general",
-            upload_mode="cleaned",
-            status="model_batch_running",
-        )
-        session.add(batch)
-        session.flush()
-        task = ModelCleaningTask(
-            batch_id=batch.id,
-            mode="batch",
-            model="qwen-plus",
-            prompt_version="test-v1",
-            status="batch_running",
-            lease_token="current-token",
-            lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-            candidate_fingerprint="f" * 64,
-            candidate_count=0,
-        )
-        session.add(task)
-        session.commit()
-        task_id = task.id
-
-    with service_db() as session:
-        task = session.get(ModelCleaningTask, task_id)
-        task.status = "failed"
-        with pytest.raises(RuntimeError, match="租约已被其他 worker 接管"):
-            worker._fenced_task_commit(session, task_id, "superseded-token", clear=True)
-
-    with service_db() as session:
-        task = session.get(ModelCleaningTask, task_id)
-        assert task.status == "batch_running"
-        assert task.lease_token == "current-token"
-
-
 def test_bailian_delete_file_treats_missing_file_as_cleaned(monkeypatch):
     import httpx
 

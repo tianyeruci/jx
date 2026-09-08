@@ -461,10 +461,6 @@ class DifyPublicationShard(Base, TimestampMixin):
     remote_parent_count: Mapped[int] = mapped_column(Integer, default=0)
     remote_child_count: Mapped[int] = mapped_column(Integer, default=0)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
-    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    lease_expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, index=True
-    )
     last_error: Mapped[str] = mapped_column(Text, default="")
 
     file: Mapped[CleaningFile] = relationship(back_populates="publication_shards")

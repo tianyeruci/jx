@@ -34,6 +34,7 @@ from ai_management.courses import (
     parse_redirect_token,
     validate_recommendation,
 )
+from ai_management.db import SessionLocal
 from ai_management.main import app
 from ai_management.models import (
     BusinessConversation,
@@ -56,6 +57,85 @@ HEADERS = {
     "X-Internal-Token": "test-internal-token",
     "X-User-Id": "user-001",
 }
+
+
+def test_knowledge_document_error_is_diagnostic_but_redacted_and_queryable(
+    service_db, monkeypatch, caplog
+):
+    settings = get_settings()
+    api_key = "secret-api-key"
+    dataset_id = "dataset-secret-id"
+    monkeypatch.setattr(settings, "dify_knowledge_api_key", api_key)
+    monkeypatch.setattr(settings, "dify_general_dataset_id", dataset_id)
+    failure = TypeError(f"{api_key} {dataset_id} incompatible contract")
+
+    class FailingClient:
+        closed = False
+
+        def iter_documents(self, **kwargs):
+            assert kwargs == {"max_pages": 1000, "max_items": 100000}
+            raise failure
+
+        def close(self):
+            self.closed = True
+
+    fake = FailingClient()
+    monkeypatch.setattr(knowledge_admin_router, "_client", lambda _: fake)
+    supplied_request_id = "diagnostic-request-" + "x" * 80
+    request_id = supplied_request_id[:64]
+    with TestClient(app) as client:
+        response = client.get(
+            "/internal/v1/admin/knowledge-bases/general/documents",
+            headers={
+                **HEADERS,
+                "X-Admin-Token": "test-admin-token",
+                "X-Request-Id": supplied_request_id,
+            },
+        )
+        logs = client.get(
+            "/internal/v1/admin/logs",
+            params={"request_id": request_id},
+            headers={**HEADERS, "X-Admin-Token": "test-admin-token"},
+        )
+        assert logs.status_code == 200
+        log_detail = client.get(
+            f"/internal/v1/admin/logs/{logs.json()['items'][0]['log_id']}",
+            headers={**HEADERS, "X-Admin-Token": "test-admin-token"},
+        )
+        assert response.status_code == 502
+        assert response.headers["X-Request-Id"] == request_id
+        assert response.json() == {
+            "code": "DIFY_UNAVAILABLE",
+            "message": "读取知识库文档失败",
+            "request_id": request_id,
+            "retryable": True,
+        }
+    assert fake.closed is True
+    assert str(failure) == f"{api_key} {dataset_id} incompatible contract"
+    assert logs.status_code == 200
+    assert log_detail.status_code == 200
+    assert log_detail.json()["details"]["phase"] == "list_documents"
+    item = logs.json()["items"][0]
+    with SessionLocal() as session:
+        from ai_management.models import SystemEventLog
+
+        event = session.get(SystemEventLog, item["log_id"])
+        assert event is not None
+        details = event.details
+        assert event.event_code == "DIFY_UNAVAILABLE"
+        assert details["phase"] == "list_documents"
+        assert details["exception_type"] == "TypeError"
+        assert "incompatible contract" in details["exception_message"]
+        assert "traceback" in details
+        assert details["knowledge_base_code"] == "general"
+        rendered = json.dumps(details, ensure_ascii=False)
+        assert "secret-api-key" not in rendered
+        assert "dataset-secret-id" not in rendered
+    assert "secret-api-key" not in caplog.text
+    assert "dataset-secret-id" not in caplog.text
+    assert "exception_type=TypeError" in caplog.text
+    assert "incompatible contract" in caplog.text
+    assert request_id in caplog.text
 
 
 def test_conversion_markdown_toggle_naming_and_retention(tmp_path, monkeypatch):

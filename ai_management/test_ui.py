@@ -284,8 +284,36 @@ def api_json(
             headers=headers(user_id, admin=admin),
             **kwargs,
         )
-        response.raise_for_status()
-        return response.json()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            detail = f"{method.upper()[:16]} {path[:300]} failed: HTTP {response.status_code}"
+            error_payload: object | None = None
+            try:
+                error_payload = response.json()
+            except ValueError:
+                pass
+            if isinstance(error_payload, dict):
+                code = str(error_payload.get("code") or "")[:100]
+                message = str(error_payload.get("message") or "")[:600]
+                request_id = str(error_payload.get("request_id") or "")[:100]
+                detail += (
+                    f" code={code or '[unknown]'} "
+                    f"message={message or '[unknown]'} "
+                    f"request_id={request_id or '[unknown]'}"
+                )
+            raise httpx.HTTPStatusError(
+                detail,
+                request=response.request,
+                response=response,
+            ) from None
+        try:
+            return response.json()
+        except ValueError:
+            raise httpx.HTTPError(
+                f"{method.upper()[:16]} {path[:300]} failed: "
+                f"HTTP {response.status_code} response was not valid JSON"
+            ) from None
 
 
 def load_all_cleaning_items(
@@ -1343,13 +1371,19 @@ def management_tab(default_user_id: str) -> None:
         knowledge_base = st.selectbox("知识库", ["general", "course"], key="admin_knowledge_base")
         col1, col2 = st.columns(2)
         if col1.button("读取知识库概览"):
-            st.json(api_json("GET", "/internal/v1/admin/knowledge-bases", admin=True))
+            try:
+                st.json(api_json("GET", "/internal/v1/admin/knowledge-bases", admin=True))
+            except httpx.HTTPError as exc:
+                st.error(str(exc))
         if col2.button("读取知识库文档"):
-            st.session_state[f"admin_documents_{knowledge_base}"] = api_json(
-                "GET",
-                f"/internal/v1/admin/knowledge-bases/{knowledge_base}/documents",
-                admin=True,
-            )
+            try:
+                st.session_state[f"admin_documents_{knowledge_base}"] = api_json(
+                    "GET",
+                    f"/internal/v1/admin/knowledge-bases/{knowledge_base}/documents",
+                    admin=True,
+                )
+            except httpx.HTTPError as exc:
+                st.error(str(exc))
         documents_payload = st.session_state.get(f"admin_documents_{knowledge_base}", {})
         documents = (
             documents_payload.get("items") or [] if isinstance(documents_payload, dict) else []

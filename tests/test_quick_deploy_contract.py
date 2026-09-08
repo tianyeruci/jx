@@ -20,6 +20,26 @@ def test_quick_deploy_has_fixed_input_and_rejects_unsupported_packages():
     assert "python3 -m pip wheel --no-deps --no-build-isolation" in source
 
 
+def test_quick_deploy_runtime_contract_probe_has_bound_self_and_two_phase_semantics():
+    source = _source("scripts/jx_quick_deploy.sh")
+    probe = "inspect.signature(DifyKnowledgeClient.iter_documents).bind(object(), max_pages=1, max_items=1)"
+    assert probe in source
+    assert "runtime_contract=failed" in source
+    assert "full-wheel-deployment-required" in source
+    plan_probe = source.index(
+        'runtime_contract_probe "$CURRENT_CORE_IMAGE" >/dev/null 2>&1'
+    )
+    assert plan_probe < source.index("exit 0", plan_probe)
+    assert source.index('runtime_contract_probe "$CURRENT_CORE_IMAGE" || die') < source.index(
+        'bash "$RESOURCE_GUARD" check'
+    )
+    assert source.index('runtime_contract_probe "$CORE_IMAGE" || die') < source.index(
+        "docker build --pull=false -f Dockerfile.ui-offline"
+    )
+    assert "requests.get" not in source
+    assert "except TypeError" not in source
+
+
 def test_quick_deploy_is_backed_up_validated_and_rollback_capable():
     source = _source("scripts/jx_quick_deploy.sh")
 

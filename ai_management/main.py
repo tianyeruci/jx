@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -26,12 +27,18 @@ from .config import get_settings
 from .db import create_schema
 from .errors import ServiceError
 from .security import user_hash
-from .services.observability import record_event
+from .services.observability import record_event, sanitize_details
 from .services.observability.events import safe_exception_message, safe_exception_traceback
 from .services.observability.logging_config import configure_logging
 
 configure_logging()
 logger = logging.getLogger(__name__)
+_REQUEST_ID_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _normalize_request_id(value: str | None) -> str:
+    normalized = _REQUEST_ID_CONTROL_RE.sub("", value or "").strip()[:64]
+    return normalized or str(uuid.uuid4())
 
 
 @asynccontextmanager
@@ -57,6 +64,23 @@ async def service_error_handler(
     exc: ServiceError,
 ) -> JSONResponse:
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    diagnostic_details = sanitize_details(exc.diagnostic_details or {})
+    if diagnostic_details:
+        logger.error(
+            "service_error request_id=%s event_code=%s component=api phase=%s "
+            "exception_type=%s exception_message=%s exception_traceback=%s",
+            request_id,
+            exc.code,
+            diagnostic_details.get("phase", ""),
+            diagnostic_details.get("exception_type", ""),
+            diagnostic_details.get("exception_message", ""),
+            diagnostic_details.get("traceback", ""),
+            extra={
+                "request_id": request_id,
+                "event_code": exc.code,
+                "component": "api",
+            },
+        )
     if exc.status_code >= 500 or exc.code in {"UNAUTHORIZED", "DIFY_ERROR"}:
         record_event(
             level="ERROR" if exc.status_code >= 500 else "WARNING",
@@ -68,7 +92,11 @@ async def service_error_handler(
             request_id=request_id,
             resource_type="http_request",
             resource_id=request.url.path,
-            details={"method": request.method, "status_code": exc.status_code},
+            details={
+                "method": request.method,
+                "status_code": exc.status_code,
+                **(diagnostic_details if diagnostic_details else {}),
+            },
         )
     return JSONResponse(
         status_code=exc.status_code,
@@ -82,7 +110,7 @@ async def service_error_handler(
 
 
 async def request_id_middleware(request: Request, call_next):
-    request.state.request_id = request.headers.get("X-Request-Id") or str(uuid.uuid4())
+    request.state.request_id = _normalize_request_id(request.headers.get("X-Request-Id"))
     started = time.monotonic()
     try:
         response = await call_next(request)

@@ -50,7 +50,10 @@ from ...services.bailian_cleanup import (
     clear_successful_bailian_file_tasks,
     ensure_bailian_cleanup_tasks,
 )
-from ...services.observability import record_event
+from ...services.observability import (
+    exception_details,
+    record_event,
+)
 
 router = APIRouter(
     prefix="/internal/v1/admin/knowledge-bases",
@@ -175,7 +178,22 @@ def _documents(kb_code: str) -> list[dict[str, Any]]:
     try:
         return list(client.iter_documents(max_pages=1000, max_items=100000))
     except Exception as exc:
-        raise ServiceError("DIFY_UNAVAILABLE", "读取知识库文档失败", 502, True) from exc
+        sensitive_values = (
+            get_settings().dify_knowledge_api_key,
+            _dataset_id(kb_code),
+        )
+        raise ServiceError(
+            "DIFY_UNAVAILABLE",
+            "读取知识库文档失败",
+            502,
+            True,
+            exception_details(
+                exc,
+                phase="list_documents",
+                sensitive_values=sensitive_values,
+                knowledge_base_code=kb_code,
+            ),
+        ) from exc
     finally:
         client.close()
 

@@ -280,12 +280,12 @@
 ## DEPLOY-022：知识库管理接口应走私网 `8000` 直连，而非 Dify 网关
 
 - 适用：jx 的知识库上传、状态、条目、重试和复核接口由另一台内网后端调用；当前调用方为 `172.17.28.83`，jx API 私网地址为 `172.30.157.197`。
-- 触发：4.10.2～4.10.8 经 `:80` 返回 `403`，而业务聊天和入口配置等接口正常；2026-08-31 误删兼容 include 后，小程序后端进一步观察到根路径 `307 → /apps`、`/ai-service/internal/v1/*` 为 Dify HTML 404。
-- 根因：Dify Nginx 的端口 `80` 不是 ai-management 的原生监听端口。裸 `/internal/...` 会进入 Dify Web 默认路由；`/ai-service/...` 虽可转发，但上传子路径由有意保留的 `403` 规则保护，且 Docker NAT 会改变 Nginx 可见来源。因此该路径不适合作为知识库管理写入接口的长期内网通道；但现有小程序后端仍依赖 `/ai-service/` 兼容路由承载其它 AI 服务请求，在调用方完成迁移前删除该 include 会把请求错误路由到 Dify。
-- 解决：知识库管理写入接口的目标仍是 `http://172.30.157.197:8000/internal/v1/admin/knowledge-bases/...`；同时在小程序后端尚未完成真实迁移和端到端验收前，保留并监控 `/ai-service/` 兼容路由。jx 保持 API 仅绑定私网地址、`AI-MGMT-8000` 仅允许 `172.17.28.83/32`、回程经 `eth0` 私网网关；所有路径继续使用 ai-management 双 Token。
-- 非解决：修改或删除 Dify Nginx 上传阻断规则、在未取得调用方实测证据前删除 `/ai-service/` include、放宽为 Docker/VPC 网段、取消 Token、开放 API `8000` 公网端口，或直接编辑 Dify 数据库。
-- 验证：2026-08-31 jx 上 `/ai-service/internal/v1/entry-config` 无 Token 返回 AI 服务 `401` JSON，带原 Token 返回 `200` JSON；`/ai-service/docs` 不再显示 Dify 页面；测试页 `/ai-management-test/` 仍为 `404`。2026-08-10 的 `172.30.157.197:8000` 私网和上传 `422` 验证仍有效。
-- 预防：将小程序后端的实际 Base URL/路径列入发布前契约清单；只有从真实调用方完成 `/ai-service/` → `:8000` 迁移、双 Token 和无写入 `422` 探针，并复核阿里云安全组后，才允许移除兼容路由。
+- 触发：4.10.2～4.10.8 经 `:80` 返回 `403`，而业务聊天和入口配置等接口正常。
+- 根因：Dify Nginx 的端口 `80` 不是 ai-management 的原生监听端口。裸 `/internal/...` 会进入 Dify Web 默认路由；`/ai-service/...` 虽可转发，但上传子路径由有意保留的 `403` 规则保护，且 Docker NAT 会改变 Nginx 可见来源。因此该路径不适合作为知识库管理接口的内网通道；这不是 ai-management 加入 Dify `docker_default` 网络导致的冲突，也不是知识库接口实现或 Token 校验冲突。
+- 解决：调用方 Base URL 固定为 `http://172.30.157.197:8000`，直接调用 `/internal/v1/admin/knowledge-bases/...`；jx 保持 API 仅绑定此私网地址、`AI-MGMT-8000` 仅允许 `172.17.28.83/32`、回程经 `eth0` 私网网关。保留 Dify Nginx 的上传 `403` 规则和 ai-management 双 Token。
+- 非解决：修改或删除 Dify Nginx 上传阻断规则、通过 `:80/ai-service/` 访问管理写入接口、放宽为 Docker/VPC 网段、取消 Token、开放 API `8000` 公网端口，或直接编辑 Dify 数据库。
+- 验证：2026-08-10 jx 上 `172.30.157.197:8000` 绑定存在，`AI-MGMT-8000` 的 `172.17.28.83/32` 允许规则与精确回程路由存在；带正确双 Token、无文件的上传 POST 返回 API `422`，API `/health/ready=status=ready`。Dify Nginx 已恢复任务开始前的上传 `403` 规则。
+- 预防：内部管理写入接口与临时 Dify 网关分离；发布或联调前从调用方验证 `:8000` 连接、双 Token 和无写入 `422` 探针，并复核阿里云安全组两端的精确 `/32` 规则。
 - 证据：`var/reports/20260810-ai-service-upload-source-allowlist/issues.jsonl`、jx 备份 `/opt/ai-management/backups/20260810-1000-direct-8000-switch`。
 - 最后验证：2026-08-10。
 
@@ -313,17 +313,29 @@
 - 证据：[2026-08-10 续测记录](../../var/reports/20260810-plan-continuation/README.md)、同目录 `issues.jsonl`。
 - 最后验证：2026-08-10。
 
-## DEPLOY-025：快速发布必须校验服务器共享包闭包，缺模块时改走完整 wheel
+## DEPLOY-025：快速发布必须校验服务器共享包闭包，缺模块或签名不兼容时改走完整 wheel
 
 - 适用：Windows 工作树向 jx 快速上传 `ai_management` 源码并重建核心镜像的发布。
-- 触发：发布脚本在切换前的全模块导入烟测报 `ModuleNotFoundError: knowledge_cleaner.markdown_table_cleaner`；旧服务仍健康，切换尚未发生。
-- 根因：服务器既有 `knowledge_cleaner` 源码目录落后于当前仓库，快速源码包只覆盖 `ai_management`，导致镜像内共享包闭包不完整；这不是新业务代码语法错误。
-- 解决：保持旧服务不切换并保留失败报告；从当前工作树构建完整 wheel，核对 wheel SHA-256 和关键模块内容，再以同一 wheel 构建核心/OCR 镜像并切换。Key/配置变更另按 DEPLOY-013 处理。
-- 非解决：只上传缺失的单个 `.py`、在运行容器内临时安装包、跳过全模块导入烟测、或忽略失败后继续切换。
-- 验证：release `20260810-route-gate-da35a0` 使用完整 wheel SHA-256 `DA35A0BA79A5C7B3F4EC6BCE25DB206DEE4C1F80E2A9EFD8396AC357ECE76467`；核心/OCR 导入烟测通过，API/Worker/Scheduler/OCR 同源切换，ready 和真实三轮 SSE 均通过。报告：`/opt/ai-management/var/reports/v2/20260810-route-gate-da35a0-deploy`。
-- 预防：快速路径预检服务器共享包与 wheel 闭包；涉及 `knowledge_cleaner`、共享脚本或构建元数据时自动转完整 wheel 发布，不以单目录源码 zip 代替。
-- 证据：jx 发布报告 `/opt/ai-management/var/reports/v2/20260810-route-gate-da35a0-deploy`，本地 wheel 构建记录及本轮脱敏部署终端记录。
-- 最后验证：2026-08-10。
+- 触发：发布脚本在切换前的全模块导入烟测报 `ModuleNotFoundError: knowledge_cleaner.markdown_table_cleaner`；或新版 `ai_management` 调用共享客户端新增参数时，线上旧 `knowledge_cleaner` 报 `unexpected keyword argument`，并在访问 Dify 前被 API 包装成 502。
+- 根因：服务器既有 `knowledge_cleaner` 源码目录落后于当前仓库，快速源码包只覆盖 `ai_management`；共享包可能缺模块，也可能模块存在但同名方法的签名与调用方不兼容。API ready、Dify 直连成功和 Python import 成功都不能单独证明调用契约兼容。
+- 解决：保持旧服务不切换并保留失败报告；从当前工作树构建同时包含 `ai_management` 与 `knowledge_cleaner` 的完整 wheel，核对 wheel SHA-256、关键模块和目标方法签名，再以同一 wheel 构建 Core/UI/OCR 镜像并切换。quick `--plan` 对当前旧镜像只报告 `runtime_contract=failed` 和 `full-wheel-deployment-required`；正式 quick 发布在资源门禁及其他副作用前硬失败，新 Core 镜像还须在切换前再次通过签名探针。Key/配置变更另按 DEPLOY-013 处理。
+- 非解决：只上传缺失的单个 `.py`、捕获 `TypeError` 后降级调用旧签名、在运行容器内临时安装包、只做 HTTP/ready 探针、跳过全模块导入或签名探针、或忽略失败后继续切换。
+- 验证：历史 release `20260810-route-gate-da35a0` 已验证缺模块场景的完整 wheel 恢复。2026-09-05 进一步复现 jx 旧共享包不接受 `max_pages`/`max_items`，而同容器绕过应用代码分页读取 Dify 正常；本地签名、分页、API 脱敏日志、测试页错误摘要和发布门禁回归通过。随后 release `20260905-knowledge-admin-502-84e3e3e6` 以一个完整 wheel 切换 Core/UI/OCR/全部直接消费者；认证 API、Dify inventory 与真实测试页均通过，发布后相关错误计数为 `0`。
+- 预防：快速路径同时预检服务器共享包的模块闭包和调用签名；涉及 `knowledge_cleaner`、共享脚本或构建元数据时自动转完整 wheel 发布，不以单目录源码 zip 代替。
+- 证据：jx 发布报告 `/opt/ai-management/var/reports/v2/20260810-route-gate-da35a0-deploy`、`/opt/ai-management/var/reports/v2/20260905-knowledge-admin-502-84e3e3e6-deploy`，[本轮脱敏报告](../../var/reports/20260905-knowledge-admin-502/README.md)。
+- 最后验证：2026-09-05。
+
+## DEPLOY-032：正式发布不能用关闭必需模型通道规避价格快照过期
+
+- 适用：jx 正式发布前校验千问 `qwen-plus` Batch 与 Realtime 费用快照，且两个通道都是当前清洗能力的一部分。
+- 触发：完整发布在迁移和服务切换前报告 `batch cleaning price snapshot has expired`；检查后发现 Realtime 快照也已过期。
+- 根因：价格数值仍匹配当前基础单价，但两份快照的 `VALID_UNTIL` 均停留在 `2026-08-31`。发布门禁按设计拒绝使用过期费用依据；关闭 `BAILIAN_BATCH_ENABLED` 只能跳过 Batch 校验，并会改变大批量清洗能力，不能作为修复。
+- 解决：先依据官方价格页和明确审批确认版本、基础单价、生效/失效日期；保持 `BAILIAN_BATCH_ENABLED=true`，精确备份 `.env`，只 upsert Batch/Realtime 共 11 个目标键并回读。`CLEANING_PRICE_*` 保存基础单价；Batch 的 50% 折扣继续由 `_price_snapshot("batch")` 的独立折扣因子应用，因此与 Realtime 配置相同基础单价不会重复计费。
+- 非解决：关闭 Batch、删除价格门禁、延长日期但不核对价格、输出完整 `.env`、在发布脚本内写死密钥，或只刷新 Batch 而遗漏仍会阻断的小任务/咨询 Realtime 快照。
+- 验证：2026-09-05 将两份 `qwen-plus` 基础单价刷新为输入 `0.8`、输出 `2` 元/百万 Token，生效日 `2026-09-04`、有效期至 `2026-10-04`；刷新脚本日期/正数校验通过，Batch 保持开启。随后完整 release 成功，Realtime/Batch Worker 同源运行、重启次数 `0`，发布后模型与知识库链路日志无新增错误。
+- 预防：发布前同时检查两个快照的版本、来源日期、有效期和正数价格；当任一通道是正式能力时不得通过改开关绕过。配置刷新和代码发布分别登记精确命令，刷新前备份，最终报告只回显非敏感价格键。
+- 证据：[阿里云百炼模型调用价格](https://help.aliyun.com/zh/model-studio/model-pricing)、[本轮脱敏报告](../../var/reports/20260905-knowledge-admin-502/README.md)、jx `/opt/ai-management/var/reports/v2/20260905-knowledge-admin-502-84e3e3e6-deploy`。
+- 最后验证：2026-09-05。
 
 ## DEPLOY-026：完整 release 必须包含运行时使用的旧包装器和入口闭包
 

@@ -10,11 +10,32 @@ APP_DIR="/opt/ai-management"
 STAGE_DIR="$APP_DIR/releases/$RELEASE_ID"
 BACKUP_DIR="$APP_DIR/backups/$BACKUP_ID"
 REPORT_DIR="$APP_DIR/var/reports/v2/$RELEASE_ID-deploy"
+BUILD_CONTEXT="$STAGE_DIR/build-context"
 LOCK_FILE="$APP_DIR/var/jx-deploy.lock"
 RESOURCE_GUARD="$APP_DIR/scripts/jx_resource_guard.sh"
 WHEEL_FILE="jx_now_ai_management-0.2.1-py3-none-any.whl"
 OPENPYXL_WHEEL="openpyxl-3.1.5-py2.py3-none-any.whl"
 ET_XMLFILE_WHEEL="et_xmlfile-2.0.0-py3-none-any.whl"
+HELPER_FILES=(
+  full_cleaning_acceptance.py
+  jx_current_baseline.sh
+  jx_full_cleaning_baseline.sh
+  jx_prebaseline_backup.sh
+  jx_prebaseline_clean.sh
+  jx_capture_ui_cleanup_manifest.sh
+  jx_quick_deploy.sh
+  jx_reset_cleaning_local_state.sh
+  jx_reset_course_route_catalog.sh
+  jx_reset_course_route_catalog.py
+  jx_reset_all_document_data.sh
+  jx_reset_all_document_data.py
+  configure_dify_nginx_ai_service_guard.py
+  jx_resource_guard.sh
+  jx_release_data.py
+  jx_acceptance_budget.py
+  backfill_course_collections.py
+  evaluate_business_e2e.py
+)
 MIGRATION_FILES=(
   "g3b7c9d1e5f2_add_large_scale_cleaning.py"
   "h4e5f6a7b8c9_expand_cleaning_batch_status.py"
@@ -39,6 +60,7 @@ SWITCHED=0
 OCR_AUTOSCALER_WAS_ACTIVE=0
 OCR_AUTOSCALER_INSTALLED=0
 OCR_WORKER_WAS_RUNNING=0
+OCR_WORKER_STARTED_NEW=0
 OCR_DEPLOYMENT_ENABLED="${JX_OCR_DEPLOYMENT_ENABLED:-false}"
 # Once Alembic has committed the new revision, the migration files are part
 # of the database contract.  A later service/ready failure must not remove
@@ -50,6 +72,8 @@ MIGRATIONS_APPLIED=0
 # a revision introduced by this release.
 PREVIOUS_ALEMBIC_REVISION=""
 MIGRATION_ROLLBACK_OK=1
+HELPERS_BACKUPS_READY=0
+HELPERS_INSTALL_STARTED=0
 
 cd "$APP_DIR"
 test "$(id -u)" -eq 0
@@ -78,6 +102,8 @@ for migration in "${MIGRATION_FILES[@]}"; do
 done
 test -f "$STAGE_DIR/docker-compose.ai.yml"
 test -f "$STAGE_DIR/docker-compose.ui.yml"
+test -d "$STAGE_DIR/source"
+test -f "$STAGE_DIR/source.SHA256SUMS"
 test -f "$APP_DIR/Dockerfile.ocr-offline"
 test -f "$APP_DIR/scripts/ocr_worker_entrypoint.sh"
 test -f "$APP_DIR/scripts/jx_ocr_autoscale.sh"
@@ -90,10 +116,42 @@ test -d "$OCR_RUNTIME_DIR/site-packages"
 test -d "$OCR_RUNTIME_DIR/models"
 test -f "$OCR_RUNTIME_DIR/requirements-ocr.lock"
 mkdir -p "$REPORT_DIR"
+if find "$STAGE_DIR/source" -type l -print -quit | grep -q .; then
+  printf '%s\n' 'release source must not contain symlinks' >&2
+  exit 1
+fi
+if find "$STAGE_DIR/source" -type f -name .env -print -quit | grep -q .; then
+  printf '%s\n' 'release source must not contain .env' >&2
+  exit 1
+fi
+for source_file in Dockerfile.offline Dockerfile.ui-offline Dockerfile.ocr-offline \
+  alembic.ini pyproject.toml scripts test_data migrations deploy/systemd; do
+  test -e "$STAGE_DIR/source/$source_file"
+done
+for forbidden_source_path in wheelhouse ui-wheelhouse-linux var/ocr-runtime; do
+  test ! -e "$STAGE_DIR/source/$forbidden_source_path"
+done
+(
+  cd "$STAGE_DIR/source"
+  find . -type f -print0 | sort -z | xargs -0 sha256sum
+) > "$REPORT_DIR/source.SHA256SUMS.actual"
+cp -a "$STAGE_DIR/source.SHA256SUMS" "$REPORT_DIR/source.SHA256SUMS.expected"
+cmp -- "$REPORT_DIR/source.SHA256SUMS.expected" "$REPORT_DIR/source.SHA256SUMS.actual"
 # A reused release id may still contain the failure marker from an earlier
 # attempt.  Remove it before starting a new attempt so the report reflects
 # this run rather than stale rollback state.
 rm -f -- "$REPORT_DIR/rollback-status.txt"
+for backup_file in \
+  SHA256SUMS env.backup dify.env.backup docker-compose.ai.yml docker-compose.ui.yml \
+  dify.dump ai-management.dump dify-redis-dump.rdb uploads.tar.gz \
+  dify-app-storage.tar.gz dify-weaviate.tar.gz prebaseline-state.safe.json \
+  restore-table-count.txt dify-restore-table-count.txt redis-rdb-check.txt \
+  redis-bgsave-state.txt uploads-archive-check.txt \
+  dify-app-storage-archive-check.txt dify-weaviate-archive-check.txt \
+  methodology-backfill-worker-state.txt methodology-promotion-worker-state.txt; do
+  test -f "$BACKUP_DIR/$backup_file"
+done
+sha256sum -c "$BACKUP_DIR/SHA256SUMS" > "$REPORT_DIR/prebaseline-backup-verify.txt"
 
 pause_ocr_autoscaler() {
   command -v systemctl >/dev/null 2>&1 || return 0
@@ -121,9 +179,28 @@ restore_ocr_autoscaler_after_failure() {
     fi
   fi
   if test "$OCR_WORKER_WAS_RUNNING" -eq 1; then
-    docker compose -f docker-compose.ai.yml up -d ai-ocr-worker \
+    if test "$OCR_WORKER_STARTED_NEW" -eq 1; then
+      docker compose -f docker-compose.ai.yml up -d --no-deps --force-recreate ai-ocr-worker \
+        >> "$REPORT_DIR/rollback.log" 2>&1 || true
+    else
+      docker compose -f docker-compose.ai.yml up -d ai-ocr-worker \
+        >> "$REPORT_DIR/rollback.log" 2>&1 || true
+    fi
+  elif test "$OCR_WORKER_STARTED_NEW" -eq 1; then
+    docker compose -f docker-compose.ai.yml stop -t 660 ai-ocr-worker \
       >> "$REPORT_DIR/rollback.log" 2>&1 || true
   fi
+}
+
+restore_helpers_after_failure() {
+  test "$HELPERS_BACKUPS_READY" -eq 1 || return 0
+  for file in "${HELPER_FILES[@]}"; do
+    if test -f "$BACKUP_DIR/scripts/$file"; then
+      cp -a "$BACKUP_DIR/scripts/$file" "scripts/$file"
+    elif test "$HELPERS_INSTALL_STARTED" -eq 1; then
+      rm -f -- "scripts/$file"
+    fi
+  done
 }
 
 rollback() {
@@ -206,6 +283,7 @@ rollback() {
   done
   systemctl daemon-reload >/dev/null 2>&1 || true
   restore_ocr_autoscaler_after_failure
+  restore_helpers_after_failure
   exit "$status"
 }
 trap rollback EXIT
@@ -260,39 +338,58 @@ done
 install -m 0644 "$STAGE_DIR/docker-compose.ai.yml" docker-compose.ai.yml
 install -m 0644 "$STAGE_DIR/docker-compose.ui.yml" docker-compose.ui.yml
 
-for file in \
-  full_cleaning_acceptance.py \
-  jx_current_baseline.sh \
-  jx_full_cleaning_baseline.sh \
-  jx_prebaseline_backup.sh \
-  jx_prebaseline_clean.sh \
-  jx_capture_ui_cleanup_manifest.sh \
-  jx_quick_deploy.sh \
-  jx_reset_cleaning_local_state.sh \
-  jx_reset_course_route_catalog.sh \
-  jx_reset_course_route_catalog.py \
-  jx_reset_all_document_data.sh \
-  jx_reset_all_document_data.py \
-  configure_dify_nginx_ai_service_guard.py \
-  jx_resource_guard.sh \
-  jx_release_data.py \
-  jx_acceptance_budget.py \
-  backfill_course_collections.py \
-  evaluate_business_e2e.py
-do
+mkdir -p "$BACKUP_DIR/scripts"
+: > "$BACKUP_DIR/helper-absent.txt"
+for file in "${HELPER_FILES[@]}"; do
   test -f "$STAGE_DIR/$file"
+  if test -e "scripts/$file"; then
+    test -f "scripts/$file"
+    cp -a "scripts/$file" "$BACKUP_DIR/scripts/$file"
+  else
+    printf '%s\n' "$file" >> "$BACKUP_DIR/helper-absent.txt"
+  fi
+done
+HELPERS_BACKUPS_READY=1
+printf '%s\n' started > "$BACKUP_DIR/helper-install.state"
+HELPERS_INSTALL_STARTED=1
+for file in "${HELPER_FILES[@]}"; do
   # The autoscaler invokes the resource guard through an executable check;
   # preserve executable mode for all release helper entry points.
   install -m 0755 "$STAGE_DIR/$file" "scripts/$file"
 done
+printf '%s\n' complete > "$BACKUP_DIR/helper-install.state"
 # A wheel release does not publish Dify assets.  In particular, do not stage
 # the historical DSL or prompt here: both still describe course and
 # learning-route behavior.  Import and publish the explicitly designated
 # current DSL through Dify, then verify /parameters and real SSE.
 
 bash "$RESOURCE_GUARD" check --phase=release
+rm -rf -- "$BUILD_CONTEXT"
+mkdir -p "$BUILD_CONTEXT"
+cp -a "$STAGE_DIR/source/." "$BUILD_CONTEXT/"
+cp -al wheelhouse "$BUILD_CONTEXT/wheelhouse" || {
+  printf '%s\n' 'hard-linking wheelhouse into build context failed' >&2
+  exit 1
+}
+cp -al ui-wheelhouse-linux "$BUILD_CONTEXT/ui-wheelhouse-linux" || {
+  printf '%s\n' 'hard-linking ui-wheelhouse-linux into build context failed' >&2
+  exit 1
+}
+mkdir -p "$BUILD_CONTEXT/var"
+cp -al "$OCR_RUNTIME_DIR" "$BUILD_CONTEXT/var/ocr-runtime" || {
+  printf '%s\n' 'hard-linking OCR runtime into build context failed' >&2
+  exit 1
+}
+test -f "$BUILD_CONTEXT/wheelhouse/$WHEEL_FILE"
+cmp -- "$STAGE_DIR/$WHEEL_FILE" "$BUILD_CONTEXT/wheelhouse/$WHEEL_FILE"
+if find "$BUILD_CONTEXT" -type f -name .env -print -quit | grep -q .; then
+  printf '%s\n' 'build context must not contain .env' >&2
+  exit 1
+fi
+printf '%s\n' "$BUILD_CONTEXT" > "$REPORT_DIR/build-context.txt"
+
 bash "$RESOURCE_GUARD" run --phase=release-core-build -- \
-docker build --pull=false -f Dockerfile.offline -t "$CORE_IMAGE" . \
+docker build --pull=false -f "$BUILD_CONTEXT/Dockerfile.offline" -t "$CORE_IMAGE" "$BUILD_CONTEXT" \
   > "$REPORT_DIR/core-build.log" 2>&1
 docker image inspect "$CORE_IMAGE" --format '{{.Id}}' \
   > "$REPORT_DIR/core-image-id.txt"
@@ -302,7 +399,7 @@ docker run --rm "$CORE_IMAGE" python -c \
 
 bash "$RESOURCE_GUARD" run --phase=release-ocr-build -- \
 docker build --pull=false --build-arg AI_IMAGE="$CORE_IMAGE" \
-  -f Dockerfile.ocr-offline -t "$OCR_IMAGE" . \
+  -f "$BUILD_CONTEXT/Dockerfile.ocr-offline" -t "$OCR_IMAGE" "$BUILD_CONTEXT" \
   > "$REPORT_DIR/ocr-build.log" 2>&1
 docker image inspect "$OCR_IMAGE" --format '{{.Id}}' \
   > "$REPORT_DIR/ocr-image-id.txt"
@@ -314,7 +411,7 @@ docker run --rm --env-file .env \
   > "$REPORT_DIR/ocr-smoke.txt"
 
 bash "$RESOURCE_GUARD" run --phase=release-ui-build -- \
-docker build --pull=false -f Dockerfile.ui-offline -t "$UI_IMAGE" . \
+docker build --pull=false -f "$BUILD_CONTEXT/Dockerfile.ui-offline" -t "$UI_IMAGE" "$BUILD_CONTEXT" \
   > "$REPORT_DIR/ui-build.log" 2>&1
 docker image inspect "$UI_IMAGE" --format '{{.Id}}' \
   > "$REPORT_DIR/ui-image-id.txt"
@@ -468,6 +565,32 @@ docker compose -f docker-compose.ai.yml -f docker-compose.ui.yml \
   api worker model-realtime-worker model-batch-worker publication-worker scheduler test-ui \
   > "$REPORT_DIR/compose-up.txt" 2>&1
 
+OCR_WORKER_STARTED_NEW=1
+bash "$RESOURCE_GUARD" run --phase=release-ocr-start -- \
+  docker compose -f docker-compose.ai.yml up -d --no-deps --force-recreate ai-ocr-worker \
+  > "$REPORT_DIR/ocr-compose-up.txt" 2>&1
+OCR_CONTAINER_ID="$(docker compose -f docker-compose.ai.yml ps -q ai-ocr-worker)"
+test -n "$OCR_CONTAINER_ID"
+OCR_CELERY_READY=0
+for _ in $(seq 1 90); do
+  if docker exec "$OCR_CONTAINER_ID" python -c \
+    "from ai_management.workers.celery_app import celery_app; expected='ai-ocr@jx-ai-ocr-worker'; response=celery_app.control.inspect(destination=[expected], timeout=5).ping() or {}; assert response.get(expected, {}).get('ok') == 'pong'" \
+    > "$REPORT_DIR/ocr-celery-ping.txt" 2>&1; then
+    OCR_CELERY_READY=1
+    break
+  fi
+  sleep 2
+done
+test "$OCR_CELERY_READY" -eq 1
+docker exec "$OCR_CONTAINER_ID" python -c \
+  "from ai_management.workers.celery_app import celery_app; import json; expected='ai-ocr@jx-ai-ocr-worker'; response=celery_app.control.inspect(destination=[expected], timeout=5).active_queues() or {}; assert expected in response; print(json.dumps(response[expected], sort_keys=True))" \
+  > "$REPORT_DIR/ocr-active-queues.json"
+docker logs --since 5m "$OCR_CONTAINER_ID" > "$REPORT_DIR/ocr-worker.log" 2>&1 || true
+docker inspect "$OCR_CONTAINER_ID" --format '{{.Config.Image}} {{.Image}}' \
+  > "$REPORT_DIR/ocr-container-image.txt"
+test "$(docker inspect "$OCR_CONTAINER_ID" --format '{{.Config.Image}}')" = "$OCR_IMAGE"
+test "$(docker inspect "$OCR_CONTAINER_ID" --format '{{.Image}}')" = "$(cat "$REPORT_DIR/ocr-image-id.txt")"
+
 for _ in $(seq 1 90); do
   if docker compose -f docker-compose.ai.yml exec -T api \
     python -c \
@@ -519,6 +642,11 @@ sha256sum \
   "$REPORT_DIR/ocr-image-id.txt" \
   "$REPORT_DIR/ocr-autoscaler-enabled.txt" \
   "$REPORT_DIR/ocr-autoscaler-active.txt" \
+  "$REPORT_DIR/source.SHA256SUMS.actual" \
+  "$REPORT_DIR/ocr-celery-ping.txt" \
+  "$REPORT_DIR/ocr-active-queues.json" \
+  "$REPORT_DIR/ocr-container-image.txt" \
+  "$REPORT_DIR/ocr-worker-container-id.txt" \
   "$REPORT_DIR/health-ready.json" \
   "$REPORT_DIR/container-images.txt" \
   > "$REPORT_DIR/SHA256SUMS"

@@ -102,7 +102,7 @@
     {
       "id": "examples-ui",
       "title": "测试 UI 案例展示与维护",
-      "status": "done",
+      "status": "in_progress",
       "paths": [
         "ai_management/test_ui.py"
       ],
@@ -111,9 +111,9 @@
         "AC-005"
       ],
       "optional": false,
-      "updated_at": "2026-08-17T08:55:50+08:00",
-      "last_change_summary": "工具会话 run 顶层 conversation_id、reset 后重新选型、并发安全和精确迁移兼容已发布到 jx；测试页验证朋友圈与日常写作 SSE/重置链路，商业顾问隔离不变。",
-      "last_changed_at": "2026-08-30T16:04:32+08:00"
+      "updated_at": "2026-09-08T02:55:51+08:00",
+      "last_change_summary": "滚动交接仅顶部 0.85 保留当前状态标签；所有旧章节移除当前最新、当前任务、当前开发状态、当前及当前网络最新后缀，实际资产文件名保持不变；测试页安全错误和知识库只读验收结论不变。",
+      "last_changed_at": "2026-09-05T19:36:11+08:00"
     },
     {
       "id": "examples-tests",
@@ -140,7 +140,7 @@
     {
       "id": "examples-docs",
       "title": "接口、索引与状态交接文档",
-      "status": "verified",
+      "status": "in_progress",
       "paths": [
         "docs/小程序后端与 AI 管理服务接口对接交互版本.md",
         "docs/小程序后端与AI管理服务接口对接标准.md",
@@ -155,9 +155,9 @@
         "AC-006"
       ],
       "optional": false,
-      "updated_at": "2026-08-31T18:15:16+08:00",
-      "last_change_summary": "本次发布仅涉及运行时区和清洗命名，工具会话及 DSL 业务语义不变。",
-      "last_changed_at": "2026-08-31T15:31:19+08:00"
+      "updated_at": "2026-09-08T02:55:51+08:00",
+      "last_change_summary": "滚动交接仅顶部 0.85 保留当前状态标签；所有旧章节移除当前最新、当前任务、当前开发状态、当前及当前网络最新后缀，实际资产文件名保持不变；测试页安全错误和知识库只读验收结论不变。",
+      "last_changed_at": "2026-09-05T19:36:11+08:00"
     }
   ],
   "validation_commands": [
@@ -175,16 +175,14 @@
     }
   ],
   "documentation": {
-    "status": "stale",
-    "last_code_change_at": "2026-08-31T17:48:24+08:00",
-    "last_synced_at": "2026-08-31T15:31:19+08:00",
-    "last_sync_summary": "本次发布仅涉及运行时区和清洗命名，工具会话及 DSL 业务语义不变。",
-    "pending_changed_paths": [
-      "AI管理服务当前状态与后续测试交接.md"
-    ],
-    "changelog_fingerprint": "16826cd879e0cdaffcbc0745222632a39f39fc8e174d90c226fe112335b9b82f"
+    "status": "current",
+    "last_code_change_at": "2026-09-05T19:35:47+08:00",
+    "last_synced_at": "2026-09-05T19:36:11+08:00",
+    "last_sync_summary": "滚动交接仅顶部 0.85 保留当前状态标签；所有旧章节移除当前最新、当前任务、当前开发状态、当前及当前网络最新后缀，实际资产文件名保持不变；测试页安全错误和知识库只读验收结论不变。",
+    "pending_changed_paths": [],
+    "changelog_fingerprint": "15b10b9ff367f17a3096e382ee50d9eac2310eca5e475b7cd0099091a5e17de1"
   },
   "created_at": "2026-08-17T02:18:13+08:00",
-  "updated_at": "2026-08-31T18:15:16+08:00",
+  "updated_at": "2026-09-08T02:55:51+08:00",
   "last_abandon_reason": "独立复核修正完成，重新建立以当前修正工作树为基线的治理周期"
 }

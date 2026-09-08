@@ -152,7 +152,8 @@ bash scripts/jx_quick_deploy.sh --plan
 - 磁盘是否至少有 10 GiB 可用空间；
 - ZIP 是否只有一个 `ai_management/` 顶层目录；
 - 路径、大小、CRC 和关键文件是否安全；
-- `models.py` 是否与当前版本一致。
+- `models.py` 是否与当前版本一致；
+- 当前 Core 镜像中的 `knowledge_cleaner` 是否支持 `ai_management` 使用的文档分页参数。
 
 正常输出示例：
 
@@ -162,9 +163,17 @@ source_sha256=...
 current_core_image=jx-now-ai-management:...
 current_ui_image=jx-now-ai-management-ui:...
 data_mode=not-selected
+runtime_contract=ok
 ```
 
-只要出现 `ERROR:` 就停止。不要绕过检查，也不要直接改运行容器。
+若当前镜像来自混装版本，计划仍会完成只读检查，但会输出：
+
+```text
+runtime_contract=failed
+WARNING: full-wheel-deployment-required (...)
+```
+
+这不是 Dify 不可达，而是当前 Core 内共享包签名与调用方不兼容；停止快速流程，改走完整同源 wheel 发布。非 `--plan` 的 quick 发布会在资源门禁、备份、停 OCR、配置和服务切换之前硬失败；新 Core 镜像也会在切换前再次执行同一签名门禁。不要绕过检查，也不要直接改运行容器。
 
 ### 第 6 步：正式部署，默认保留测试数据
 
@@ -282,6 +291,7 @@ RESET_JX_TEST_ENVIRONMENT
 | `upload ai_management.zip` | 服务器没找到 ZIP | 重新执行第 2 步上传 |
 | `ZIP must contain only one top-level ai_management directory` | 压缩层级错误 | 重新选中 `ai_management` 文件夹本身压缩 |
 | `models.py changed` | 涉及模型/迁移风险 | 停止快速流程，改走完整发布 |
+| `runtime_contract=failed` / `full-wheel-deployment-required` | 当前或新 Core 中 `knowledge_cleaner` 的调用签名与 `ai_management` 不兼容 | 保持旧服务，构建同时包含两个包的完整 wheel；不得降级参数、单文件覆盖或跳过探针 |
 | `ModuleNotFoundError` | 新代码需要当前构建元数据未声明的依赖 | 不在容器内安装；核对依赖并走完整发布或修复已验证的服务器构建元数据 |
 | `at least 10 GiB` | 磁盘空间不足 | 停止，先做只读空间分析和精确清理 |
 | `another quick deployment is already running` | 已有部署持有独占锁 | 确认现有任务，不删除锁文件、不并发执行 |

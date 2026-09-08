@@ -193,6 +193,51 @@ def test_jx_release_scripts_manage_all_cleaning_workers_and_exact_upload_targets
     assert "find /data -mindepth 1 -delete" not in clean
 
 
+def test_prebaseline_backup_verifies_restore_databases_and_archives_without_data_echo():
+    backup = _source("scripts/jx_prebaseline_backup.sh")
+
+    assert 'VERIFY_DB="ai_restore_check_' in backup
+    assert 'VERIFY_DIFY_DB="dify_restore_check_' in backup
+    assert "cleanup_verify_dbs()" in backup
+    assert "trap cleanup_verify_dbs EXIT" in backup
+    assert 'dropdb -U postgres --if-exists "$VERIFY_DB"' in backup
+    assert 'dropdb -U postgres --if-exists "$VERIFY_DIFY_DB"' in backup
+    assert 'pg_restore -U postgres -d "$VERIFY_DIFY_DB" --no-owner --no-privileges' in backup
+    assert 'dify-restore-table-count.txt' in backup
+    assert 'dify-restore-table-count.txt")" -gt 0' in backup
+    assert 'redis-check-rdb /backup/dify-redis-dump.rdb' in backup
+    assert '"$BACKUP_DIR:/backup:ro"' in backup
+    assert 'tar -tzf "$BACKUP_DIR/uploads.tar.gz" > /dev/null' in backup
+    assert "archive_check=ok" in backup
+    assert "uploads-archive-check.txt" in backup
+    assert "uploads-contents.txt" not in backup
+    assert '"$BACKUP_DIR/env.backup"' in backup
+    assert '"$BACKUP_DIR/dify.env.backup"' in backup
+    assert '"$BACKUP_DIR/docker-compose.ai.yml"' in backup
+    assert '"$BACKUP_DIR/docker-compose.ui.yml"' in backup
+    assert '"$BACKUP_DIR/dify.dump"' in backup
+    assert '"$BACKUP_DIR/ai-management.dump"' in backup
+    assert '"$BACKUP_DIR/dify-redis-dump.rdb"' in backup
+    assert '"$BACKUP_DIR/uploads.tar.gz"' in backup
+    assert '"$BACKUP_DIR/prebaseline-state.safe.json"' in backup
+    assert 'sha256sum -c "$BACKUP_DIR/SHA256SUMS"' in backup
+    assert "REDIS_PASSWORD" in backup
+    assert 'printf "%s" "$REDIS_PASSWORD"' not in backup
+    assert 'REDIS_LASTSAVE_BEFORE=' in backup
+    assert 'REDIS_LASTSAVE_AFTER=' in backup
+    assert 'REDIS_BGSAVE_STATUS=' in backup
+    assert 'rdb_last_bgsave_status:/{' in backup
+    assert 'redis-bgsave-state.txt' in backup
+    assert 'dify-app-storage.tar.gz' in backup
+    assert 'dify-weaviate.tar.gz' in backup
+    assert '/opt/dify/docker/volumes/app/storage:/source:ro' in backup
+    assert '/opt/dify/docker/volumes/weaviate:/source:ro' in backup
+    assert 'methodology-backfill-worker-state.txt' in backup
+    assert 'methodology-promotion-worker-state.txt' in backup
+    assert 'DATA_SCRIPT="${JX_RELEASE_DATA_SCRIPT:-$APP_DIR/scripts/jx_release_data.py}"' in backup
+    assert 'uploads-contents.txt' not in backup
+
+
 def test_jx_release_removes_and_restores_the_exact_legacy_duplicate_migration():
     """A historical filename declared the same revision as the new formal file."""
 
@@ -268,6 +313,60 @@ def test_ocr_runtime_is_separate_and_deployed_scale_to_zero():
     assert 'OCR_DEPLOYMENT_ENABLED="${JX_OCR_DEPLOYMENT_ENABLED:-false}"' in deploy
     assert "OCR deployment is paused" in deploy
     assert "Persistent=false" in _source("deploy/systemd/jx-ocr-autoscaler.timer")
+
+
+def test_release_builds_from_verified_stage_context_and_verifies_ocr_recreate():
+    deploy = _source("scripts/jx_deploy_release.sh")
+
+    assert 'BUILD_CONTEXT="$STAGE_DIR/build-context"' in deploy
+    assert 'test -f "$STAGE_DIR/source.SHA256SUMS"' in deploy
+    assert 'find . -type f -print0 | sort -z | xargs -0 sha256sum' in deploy
+    assert 'cmp -- "$REPORT_DIR/source.SHA256SUMS.expected" "$REPORT_DIR/source.SHA256SUMS.actual"' in deploy
+    assert 'find "$STAGE_DIR/source" -type l' in deploy
+    assert 'find "$STAGE_DIR/source" -type f -name .env' in deploy
+    assert "deploy/systemd" in deploy
+    assert "forbidden_source_path in wheelhouse ui-wheelhouse-linux var/ocr-runtime" in deploy
+    assert 'rm -rf -- "$BUILD_CONTEXT"' in deploy
+    assert 'cp -a "$STAGE_DIR/source/." "$BUILD_CONTEXT/"' in deploy
+    assert 'bash "$RESOURCE_GUARD" check --phase=release' in deploy
+    assert deploy.index('bash "$RESOURCE_GUARD" check --phase=release') < deploy.index('cp -al wheelhouse')
+    assert 'cp -al wheelhouse "$BUILD_CONTEXT/wheelhouse"' in deploy
+    assert 'cp -al ui-wheelhouse-linux "$BUILD_CONTEXT/ui-wheelhouse-linux"' in deploy
+    assert 'cp -al "$OCR_RUNTIME_DIR" "$BUILD_CONTEXT/var/ocr-runtime"' in deploy
+    assert "hard-linking wheelhouse into build context failed" in deploy
+    assert "hard-linking ui-wheelhouse-linux into build context failed" in deploy
+    assert "hard-linking OCR runtime into build context failed" in deploy
+    assert 'find "$BUILD_CONTEXT" -type f -name .env' in deploy
+    assert deploy.count("docker build --pull=false") == 3
+    assert ' -t "$CORE_IMAGE" . ' not in deploy
+    assert ' -t "$OCR_IMAGE" . ' not in deploy
+    assert ' -t "$UI_IMAGE" . ' not in deploy
+    assert 'docker build --pull=false -f "$BUILD_CONTEXT/Dockerfile.offline"' in deploy
+    assert 'docker build --pull=false --build-arg AI_IMAGE="$CORE_IMAGE"' in deploy
+    assert 'docker build --pull=false -f "$BUILD_CONTEXT/Dockerfile.ui-offline"' in deploy
+    assert 'docker compose -f docker-compose.ai.yml up -d --no-deps --force-recreate ai-ocr-worker' in deploy
+    assert 'ai-ocr@jx-ai-ocr-worker' in deploy
+    assert 'active_queues()' in deploy
+    assert 'docker logs --since 5m "$OCR_CONTAINER_ID"' in deploy
+    assert "{{.Config.Image}} {{.Image}}" in deploy
+    assert 'OCR_WORKER_STARTED_NEW=0' in deploy
+    assert 'elif test "$OCR_WORKER_STARTED_NEW" -eq 1; then' in deploy
+    assert 'docker compose -f docker-compose.ai.yml stop -t 660 ai-ocr-worker' in deploy
+    assert 'docker compose -f docker-compose.ai.yml up -d --no-deps --force-recreate ai-ocr-worker' in deploy
+    assert '"$REPORT_DIR/source.SHA256SUMS.actual"' in deploy
+    assert '"$REPORT_DIR/ocr-celery-ping.txt"' in deploy
+    assert '"$REPORT_DIR/ocr-active-queues.json"' in deploy
+    assert '"$REPORT_DIR/ocr-container-image.txt"' in deploy
+    assert '"$REPORT_DIR/ocr-worker-container-id.txt"' in deploy
+    assert 'sha256sum -c "$BACKUP_DIR/SHA256SUMS" > "$REPORT_DIR/prebaseline-backup-verify.txt"' in deploy
+    assert 'dify-app-storage.tar.gz' in deploy
+    assert 'dify-weaviate.tar.gz' in deploy
+    assert 'HELPER_FILES=(' in deploy
+    assert 'mkdir -p "$BACKUP_DIR/scripts"' in deploy
+    assert 'cp -a "scripts/$file" "$BACKUP_DIR/scripts/$file"' in deploy
+    assert 'helper-install.state' in deploy
+    assert 'restore_helpers_after_failure()' in deploy
+    assert 'HELPERS_INSTALL_STARTED' in deploy
 
 
 def test_precise_cleanup_accepts_a_relative_private_manifest_path_safely():
@@ -553,3 +652,29 @@ def test_test_ui_tags_each_upload_for_exact_cleanup_capture_only():
     assert "tagged_test_ui_metadata" in ui
     assert "cleanup_run_id=cleanup_run_id" in ui
     assert '"_test_ui_cleanup_run_id"' in cleaning
+
+
+def test_formal_release_helpers_include_acceptance_budget_and_nginx_guard():
+    acceptance_budget = ROOT / "scripts/jx_acceptance_budget.py"
+    nginx_guard = ROOT / "scripts/configure_dify_nginx_ai_service_guard.py"
+
+    assert acceptance_budget.is_file()
+    assert nginx_guard.is_file()
+    budget_source = acceptance_budget.read_text(encoding="utf-8")
+    guard_source = nginx_guard.read_text(encoding="utf-8")
+    assert "AcceptanceBudget.from_settings()" in budget_source
+    assert "# BEGIN ai-management-public-upload-block" in guard_source
+    assert "# END ai-management-public-upload-block" in guard_source
+    assert "LEGACY_BEGIN" in guard_source
+    for path in (
+        "course/upload-batches",
+        "course/upload-batches/",
+        "general/upload-batches",
+        "general/upload-batches/",
+    ):
+        assert f"/ai-service/internal/v1/admin/knowledge-bases/{path}" in guard_source
+    block_source = guard_source[
+        guard_source.index("BLOCK =") : guard_source.index("\n\ndef _remove_managed_block")
+    ]
+    assert block_source.count("return 403;") == 4
+    assert "location ^~ /ai-service/" in guard_source
