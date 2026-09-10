@@ -385,3 +385,63 @@
 - 预防：发布前检查远端 migration revision 唯一性；对 legacy/formal 文件名使用显式常量和精确路径；保留迁移前数据库 revision 与可恢复备份。
 - 证据：`var/reports/tool-conversation-initial-20260826/issues.jsonl`；jx `/opt/ai-management/var/reports/v2/toolconv-20260830-155349-contractfix2-deploy`。
 - 最后验证：2026-08-30。
+
+## DEPLOY-032：Windows 生成发布归档时必须显式禁用换行转换
+
+- 适用：在 `core.autocrlf=true` 的 Windows 工作树中用 Git 构造 jx Linux 发布 stage。
+- 触发：本地文件看似可读，上传后 Bash/Python/Compose 文本含 CRLF，`bash -n` 在 `do\r` 等位置失败；wheel 本身仍可能完整。
+- 根因：普通 `git archive` 会受当前 Git 换行配置影响，不能仅凭“内容来自 Git”推断归档一定保持 LF。
+- 解决：用 `git -c core.autocrlf=false archive` 生成发布资产；上传前后对白名单文本断言 CR 数为 0，并执行 Bash/Python/Compose 语法检查；二进制 wheel 单独按 ZIP 和 SHA-256 校验。
+- 非解决：对整个 stage 递归 `sed`、改写 wheel、忽略语法失败继续切换，或把 CRLF helper 热拷入运行容器。
+- 验证：LF-only stage 的 15 个 helper 均通过 CR 计数、权限和语法门禁，正式 release 与 postdeploy 完成。
+- 预防：Windows 发布打包固定关闭 autocrlf，并把文本换行、脚本语法和二进制摘要作为切换前门禁。
+- 证据：`scripts/jx_deploy_release.sh`、`tests/test_cleaning_release_contract.py`、`var/reports/advisor-message-actions/issues.jsonl`。
+- 最后验证：2026-09-09。
+
+## DEPLOY-033：PowerShell 调用 native 发布命令必须立即检查 `$LASTEXITCODE`
+
+- 适用：Windows PowerShell 5/7 经 `ssh`、`scp` 编排 jx 发布。
+- 触发：远端语法或校验命令已经失败，本地脚本仍继续备份或输出成功；PowerShell 5 还可能重组多层引号，使 PowerShell 7 的成功预检不能代表同一 argv。
+- 根因：`$ErrorActionPreference='Stop'` 不会稳定地把所有 native 非零退出码转换成终止错误，且 legacy native argument passing 会改变复杂远端命令参数。
+- 解决：每次 `ssh`/`scp` 后紧邻检查 `$LASTEXITCODE`；多行远端 Bash 先归一化为 UTF-8 LF，再以 Base64 作为单一安全参数或 stdin 数据传输，远端从受限临时文件执行。
+- 非解决：只检查 PowerShell 是否抛异常、依赖最后一条命令的退出码、继续嵌套多层单引号，或因本地预检通过就跳过远端门禁。
+- 验证：PowerShell 5/7 解析通过；合成远端脚本的 `exit 7` 原样传播，正式发布失败不会继续到伪成功输出。
+- 预防：发布编排器统一封装 native 退出检查，并用失败退出码做发布前自测。
+- 证据：`var/release-artifacts/advisor-actions-20260909-085223/resume-advisor-actions-deploy-20260909-091626.ps1`、`var/reports/advisor-message-actions/issues.jsonl`。
+- 最后验证：2026-09-09。
+
+## DEPLOY-034：不要从 SSH stdin 直接执行会启动 stdin 消费者的发布脚本
+
+- 适用：远端 Bash 控制流包含 `docker compose run -T`、`exec -T` 或其他会继承标准输入的子进程。
+- 触发：备份完成后 Bash 后续发布语句没有执行，外层 SSH 却返回 0；报告中缺少 deploy/postdeploy 证据。
+- 根因：子进程继承并消费了 Bash 尚未读取的 SSH stdin，导致后续脚本文本被当作子进程输入，外层对已执行部分正常结束。
+- 解决：把已校验脚本解码到 root-owned、`0600`、唯一命名的临时文件，从文件启动 Bash；正式发布脚本使用独立 SSH 调用，并在退出后精确删除临时文件。
+- 非解决：继续使用 `base64 | bash -s` 管道、仅依赖外层 0 退出码，或为规避问题移除 `-T` 破坏非交互语义。
+- 验证：验证和 postdeploy 脚本均从临时文件完整执行，正式 deploy 报告存在，主体/清理失败退出码均能被本地编排器识别。
+- 预防：任何包含可能读取 stdin 的远端控制流都先落受限临时文件；报告必须核对预期阶段标记，不以单一退出码代替。
+- 证据：`var/reports/advisor-message-actions/issues.jsonl`、正式发布报告的阶段标记。
+- 最后验证：2026-09-09。
+
+## DEPLOY-035：PowerShell 5 向 GNU base64 stdin 写入时要处理附加 CRLF
+
+- 适用：PowerShell 5 通过 native stdin 向 Linux 主机传输 Base64 文本。
+- 触发：同一 Base64 在 PowerShell 7 正常，PowerShell 5 经 SSH 后 `base64 -d` 报 `invalid input`。
+- 根因：PowerShell 5 向 native stdin 写字符串时附加 CRLF；GNU coreutils 默认解码接受 LF，但把 CR 视为非法字符。
+- 解决：仅对本地固定生成的 Base64 传输使用 `base64 --decode --ignore-garbage`，输出写入受限唯一临时文件并再做内容/语法校验；不能把该选项用于不受信任的外部载荷。
+- 非解决：关闭所有校验、在远端拼接 shell 源码、把 decoder 报错当成网络问题，或留下临时脚本。
+- 验证：PowerShell 5 合成脚本成功执行，非零主体退出码正确传播，验证/postdeploy 临时文件均被精确删除。
+- 预防：Windows PowerShell 5 的 native stdin 兼容性必须单独实测，不能用 PowerShell 7 结果替代。
+- 证据：`var/release-artifacts/advisor-actions-20260909-085223/resume-advisor-actions-deploy-20260909-091626.ps1`、独立只读审查记录。
+- 最后验证：2026-09-09。
+
+## DEPLOY-036：完整 release 成功路径必须恢复发布前运行中的 OCR Worker
+
+- 适用：`scripts/jx_deploy_release.sh` 为资源预算主动暂停 `ai-ocr-worker`，且发布前该具名 Worker 正在运行。
+- 触发：Core/UI 发布成功、API ready，但 OCR 容器仍退出或保留旧镜像，发布报告中的 OCR 容器 ID 为空。
+- 根因：旧脚本失败回滚路径会恢复 OCR，成功路径只安装 autoscaler 并记录状态，缺少与发布前状态对称的恢复。
+- 解决：成功路径仅在 `OCR_WORKER_WAS_RUNNING=1` 时重新执行 OCR 恢复资源门禁，再用 `up -d --no-deps --force-recreate ai-ocr-worker` 恢复具名 Worker；校验容器存在、使用本次 `$OCR_IMAGE` 且为 running，并把镜像证据纳入报告 SHA。
+- 非解决：无条件常驻 OCR、使用 `down`/`--remove-orphans`、触碰 Methodology Worker，或只检查 autoscaler timer。
+- 验证：`tests/test_cleaning_release_contract.py::test_formal_release_restores_preexisting_ocr_worker_with_new_image_on_success` 和三类顾问聚焦回归通过；真实 release 后还需再次核对 Core/UI/OCR 同源与 Methodology Worker 连续性。
+- 预防：发布脚本对所有“发布前暂停”的可选 Worker维护 before-state，并在成功和失败两条路径分别验证恢复语义。
+- 证据：`scripts/jx_deploy_release.sh`、`tests/test_cleaning_release_contract.py`、`var/reports/advisor-message-actions/issues.jsonl`。
+- 最后验证：2026-09-09。

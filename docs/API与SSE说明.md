@@ -26,6 +26,7 @@ GET    /internal/v1/business/conversations/{conversation_id}/messages
 PATCH  /internal/v1/business/conversations/{conversation_id}
 DELETE /internal/v1/business/conversations/{conversation_id}
 POST   /internal/v1/business/messages/{message_id}/feedback
+POST   /internal/v1/business/messages/{message_id}/regenerate
 ```
 
 聊天请求：
@@ -38,6 +39,16 @@ POST   /internal/v1/business/messages/{message_id}/feedback
 ```
 
 不传 `conversation_id` 创建新会话；续聊时只能传本服务返回的本地 ID。
+
+### 商业顾问消息操作
+
+- `POST /internal/v1/business/messages/{message_id}/feedback` 请求体为
+  `{"rating":"like|dislike|null","content":"可选，最多1000字"}`；`message_id` 是本地
+  `BusinessMessage.id`，服务端校验当前用户、入口和有效会话归属。
+- `POST /internal/v1/business/messages/{message_id}/regenerate` 无请求体，返回
+  `text/event-stream`。只接受当前会话最新、未进入摘要游标且状态允许的助手消息；否则返回
+  `409 MESSAGE_NOT_REGENERATABLE`。服务清空旧答案后严格排除原用户/助手二元组重发，并覆盖同一助手消息 ID。
+- 成功或停止沿用商业 SSE 的 `message_end`；`message_id` 仍为原本地 ID。失败发送带该本地 ID、`status=failed` 的 `error`，客户端丢弃本轮增量。
 
 ## SSE
 
@@ -75,10 +86,25 @@ error
 
 `message_end` 包含本地会话/消息 ID、Dify message/task ID、状态、首 Token、总耗时和 Token 用量。若流中收到 `error`，不能把此前部分文本标记为完整回答。
 
+商业重生成受理后旧答案立即失效：`completed` 替换同一消息，`stopped` 保留新片段，`failed` 不保留旧答案或新片段。消息列表的 `can_regenerate` 仅对当前最新且未摘要的可重生成助手消息为 `true`。
+
 同一会话已有生成时返回：
 
 ```http
 409 CONVERSATION_BUSY
+```
+
+消息或会话不存在返回 `404 MESSAGE_NOT_FOUND`；消息不是最新可操作回答返回
+`409 MESSAGE_NOT_REGENERATABLE`；Dify 不可达/超时返回 `502 DIFY_UNAVAILABLE`，响应非法返回
+`502 DIFY_RESPONSE_INVALID`。
+
+预检失败发生在 `StreamingResponse` 建立前，HTTP 状态为对应的 4xx/5xx，响应为 JSON 错误，不会建立 SSE。预检通过后为 HTTP 200；如果 Dify 在流中失败，则通过 `event: error` 返回 `status=failed`、`retryable` 和会话/消息/任务 ID，客户端按失败规则处理累计增量。
+
+流中失败示例（HTTP 已为 200）：
+
+```text
+event: error
+data: {"code":"DIFY_UNAVAILABLE","status":"failed","retryable":true,"conversation_id":"local-c1","message_id":"opaque-m1","task_id":"task-1"}
 ```
 
 ## 朋友圈顾问与日常写作工具
@@ -91,6 +117,8 @@ POST /internal/v1/tools/{kind}/conversations/{conversation_id}/reset
 POST /internal/v1/tools/moments/run
 POST /internal/v1/tools/writing/run
 POST /internal/v1/tools/{task_id}/stop
+POST /internal/v1/tools/{kind}/messages/{message_id}/feedback
+POST /internal/v1/tools/{kind}/messages/{message_id}/regenerate
 ```
 
 请求：
@@ -110,6 +138,24 @@ POST /internal/v1/tools/{task_id}/stop
 创建会话请求为 `{\"type\":\"sales|seeding|polish|expand\",\"output_format\":\"article|wechat_public_account\"}`（按工具限制取值）。服务端将会话中的类型和成稿格式映射到 Dify Chatflow。两个工具不创建商业历史、画像、课程事件或商业顾问数据。
 
 `GET /internal/v1/tools/{kind}/examples` 现在返回空目录（旧案例已按需求清除）；管理员仍可在 `/internal/v1/admin/tools/{kind}/examples` 下使用双 Token CRUD 新增案例，不再提供 restore-defaults。调用 `/run` 前必须先创建会话并把本地 `conversation_id` 放在请求体顶层；`inputs` 不得传 `conversation_id`、`type`、`format` 或 `output_format`，顶层未知字段返回 `422 extra_forbidden`。输入精确“新对话”“开启新对话”“开始新对话”“新建对话”“重新开始对话”“重新开启对话”“重开对话”（允许首尾空白和句末标点）时，SSE 直接返回“已开启新会话”，不调用 Dify；其它相似表达按普通内容处理。
+
+### 工具消息操作与流终态
+
+`kind` 仅允许 `moments` 或 `writing`。工具 `message_id` 是不透明的 Dify 消息 ID，客户端不得解析或拼接；本服务只接受当前用户当天有效会话、当前 Dify `conversation_id` 内的消息。
+
+- `POST /internal/v1/tools/{kind}/messages/{message_id}/feedback` 请求体为
+  `{"rating":"like|dislike|null","content":"可选，最多1000字"}`，直接转发 Dify feedback。
+- `POST /internal/v1/tools/{kind}/messages/{message_id}/regenerate` 无请求体，回读目标消息的
+  `query/inputs`，按当前工具白名单重新校验并注入当前类型、写作格式和管理员风格，在同一
+  `conversation_id` 重发并返回新的不透明 `message_id`。非当前会话最新消息返回 `409 MESSAGE_NOT_REGENERATABLE`。
+- 普通生成和重生成取得任务 ID 后先发送 `status(code=task_started,task_id)`；成功或停止发送含本地
+  `conversation_id`、Dify `message_id`、`task_id` 和 `status=completed|stopped` 的 `message_end`。
+  Dify 尚未创建消息时极早停止允许 stopped 的 `message_id` 为 `null`；completed 仍必须有 ID，
+  客户端不得对 null ID 发起反馈或重生成。
+  Dify 错误、非法流或会话不一致发送 `error(status=failed)`；客户端失败时清空本轮全部
+  `answer_delta`，停止时保留已收到片段。
+
+商业顾问使用本服务显式组装上下文且 Dify Memory 关闭；朋友圈顾问和日常写作复用同一 Dify 会话，目标 Memory 窗口为 6，重生成后的旧问答可能仍留在远端短期 Memory。
 
 ## 入口配置
 
@@ -179,3 +225,10 @@ GET /internal/v1/admin/catalog
 ```
 
 会话审计接口的 `user_id` 是管理人员可见的原始用户 ID，不返回内部 `user_hash`。新聊天列表使用最近一条助手消息的回答、通用引用、token 消耗和首 token/总响应耗时；历史推荐字段仅容错读取。`recommendation_note` 始终返回空字符串，旧库原值不回填、不改写。
+
+### 三类顾问消息操作增量
+
+- 新增 `POST /internal/v1/business/messages/{message_id}/regenerate`；商业仅允许最新、未摘要回答，严格替换同一本地 assistant 消息，失败清空、停止保留片段。
+- 新增 `POST /internal/v1/tools/{kind}/messages/{message_id}/feedback` 与 `/regenerate`（`kind=moments|writing`）；工具 message ID 为不透明 Dify ID，重生成回读 query/inputs 后在同一 conversation 重发。
+- 既有 business/tools stop 路由保持；工具 SSE 先发 `task_started`，终态带 conversation/message/task/status；失败清空页面累计 delta，停止保留。
+- rating 支持 `like|dislike|null`，content 最长 1000；工具 Memory 目标窗口 6，商业主 LLM Memory 关闭。jx/真实小程序后端 E2E 与本地 DSL/线上发布证据分开记录。

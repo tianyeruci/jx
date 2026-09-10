@@ -180,3 +180,51 @@
 - 预防：验收脚本保留脱敏 JSON 证据；Batch 测试完成后恢复 `BAILIAN_BATCH_ENABLED=false`，不删除用户要求保留的测试数据/任务。
 - 证据：[`full_remote_metadata_parity.safe.json`](../../var/reports/20260820-qwen-activity/full_remote_metadata_parity.safe.json)、`scripts/verify_qwen_activity_e2e.py`。
 - 最后验证：2026-08-20。
+
+## TEST-016：流式 HTTP 非成功响应必须先读取响应体再解析错误
+
+- 适用：`httpx.Client.stream()` 驱动的 Streamlit 后台 SSE 请求。
+- 触发：接口在建立 SSE 前返回 4xx/5xx，后台线程抛出 `httpx.ResponseNotRead`，页面既收不到稳定错误码，也无法执行既定的失败清屏逻辑。
+- 根因：流式响应体默认未缓冲；直接 `raise_for_status()` 后再对 `exc.response` 调用 `json()`，会在错误处理路径再次抛异常。
+- 解决：在 `with client.stream(...) as response` 内发现非 2xx 时先调用 `response.read()`，再 `raise_for_status()`；之后复用统一的 HTTP 错误解析和队列事件逻辑。
+- 非解决：吞掉异常、把预检错误伪装成空 SSE，或仅在页面捕获 `ResponseNotRead` 而丢失服务端错误码。
+- 验证：`tests/test_test_ui.py::test_background_stream_reads_http_error_before_decoding` 通过；三类顾问聚焦回归共 194 项通过。
+- 预防：所有流式 HTTP 客户端的非成功分支都应在响应上下文关闭前读取响应体，并对真实 4xx/5xx 增加回归。
+- 证据：`ai_management/test_ui.py`、`tests/test_test_ui.py`、`var/reports/advisor-message-actions/issues.jsonl`。
+- 最后验证：2026-09-09。
+
+## TEST-017：商业顾问分段流停止时持久正文必须与客户端已见片段一致
+
+- 适用：商业顾问先输出 `progress_answer`、后输出最终 `answer_*` 的分段 SSE。
+- 触发：客户端已收到即时提示 `answer_delta` 后停止，终态为 `stopped`，但回读助手消息正文为空。
+- 根因：即时提示与最终答案分别累积在 `progress_answer_parts`、`answer_parts`；停止发生在最终段开始前时，旧持久化逻辑只读取空的 `answer_parts`。
+- 解决：仅在终态为 `stopped`、最终答案片段为空且即时提示已实际发送时，持久化即时提示片段；一旦有最终答案片段仍只保存最终段，`failed` 始终保持空正文。
+- 非解决：把即时提示永久拼进完整答案、对失败终态保存片段，或恢复停止前已经作废的旧答案。
+- 验证：`tests/test_ai_management.py::test_business_stop_persists_progress_fragment_when_final_answer_has_not_started` 通过；三类顾问聚焦回归共 194 项通过。
+- 预防：分段 SSE 的停止测试同时断言“客户端收到的片段”和“本地同一助手消息回读正文”，并覆盖 progress-only 与 final-started 两条路径。
+- 证据：`ai_management/conversations.py`、`tests/test_ai_management.py`、`var/reports/advisor-message-actions/live-acceptance-initial.json`。
+- 最后验证：2026-09-09。
+
+## TEST-018：Streamlit fragment 终态必须触发整页刷新并持久渲染结果
+
+- 适用：测试页使用 `st.fragment(run_every=...)` 轮询后台 SSE 的商业、朋友圈和写作入口。
+- 触发：Dify 已生成成功且 session state 已保存 answer/message ID，但答案和反馈/重新生成控件在终态后不稳定出现，或约一个 fragment 周期后消失。
+- 根因：fragment 只重绘自身；旧逻辑在 `__done__` 后删除 active entry，却不触发 app-scope rerun，fragment 外的持久结果区和消息操作控件不会重新执行。
+- 解决：终态保存结果并删除 active entry 后调用 `st.rerun(scope="app")`；商业和工具的常规结果区显式渲染已保存的 progress/final answer，再渲染诊断及操作控件。
+- 非解决：延长 fragment 周期、依赖用户手工点击触发整页刷新，或只把答案放进默认折叠的诊断 JSON。
+- 验证：`tests/test_test_ui.py` 覆盖 app-scope rerun 和持久结果渲染；真实浏览器仍需在新 jx release 后跨多个 fragment 周期复验三入口。
+- 预防：Streamlit fragment 测试必须区分“fragment 内临时输出”和“整页终态持久输出”，并断言操作控件无需额外交互即可出现。
+- 证据：`ai_management/test_ui.py`、`tests/test_test_ui.py`、`var/reports/advisor-message-actions/issues.jsonl`。
+- 最后验证：2026-09-09。
+
+## TEST-019：SSE conversation ID 重复事件不能造成按 token 数据库提交
+
+- 适用：工具 Dify 流的多个 token/message 事件重复携带同一 `conversation_id`。
+- 触发：短回答也产生大量 PostgreSQL commit，SSE delta 在写事务后才发送，并发时连接池和数据库写入被无意义放大。
+- 根因：旧逻辑只要事件包含 `conversation_id` 就更新活动时间并提交，没有区分首次绑定和重复回显。
+- 解决：仅在本地远端 ID 为空时提前绑定并提交一次，确保首轮停止/断开仍可精确清理；相同 ID 的重复事件不提交，终态统一更新活动时间并提交。
+- 非解决：完全延迟到终态而丢失首轮提前停止的清理标识，或取消 conversation switch 的 fail-closed 校验。
+- 验证：100 个重复 conversation ID 增量的回归中，请求 session 只提交“首次绑定 + 终态”两次。
+- 预防：流式持久化回归使用大量重复 token 事件并对同一请求 session 的 commit 次数设置常数上限。
+- 证据：`ai_management/api/routers/tools.py`、`tests/test_tool_conversations_contract.py`。
+- 最后验证：2026-09-09。

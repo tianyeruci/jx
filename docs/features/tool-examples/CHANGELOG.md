@@ -774,3 +774,410 @@ This is a semantic change log, not a copy of Git diff.
 - **Changed paths:**
   - `AI管理服务当前状态与后续测试交接.md`
   - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-08T22:12:46+08:00 — 案例目录、默认案例和管理员 CRUD 语义不变；共享工具路由和测试页新增消息反馈、同会话重生成、可停止流及兼容 SSE 字段。
+
+- **Purpose:** 案例目录、默认案例和管理员 CRUD 语义不变；共享工具路由和测试页新增消息反馈、同会话重生成、可停止流及兼容 SSE 字段。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+
+## 2026-09-08T22:30:02+08:00 — 案例目录语义保持不变；共享工具路由新增的消息操作和测试页异步停止已通过本地回归，因本功能有意更新接口契约而刷新对应冻结摘要。
+
+- **Purpose:** 案例目录语义保持不变；共享工具路由新增的消息操作和测试页异步停止已通过本地回归，因本功能有意更新接口契约而刷新对应冻结摘要。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-08T23:12:20+08:00 — 工具示例继续使用既有会话和 SSE 基线；新增 feedback、regenerate、task_started 和 stop 终态字段，且测试页按入口隔离活跃流。
+
+- **Purpose:** 工具示例继续使用既有会话和 SSE 基线；新增 feedback、regenerate、task_started 和 stop 终态字段，且测试页按入口隔离活跃流。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 针对性回归已通过；完整 gov quality 将在所有相关 Feature 同步后从头执行。
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-08T23:15:43+08:00 — 工具示例继续使用既有会话和 SSE 基线；新增 feedback、regenerate、task_started 和 stop 终态字段，测试页为 business、moments、writing 独立维护活跃流和 stop 控件。
+
+- **Purpose:** 工具示例继续使用既有会话和 SSE 基线；新增 feedback、regenerate、task_started 和 stop 终态字段，测试页为 business、moments、writing 独立维护活跃流和 stop 控件。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 当前完整质量门从格式阶段重新开始；Ruff 格式已修正，完整结果待执行。
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-08T23:22:31+08:00 — 工具示例保持既有会话/SSE 基线并增加反馈、同会话重生成、task_started 和 stop 终态；测试页活跃流按 business、moments、writing 隔离。
+
+- **Purpose:** 工具示例保持既有会话/SSE 基线并增加反馈、同会话重生成、task_started 和 stop 终态；测试页活跃流按 business、moments、writing 隔离。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 完整质量门已执行至第二单元组；冻结摘要基线修正后将从头重跑。
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-08T23:44:10+08:00 — 工具会话保持不持久化生成正文；补齐 Dify 消息标识、提前任务标识、反馈、同会话重生成、可靠停止和失败终态的兼容 SSE 契约。
+
+- **Purpose:** 工具会话保持不持久化生成正文；补齐 Dify 消息标识、提前任务标识、反馈、同会话重生成、可靠停止和失败终态的兼容 SSE 契约。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-08T23:44:27+08:00 — 工具会话保持不持久化生成正文；补齐 Dify 消息标识、提前任务标识、反馈、同会话重生成、可靠停止和失败终态的兼容 SSE 契约。
+
+- **Purpose:** 工具会话保持不持久化生成正文；补齐 Dify 消息标识、提前任务标识、反馈、同会话重生成、可靠停止和失败终态的兼容 SSE 契约。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-08T23:58:09+08:00 — 确认工具会话消息操作的正式接口正文和接口索引与当前实现一致。
+
+- **Purpose:** 确认工具会话消息操作的正式接口正文和接口索引与当前实现一致。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-09T00:04:13+08:00 — 工具会话跨日删除测试改为显式构造北京时间前一日，保持既有生产清理与精确 Dify 会话删除语义不变。
+
+- **Purpose:** 工具会话跨日删除测试改为显式构造北京时间前一日，保持既有生产清理与精确 Dify 会话删除语义不变。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-09T00:33:42+08:00 — 工具消息操作的反馈、同会话重生成和可靠停止文档改为正文级契约，并同步结构性文档测试和SSE收敛边界。
+
+- **Purpose:** 工具消息操作的反馈、同会话重生成和可靠停止文档改为正文级契约，并同步结构性文档测试和SSE收敛边界。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-09T00:48:27+08:00 — 记录工具会话仍只保存映射、普通生成与重生成返回 task/message 标识、反馈与停止均由当前用户和会话绑定保护的兼容增量。
+
+- **Purpose:** 记录工具会话仍只保存映射、普通生成与重生成返回 task/message 标识、反馈与停止均由当前用户和会话绑定保护的兼容增量。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-09T00:53:59+08:00 — 更新工具相关接口文档冻结验证，保持会话映射、Dify 远端正文责任和既有工具能力边界不变。
+
+- **Purpose:** 更新工具相关接口文档冻结验证，保持会话映射、Dify 远端正文责任和既有工具能力边界不变。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-09T02:05:09+08:00 — 商业顾问同本地ID严格替换/静默EOF failed；工具同Dify会话远端feedback+regenerate+task_started/stop终态；Streamlit accepted时序；Moments/Writing Memory窗口6；无迁移。
+
+- **Purpose:** 商业顾问同本地ID严格替换/静默EOF failed；工具同Dify会话远端feedback+regenerate+task_started/stop终态；Streamlit accepted时序；Moments/Writing Memory窗口6；无迁移。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** 工具顾问消息操作契约和共享路径变更尚未同步。
+- **After:** 工具同Dify会话支持远端feedback和regenerate，返回task_started并提供stop终态；商业顾问同本地ID严格替换、静默EOF为failed；Streamlit accepted时序；Moments/Writing Memory窗口6；无迁移。
+- **Impact / Notes:** 同步共享路径、接口契约、DSL约束与测试记录。
+- **Validation:** 聚焦pytest、Ruff、索引确定性检查已完成。
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-09T02:41:55+08:00 — 共享 tools 路由保持现有 examples 语义，同时补齐 moments/writing 远端反馈、同会话重生成、task_started 与并发 stop 终态；测试页按 accepted/failed/stopped 时序展示；不持久化工具正文或 feedback。
+
+- **Purpose:** 共享 tools 路由保持现有 examples 语义，同时补齐 moments/writing 远端反馈、同会话重生成、task_started 与并发 stop 终态；测试页按 accepted/failed/stopped 时序展示；不持久化工具正文或 feedback。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Ruff format/check; advisor focused pytest; generate_project_index --check
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-09T03:19:06+08:00 — 共享工具路由继续沿用既有匿名会话映射和管理员风格；消息反馈、同会话重新生成及可靠停止均限制为当前用户、当前入口和绑定 transport。停止使用 terminal claim 与远端确认后的两阶段 marker，失败不伪 stopped；测试页可在流进行中获取 task_id 并处理预检、失败或停止终态。
+
+- **Purpose:** 共享工具路由继续沿用既有匿名会话映射和管理员风格；消息反馈、同会话重新生成及可靠停止均限制为当前用户、当前入口和绑定 transport。停止使用 terminal claim 与远端确认后的两阶段 marker，失败不伪 stopped；测试页可在流进行中获取 task_id 并处理预检、失败或停止终态。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-09T03:58:35+08:00 — 共享工具路由继续使用既有匿名会话映射与管理员风格；反馈、同会话重生成和可靠停止限定当前用户、入口与transport。terminal claim和两阶段marker保证远端确认才stopped，失败不伪stopped；测试页在流中获取task_id并处理预检、失败和停止终态。
+
+- **Purpose:** 共享工具路由继续使用既有匿名会话映射与管理员风格；反馈、同会话重生成和可靠停止限定当前用户、入口与transport。terminal claim和两阶段marker保证远端确认才stopped，失败不伪stopped；测试页在流中获取task_id并处理预检、失败和停止终态。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-09T05:11:31+08:00 — 共享工具会话路由和 Streamlit 测试页补足当前 Dify 会话的消息反馈与重生成、早期 task ID、受用户绑定的停止和 completed/stopped/failed 页面语义。工具本地仍只保存会话映射；回复正文与远端反馈不新增持久化。
+
+- **Purpose:** 共享工具会话路由和 Streamlit 测试页补足当前 Dify 会话的消息反馈与重生成、早期 task ID、受用户绑定的停止和 completed/stopped/failed 页面语义。工具本地仍只保存会话映射；回复正文与远端反馈不新增持久化。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-09T05:55:48+08:00 — 共享测试/接口文档同步本 Feature 的工具消息操作终态契约与 ownership：失败 error.status=failed，成功/停止 message_end；不改变工具示例目录、数据或既有运行语义。
+
+- **Purpose:** 共享测试/接口文档同步本 Feature 的工具消息操作终态契约与 ownership：失败 error.status=failed，成功/停止 message_end；不改变工具示例目录、数据或既有运行语义。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest tests/test_advisor_message_action_docs.py (4 passed)
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-09T05:56:23+08:00 — 共享测试/接口文档同步本 Feature 的工具消息操作终态契约与 ownership：失败 error.status=failed，成功/停止 message_end；不改变工具示例目录、数据或既有运行语义。
+
+- **Purpose:** 共享测试/接口文档同步本 Feature 的工具消息操作终态契约与 ownership：失败 error.status=failed，成功/停止 message_end；不改变工具示例目录、数据或既有运行语义。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest tests/test_advisor_message_action_docs.py (4 passed)
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-09T06:06:19+08:00 — 工具共享文档与测试证据同步：正式接口冻结值反映已审查 SSE 失败终态与 UV_NO_SYNC 工作树卫生，不改变工具示例数据或既有生成行为。
+
+- **Purpose:** 工具共享文档与测试证据同步：正式接口冻结值反映已审查 SSE 失败终态与 UV_NO_SYNC 工作树卫生，不改变工具示例数据或既有生成行为。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest test_cleaning_release_contract.py (27 passed); pytest Other/event_rag_cleaner (45 passed)
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-09T06:30:21+08:00 — 恢复项目级 tool-examples/AdminSetting/既有工具会话与迁移事实，并保留本 Feature 的消息操作边界；案例目录语义、接口和 DSL 不变。
+
+- **Purpose:** 恢复项目级 tool-examples/AdminSetting/既有工具会话与迁移事实，并保留本 Feature 的消息操作边界；案例目录语义、接口和 DSL 不变。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest tests/test_advisor_message_action_docs.py (5 passed)
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-09T12:53:43+08:00 — 朋友圈/写作的反馈、重新生成和停止复用现有工具入口；案例读取、管理员 CRUD、示例注入与既有普通生成请求保持不变。
+
+- **Purpose:** 朋友圈/写作的反馈、重新生成和停止复用现有工具入口；案例读取、管理员 CRUD、示例注入与既有普通生成请求保持不变。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** 工具消息操作缺失，案例能力仅驱动普通生成。
+- **After:** 案例能力继续按原契约工作，新增消息操作使用 opaque Dify message ID 且不持久化正文。
+- **Impact / Notes:** None
+- **Validation:** 工具路由、普通生成、案例兼容与测试页相关回归包含在 194 项通过结果中。
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-09T13:42:29+08:00 — 工具案例与普通生成保持原契约；新增消息操作完成后整页刷新，重复 Dify conversation ID 增量不再按 token 提交。
+
+- **Purpose:** 工具案例与普通生成保持原契约；新增消息操作完成后整页刷新，重复 Dify conversation ID 增量不再按 token 提交。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 工具与测试页两文件 66 项通过。
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-09T13:47:33+08:00 — 工具案例能力不变；工具生成/重生成错误可跨 app rerun 稳定显示，后续成功清除旧错误。
+
+- **Purpose:** 工具案例能力不变；工具生成/重生成错误可跨 app rerun 稳定显示，后续成功清除旧错误。
+- **Affected modules:**
+  - `examples-api — 用户读取与管理员 CRUD API`
+  - `examples-ui — 测试 UI 案例展示与维护`
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 共享测试页与工具契约 67 项通过。
+- **Changed paths:**
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/test_ui.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_cleaning_release_contract.py`

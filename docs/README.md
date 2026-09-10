@@ -178,3 +178,4 @@
 - 改 HTTP 接口、CLI、Worker、Compose、Dify 资产或发布/RAG 脚本：运行 `python scripts/generate_project_index.py --write`，再运行 `--check`。
 - 完成远端发布：最后更新当前状态、日期化验收和排坑记录。
 - 只产生一次性运行证据：写 `var/reports/`，不要塞入 `AGENTS.md`。
+- 三类 AI 顾问消息操作的接口/SSE、Dify Memory、验收与 Feature 约束见 `docs/features/advisor-message-actions/` 及对应 API/小程序/Dify 文档；本地 DSL 不代表线上发布状态。

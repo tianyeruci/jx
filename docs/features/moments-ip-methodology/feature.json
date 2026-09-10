@@ -36,7 +36,7 @@
     {
       "id": "prompt-dsl",
       "title": "朋友圈 Prompt 与 DSL",
-      "status": "verified",
+      "status": "done",
       "paths": [
         "dify/dsl/moments_advisor.yml",
         "dify/prompts/朋友圈顾问提示词.md"
@@ -46,9 +46,9 @@
         "AC-002"
       ],
       "optional": false,
-      "updated_at": "2026-08-30T15:33:18+08:00",
-      "last_change_summary": "修正 request/source_material 事实来源冲突，保持现有 Dify App、qwen-plus、API Key、可选素材和 SSE 链路；新增测试锁定完整 inputs、管理员风格、现有 moments Key 映射和成功事件序列。已完成 Dify 原 App 发布、jx 测试页五类回归、精确测试记录清理及本地 canonical quality。",
-      "last_changed_at": "2026-08-24T21:43:14+08:00"
+      "updated_at": "2026-09-09T14:52:12+08:00",
+      "last_change_summary": "方法论 Prompt 与节点不变；朋友圈工具错误状态跨 app rerun 保持可见。",
+      "last_changed_at": "2026-09-09T13:47:38+08:00"
     },
     {
       "id": "examples-defaults",
@@ -111,12 +111,12 @@
   ],
   "documentation": {
     "status": "current",
-    "last_code_change_at": "2026-08-24T21:43:13+08:00",
-    "last_synced_at": "2026-08-24T21:43:14+08:00",
-    "last_sync_summary": "修正 request/source_material 事实来源冲突，保持现有 Dify App、qwen-plus、API Key、可选素材和 SSE 链路；新增测试锁定完整 inputs、管理员风格、现有 moments Key 映射和成功事件序列。已完成 Dify 原 App 发布、jx 测试页五类回归、精确测试记录清理及本地 canonical quality。",
+    "last_code_change_at": "2026-09-09T13:47:26+08:00",
+    "last_synced_at": "2026-09-09T13:47:38+08:00",
+    "last_sync_summary": "方法论 Prompt 与节点不变；朋友圈工具错误状态跨 app rerun 保持可见。",
     "pending_changed_paths": [],
-    "changelog_fingerprint": "1f63eb577f6ab323f559e8b387435c452607261b5aedf466d2ce53e2490392a2"
+    "changelog_fingerprint": "7b6b92670a24bae46305a74cb7b609af76fa176f93f8e92f23825e4aa858347d"
   },
   "created_at": "2026-08-24T14:11:10+08:00",
-  "updated_at": "2026-08-30T15:33:18+08:00"
+  "updated_at": "2026-09-09T14:52:12+08:00"
 }

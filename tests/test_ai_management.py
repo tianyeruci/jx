@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
 import os
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -37,6 +39,7 @@ from ai_management.courses import (
 from ai_management.main import app
 from ai_management.models import (
     BusinessConversation,
+    BusinessConversationSegment,
     BusinessMessage,
     BusinessProfile,
     CleaningBatch,
@@ -51,11 +54,322 @@ from ai_management.schemas import RecommendationDecision
 from ai_management.security import dify_user, user_hash
 from ai_management.stream_filter import StreamingUrlRedactor
 from ai_management.tasks import _merge_profile_payload
+from ai_management.timeutil import business_today
 
 HEADERS = {
     "X-Internal-Token": "test-internal-token",
     "X-User-Id": "user-001",
 }
+
+
+def test_business_context_excludes_regeneration_pair_and_failed_messages(service_db):
+    with service_db() as session:
+        conversation = BusinessConversation(user_hash=user_hash("user-001"), title="t")
+        session.add(conversation)
+        session.flush()
+        session.add_all(
+            [
+                BusinessMessage(
+                    conversation_id=conversation.id, role="user", content="old", status="completed"
+                ),
+                BusinessMessage(
+                    conversation_id=conversation.id,
+                    role="assistant",
+                    content="answer",
+                    status="completed",
+                ),
+                BusinessMessage(
+                    conversation_id=conversation.id,
+                    role="user",
+                    content="failed-q",
+                    status="failed",
+                ),
+                BusinessMessage(
+                    conversation_id=conversation.id, role="assistant", content="", status="failed"
+                ),
+            ]
+        )
+        session.commit()
+        context = build_context(session, conversation, user_hash("user-001"))
+        assert "old" in context.inputs["recent_history_text"]
+        assert "failed-q" not in context.inputs["recent_history_text"]
+        pair = list(
+            session.scalars(select(BusinessMessage).where(BusinessMessage.content == "old"))
+        )
+        assert len(pair) == 1
+        excluded = build_context(
+            session, conversation, user_hash("user-001"), exclude_message_ids={pair[0].id}
+        )
+        assert "old" not in excluded.inputs["recent_history_text"]
+
+
+def test_summary_selection_never_sends_pending_pair(service_db, monkeypatch):
+    from ai_management.workers.tasks import summary as summary_task
+
+    sent = []
+
+    class FakeClient:
+        def __init__(self, *_args):
+            pass
+
+        def run_workflow(self, *, inputs, user):
+            sent.append(json.loads(inputs["messages_json"]))
+            return {"outputs": {"updated_summary": "s"}}
+
+    monkeypatch.setattr(summary_task, "DifyAppClient", FakeClient)
+    with service_db() as session:
+        conversation = BusinessConversation(user_hash=user_hash("u"), title="t")
+        session.add(conversation)
+        session.flush()
+        for role, content, status in [
+            ("user", "u1", "completed"),
+            ("assistant", "a1", "completed"),
+            ("user", "u2", "completed"),
+            ("assistant", "a2", "pending"),
+        ]:
+            session.add(
+                BusinessMessage(
+                    conversation_id=conversation.id, role=role, content=content, status=status
+                )
+            )
+        session.commit()
+        cid = conversation.id
+    assert summary_task._summarize_sync(cid) is True
+    assert not sent
+    with service_db() as session:
+        row = session.get(BusinessConversation, cid)
+        assert row.summary_through_message_id is None
+
+
+def test_summary_selection_keeps_latest_complete_pair_and_pending_pair(service_db, monkeypatch):
+    from ai_management.workers.tasks import summary as summary_task
+
+    sent = []
+
+    class FakeClient:
+        def __init__(self, *_args):
+            pass
+
+        def run_workflow(self, *, inputs, user):
+            sent.append(json.loads(inputs["messages_json"]))
+            return {"outputs": {"updated_summary": "s"}}
+
+    monkeypatch.setattr(summary_task, "DifyAppClient", FakeClient)
+    with service_db() as session:
+        conversation = BusinessConversation(user_hash=user_hash("u2"), title="t")
+        session.add(conversation)
+        session.flush()
+        for index in range(1, 4):
+            session.add(
+                BusinessMessage(
+                    conversation_id=conversation.id,
+                    role="user",
+                    content=f"u{index}",
+                    status="completed",
+                )
+            )
+            session.add(
+                BusinessMessage(
+                    conversation_id=conversation.id,
+                    role="assistant",
+                    content=f"a{index}",
+                    status="completed" if index < 3 else "pending",
+                )
+            )
+        session.commit()
+        cid = conversation.id
+    assert summary_task._summarize_sync(cid) is True
+    assert [x["content"] for x in sent[0]] == ["u1", "a1"]
+
+
+def test_summary_odd_message_limit_sends_only_complete_pairs(service_db, monkeypatch):
+    from ai_management.workers.tasks import summary as summary_task
+
+    sent = []
+
+    class FakeClient:
+        def __init__(self, *_args):
+            pass
+
+        def run_workflow(self, *, inputs, user):
+            sent.append(json.loads(inputs["messages_json"]))
+            return {"outputs": {"updated_summary": "s"}}
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "summary_batch_max_messages", 5)
+    monkeypatch.setattr(summary_task, "settings", settings)
+    monkeypatch.setattr(summary_task, "DifyAppClient", FakeClient)
+    with service_db() as session:
+        conversation = BusinessConversation(user_hash=user_hash("odd"), title="t")
+        session.add(conversation)
+        session.flush()
+        for index in range(1, 5):
+            session.add(
+                BusinessMessage(
+                    conversation_id=conversation.id,
+                    role="user",
+                    content=f"u{index}",
+                    status="completed",
+                )
+            )
+            session.add(
+                BusinessMessage(
+                    conversation_id=conversation.id,
+                    role="assistant",
+                    content=f"a{index}",
+                    status="completed" if index < 4 else "pending",
+                )
+            )
+        session.commit()
+        cid = conversation.id
+    assert summary_task._summarize_sync(cid) is True
+    assert [item["role"] for item in sent[0]] == ["user", "assistant", "user", "assistant"]
+    with service_db() as session:
+        assert (
+            session.get(
+                BusinessMessage, session.get(BusinessConversation, cid).summary_through_message_id
+            ).role
+            == "assistant"
+        )
+
+
+def test_can_regenerate_only_global_latest_across_pages(service_db):
+    with service_db() as session:
+        conversation = BusinessConversation(user_hash=user_hash("pages"), title="t")
+        session.add(conversation)
+        session.flush()
+        for index in range(3):
+            session.add(
+                BusinessMessage(
+                    conversation_id=conversation.id,
+                    role="user",
+                    content=f"u{index}",
+                    status="completed",
+                )
+            )
+            session.add(
+                BusinessMessage(
+                    conversation_id=conversation.id,
+                    role="assistant",
+                    content=f"a{index}",
+                    status="completed",
+                )
+            )
+        session.commit()
+        cid = conversation.id
+        page = list_conversation_messages(session, user_hash("pages"), cid, limit=1)
+        all_rows = list(
+            session.scalars(
+                select(BusinessMessage)
+                .where(BusinessMessage.conversation_id == cid)
+                .order_by(BusinessMessage.created_at, BusinessMessage.id)
+            )
+        )
+        assert page["items"][0]["can_regenerate"] is False
+        latest = list_conversation_messages(session, user_hash("pages"), cid, limit=20)
+        ids = {item["message_id"]: item["can_regenerate"] for item in latest["items"]}
+        assert sum(ids.values()) == 1 and ids[all_rows[-1].id] is True
+
+
+def test_can_regenerate_requires_a_latest_adjacent_user_assistant_pair(service_db):
+    with service_db() as session:
+        conversation = BusinessConversation(user_hash=user_hash("unpaired"), title="t")
+        session.add(conversation)
+        session.flush()
+        session.add_all(
+            [
+                BusinessMessage(
+                    conversation_id=conversation.id,
+                    role="user",
+                    content="q",
+                    status="completed",
+                ),
+                BusinessMessage(
+                    conversation_id=conversation.id,
+                    role="assistant",
+                    content="first",
+                    status="completed",
+                ),
+                BusinessMessage(
+                    conversation_id=conversation.id,
+                    role="assistant",
+                    content="orphaned latest",
+                    status="completed",
+                ),
+            ]
+        )
+        session.commit()
+        payload = list_conversation_messages(session, user_hash("unpaired"), conversation.id)
+    assert not any(item["can_regenerate"] for item in payload["items"])
+
+
+def test_regenerate_rejects_pair_when_summary_cursor_is_paired_user(service_db, monkeypatch):
+    from ai_management.api.routers import business
+
+    class UnexpectedDify:
+        def __init__(self, *_args):
+            raise AssertionError("Dify must not be called for a summarized pair")
+
+    monkeypatch.setattr(business, "DifyAppClient", UnexpectedDify)
+    with service_db() as session:
+        conversation = BusinessConversation(user_hash=user_hash("summary-pair"), title="t")
+        session.add(conversation)
+        session.flush()
+        user = BusinessMessage(
+            conversation_id=conversation.id, role="user", content="q", status="completed"
+        )
+        assistant = BusinessMessage(
+            conversation_id=conversation.id, role="assistant", content="a", status="completed"
+        )
+        session.add_all([user, assistant])
+        session.flush()
+        conversation.summary_through_message_id = user.id
+        assistant_id = assistant.id
+        session.commit()
+    headers = {"X-Internal-Token": "test-internal-token", "X-User-Id": "summary-pair"}
+    with TestClient(app) as client:
+        response = client.post(
+            f"/internal/v1/business/messages/{assistant_id}/regenerate", headers=headers
+        )
+    assert response.status_code == 409
+    assert response.json()["code"] == "MESSAGE_NOT_REGENERATABLE"
+
+
+@pytest.mark.parametrize(
+    "user_status,assistant_status",
+    [("pending", "completed"), ("completed", "pending"), ("completed", "streaming")],
+)
+def test_regenerate_rejects_nonterminal_pair_before_dify(
+    service_db, monkeypatch, user_status, assistant_status
+):
+    from ai_management.api.routers import business
+
+    class UnexpectedDify:
+        def __init__(self, *_args):
+            raise AssertionError("Dify must not be called for a nonterminal pair")
+
+    monkeypatch.setattr(business, "DifyAppClient", UnexpectedDify)
+    with service_db() as session:
+        conversation = BusinessConversation(user_hash=user_hash("status-pair"), title="t")
+        session.add(conversation)
+        session.flush()
+        user = BusinessMessage(
+            conversation_id=conversation.id, role="user", content="q", status=user_status
+        )
+        assistant = BusinessMessage(
+            conversation_id=conversation.id, role="assistant", content="a", status=assistant_status
+        )
+        session.add_all([user, assistant])
+        session.flush()
+        assistant_id = assistant.id
+        session.commit()
+    headers = {"X-Internal-Token": "test-internal-token", "X-User-Id": "status-pair"}
+    with TestClient(app) as client:
+        response = client.post(
+            f"/internal/v1/business/messages/{assistant_id}/regenerate", headers=headers
+        )
+    assert response.status_code == 409
+    assert response.json()["code"] == "MESSAGE_NOT_REGENERATABLE"
 
 
 def test_conversion_markdown_toggle_naming_and_retention(tmp_path, monkeypatch):
@@ -116,6 +430,1015 @@ def test_internal_auth_is_required(service_db):
         response = client.get("/internal/v1/business/conversations")
     assert response.status_code == 401
     assert response.json()["code"] == "UNAUTHORIZED"
+
+
+def test_business_regenerate_completed_replaces_same_id_and_excludes_pair(service_db, monkeypatch):
+    import ai_management.conversations as conversations_module
+
+    calls = []
+
+    class FakeClient:
+        def __init__(self, *_args):
+            pass
+
+        def stream_chat(self, **kwargs):
+            calls.append(kwargs)
+            yield {"event": "message", "task_id": "t-r", "message_id": "d-r", "answer": "新答案"}
+            yield {
+                "event": "message_end",
+                "message_id": "d-r",
+                "conversation_id": "dc-r",
+                "metadata": {},
+            }
+
+    monkeypatch.setattr(conversations_module, "DifyAppClient", FakeClient)
+    with TestClient(app) as client:
+        first = client.post("/internal/v1/business/chat", headers=HEADERS, json={"query": "原问题"})
+        assert first.status_code == 200
+        with service_db() as db:
+            row = db.scalar(select(BusinessMessage).where(BusinessMessage.role == "assistant"))
+            aid = row.id
+            before = db.scalar(
+                select(BusinessConversation).where(BusinessConversation.id == row.conversation_id)
+            )
+            before_count = len(
+                list(
+                    db.scalars(
+                        select(BusinessMessage).where(
+                            BusinessMessage.conversation_id == row.conversation_id
+                        )
+                    )
+                )
+            )
+        regenerated = client.post(
+            f"/internal/v1/business/messages/{aid}/regenerate", headers=HEADERS
+        )
+    assert regenerated.status_code == 200
+    assert calls[-1]["query"] == "原问题"
+    assert "原问题" not in calls[-1]["inputs"]["recent_history_text"]
+    assert "新答案" in regenerated.text
+    with service_db() as db:
+        rows = list(
+            db.scalars(select(BusinessMessage).where(BusinessMessage.conversation_id == before.id))
+        )
+        assert len(rows) == before_count
+        assert db.get(BusinessMessage, aid).content == "新答案"
+
+
+def test_business_regenerate_preflight_does_not_record_acceptance(service_db, monkeypatch):
+    import ai_management.api.routers.business as business_router
+
+    events = []
+    monkeypatch.setattr(business_router, "record_event", lambda **kwargs: events.append(kwargs))
+    with TestClient(app) as client:
+        response = client.post(
+            "/internal/v1/business/messages/not-found/regenerate",
+            headers=HEADERS,
+        )
+    assert response.status_code == 404
+    assert not any(
+        event["event_code"] == "BUSINESS_MESSAGE_REGENERATE_ACCEPTED" for event in events
+    )
+
+
+@pytest.mark.parametrize(
+    "mode, expected_status",
+    [("completed", "completed"), ("stopped", "stopped"), ("failed", "failed")],
+)
+def test_business_regenerate_audits_acceptance_and_one_redacted_terminal(
+    service_db, monkeypatch, mode, expected_status
+):
+    import ai_management.api.routers.business as business_router
+    import ai_management.conversations as conversations_module
+    from ai_management.errors import ServiceError
+
+    events = []
+
+    def capture(**kwargs):
+        events.append(kwargs)
+
+    monkeypatch.setattr(business_router, "record_event", capture)
+    monkeypatch.setattr(conversations_module, "record_event", capture)
+
+    class FakeClient:
+        def __init__(self, *_args):
+            pass
+
+        def stream_chat(self, **kwargs):
+            yield {
+                "event": "message",
+                "task_id": "audit-task",
+                "message_id": "audit-msg",
+                "answer": "片段",
+            }
+            if mode == "failed":
+                raise ServiceError("DIFY_UNAVAILABLE", "fail", 502, True)
+            if mode == "stopped":
+                cache.set_json(
+                    "ai:business-task-stopped:audit-task:" + user_hash("audit-user"),
+                    True,
+                    ttl=60,
+                )
+                return
+            yield {
+                "event": "message_end",
+                "message_id": "audit-msg",
+                "conversation_id": "audit-conv",
+                "metadata": {},
+            }
+
+    monkeypatch.setattr(conversations_module, "DifyAppClient", FakeClient)
+    headers = {**HEADERS, "X-User-Id": "audit-user"}
+    with TestClient(app) as client:
+        first = client.post(
+            "/internal/v1/business/chat", headers=headers, json={"query": "原始问题"}
+        )
+        assert first.status_code == 200
+        with service_db() as db:
+            assistant = db.scalar(
+                select(BusinessMessage).where(BusinessMessage.role == "assistant")
+            )
+            aid = assistant.id
+        response = client.post(f"/internal/v1/business/messages/{aid}/regenerate", headers=headers)
+    assert response.status_code == 200
+    accepted = [
+        event for event in events if event["event_code"] == "BUSINESS_MESSAGE_REGENERATE_ACCEPTED"
+    ]
+    terminal = [
+        event for event in events if event["event_code"] == "BUSINESS_MESSAGE_REGENERATE_TERMINAL"
+    ]
+    assert len(accepted) == 1 and len(terminal) == 1
+    assert terminal[0]["status"] == expected_status
+    assert terminal[0]["request_id"] == accepted[0]["request_id"]
+    serialized = json.dumps(terminal[0], ensure_ascii=False)
+    assert "原始问题" not in serialized and "原始用户" not in serialized
+    assert "query" not in terminal[0].get("details", {})
+    assert "inputs" not in terminal[0].get("details", {})
+
+
+def test_business_stop_persists_progress_fragment_when_final_answer_has_not_started(
+    service_db, monkeypatch
+):
+    import ai_management.conversations as conversations_module
+
+    raw_user = "progress-stop-user"
+    current_hash = user_hash(raw_user)
+
+    class FakeClient:
+        def __init__(self, *_args):
+            pass
+
+        def stream_chat(self, **_kwargs):
+            yield {
+                "event": "node_started",
+                "task_id": "progress-stop-task",
+                "data": {"node_id": conversations_module.PROGRESS_ANSWER_NODE_ID},
+            }
+            yield {
+                "event": "message",
+                "task_id": "progress-stop-task",
+                "message_id": "progress-stop-message",
+                "answer": "即时提示片段",
+            }
+            cache.set_json(
+                f"ai:business-task-stopped:progress-stop-task:{current_hash}",
+                True,
+                ttl=60,
+            )
+
+    monkeypatch.setattr(conversations_module, "DifyAppClient", FakeClient)
+    headers = {**HEADERS, "X-User-Id": raw_user}
+    with TestClient(app) as client:
+        response = client.post(
+            "/internal/v1/business/chat", headers=headers, json={"query": "停止测试"}
+        )
+
+    assert response.status_code == 200
+    assert "即时提示片段" in response.text
+    assert '"status": "stopped"' in response.text
+    with service_db() as db:
+        assistant = db.scalar(select(BusinessMessage).where(BusinessMessage.role == "assistant"))
+        assert assistant.status == "stopped"
+        assert assistant.content == "即时提示片段"
+
+
+def test_business_regenerate_failure_clears_pair_and_is_retryable(service_db, monkeypatch):
+    import ai_management.conversations as conversations_module
+    from ai_management.errors import ServiceError
+
+    mode = {"fail": False}
+
+    class FakeClient:
+        def __init__(self, *_args):
+            pass
+
+        def stream_chat(self, **kwargs):
+            yield {"event": "message", "task_id": "t", "message_id": "d", "answer": "片段"}
+            if mode["fail"]:
+                raise ServiceError("DIFY_UNAVAILABLE", "fail", 502, True)
+            yield {
+                "event": "message_end",
+                "message_id": "d",
+                "conversation_id": "dc",
+                "metadata": {},
+            }
+
+    monkeypatch.setattr(conversations_module, "DifyAppClient", FakeClient)
+    with TestClient(app) as client:
+        client.post("/internal/v1/business/chat", headers=HEADERS, json={"query": "问题"})
+        with service_db() as db:
+            assistant = db.scalar(
+                select(BusinessMessage).where(BusinessMessage.role == "assistant")
+            )
+            aid = assistant.id
+            initial_segment = db.scalar(
+                select(BusinessConversationSegment).where(
+                    BusinessConversationSegment.conversation_id == assistant.conversation_id
+                )
+            )
+            initial_segment.segment_date = business_today() - timedelta(days=1)
+            db.commit()
+        mode["fail"] = True
+        failed = client.post(f"/internal/v1/business/messages/{aid}/regenerate", headers=HEADERS)
+        assert failed.status_code == 200 and '"status": "failed"' in failed.text
+        with service_db() as db:
+            pair = db.get(BusinessMessage, aid)
+            assert pair.content == "" and pair.status == "failed"
+            conversation = db.get(BusinessConversation, pair.conversation_id)
+            failed_context = build_context(db, conversation, user_hash("user-001"))
+            assert "问题" not in failed_context.inputs["recent_history_text"]
+        mode["fail"] = False
+        retry = client.post(f"/internal/v1/business/messages/{aid}/regenerate", headers=HEADERS)
+        assert retry.status_code == 200
+
+
+def test_business_regenerate_persist_failure_converges_to_durable_failed_pair(
+    service_db, monkeypatch
+):
+    import ai_management.conversations as conversations_module
+
+    class FakeClient:
+        def __init__(self, *_args):
+            pass
+
+        def stream_chat(self, **_kwargs):
+            yield {
+                "event": "message",
+                "task_id": "persist-task",
+                "message_id": "persist-msg",
+                "answer": "new",
+            }
+            yield {
+                "event": "message_end",
+                "message_id": "persist-msg",
+                "conversation_id": "persist-conv",
+                "metadata": {},
+            }
+
+    monkeypatch.setattr(conversations_module, "DifyAppClient", FakeClient)
+    original_persist = conversations_module._persist_business_result
+
+    with TestClient(app) as client:
+        first = client.post("/internal/v1/business/chat", headers=HEADERS, json={"query": "问题"})
+        assert first.status_code == 200
+        with service_db() as db:
+            aid = db.scalar(select(BusinessMessage).where(BusinessMessage.role == "assistant")).id
+
+        def fail_persist(**_kwargs):
+            raise RuntimeError("persist down")
+
+        monkeypatch.setattr(conversations_module, "_persist_business_result", fail_persist)
+        failed = client.post(f"/internal/v1/business/messages/{aid}/regenerate", headers=HEADERS)
+        assert failed.status_code == 200 and '"status": "failed"' in failed.text
+        monkeypatch.setattr(conversations_module, "_persist_business_result", original_persist)
+
+    with service_db() as db:
+        assistant = db.get(BusinessMessage, aid)
+        user = db.scalar(
+            select(BusinessMessage).where(
+                BusinessMessage.conversation_id == assistant.conversation_id,
+                BusinessMessage.role == "user",
+            )
+        )
+        assert assistant.status == "failed" and assistant.content == ""
+        assert user.status == "failed"
+
+
+def test_failed_regeneration_keeps_new_remote_segment_for_precise_deletion(service_db, monkeypatch):
+    import ai_management.conversations as conversations_module
+    from ai_management.timeutil import business_today
+
+    delete_calls = []
+    call_count = 0
+
+    class FakeClient:
+        def __init__(self, *_args):
+            pass
+
+        def stream_chat(self, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield {
+                    "event": "message",
+                    "task_id": "initial-task",
+                    "message_id": "initial-message",
+                    "answer": "initial",
+                }
+                yield {
+                    "event": "message_end",
+                    "message_id": "initial-message",
+                    "conversation_id": "initial-conversation",
+                    "metadata": {},
+                }
+                return
+            yield {
+                "event": "message",
+                "task_id": "regenerate-task",
+                "message_id": "regenerate-message",
+                "conversation_id": "new-regeneration-conversation",
+                "answer": "partial",
+            }
+
+        def delete_conversation(self, conversation_id, anonymous_user):
+            delete_calls.append((conversation_id, anonymous_user))
+
+    monkeypatch.setattr(conversations_module, "DifyAppClient", FakeClient)
+    with TestClient(app) as client:
+        first = client.post("/internal/v1/business/chat", headers=HEADERS, json={"query": "问题"})
+        assert first.status_code == 200
+        with service_db() as db:
+            assistant = db.scalar(
+                select(BusinessMessage).where(BusinessMessage.role == "assistant")
+            )
+            conversation_id = assistant.conversation_id
+            segment = db.scalar(
+                select(BusinessConversationSegment).where(
+                    BusinessConversationSegment.conversation_id == conversation_id
+                )
+            )
+            segment.segment_date = business_today() - timedelta(days=1)
+            db.commit()
+            assistant_id = assistant.id
+
+        failed = client.post(
+            f"/internal/v1/business/messages/{assistant_id}/regenerate", headers=HEADERS
+        )
+        assert failed.status_code == 200
+        assert '"status": "failed"' in failed.text
+        with service_db() as db:
+            assistant = db.get(BusinessMessage, assistant_id)
+            segment = db.scalar(
+                select(BusinessConversationSegment).where(
+                    BusinessConversationSegment.conversation_id == conversation_id,
+                    BusinessConversationSegment.segment_date == business_today(),
+                )
+            )
+            assert assistant.status == "failed"
+            assert assistant.content == ""
+            assert assistant.dify_message_id is None
+            assert assistant.dify_task_id is None
+            assert segment is not None
+            assert segment.dify_conversation_id == "new-regeneration-conversation"
+            targets = conversations_module.delete_user_conversation(
+                db,
+                user_hash=user_hash("user-001"),
+                conversation_id=conversation_id,
+            )
+            assert ("new-regeneration-conversation", segment.dify_user) in targets
+
+    # The deletion call is made through the same precise segment IDs, not a
+    # name/prefix search; verify the newly discovered remote conversation was
+    # included in the deletion targets.
+    assert delete_calls == [
+        ("initial-conversation", dify_user("user-001")),
+        ("new-regeneration-conversation", dify_user("user-001")),
+    ]
+
+
+def test_failed_regeneration_persist_recovery_keeps_new_remote_segment(service_db, monkeypatch):
+    import ai_management.conversations as conversations_module
+
+    delete_calls: list[tuple[str, str]] = []
+
+    class FakeClient:
+        calls = 0
+
+        def __init__(self, *_args):
+            pass
+
+        def stream_chat(self, **_kwargs):
+            conversation_id = (
+                "initial-conversation" if FakeClient.calls == 0 else "recovery-conversation"
+            )
+            FakeClient.calls += 1
+            yield {
+                "event": "message",
+                "task_id": "recovery-task"
+                if conversation_id.startswith("recovery")
+                else "initial-task",
+                "message_id": "recovery-message"
+                if conversation_id.startswith("recovery")
+                else "initial-message",
+                "answer": "new",
+            }
+            yield {
+                "event": "message_end",
+                "message_id": "recovery-message"
+                if conversation_id.startswith("recovery")
+                else "initial-message",
+                "conversation_id": conversation_id,
+                "metadata": {},
+            }
+
+        def delete_conversation(self, conversation_id, anonymous_user):
+            delete_calls.append((conversation_id, anonymous_user))
+
+    monkeypatch.setattr(conversations_module, "DifyAppClient", FakeClient)
+    original_persist = conversations_module._persist_business_result
+    with TestClient(app) as client:
+        first = client.post("/internal/v1/business/chat", headers=HEADERS, json={"query": "问题"})
+        assert first.status_code == 200
+        with service_db() as db:
+            assistant = db.scalar(
+                select(BusinessMessage).where(BusinessMessage.role == "assistant")
+            )
+            aid = assistant.id
+            initial_segment = db.scalar(
+                select(BusinessConversationSegment).where(
+                    BusinessConversationSegment.conversation_id == assistant.conversation_id
+                )
+            )
+            initial_segment.segment_date = business_today() - timedelta(days=1)
+            db.commit()
+
+        monkeypatch.setattr(
+            conversations_module,
+            "_persist_business_result",
+            lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("persist down")),
+        )
+        failed = client.post(f"/internal/v1/business/messages/{aid}/regenerate", headers=HEADERS)
+        assert failed.status_code == 200
+        monkeypatch.setattr(conversations_module, "_persist_business_result", original_persist)
+
+    with service_db() as db:
+        assistant = db.get(BusinessMessage, aid)
+        segment = db.scalar(
+            select(BusinessConversationSegment).where(
+                BusinessConversationSegment.conversation_id == assistant.conversation_id,
+                BusinessConversationSegment.dify_conversation_id == "recovery-conversation",
+            )
+        )
+        assert assistant.status == "failed" and assistant.content == ""
+        assert segment is not None
+        all_segments = list(
+            db.scalars(
+                select(BusinessConversationSegment).where(
+                    BusinessConversationSegment.conversation_id == assistant.conversation_id
+                )
+            )
+        )
+        assert {item.dify_conversation_id for item in all_segments} == {
+            "initial-conversation",
+            "recovery-conversation",
+        }
+
+        targets = conversations_module.delete_user_conversation(
+            db,
+            user_hash=user_hash(HEADERS["X-User-Id"]),
+            conversation_id=assistant.conversation_id,
+        )
+    expected_targets = {
+        ("initial-conversation", dify_user(HEADERS["X-User-Id"])),
+        ("recovery-conversation", dify_user(HEADERS["X-User-Id"])),
+    }
+    assert set(targets) == expected_targets
+    assert set(delete_calls) == expected_targets
+
+
+def test_regeneration_lock_blocks_delete_and_delete_targets_old_and_new_remote_conversations(
+    service_db, monkeypatch
+):
+    import ai_management.conversations as conversations_module
+    from ai_management.errors import ServiceError
+
+    entered = threading.Event()
+    release = threading.Event()
+    delete_calls: list[tuple[str, str]] = []
+    calls = 0
+
+    class FakeClient:
+        def __init__(self, *_args):
+            pass
+
+        def stream_chat(self, **_kwargs):
+            nonlocal calls
+            calls += 1
+            conversation_id = "initial-remote" if calls == 1 else "new-remote"
+            yield {
+                "event": "message",
+                "task_id": f"task-{calls}",
+                "message_id": f"message-{calls}",
+                "conversation_id": conversation_id,
+                "answer": "old" if calls == 1 else "new",
+            }
+            if calls == 2:
+                entered.set()
+                assert release.wait(timeout=3)
+            yield {
+                "event": "message_end",
+                "task_id": f"task-{calls}",
+                "message_id": f"message-{calls}",
+                "conversation_id": conversation_id,
+                "metadata": {},
+            }
+
+        def delete_conversation(self, conversation_id, anonymous_user):
+            delete_calls.append((conversation_id, anonymous_user))
+
+    monkeypatch.setattr(conversations_module, "DifyAppClient", FakeClient)
+    with TestClient(app) as client:
+        first = client.post("/internal/v1/business/chat", headers=HEADERS, json={"query": "q"})
+        assert first.status_code == 200
+        with service_db() as db:
+            assistant = db.scalar(
+                select(BusinessMessage).where(BusinessMessage.role == "assistant")
+            )
+            conversation_id = assistant.conversation_id
+            yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+            assistant.created_at = yesterday
+            user = db.scalar(
+                select(BusinessMessage).where(
+                    BusinessMessage.conversation_id == conversation_id,
+                    BusinessMessage.role == "user",
+                )
+            )
+            user.created_at = yesterday
+            segment = db.scalar(
+                select(BusinessConversationSegment).where(
+                    BusinessConversationSegment.conversation_id == conversation_id
+                )
+            )
+            segment.segment_date = business_today() - timedelta(days=1)
+            db.commit()
+            assistant_id = assistant.id
+        result: dict[str, object] = {}
+
+        def regenerate():
+            result["response"] = client.post(
+                f"/internal/v1/business/messages/{assistant_id}/regenerate", headers=HEADERS
+            )
+
+        thread = threading.Thread(target=regenerate)
+        thread.start()
+        assert entered.wait(timeout=3)
+        with service_db() as db:
+            with pytest.raises(ServiceError) as exc_info:
+                conversations_module.delete_user_conversation(
+                    db, user_hash=user_hash(HEADERS["X-User-Id"]), conversation_id=conversation_id
+                )
+        assert exc_info.value.code == "CONVERSATION_BUSY"
+        release.set()
+        thread.join(timeout=4)
+        assert not thread.is_alive()
+        assert result["response"].status_code == 200
+
+        with service_db() as db:
+            targets = conversations_module.delete_user_conversation(
+                db, user_hash=user_hash(HEADERS["X-User-Id"]), conversation_id=conversation_id
+            )
+    assert set(targets) == {
+        ("initial-remote", dify_user(HEADERS["X-User-Id"])),
+        ("new-remote", dify_user(HEADERS["X-User-Id"])),
+    }
+    assert set(delete_calls) == set(targets)
+
+
+def test_cross_day_successful_regeneration_is_in_followup_context(service_db, monkeypatch):
+    import ai_management.conversations as conversations_module
+
+    calls: list[dict[str, object]] = []
+
+    class FakeClient:
+        count = 0
+
+        def __init__(self, *_args):
+            pass
+
+        def stream_chat(self, **kwargs):
+            calls.append(kwargs)
+            FakeClient.count += 1
+            answer = ["旧答案", "新答案", "后续答案"][FakeClient.count - 1]
+            conversation_id = "remote-initial" if FakeClient.count == 1 else "remote-new"
+            yield {
+                "event": "message",
+                "task_id": f"task-{FakeClient.count}",
+                "message_id": f"message-{FakeClient.count}",
+                "conversation_id": conversation_id,
+                "answer": answer,
+            }
+            yield {
+                "event": "message_end",
+                "task_id": f"task-{FakeClient.count}",
+                "message_id": f"message-{FakeClient.count}",
+                "conversation_id": conversation_id,
+                "metadata": {},
+            }
+
+    monkeypatch.setattr(conversations_module, "DifyAppClient", FakeClient)
+    with TestClient(app) as client:
+        first = client.post(
+            "/internal/v1/business/chat", headers=HEADERS, json={"query": "原始问题"}
+        )
+        assert first.status_code == 200
+        with service_db() as db:
+            assistant = db.scalar(
+                select(BusinessMessage).where(BusinessMessage.role == "assistant")
+            )
+            conversation_id = assistant.conversation_id
+            yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+            assistant.created_at = yesterday
+            user = db.scalar(
+                select(BusinessMessage).where(
+                    BusinessMessage.conversation_id == conversation_id,
+                    BusinessMessage.role == "user",
+                )
+            )
+            user.created_at = yesterday
+            segment = db.scalar(
+                select(BusinessConversationSegment).where(
+                    BusinessConversationSegment.conversation_id == conversation_id
+                )
+            )
+            segment.segment_date = business_today() - timedelta(days=1)
+            db.commit()
+            assistant_id = assistant.id
+        regenerated = client.post(
+            f"/internal/v1/business/messages/{assistant_id}/regenerate", headers=HEADERS
+        )
+        assert regenerated.status_code == 200 and "新答案" in regenerated.text
+        followup = client.post(
+            "/internal/v1/business/chat",
+            headers=HEADERS,
+            json={"conversation_id": conversation_id, "query": "后续问题"},
+        )
+        assert followup.status_code == 200
+
+    assert calls[2]["query"] == "后续问题"
+    history = calls[2]["inputs"]["recent_history_text"]
+    assert "原始问题" in history
+    assert "新答案" in history
+    assert "旧答案" not in history
+
+
+def test_business_feedback_and_regeneration_are_serialized_by_conversation_lock(
+    service_db, monkeypatch
+):
+    import ai_management.conversations as conversations_module
+    from ai_management.api.routers import business as business_router
+
+    feedback_entered = threading.Event()
+    release_feedback = threading.Event()
+    regen_entered = threading.Event()
+    release_regen = threading.Event()
+    feedback_calls: list[str] = []
+    stream_calls = 0
+
+    class FakeClient:
+        def __init__(self, *_args):
+            pass
+
+        def stream_chat(self, **kwargs):
+            nonlocal stream_calls
+            stream_calls += 1
+            yield {
+                "event": "message",
+                "task_id": f"task-{stream_calls}",
+                "message_id": f"dify-{stream_calls}",
+                "conversation_id": "remote",
+                "answer": "answer",
+            }
+            if stream_calls == 2:
+                regen_entered.set()
+                assert release_regen.wait(timeout=3)
+            yield {
+                "event": "message_end",
+                "task_id": f"task-{stream_calls}",
+                "message_id": f"dify-{stream_calls}",
+                "conversation_id": "remote",
+                "metadata": {},
+            }
+
+        def feedback(self, message_id, *_args):
+            feedback_calls.append(message_id)
+            feedback_entered.set()
+            assert release_feedback.wait(timeout=3)
+            return {"result": "ok"}
+
+    monkeypatch.setattr(conversations_module, "DifyAppClient", FakeClient)
+    monkeypatch.setattr(business_router, "DifyAppClient", FakeClient)
+    with TestClient(app) as client:
+        first = client.post("/internal/v1/business/chat", headers=HEADERS, json={"query": "q"})
+        assert first.status_code == 200
+        with service_db() as db:
+            assistant_id = db.scalar(
+                select(BusinessMessage).where(BusinessMessage.role == "assistant")
+            ).id
+        feedback_result: dict[str, object] = {}
+
+        def submit_feedback():
+            feedback_result["response"] = client.post(
+                f"/internal/v1/business/messages/{assistant_id}/feedback",
+                headers=HEADERS,
+                json={"rating": "like", "content": ""},
+            )
+
+        feedback_thread = threading.Thread(target=submit_feedback)
+        feedback_thread.start()
+        assert feedback_entered.wait(timeout=3)
+        blocked_regen = client.post(
+            f"/internal/v1/business/messages/{assistant_id}/regenerate", headers=HEADERS
+        )
+        assert blocked_regen.status_code == 409
+        release_feedback.set()
+        feedback_thread.join(timeout=4)
+        assert feedback_result["response"].status_code == 200
+        regen_result: dict[str, object] = {}
+
+        def regenerate():
+            regen_result["response"] = client.post(
+                f"/internal/v1/business/messages/{assistant_id}/regenerate", headers=HEADERS
+            )
+
+        regen_thread = threading.Thread(target=regenerate)
+        regen_thread.start()
+        assert regen_entered.wait(timeout=3)
+        pending_feedback = client.post(
+            f"/internal/v1/business/messages/{assistant_id}/feedback",
+            headers=HEADERS,
+            json={"rating": "like", "content": ""},
+        )
+        assert pending_feedback.status_code == 409
+        assert feedback_calls == ["dify-1"]
+        release_regen.set()
+        regen_thread.join(timeout=4)
+        assert not regen_thread.is_alive()
+        assert regen_result["response"].status_code == 200
+        with service_db() as db:
+            assistant = db.get(BusinessMessage, assistant_id)
+            assert assistant.feedback == {}
+            assert assistant.status == "completed"
+    assert feedback_calls == ["dify-1"]
+
+
+def test_business_regenerate_stopped_keeps_partial_and_terminal(service_db, monkeypatch):
+    import ai_management.conversations as conversations_module
+    from ai_management.cache import cache
+
+    mode = {"stop": False}
+
+    class FakeClient:
+        def __init__(self, *_args):
+            pass
+
+        def stream_chat(self, **kwargs):
+            yield {"event": "message", "task_id": "ts", "message_id": "ds", "answer": "部分"}
+            if mode["stop"]:
+                cache.set_json("ai:business-task-stopped:ts:" + user_hash("user-001"), True, ttl=60)
+            yield {
+                "event": "message_end",
+                "message_id": "ds",
+                "conversation_id": "dcs",
+                "metadata": {},
+            }
+
+    monkeypatch.setattr(conversations_module, "DifyAppClient", FakeClient)
+    with TestClient(app) as client:
+        client.post("/internal/v1/business/chat", headers=HEADERS, json={"query": "停止问题"})
+        with service_db() as db:
+            aid = db.scalar(select(BusinessMessage).where(BusinessMessage.role == "assistant")).id
+        mode["stop"] = True
+        response = client.post(f"/internal/v1/business/messages/{aid}/regenerate", headers=HEADERS)
+    assert response.status_code == 200 and '"status": "stopped"' in response.text
+    with service_db() as db:
+        assert db.get(BusinessMessage, aid).content == "部分"
+
+
+def test_business_regenerate_stop_failure_and_generator_exit_is_single_terminal(
+    service_db, monkeypatch
+):
+    """A failed explicit stop must win over disconnect cleanup, without retrying Dify."""
+
+    from starlette.requests import Request
+
+    import ai_management.api.routers.business as business_router
+    import ai_management.conversations as conversations_module
+    from ai_management.db import SessionLocal
+
+    stop_entered = threading.Event()
+    release_stop = threading.Event()
+    stream_started = threading.Event()
+    stop_errors = []
+    stream_calls = 0
+    stop_calls = 0
+
+    class FakeClient:
+        def __init__(self, *_args):
+            pass
+
+        def stream_chat(self, **kwargs):
+            nonlocal stream_calls
+            stream_calls += 1
+            if stream_calls == 1:
+                yield {
+                    "event": "message",
+                    "task_id": "initial-business-task",
+                    "message_id": "initial-business-message",
+                    "answer": "初始答案",
+                }
+                yield {
+                    "event": "message_end",
+                    "task_id": "initial-business-task",
+                    "message_id": "initial-business-message",
+                    "conversation_id": "initial-business-conversation",
+                    "metadata": {},
+                }
+                return
+            stream_started.set()
+            yield {
+                "event": "message",
+                "task_id": "regenerate-business-task",
+                "message_id": "regenerate-business-message",
+                "answer": "新答案片段",
+            }
+            assert release_stop.wait(5)
+            return
+
+        def stop_chat(self, *_args):
+            nonlocal stop_calls
+            stop_calls += 1
+            stop_entered.set()
+            assert release_stop.wait(5)
+            raise RuntimeError("remote stop failed")
+
+    monkeypatch.setattr(conversations_module, "DifyAppClient", FakeClient)
+    monkeypatch.setattr(business_router, "DifyAppClient", FakeClient)
+
+    with TestClient(app) as client:
+        first = client.post(
+            "/internal/v1/business/chat", headers=HEADERS, json={"query": "原始问题"}
+        )
+        assert first.status_code == 200
+        with service_db() as db:
+            assistant = db.scalar(
+                select(BusinessMessage).where(BusinessMessage.role == "assistant")
+            )
+            assistant_id = assistant.id
+            conversation_id = assistant.conversation_id
+
+        with SessionLocal() as session:
+            request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+            request.state.request_id = "regenerate-race-request"
+            response = business_router.regenerate_business_message(
+                assistant_id,
+                request,
+                "user-001",
+                "",
+                session,
+            )
+            generator = response.body_iterator
+            consumed = []
+            close_requested = threading.Event()
+
+            async def consume_until_disconnect_async():
+                async for item in generator:
+                    consumed.append(item)
+                    if b'"code": "task_started"' in item:
+                        close_requested.wait(5)
+                        await generator.aclose()
+                        return
+
+            def consume_until_disconnect():
+                asyncio.run(consume_until_disconnect_async())
+
+            consumer = threading.Thread(target=consume_until_disconnect)
+            consumer.start()
+            assert stream_started.wait(5)
+
+            def call_stop():
+                stop_request = Request(
+                    {"type": "http", "method": "POST", "path": "/", "headers": []}
+                )
+                stop_request.state.request_id = "stop-race-request"
+                try:
+                    business_router.stop_business_chat(
+                        "regenerate-business-task", stop_request, "user-001"
+                    )
+                except Exception as exc:  # expected remote failure
+                    stop_errors.append(exc)
+
+            stopper = threading.Thread(target=call_stop)
+            stopper.start()
+            assert stop_entered.wait(5)
+            # The generator is suspended at the fake stream barrier. Closing it
+            # here is the real client-disconnect/GeneratorExit path.
+            close_requested.set()
+            release_stop.set()
+            consumer.join(timeout=5)
+            stopper.join(timeout=5)
+            assert not consumer.is_alive() and not stopper.is_alive()
+
+    assert stop_calls == 1
+    assert len(stop_errors) == 1
+    assert "初始答案" not in b"".join(consumed).decode("utf-8", errors="ignore")
+    with service_db() as db:
+        assistant = db.get(BusinessMessage, assistant_id)
+        user = db.scalar(
+            select(BusinessMessage).where(
+                BusinessMessage.conversation_id == conversation_id,
+                BusinessMessage.role == "user",
+            )
+        )
+        assert assistant is not None and user is not None
+        assert assistant.status == "failed" and assistant.content == ""
+        assert user.status == "failed"
+
+    current_hash = user_hash("user-001")
+    for key in (
+        "ai:business-task:regenerate-business-task",
+        f"ai:business-task-stopping:regenerate-business-task:{current_hash}",
+        f"ai:business-task-stopped:regenerate-business-task:{current_hash}",
+        "ai:business-stop-claim:regenerate-business-task",
+    ):
+        assert cache.get_json(key) is None
+    with TestClient(app) as client:
+        late = client.post(
+            "/internal/v1/business/chat/regenerate-business-task/stop", headers=HEADERS
+        )
+    assert late.status_code == 404
+
+
+def test_business_chat_eof_without_stop_is_failed(service_db, monkeypatch):
+    from ai_management.dify import DifyAppClient
+
+    def fake_stream(self, **kwargs):
+        yield {"event": "message", "task_id": "eof-business", "answer": "部分答案"}
+
+    monkeypatch.setattr(DifyAppClient, "stream_chat", fake_stream)
+    with TestClient(app) as client:
+        response = client.post(
+            "/internal/v1/business/chat", headers=HEADERS, json={"query": "EOF测试"}
+        )
+    assert response.status_code == 200
+    assert '"status": "failed"' in response.text
+    assert '"code": "DIFY_RESPONSE_INVALID"' in response.text
+    assert "event: message_end" not in response.text
+
+
+@pytest.mark.parametrize("remote_ok", [True, False])
+def test_business_stop_publishes_stopped_only_after_remote_confirmation(
+    service_db, monkeypatch, remote_ok
+):
+    from starlette.requests import Request
+
+    import ai_management.api.routers.business as business_router
+
+    task_id = "stop-confirmation-task"
+    current_hash = user_hash("stop-confirmation-user")
+    cache.set_json(
+        f"ai:business-task:{task_id}",
+        {
+            "user_hash": current_hash,
+            "dify_user": dify_user("stop-confirmation-user"),
+            "kind": "business",
+            "transport": "sse",
+        },
+        ttl=60,
+    )
+
+    class FakeClient:
+        def __init__(self, *_args):
+            pass
+
+        def stop_chat(self, *_args):
+            assert cache.get_json(f"ai:business-task-stopped:{task_id}:{current_hash}") is None
+            if not remote_ok:
+                raise RuntimeError("remote stop failed")
+            return {"result": "stopped"}
+
+    monkeypatch.setattr(business_router, "DifyAppClient", FakeClient)
+    request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+    request.state.request_id = "stop-confirmation-request"
+    if remote_ok:
+        assert business_router.stop_business_chat(task_id, request, "stop-confirmation-user") == {
+            "result": "stopped"
+        }
+        assert cache.get_json(f"ai:business-task-stopped:{task_id}:{current_hash}") is True
+    else:
+        with pytest.raises(RuntimeError):
+            business_router.stop_business_chat(task_id, request, "stop-confirmation-user")
+        assert cache.get_json(f"ai:business-task-stopped:{task_id}:{current_hash}") is None
+        assert cache.get_json(f"ai:business-task-stopping:{task_id}:{current_hash}") is True
 
 
 def test_business_chat_stream_and_history(service_db, monkeypatch):

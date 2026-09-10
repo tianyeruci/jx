@@ -70,7 +70,7 @@
     {
       "id": "examples-api",
       "title": "用户读取与管理员 CRUD API",
-      "status": "verified",
+      "status": "done",
       "paths": [
         "ai_management/api/routers/tools.py"
       ],
@@ -81,9 +81,9 @@
         "AC-005"
       ],
       "optional": false,
-      "updated_at": "2026-08-30T15:33:19+08:00",
-      "last_change_summary": "工具会话 run 顶层 conversation_id、reset 后重新选型、并发安全和精确迁移兼容已发布到 jx；测试页验证朋友圈与日常写作 SSE/重置链路，商业顾问隔离不变。",
-      "last_changed_at": "2026-08-30T16:04:32+08:00"
+      "updated_at": "2026-09-09T14:52:14+08:00",
+      "last_change_summary": "工具案例能力不变；工具生成/重生成错误可跨 app rerun 稳定显示，后续成功清除旧错误。",
+      "last_changed_at": "2026-09-09T13:47:33+08:00"
     },
     {
       "id": "examples-admin-api",
@@ -111,9 +111,9 @@
         "AC-005"
       ],
       "optional": false,
-      "updated_at": "2026-08-17T08:55:50+08:00",
-      "last_change_summary": "工具会话 run 顶层 conversation_id、reset 后重新选型、并发安全和精确迁移兼容已发布到 jx；测试页验证朋友圈与日常写作 SSE/重置链路，商业顾问隔离不变。",
-      "last_changed_at": "2026-08-30T16:04:32+08:00"
+      "updated_at": "2026-09-09T14:52:14+08:00",
+      "last_change_summary": "工具案例能力不变；工具生成/重生成错误可跨 app rerun 稳定显示，后续成功清除旧错误。",
+      "last_changed_at": "2026-09-09T13:47:33+08:00"
     },
     {
       "id": "examples-tests",
@@ -133,9 +133,9 @@
         "AC-006"
       ],
       "optional": false,
-      "updated_at": "2026-08-31T15:39:11+08:00",
-      "last_change_summary": "本次发布仅涉及运行时区和清洗命名，工具会话及 DSL 业务语义不变。",
-      "last_changed_at": "2026-08-31T15:31:19+08:00"
+      "updated_at": "2026-09-09T14:52:14+08:00",
+      "last_change_summary": "工具案例能力不变；工具生成/重生成错误可跨 app rerun 稳定显示，后续成功清除旧错误。",
+      "last_changed_at": "2026-09-09T13:47:33+08:00"
     },
     {
       "id": "examples-docs",
@@ -176,13 +176,13 @@
   ],
   "documentation": {
     "status": "current",
-    "last_code_change_at": "2026-08-31T15:31:16+08:00",
-    "last_synced_at": "2026-08-31T15:31:19+08:00",
-    "last_sync_summary": "本次发布仅涉及运行时区和清洗命名，工具会话及 DSL 业务语义不变。",
+    "last_code_change_at": "2026-09-09T13:47:26+08:00",
+    "last_synced_at": "2026-09-09T13:47:33+08:00",
+    "last_sync_summary": "工具案例能力不变；工具生成/重生成错误可跨 app rerun 稳定显示，后续成功清除旧错误。",
     "pending_changed_paths": [],
-    "changelog_fingerprint": "16826cd879e0cdaffcbc0745222632a39f39fc8e174d90c226fe112335b9b82f"
+    "changelog_fingerprint": "7f70eb86e105921f234f30f43d4af779507198c1753e4f3370cf7e02914dd684"
   },
   "created_at": "2026-08-17T02:18:13+08:00",
-  "updated_at": "2026-08-31T15:39:11+08:00",
+  "updated_at": "2026-09-09T14:52:14+08:00",
   "last_abandon_reason": "独立复核修正完成，重新建立以当前修正工作树为基线的治理周期"
 }

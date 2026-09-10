@@ -31,6 +31,7 @@ from .models import (
 )
 from .privacy import load_public_redaction_rules
 from .security import dify_user
+from .services.observability import record_event
 from .services.style_settings import get_style_prompt
 from .sse import SSEEmitter
 from .stream_filter import (
@@ -42,6 +43,22 @@ from .stream_filter import (
     redact_internal_ids_in_value,
 )
 from .timeutil import business_today
+
+BUSINESS_STOP_CLAIM_TTL = 600
+
+
+def _claim_business_terminal(task_id: str):
+    deadline = time.monotonic() + BUSINESS_STOP_CLAIM_TTL
+    while True:
+        claim = cache.lock(f"ai:business-stop-claim:{task_id}", ttl=BUSINESS_STOP_CLAIM_TTL)
+        state = claim.__enter__()
+        if state.acquired:
+            return claim
+        claim.__exit__(None, None, None)
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.1)
+
 
 logger = logging.getLogger(__name__)
 
@@ -140,17 +157,23 @@ def _persist_business_result(
         )
         if not conversation_db or not user_db or not assistant_db:
             raise RuntimeError("本地会话或消息在生成期间已不存在")
-        assistant_db.content = redact_internal_ids("".join(answer_parts))
+        failed = final_status == "failed" and bool(prepared.get("regeneration"))
+        assistant_db.content = "" if failed else redact_internal_ids("".join(answer_parts))
         assistant_db.status = final_status
-        assistant_db.dify_task_id = dify_task_id or None
-        assistant_db.dify_message_id = dify_message_id or None
-        assistant_db.first_token_ms = first_token_ms
-        assistant_db.total_ms = total_ms
-        assistant_db.token_usage = int(usage_metadata.get("total_tokens") or 0)
-        assistant_db.retriever_resources = resources
-        assistant_db.recommendation = recommendation
+        assistant_db.dify_task_id = None if failed else (dify_task_id or None)
+        assistant_db.dify_message_id = None if failed else (dify_message_id or None)
+        assistant_db.first_token_ms = None if failed else first_token_ms
+        assistant_db.total_ms = None if failed else total_ms
+        assistant_db.token_usage = 0 if failed else int(usage_metadata.get("total_tokens") or 0)
+        assistant_db.retriever_resources = [] if failed else resources
+        assistant_db.recommendation = {} if failed else recommendation
+        if prepared.get("regeneration"):
+            user_db.status = "completed" if final_status in {"completed", "stopped"} else "failed"
         conversation_db.last_active_at = datetime.now(timezone.utc)
-        if actual_dify_conversation_id:
+        # A regeneration may create a new remote conversation before failing.
+        # Keep that exact segment even when the local answer is terminally
+        # failed, so the existing precise deletion flow can still remove it.
+        if actual_dify_conversation_id and (not failed or prepared.get("regeneration")):
             _store_segment(
                 work_session,
                 conversation=conversation_db,
@@ -171,6 +194,42 @@ def _persist_business_result(
     return recommendation, enqueue_summary
 
 
+def _converge_regeneration_failure(
+    prepared: dict[str, Any],
+    *,
+    actual_dify_conversation_id: str = "",
+    anonymous_user: str = "",
+) -> None:
+    """Durably clear a failed regeneration even if its normal save failed."""
+    with SessionLocal() as recovery:
+        user_db = recovery.get(BusinessMessage, prepared["user_message_id"])
+        assistant_db = recovery.get(BusinessMessage, prepared["assistant_message_id"])
+        conversation_db = recovery.get(BusinessConversation, prepared["conversation_id"])
+        if user_db is None or assistant_db is None or conversation_db is None:
+            return
+        assistant_db.content = ""
+        assistant_db.status = "failed"
+        assistant_db.feedback = {}
+        assistant_db.recommendation = {}
+        assistant_db.retriever_resources = []
+        assistant_db.dify_task_id = None
+        assistant_db.dify_message_id = None
+        assistant_db.first_token_ms = None
+        assistant_db.total_ms = None
+        assistant_db.token_usage = 0
+        user_db.status = "failed"
+        if actual_dify_conversation_id:
+            _store_segment(
+                recovery,
+                conversation=conversation_db,
+                dify_conversation_id=actual_dify_conversation_id,
+                anonymous_user=anonymous_user,
+                user_message=user_db,
+                assistant_message=assistant_db,
+            )
+        recovery.commit()
+
+
 def prepare_business_chat(
     session: Session,
     *,
@@ -180,6 +239,7 @@ def prepare_business_chat(
     conversation_id: str | None,
     request_id: str,
     user_display_name: str = "",
+    regenerate_message_id: str | None = None,
 ) -> Iterator[bytes]:
     settings = get_settings()
     query = query.strip()
@@ -233,21 +293,96 @@ def prepare_business_chat(
         lock_context.__exit__(None, None, None)
         raise ServiceError("CONVERSATION_BUSY", "当前对话正在生成回答，请稍后再试", 409, True)
 
-    user_message = BusinessMessage(
-        conversation_id=conversation.id,
-        role="user",
-        content=query,
-        status="completed",
-    )
-    assistant_message = BusinessMessage(
-        conversation_id=conversation.id,
-        role="assistant",
-        content="",
-        status="pending",
-    )
-    session.add_all([user_message, assistant_message])
-    session.flush()
-    context = build_context(session, conversation, user_hash, exclude_message_id=user_message.id)
+    if regenerate_message_id:
+        assistant_message = session.scalar(
+            select(BusinessMessage).where(
+                BusinessMessage.id == regenerate_message_id,
+                BusinessMessage.conversation_id == conversation.id,
+                BusinessMessage.role == "assistant",
+            )
+        )
+        ordered = list(
+            session.scalars(
+                select(BusinessMessage)
+                .where(BusinessMessage.conversation_id == conversation.id)
+                .order_by(BusinessMessage.created_at.asc(), BusinessMessage.id.asc())
+            )
+        )
+        if assistant_message is None:
+            lock_context.__exit__(None, None, None)
+            raise ServiceError("MESSAGE_NOT_FOUND", "消息不存在", 404, False)
+        index = next((i for i, item in enumerate(ordered) if item.id == assistant_message.id), -1)
+        user_message = (
+            ordered[index - 1] if index > 0 and ordered[index - 1].role == "user" else None
+        )
+        latest = next((item for item in reversed(ordered) if item.role == "assistant"), None)
+        if user_message is None or latest is None or latest.id != assistant_message.id:
+            lock_context.__exit__(None, None, None)
+            raise ServiceError("MESSAGE_NOT_REGENERATABLE", "该消息不可重新生成", 409, False)
+        cursor = (
+            session.get(BusinessMessage, conversation.summary_through_message_id)
+            if conversation.summary_through_message_id
+            else None
+        )
+        if cursor is not None and (
+            cursor.created_at > assistant_message.created_at
+            or (
+                cursor.created_at == assistant_message.created_at
+                and cursor.id >= assistant_message.id
+            )
+            or cursor.created_at > user_message.created_at
+            or (cursor.created_at == user_message.created_at and cursor.id >= user_message.id)
+        ):
+            lock_context.__exit__(None, None, None)
+            raise ServiceError("MESSAGE_NOT_REGENERATABLE", "该消息不可重新生成", 409, False)
+        if assistant_message.status not in {
+            "completed",
+            "stopped",
+            "failed",
+        } or user_message.status not in {
+            "completed",
+            "stopped",
+            "failed",
+        }:
+            lock_context.__exit__(None, None, None)
+            raise ServiceError("MESSAGE_NOT_REGENERATABLE", "该消息不可重新生成", 409, False)
+        query = user_message.content
+        assistant_message.content = ""
+        assistant_message.status = "pending"
+        assistant_message.feedback = {}
+        assistant_message.recommendation = {}
+        assistant_message.retriever_resources = []
+        assistant_message.dify_task_id = None
+        assistant_message.dify_message_id = None
+        assistant_message.total_ms = None
+        assistant_message.first_token_ms = None
+        assistant_message.token_usage = 0
+        user_message.status = "pending"
+        session.flush()
+        context = build_context(
+            session,
+            conversation,
+            user_hash,
+            exclude_message_ids={user_message.id, assistant_message.id},
+        )
+    else:
+        user_message = BusinessMessage(
+            conversation_id=conversation.id,
+            role="user",
+            content=query,
+            status="completed",
+        )
+        assistant_message = BusinessMessage(
+            conversation_id=conversation.id,
+            role="assistant",
+            content="",
+            status="pending",
+        )
+        session.add_all([user_message, assistant_message])
+        session.flush()
+        context = build_context(
+            session, conversation, user_hash, exclude_message_id=user_message.id
+        )
     configured_style = get_style_prompt(session, "business_answer").strip()
     context.inputs.update(
         {
@@ -278,6 +413,7 @@ def prepare_business_chat(
         "dify_conversation_id": dify_conversation_id,
         "anonymous_user": anonymous_user,
         "inputs": context.inputs,
+        "regeneration": bool(regenerate_message_id),
     }
     session.commit()
 
@@ -295,6 +431,8 @@ def prepare_business_chat(
         error_to_emit: ServiceError | None = None
         enqueue_summary = False
         task_announced = False
+        saw_message_end = False
+        terminal_claim = None
         final_redactor = StreamingPublicRedactor(redaction_rules.replacements)
         final_prefix_deduper: StreamingExactPrefixDeduper | None = None
         answer_phase = "unknown"
@@ -472,6 +610,7 @@ def prepare_business_chat(
                         for event in switch_answer_phase("final"):
                             yield event
                 elif event_name == "message_end":
+                    saw_message_end = True
                     metadata = item.get("metadata") or {}
                     raw_resources = metadata.get("retriever_resources") or []
                     if isinstance(raw_resources, list):
@@ -492,6 +631,26 @@ def prepare_business_chat(
                         502,
                         True,
                     )
+            if not saw_message_end:
+                raise ServiceError(
+                    "DIFY_RESPONSE_INVALID",
+                    "Dify流未正常结束",
+                    502,
+                    True,
+                )
+            terminal_claim = _claim_business_terminal(dify_task_id) if dify_task_id else None
+            if dify_task_id and terminal_claim is None:
+                raise ServiceError("DIFY_UNAVAILABLE", "生成终态协调失败", 502, True)
+            if dify_task_id:
+                stop_key = f"ai:business-task-stopped:{dify_task_id}:{user_hash}"
+                stopping_key = f"ai:business-task-stopping:{dify_task_id}:{user_hash}"
+                if cache.get_json(stop_key):
+                    final_status = "stopped"
+                cache.delete(f"ai:business-task:{dify_task_id}")
+                cache.delete(stop_key)
+                cache.delete(stopping_key)
+                terminal_claim.__exit__(None, None, None)
+                terminal_claim = None
             final_delta = final_redactor.finish()
             final_delta = redact_internal_ids(final_delta)
             final_delta = final_deduper().feed(final_delta)
@@ -500,12 +659,29 @@ def prepare_business_chat(
                 answer_parts.append(final_delta)
                 yield emit("answer_delta", {"delta": final_delta})
         except GeneratorExit:
-            final_status = "stopped"
+            final_status = "failed"
             if dify_task_id:
-                try:
-                    _business_client().stop_chat(dify_task_id, anonymous_user)
-                except Exception:
-                    logger.warning("failed to stop Dify task after client disconnect")
+                terminal_claim = _claim_business_terminal(dify_task_id)
+                if terminal_claim is not None:
+                    stop_key = f"ai:business-task-stopped:{dify_task_id}:{user_hash}"
+                    stopping_key = f"ai:business-task-stopping:{dify_task_id}:{user_hash}"
+                    already_stopped = bool(cache.get_json(stop_key))
+                    stopping = cache.get_json(stopping_key)
+                    if already_stopped:
+                        final_status = "stopped"
+                    elif stopping:
+                        final_status = "failed"
+                    else:
+                        try:
+                            _business_client().stop_chat(dify_task_id, anonymous_user)
+                            final_status = "stopped"
+                        except Exception:
+                            final_status = "failed"
+                            logger.warning("failed to stop Dify task after client disconnect")
+                    cache.delete(f"ai:business-task:{dify_task_id}")
+                    cache.delete(stop_key)
+                    cache.delete(stopping_key)
+                    terminal_claim.__exit__(None, None, None)
             raise
         except ServiceError as exc:
             final_status = "failed"
@@ -520,12 +696,35 @@ def prepare_business_chat(
                 True,
             )
         finally:
+            # Terminalize exceptional/EOF paths under the same claim used by
+            # stop_business_chat.  A stopping marker without a stopped marker
+            # means the remote stop did not confirm and must remain failed.
+            if dify_task_id and terminal_claim is None:
+                terminal_claim = _claim_business_terminal(dify_task_id)
             stop_key = f"ai:business-task-stopped:{dify_task_id}:{user_hash}"
-            if dify_task_id and cache.get_json(stop_key):
-                final_status = "stopped"
+            stopping_key = f"ai:business-task-stopping:{dify_task_id}:{user_hash}"
+            if dify_task_id:
+                stopped_confirmed = bool(cache.get_json(stop_key))
+                stop_in_flight = bool(cache.get_json(stopping_key))
+                if stopped_confirmed:
+                    final_status = "stopped"
+                    error_to_emit = None
+                elif stop_in_flight:
+                    final_status = "failed"
+                cache.delete(f"ai:business-task:{dify_task_id}")
                 cache.delete(stop_key)
+                cache.delete(stopping_key)
+                if terminal_claim is not None:
+                    terminal_claim.__exit__(None, None, None)
+                    terminal_claim = None
             total_ms = int((time.monotonic() - started) * 1000)
             recommendation: dict[str, Any] = {}
+            if final_status == "stopped" and not answer_parts and progress_answer_parts:
+                # The stop may be confirmed after the service-controlled
+                # progress Answer node but before the final Answer node starts.
+                # Persist exactly the sanitized fragments already sent to the
+                # client so a stopped message does not become empty on reload.
+                answer_parts.extend(progress_answer_parts)
             try:
                 recommendation, enqueue_summary = _persist_business_result(
                     prepared=prepared,
@@ -557,6 +756,15 @@ def prepare_business_chat(
                     extra={"request_id": request_id},
                 )
                 final_status = "failed"
+                if prepared.get("regeneration"):
+                    try:
+                        _converge_regeneration_failure(
+                            prepared,
+                            actual_dify_conversation_id=actual_dify_conversation_id,
+                            anonymous_user=anonymous_user,
+                        )
+                    except Exception:
+                        logger.exception("failed to converge regeneration failure")
                 error_to_emit = ServiceError(
                     "DIFY_UNAVAILABLE",
                     "回答已生成但保存失败，请稍后重试",
@@ -564,6 +772,23 @@ def prepare_business_chat(
                     True,
                 )
             finally:
+                if prepared.get("regeneration"):
+                    try:
+                        record_event(
+                            level="INFO",
+                            category="operation",
+                            component="business_api",
+                            event_code="BUSINESS_MESSAGE_REGENERATE_TERMINAL",
+                            status=final_status,
+                            message="商业消息重新生成结束",
+                            request_id=request_id,
+                            actor_hash=user_hash,
+                            resource_type="message",
+                            resource_id=prepared["assistant_message_id"],
+                            details={"conversation_id": prepared["conversation_id"]},
+                        )
+                    except Exception:
+                        logger.exception("failed to record regeneration terminal audit")
                 logger.info(
                     "business_chat_completed request_id=%s user_hash=%s "
                     "local_conversation_id=%s dify_conversation_id=%s "
@@ -593,6 +818,9 @@ def prepare_business_chat(
                     "message": error_to_emit.message,
                     "request_id": request_id,
                     "retryable": error_to_emit.retryable,
+                    "conversation_id": prepared["conversation_id"],
+                    "message_id": prepared["assistant_message_id"],
+                    "status": "failed",
                 },
             )
             return
@@ -742,6 +970,35 @@ def list_conversation_messages(
             )
         return recommendation
 
+    latest_assistant = session.scalar(
+        select(BusinessMessage)
+        .where(
+            BusinessMessage.conversation_id == conversation_id,
+            BusinessMessage.role == "assistant",
+        )
+        .order_by(BusinessMessage.created_at.desc(), BusinessMessage.id.desc())
+    )
+    latest_assistant_id = latest_assistant.id if latest_assistant else None
+    latest_user = None
+    if latest_assistant is not None:
+        latest_pair = list(
+            session.scalars(
+                select(BusinessMessage)
+                .where(
+                    BusinessMessage.conversation_id == conversation_id,
+                )
+                .order_by(BusinessMessage.created_at.desc(), BusinessMessage.id.desc())
+                .limit(2)
+            )
+        )
+        if (
+            len(latest_pair) == 2
+            and latest_pair[0].id == latest_assistant.id
+            and latest_pair[1].role == "user"
+        ):
+            latest_user = latest_pair[1]
+    summary_cursor_id = conversation.summary_through_message_id
+    summary_cursor = session.get(BusinessMessage, summary_cursor_id) if summary_cursor_id else None
     items = [
         {
             "message_id": row.id,
@@ -767,6 +1024,28 @@ def list_conversation_messages(
                 public_name_fallbacks(snapshot, recommendation=row.recommendation),
             ),
             "created_at": row.created_at,
+            "can_regenerate": bool(
+                row.role == "assistant"
+                and row.id == latest_assistant_id
+                and latest_user is not None
+                and not (
+                    summary_cursor is not None
+                    and (
+                        summary_cursor.created_at > row.created_at
+                        or (
+                            summary_cursor.created_at == row.created_at
+                            and summary_cursor.id >= row.id
+                        )
+                        or summary_cursor.created_at > latest_user.created_at
+                        or (
+                            summary_cursor.created_at == latest_user.created_at
+                            and summary_cursor.id >= latest_user.id
+                        )
+                    )
+                )
+                and row.status in {"completed", "stopped", "failed"}
+                and latest_user.status in {"completed", "stopped", "failed"}
+            ),
         }
         for row in messages
     ]
@@ -781,34 +1060,44 @@ def list_conversation_messages(
 def delete_user_conversation(
     session: Session, *, user_hash: str, conversation_id: str
 ) -> list[tuple[str, str]]:
-    conversation = session.scalar(
-        select(BusinessConversation)
-        .where(
-            BusinessConversation.id == conversation_id,
-            BusinessConversation.user_hash == user_hash,
-        )
-        .options(selectinload(BusinessConversation.segments))
-    )
-    if conversation is None:
-        raise ServiceError("CONVERSATION_NOT_FOUND", "历史对话不存在", 404, False)
-    targets = [
-        (segment.dify_conversation_id, segment.dify_user) for segment in conversation.segments
-    ]
-    session.delete(conversation)
-    session.commit()
-    client = _business_client()
-    for dify_conversation_id, anonymous_user in targets:
-        try:
-            client.delete_conversation(dify_conversation_id, anonymous_user)
-        except Exception as exc:
-            session.add(
-                ExternalDeletionTask(
-                    kind="dify_conversation",
-                    external_id=dify_conversation_id,
-                    payload={"user": anonymous_user},
-                    attempts=1,
-                    last_error=str(exc)[:1000],
-                )
+    lock = cache.lock(f"ai:conversation-lock:{conversation_id}", ttl=600)
+    state = lock.__enter__()
+    if not state.acquired:
+        lock.__exit__(None, None, None)
+        raise ServiceError("CONVERSATION_BUSY", "当前对话正在生成回答，请稍后再试", 409, True)
+    try:
+        # Re-read after acquiring the same lock used by generation/regeneration
+        # so a newly discovered Dify segment cannot be missed by deletion.
+        conversation = session.scalar(
+            select(BusinessConversation)
+            .where(
+                BusinessConversation.id == conversation_id,
+                BusinessConversation.user_hash == user_hash,
             )
-    session.commit()
-    return targets
+            .options(selectinload(BusinessConversation.segments))
+        )
+        if conversation is None:
+            raise ServiceError("CONVERSATION_NOT_FOUND", "历史对话不存在", 404, False)
+        targets = [
+            (segment.dify_conversation_id, segment.dify_user) for segment in conversation.segments
+        ]
+        session.delete(conversation)
+        session.commit()
+        client = _business_client()
+        for dify_conversation_id, anonymous_user in targets:
+            try:
+                client.delete_conversation(dify_conversation_id, anonymous_user)
+            except Exception as exc:
+                session.add(
+                    ExternalDeletionTask(
+                        kind="dify_conversation",
+                        external_id=dify_conversation_id,
+                        payload={"user": anonymous_user},
+                        attempts=1,
+                        last_error=str(exc)[:1000],
+                    )
+                )
+        session.commit()
+        return targets
+    finally:
+        lock.__exit__(None, None, None)

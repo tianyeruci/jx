@@ -231,3 +231,15 @@
 - 预防：Dify 验收报告固定拆分“发布状态”“jx App Key 映射”“本地终态”“远端索引/Metadata 回读”四项；没有全量回读证据时只能写“抽样通过”，不能写“全量一致”。
 - 证据：`var/reports/20260820-qwen-activity/full_remote_metadata_parity.safe.json`、`knowledge_cleaner/dify.py::DifyKnowledgeClient.get_document`。
 - 最后验证：2026-08-20。
+
+## DIFY-022：Dify 1.13.3 消息回读的用户请求来自顶层 `query`
+
+- 适用：朋友圈顾问、日常写作通过 `GET /messages` 回读上一轮输入并在同一 Dify conversation 中重新生成。
+- 触发：普通生成和反馈正常，但两个工具的重新生成都在建立 SSE 前返回 `DIFY_RESPONSE_INVALID`；回读记录的 `inputs` 只有控制字段，没有必填 `request`。
+- 根因：Dify 1.13.3 将用户请求保存在消息顶层 `query`，不会保证在 `inputs.request` 中回显；直接用 `inputs` 构造 `MomentsInputs`/`WritingInputs` 会因缺少 `request` 失败。
+- 解决：先验证顶层 `query` 为非空字符串，只从远端 `inputs` 提取允许的用户字段，再用顶层 `query` 强制重建 `request`；`type`、写作格式和管理员风格继续由当前本地会话与配置覆盖。
+- 非解决：信任远端未知字段或历史控制字段、放宽 Pydantic 必填约束、把消息正文写入本地，或新建 Dify 会话规避回读。
+- 验证：真实 Dify 结构诊断确认 `query` 与 `inputs` 分离；`tests/test_tool_conversations_contract.py::test_tool_regenerate_feedback_and_terminal_contract_are_executable` 及三类顾问聚焦回归共 194 项通过。
+- 预防：Dify 版本升级或 App 图变化后，先用只输出字段名和类型的脱敏探针核对 `/messages` 结构；契约测试固定覆盖“顶层 query + inputs 不含 request”。
+- 证据：`ai_management/api/routers/tools.py`、`tests/test_tool_conversations_contract.py`、`var/reports/advisor-message-actions/diagnose_tool_message_shape.py`。
+- 最后验证：2026-09-09。

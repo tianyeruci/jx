@@ -30,6 +30,7 @@ def test_request_only_moments_run_keeps_existing_sse_contract(service_db, monkey
             yield {
                 "event": "message",
                 "task_id": "task-contract",
+                "message_id": "msg-contract",
                 "data": {"answer": "概括性朋友圈内容"},
             }
             yield {
@@ -61,6 +62,7 @@ def test_request_only_moments_run_keeps_existing_sse_contract(service_db, monkey
     event_names = [line for line in body.splitlines() if line.startswith("event:")]
     assert event_names == [
         "event: request_started",
+        "event: status",
         "event: status",
         "event: answer_delta",
         "event: message_end",
@@ -101,7 +103,12 @@ def test_moments_run_preserves_supplied_source_material(service_db, monkeypatch)
             self.calls.append(
                 {"query": query, "user": user, "conversation_id": conversation_id, "inputs": inputs}
             )
-            yield {"event": "message_end", "task_id": "task-source", "data": {}}
+            yield {
+                "event": "message_end",
+                "task_id": "task-source",
+                "message_id": "msg-source",
+                "data": {},
+            }
 
     monkeypatch.setattr(tools, "DifyAppClient", FakeDifyClient)
     with TestClient(app) as client:
@@ -127,6 +134,7 @@ def test_moments_run_preserves_supplied_source_material(service_db, monkeypatch)
     assert response.headers["content-type"].startswith("text/event-stream")
     assert [line for line in response.text.splitlines() if line.startswith("event:")] == [
         "event: request_started",
+        "event: status",
         "event: status",
         "event: message_end",
     ]

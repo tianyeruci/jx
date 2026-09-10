@@ -127,3 +127,15 @@
 - 预防：每次 Desktop 升级后优先检查 `config.toml` 是否仍保留上述 3 个开关组合；若发现 `code_mode_host = true`，先恢复基线再做业务任务。
 - 证据：[Codex 会话工具故障：完整链路复盘与修复（2026-07-28）](../Codex会话工具报错复盘与修复-2026-07-28.md)、[OpenAI Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)、[ChatGPT & Codex changelog](https://learn.chatgpt.com/docs/changelog)。
 - 最后验证：2026-08-27。
+
+## DEV-011：无锁文件项目运行 `uv` 时要避免生成非交付 `uv.lock`
+
+- 适用：仓库未跟踪 `uv.lock`，但治理质量命令通过既有虚拟环境执行 `uv run ...`。
+- 触发：格式化或测试本身通过后，工作树新增约 600 KiB 的 `uv.lock`，治理将其识别为未映射实现路径并阻断文档/质量门。
+- 根因：`UV_NO_SYNC=1` 只禁止环境同步，不禁止 `uv` 发现项目并生成锁文件；当前仓库的发布和依赖基线没有把该锁文件列为交付资产。
+- 解决：在已确认使用当前环境、无需解析项目依赖的验证命令中设置 `UV_NO_PROJECT=1`，让 `uv run` 不发现项目；对本轮生成的精确未跟踪 `uv.lock` 核对路径后删除。是否正式引入锁文件必须另作依赖治理决定。
+- 非解决：把生成锁文件加入任意 Feature 模块掩盖门禁、提交未经评审的锁文件、整目录清理，或误以为 `UV_NO_SYNC` 足以阻止生成。
+- 验证：`UV_NO_PROJECT=1 uv run python -c ...` 成功且未创建 `uv.lock`；后续质量命令继续以工作树无该文件为前提运行。
+- 预防：无锁文件仓库的本地验证固定设置 `UV_NO_PROJECT=1`，并在质量结束后检查工作树没有新增依赖资产。
+- 证据：本轮治理 `gate-status` 的 orphan path 提示与脱敏本地验证记录。
+- 最后验证：2026-09-09。

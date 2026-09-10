@@ -27,19 +27,37 @@ def entry_config() -> dict[str, Any]:
             "business_advisor",
             "商业顾问",
             settings.dify_business_app_api_key,
-            {"history": True, "feedback": True, "course_recommendation": False},
+            {
+                "history": True,
+                "feedback": True,
+                "regenerate": True,
+                "stop": True,
+                "course_recommendation": False,
+            },
         ),
         (
             "moments_advisor",
             "朋友圈顾问",
             settings.dify_moments_app_api_key,
-            {"history": False, "feedback": False, "course_recommendation": False},
+            {
+                "history": False,
+                "feedback": True,
+                "regenerate": True,
+                "stop": True,
+                "course_recommendation": False,
+            },
         ),
         (
             "writing_advisor",
             "日常写作",
             settings.dify_writing_app_api_key,
-            {"history": False, "feedback": False, "course_recommendation": False},
+            {
+                "history": False,
+                "feedback": True,
+                "regenerate": True,
+                "stop": True,
+                "course_recommendation": False,
+            },
         ),
     ]
     result: list[dict[str, Any]] = []

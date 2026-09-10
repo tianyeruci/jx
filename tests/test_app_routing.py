@@ -19,6 +19,9 @@ EXPECTED_ROUTES = {
     ("PATCH", "/internal/v1/business/conversations/{conversation_id}"),
     ("DELETE", "/internal/v1/business/conversations/{conversation_id}"),
     ("POST", "/internal/v1/business/messages/{message_id}/feedback"),
+    ("POST", "/internal/v1/business/messages/{message_id}/regenerate"),
+    ("POST", "/internal/v1/tools/{kind}/messages/{message_id}/feedback"),
+    ("POST", "/internal/v1/tools/{kind}/messages/{message_id}/regenerate"),
     ("POST", "/internal/v1/tools/moments/run"),
     ("POST", "/internal/v1/tools/writing/run"),
     ("GET", "/internal/v1/tools/{kind}/examples"),
@@ -260,6 +263,7 @@ def test_health_ready_requires_reachable_configured_dify(
     import ai_management.api.routers.health as health
 
     settings = health.get_settings()
+    monkeypatch.setattr(settings, "dify_knowledge_api_key", "knowledge-test")
     monkeypatch.setattr(settings, "dify_general_dataset_id", "general-test")
     monkeypatch.setattr(settings, "dify_course_dataset_id", "course-test")
     monkeypatch.setattr(health.DifyAppClient, "parameters", lambda self: {})

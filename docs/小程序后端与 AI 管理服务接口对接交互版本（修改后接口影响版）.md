@@ -156,3 +156,9 @@ POST /internal/v1/tools/{task_id}/stop
 - 已通过测试页验证：朋友圈 reset 后重新选型、种草型会话创建与 SSE 生成、日常写作会话创建与文章生成、写作 reset 后重新选型；商业顾问入口正常加载。
 - 迁移从 `m9d0e1f2g3h4` 升级到唯一 head `n0e1f2g3h4i5`；发布报告无回滚标记。
 - 浏览器仅记录 Streamlit `WebSocket onclose` warning，无页面 error；该 warning 不影响本次接口/SSE 验收。
+
+### 6.2 三类顾问消息操作增量
+
+- 工具新增 feedback/regenerate：`POST /internal/v1/tools/{kind}/messages/{message_id}/feedback` 与 `/regenerate`，`kind` 仅 moments/writing；message_id 是不透明 Dify ID，重生成回读 query/inputs 后沿用同一 conversation_id 重发。
+- 工具普通/重生成首次取得 task ID 后发送 `status(code=task_started,task_id)`；完成/停止发送包含 conversation_id、opaque message_id、task_id、status 的 `message_end`；失败发送 `error(status=failed)`，客户端清空本次全部 delta，停止保留已生成片段。
+- 工具 Memory 目标为实际生成节点开启窗口 6；商业主 LLM Memory 关闭。旧工具问答可能继续留在 Dify Memory，页面以新 message_id 替换；本服务不持久工具正文或伪称远端删除。

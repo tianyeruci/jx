@@ -241,3 +241,7 @@ Workflow：
 当前商业顾问只绑定一个 `general` Dataset。普通商业知识与咨询案例通过静态 `record_type` 过滤隔离；它们不是两个知识库。
 
 课程/路线数据即使仍因管理兼容而存在，也不属于本应用的 Dataset、检索节点、SSE 或验收目标。不能为了“提高课程召回”把它们放进 `general`，因为普通分支可能召回 `record_type` 不为 `consulting_case` 的污染资料。
+
+### 本 Feature Memory 与发布证据
+
+仓库权威 `dify/dsl/moments_advisor.yml`、`writing_advisor.yml` 的实际生成 LLM 节点要求 Memory enabled、window size 6；商业主 LLM 必须保持 Memory disabled。发布前必须核验线上绑定 App 的实际发布图，再决定是否在原 App 最小发布；本地 DSL 变更不等于线上已发布，须分别保存导出/回滚证据，不修改 App Key、知识库或 Dify 业务数据库。

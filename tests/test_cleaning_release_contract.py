@@ -48,7 +48,9 @@ def test_miniapp_interface_document_is_frozen_for_internal_cleaning_changes():
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     # The contract text freezes event/payload semantics and the approved
     # private-port-8000 policy for knowledge-base management routes.
-    assert digest == "c27dfd18d9b37c27518fa434a68315a1fbd9b3a808fd187d63009bdcb1741946"
+    # The frozen public contract was intentionally revised by the approved
+    # advisor-message-actions Feature to make the SSE failed terminal explicit.
+    assert digest == "c4439bb9c8e558346e37d6d666796d579f0dd88a7d1b54b806c8ced5a7a53edd"
 
 
 def test_remote_cleaning_acceptance_uses_anonymous_names_and_covers_new_flow():
@@ -499,6 +501,26 @@ def test_formal_release_restores_preexisting_ocr_worker_on_early_failure():
     assert "if command -v systemctl >/dev/null 2>&1; then" in restore
     assert 'if test "$OCR_WORKER_WAS_RUNNING" -eq 1; then' in restore
     assert "docker compose -f docker-compose.ai.yml up -d ai-ocr-worker" in restore
+
+
+def test_formal_release_restores_preexisting_ocr_worker_with_new_image_on_success():
+    release = _source("scripts/jx_deploy_release.sh")
+    success = release[
+        release.index('docker image inspect "$OCR_IMAGE"') : release.index(
+            'if test "${JX_RUN_DOCKER_STORAGE_MAINTENANCE:-false}" = true'
+        )
+    ]
+
+    assert 'if test "$OCR_WORKER_WAS_RUNNING" -eq 1; then' in success
+    assert 'check --phase=release-ocr-restore' in success
+    assert (
+        "docker compose -f docker-compose.ai.yml up -d --no-deps --force-recreate "
+        "ai-ocr-worker" in success
+    )
+    assert 'grep -q "$OCR_IMAGE" "$REPORT_DIR/ocr-worker-image.txt"' in success
+    assert success.index("--force-recreate ai-ocr-worker") < success.index(
+        'ps -q ai-ocr-worker'
+    )
 
 
 def test_formal_release_downgrades_migrations_before_old_image_rollback():

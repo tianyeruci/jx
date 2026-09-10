@@ -105,19 +105,39 @@ def _summarize_sync(conversation_id: str) -> bool:
         messages = messages_after_summary(
             session,
             conversation,
-            limit=settings.summary_batch_max_messages,
+            # Pair selection must happen before pagination; otherwise an odd
+            # limit can make a complete pair look like an orphan.
+            limit=None,
         )
         if not messages:
             return True
-        batch: list[BusinessMessage] = []
+        pairs: list[list[BusinessMessage]] = []
+        for index in range(len(messages) - 1):
+            if messages[index].role == "user" and messages[index + 1].role == "assistant":
+                pairs.append([messages[index], messages[index + 1]])
+        if len(pairs) <= 1:
+            return True
+        # Keep the newest complete pair replaceable; select only older pairs.
+        candidates = pairs[:-1]
+        batch_pairs: list[list[BusinessMessage]] = []
         batch_chars = 0
-        for message in messages:
-            message_chars = len(message.content)
-            if batch and batch_chars + message_chars > settings.summary_batch_max_chars:
+        max_pairs = settings.summary_batch_max_messages // 2
+        if max_pairs < 1:
+            return True
+        for pair in candidates:
+            pair_chars = sum(len(item.content) for item in pair)
+            if batch_pairs and (
+                len(batch_pairs) >= max_pairs
+                or batch_chars + pair_chars > settings.summary_batch_max_chars
+            ):
                 break
-            batch.append(message)
-            batch_chars += message_chars
-        messages = batch
+            if len(batch_pairs) >= max_pairs:
+                break
+            batch_pairs.append(pair)
+            batch_chars += pair_chars
+        messages = [item for pair in batch_pairs for item in pair]
+        if not messages:
+            return True
         target_message_id = messages[-1].id
         serialized_messages = [
             {
@@ -150,7 +170,10 @@ def _summarize_sync(conversation_id: str) -> bool:
         conversation = session.get(BusinessConversation, conversation_id)
         if conversation is None:
             return False
-        if conversation.summary != old_summary or conversation.summary_through_message_id != old_cursor:
+        if (
+            conversation.summary != old_summary
+            or conversation.summary_through_message_id != old_cursor
+        ):
             return False
         conversation.summary = payload["updated_summary"].strip()
         conversation.summary_through_message_id = target_message_id
@@ -180,9 +203,13 @@ def summarize_conversation(conversation_id: str) -> bool:
     with cache.lock(f"ai:summary-lock:{conversation_id}", ttl=900) as acquired:
         if not acquired:
             record_event(
-                level="INFO", category="task", component="summary_worker",
-                event_code="SUMMARY_SKIPPED_LOCKED", status="skipped",
-                message="会话已有摘要任务执行中", resource_type="conversation",
+                level="INFO",
+                category="task",
+                component="summary_worker",
+                event_code="SUMMARY_SKIPPED_LOCKED",
+                status="skipped",
+                message="会话已有摘要任务执行中",
+                resource_type="conversation",
                 resource_id=conversation_id,
             )
             return False

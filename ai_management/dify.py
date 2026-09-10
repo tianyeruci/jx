@@ -36,7 +36,9 @@ class DifyAppClient:
             detail = response.text
         if response.status_code == 429:
             raise dify_error(detail, rate_limited=True)
-        raise ServiceError("DIFY_UNAVAILABLE", "Dify 应用调用失败", 502, response.status_code >= 500)
+        raise ServiceError(
+            "DIFY_UNAVAILABLE", "Dify 应用调用失败", 502, response.status_code >= 500
+        )
 
     def stream_chat(
         self,
@@ -94,7 +96,9 @@ class DifyAppClient:
         payload = {"inputs": inputs, "response_mode": "blocking", "user": user}
         try:
             with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(f"{self.base_url}/workflows/run", headers=self.headers, json=payload)
+                response = client.post(
+                    f"{self.base_url}/workflows/run", headers=self.headers, json=payload
+                )
                 self._raise(response)
                 return response.json()
         except ServiceError:
@@ -117,11 +121,77 @@ class DifyAppClient:
     def stop_workflow(self, task_id: str, user: str) -> dict[str, Any]:
         return self._post(f"/workflows/tasks/{task_id}/stop", {"user": user})
 
-    def feedback(self, message_id: str, user: str, rating: str | None, content: str) -> dict[str, Any]:
+    def feedback(
+        self, message_id: str, user: str, rating: str | None, content: str
+    ) -> dict[str, Any]:
         return self._post(
             f"/messages/{message_id}/feedbacks",
             {"user": user, "rating": rating, "content": content},
         )
+
+    def list_messages(
+        self, *, conversation_id: str, user: str, limit: int = 100, first_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Read chat messages for one opaque Dify conversation."""
+        params: dict[str, Any] = {"conversation_id": conversation_id, "user": user, "limit": limit}
+        if first_id:
+            params["first_id"] = first_id
+        try:
+            collected: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            with httpx.Client(timeout=self.timeout) as client:
+                for _ in range(20):
+                    response = client.get(
+                        f"{self.base_url}/messages", headers=self.headers, params=params
+                    )
+                    self._raise(response)
+                    payload = response.json()
+                    data = payload.get("data") if isinstance(payload, dict) else None
+                    if not isinstance(data, list) or not all(
+                        isinstance(item, dict) for item in data
+                    ):
+                        raise ServiceError(
+                            "DIFY_RESPONSE_INVALID", "Dify返回的消息列表格式无效", 502, True
+                        )
+                    collected.extend(data)
+                    if not payload.get("has_more"):
+                        break
+                    if not data:
+                        raise ServiceError(
+                            "DIFY_RESPONSE_INVALID", "Dify消息分页数据为空", 502, True
+                        )
+                    # Dify 1.13.3 returns messages in ASC order and expects
+                    # the first item's id as the next-page cursor.  Do not
+                    # trust the optional ``last_id`` field: deployments that
+                    # expose a descending-style cursor there can otherwise
+                    # skip or repeat pages.
+                    cursor = str(data[0].get("id") or "")
+                    if not cursor or cursor in seen:
+                        raise ServiceError(
+                            "DIFY_RESPONSE_INVALID", "Dify消息分页游标无效", 502, True
+                        )
+                    seen.add(cursor)
+                    params["first_id"] = cursor
+                else:
+                    raise ServiceError("DIFY_RESPONSE_INVALID", "Dify消息分页超过限制", 502, True)
+                unique: list[dict[str, Any]] = []
+                seen_ids: set[str] = set()
+                for item in collected:
+                    item_id = str(item.get("id") or item.get("message_id") or "")
+                    if item_id and item_id in seen_ids:
+                        continue
+                    if item_id:
+                        seen_ids.add(item_id)
+                    unique.append(item)
+                return unique
+        except ServiceError:
+            raise
+        except httpx.RequestError as exc:
+            raise dify_error(str(exc)) from exc
+        except (ValueError, TypeError) as exc:
+            raise ServiceError(
+                "DIFY_RESPONSE_INVALID", "Dify返回了无法解析的响应", 502, True
+            ) from exc
 
     def delete_conversation(self, conversation_id: str, user: str) -> None:
         try:

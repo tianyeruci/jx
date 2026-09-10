@@ -1,0 +1,788 @@
+# 三类 AI 顾问消息操作 — Change Log
+
+This is a semantic change log, not a copy of Git diff.
+
+## 2026-09-08T22:11:42+08:00 — 商业顾问以同一本地消息严格替换；朋友圈和写作在同一 Dify 会话回读重发并支持反馈和停止；补齐 task_started、终态字段、Memory 6 契约及测试页异步停止。
+
+- **Purpose:** 商业顾问以同一本地消息严格替换；朋友圈和写作在同一 Dify 会话回读重发并支持反馈和停止；补齐 task_started、终态字段、Memory 6 契约及测试页异步停止。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-08T22:12:50+08:00 — 商业顾问以同一本地消息严格替换；朋友圈和写作在同一 Dify 会话回读重发并支持反馈和停止；补齐 task_started、终态字段、Memory 6 契约及测试页异步停止。
+
+- **Purpose:** 商业顾问以同一本地消息严格替换；朋友圈和写作在同一 Dify 会话回读重发并支持反馈和停止；补齐 task_started、终态字段、Memory 6 契约及测试页异步停止。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-08T22:30:06+08:00 — 商业顾问严格同消息替换，工具同 Dify 会话反馈、重生成与停止均已完成本地回归；修正停止标记时限、列表二元组判定和测试页 SSE 重复累计，未写入任何线上发布事实。
+
+- **Purpose:** 商业顾问严格同消息替换，工具同 Dify 会话反馈、重生成与停止均已完成本地回归；修正停止标记时限、列表二元组判定和测试页 SSE 重复累计，未写入任何线上发布事实。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-08T23:11:46+08:00 — 商业顾问复用本地助手消息严格替换；朋友圈/写作复用当前 Dify 会话回读重发，并新增反馈、早期 task_started 和受限 stop；测试页按入口隔离流状态；工具 DSL Memory 窗口为 6、商业主模型关闭 Memory；无数据库迁移。
+
+- **Purpose:** 商业顾问复用本地助手消息严格替换；朋友圈/写作复用当前 Dify 会话回读重发，并新增反馈、早期 task_started 和受限 stop；测试页按入口隔离流状态；工具 DSL Memory 窗口为 6、商业主模型关闭 Memory；无数据库迁移。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 已通过针对性 Ruff、37 项顾问消息操作回归和接口索引检查；完整 gov quality 待本次同步后从头执行。
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-08T23:15:51+08:00 — 商业顾问严格替换本地助手消息；朋友圈/写作在同一 Dify 会话回读重发并支持反馈/停止；工具早期返回 task_started，终态区分 completed/stopped/failed；测试页按入口独立消费 SSE；工具 DSL Memory 6、商业主模型关闭 Memory；无迁移。
+
+- **Purpose:** 商业顾问严格替换本地助手消息；朋友圈/写作在同一 Dify 会话回读重发并支持反馈/停止；工具早期返回 task_started，终态区分 completed/stopped/failed；测试页按入口独立消费 SSE；工具 DSL Memory 6、商业主模型关闭 Memory；无迁移。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 当前完整质量门从格式阶段重新开始；Ruff 格式已修正，完整结果待执行。
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-08T23:22:39+08:00 — 商业顾问严格替换本地助手消息；朋友圈/写作同会话反馈、回读重生成和停止；工具 task_started/终态契约、Memory 边界、按入口隔离的测试页与正式小程序交互文档均已同步；测试仅更新了该有意接口契约的 SHA-256 冻结值；无迁移。
+
+- **Purpose:** 商业顾问严格替换本地助手消息；朋友圈/写作同会话反馈、回读重生成和停止；工具 task_started/终态契约、Memory 边界、按入口隔离的测试页与正式小程序交互文档均已同步；测试仅更新了该有意接口契约的 SHA-256 冻结值；无迁移。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 完整质量门已执行至第二单元组；冻结摘要基线修正后将从头重跑。
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-08T23:43:56+08:00 — 商业顾问在同一消息行严格替换答案；朋友圈和写作回读 Dify 会话消息后同会话重发，新增反馈和可靠停止 SSE 终态；同步 Dify Memory 契约、测试页和正式接口文档。
+
+- **Purpose:** 商业顾问在同一消息行严格替换答案；朋友圈和写作回读 Dify 会话消息后同会话重发，新增反馈和可靠停止 SSE 终态；同步 Dify Memory 契约、测试页和正式接口文档。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-08T23:58:12+08:00 — 确认三类顾问消息操作的正式接口正文、SSE契约、索引和质量测试基线与当前实现一致。
+
+- **Purpose:** 确认三类顾问消息操作的正式接口正文、SSE契约、索引和质量测试基线与当前实现一致。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-09T00:04:16+08:00 — 工具会话跨日删除测试改为显式构造北京时间前一日，保持既有生产清理与精确 Dify 会话删除语义不变。
+
+- **Purpose:** 工具会话跨日删除测试改为显式构造北京时间前一日，保持既有生产清理与精确 Dify 会话删除语义不变。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-09T00:33:46+08:00 — 停止状态机使用单一终态协调；工具输入和SSE非法值fail closed；三类顾问消息操作以正文级接口/SSE契约和结构性文档回归交付，补齐Feature ownership。
+
+- **Purpose:** 停止状态机使用单一终态协调；工具输入和SSE非法值fail closed；三类顾问消息操作以正文级接口/SSE契约和结构性文档回归交付，补齐Feature ownership。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-09T00:48:36+08:00 — 商业顾问严格替换本地最新未摘要回答；朋友圈/写作在同一 Dify 会话中支持反馈、重生成和早期停止，工具正文不落库；补齐 Memory=6 DSL、SSE 终态、Streamlit 交互、API 契约与回归覆盖。
+
+- **Purpose:** 商业顾问严格替换本地最新未摘要回答；朋友圈/写作在同一 Dify 会话中支持反馈、重生成和早期停止，工具正文不落库；补齐 Memory=6 DSL、SSE 终态、Streamlit 交互、API 契约与回归覆盖。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_advisor_message_action_docs.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_cleaning_release_contract.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-09T00:54:03+08:00 — 同步最终契约指纹：商业严格替换、工具同会话反馈/重生成/停止、SSE 终态、Memory DSL 与测试页交互范围保持不变。
+
+- **Purpose:** 同步最终契约指纹：商业严格替换、工具同会话反馈/重生成/停止、SSE 终态、Memory DSL 与测试页交互范围保持不变。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_advisor_message_action_docs.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_cleaning_release_contract.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-09T02:05:18+08:00 — 商业顾问同本地ID严格替换/静默EOF failed；工具同Dify会话远端feedback+regenerate+task_started/stop终态；Streamlit accepted时序；Moments/Writing Memory窗口6；无迁移。
+
+- **Purpose:** 商业顾问同本地ID严格替换/静默EOF failed；工具同Dify会话远端feedback+regenerate+task_started/stop终态；Streamlit accepted时序；Moments/Writing Memory窗口6；无迁移。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** 三类顾问消息操作实现与对应接口、DSL、测试和文档尚未完成最终同步。
+- **After:** 商业顾问同本地ID严格替换且静默EOF为failed；工具同Dify会话支持远端feedback+regenerate并返回task_started和stop终态；Streamlit采用accepted时序；Moments/Writing Memory窗口6；无迁移。
+- **Impact / Notes:** 完成共享路径、接口契约、DSL与测试的最终文档同步。
+- **Validation:** 聚焦pytest、Ruff、索引确定性检查已完成。
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_advisor_message_action_docs.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_cleaning_release_contract.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-09T02:42:05+08:00 — 商业顾问以同一本地助手消息 ID 严格替换且 EOF 失败收敛，商业/工具 stop 使用 claim 与两阶段 marker 完成唯一终态和清理；工具在同一 Dify 会话回读后反馈/重生成并提前发送 task_started；Streamlit 区分 preflight、accepted、failed 和 stopped；Moments/Writing Memory=6，商业 Memory 关闭；无数据库迁移。
+
+- **Purpose:** 商业顾问以同一本地助手消息 ID 严格替换且 EOF 失败收敛，商业/工具 stop 使用 claim 与两阶段 marker 完成唯一终态和清理；工具在同一 Dify 会话回读后反馈/重生成并提前发送 task_started；Streamlit 区分 preflight、accepted、failed 和 stopped；Moments/Writing Memory=6，商业 Memory 关闭；无数据库迁移。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Ruff format/check; focused API/SSE/Dify/UI/DSL/docs pytest exit 0; generate_project_index --check exit 0
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_advisor_message_action_docs.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_cleaning_release_contract.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-09T03:18:43+08:00 — 商业顾问以同一本地助手消息 ID 严格重生成，排除配对二元组并延迟摘要；朋友圈和写作在同一 Dify 会话回读后反馈或重生成，SSE 提前发送 task_started。商业和工具停止均以 terminal claim 与 stopping/stopped 两阶段 marker 线性化，远端成功才 stopped，EOF、异常和 GeneratorExit 都唯一收敛并清理 task/marker；新增真实 Event barrier 覆盖 claim-before-marker 竞态及商业重生成 stop 失败与断开。Streamlit 区分预检、受理、失败和停止；Moments/Writing Memory=6、商业 Memory 关闭；无迁移且不持久化工具正文。
+
+- **Purpose:** 商业顾问以同一本地助手消息 ID 严格重生成，排除配对二元组并延迟摘要；朋友圈和写作在同一 Dify 会话回读后反馈或重生成，SSE 提前发送 task_started。商业和工具停止均以 terminal claim 与 stopping/stopped 两阶段 marker 线性化，远端成功才 stopped，EOF、异常和 GeneratorExit 都唯一收敛并清理 task/marker；新增真实 Event barrier 覆盖 claim-before-marker 竞态及商业重生成 stop 失败与断开。Streamlit 区分预检、受理、失败和停止；Moments/Writing Memory=6、商业 Memory 关闭；无迁移且不持久化工具正文。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_advisor_message_action_docs.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_cleaning_release_contract.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-09T03:58:11+08:00 — 商业顾问同本地消息 ID 严格重生成，失败时内容和Dify message/task ID清空、二元组排除上下文与摘要；若跨日重生成已取得新的Dify conversation ID，失败或本地持久化恢复也保留既有BusinessConversationSegment，以供后续精确远端删除。商业与工具停止均以 terminal claim 和 stopping/stopped 两阶段 marker 唯一收敛；真实Event barrier覆盖工具claim-before-marker和商业重生成stop失败/断开。工具在同一Dify会话回读后反馈或重生成，并提前发送task_started；Memory与无迁移边界不变。
+
+- **Purpose:** 商业顾问同本地消息 ID 严格重生成，失败时内容和Dify message/task ID清空、二元组排除上下文与摘要；若跨日重生成已取得新的Dify conversation ID，失败或本地持久化恢复也保留既有BusinessConversationSegment，以供后续精确远端删除。商业与工具停止均以 terminal claim 和 stopping/stopped 两阶段 marker 唯一收敛；真实Event barrier覆盖工具claim-before-marker和商业重生成stop失败/断开。工具在同一Dify会话回读后反馈或重生成，并提前发送task_started；Memory与无迁移边界不变。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_advisor_message_action_docs.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_cleaning_release_contract.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-09T05:11:08+08:00 — 商业顾问以同一本地助手消息 ID 严格重生成：排除原 user/assistant 二元组，完成或停止覆盖同一行，失败清空答案并排除 context/summary/profile；已取得的精确远端会话仅作为 cleanup-only segment 保留。删除和反馈复用商业会话锁，跨日成功重生成通过今日 segment 保持后续上下文。工具在当前 Dify 会话中回读并重发，支持 feedback、早期 task_started 和可靠停止；早停尚未产生远端消息时 stopped message_id 为 null，completed 仍必有 ID。补充 Event/barrier、恢复、SSE、UI 与 DSL Memory=6/商业Memory关闭回归；无迁移且不持久化工具正文。
+
+- **Purpose:** 商业顾问以同一本地助手消息 ID 严格重生成：排除原 user/assistant 二元组，完成或停止覆盖同一行，失败清空答案并排除 context/summary/profile；已取得的精确远端会话仅作为 cleanup-only segment 保留。删除和反馈复用商业会话锁，跨日成功重生成通过今日 segment 保持后续上下文。工具在当前 Dify 会话中回读并重发，支持 feedback、早期 task_started 和可靠停止；早停尚未产生远端消息时 stopped message_id 为 null，completed 仍必有 ID。补充 Event/barrier、恢复、SSE、UI 与 DSL Memory=6/商业Memory关闭回归；无迁移且不持久化工具正文。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_advisor_message_action_docs.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_cleaning_release_contract.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-09T05:55:33+08:00 — 统一正式小程序文档：message_end 仅 completed/stopped，failed 仅以 error.status=failed 终态并丢弃本轮 answer_delta；Feature contract-docs ownership 补齐修改后接口影响版、测试与验收指南和 README，新增反向文档/ownership 契约测试。
+
+- **Purpose:** 统一正式小程序文档：message_end 仅 completed/stopped，failed 仅以 error.status=failed 终态并丢弃本轮 answer_delta；Feature contract-docs ownership 补齐修改后接口影响版、测试与验收指南和 README，新增反向文档/ownership 契约测试。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** ruff format/check tests/test_advisor_message_action_docs.py; pytest tests/test_advisor_message_action_docs.py (4 passed)
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_advisor_message_action_docs.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_cleaning_release_contract.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-09T06:05:59+08:00 — 冻结正式小程序交互文档的 SHA-256 已更新为本 Feature 已审查的 SSE 终态契约；后台质量门显式使用 UV_NO_SYNC，未跟踪 uv.lock 已精确清理；补齐接口文档反向契约、ownership 与完整问题报告验证。
+
+- **Purpose:** 冻结正式小程序交互文档的 SHA-256 已更新为本 Feature 已审查的 SSE 终态契约；后台质量门显式使用 UV_NO_SYNC，未跟踪 uv.lock 已精确清理；补齐接口文档反向契约、ownership 与完整问题报告验证。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** explicit Ruff format/check (17 files); pytest test_cleaning_release_contract.py (27 passed); pytest Other/event_rag_cleaner (45 passed); docs tests (4 passed)
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_advisor_message_action_docs.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_cleaning_release_contract.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-09T06:30:00+08:00 — PROFILE 恢复 existing cleaning/RAG/activity/tool-examples/AdminSetting、迁移、发布补偿和测试 seams，并增量保留商业严格替换、工具远端消息操作、SSE、Memory 和本 Feature 不新增迁移；新增架构结构契约测试。
+
+- **Purpose:** PROFILE 恢复 existing cleaning/RAG/activity/tool-examples/AdminSetting、迁移、发布补偿和测试 seams，并增量保留商业严格替换、工具远端消息操作、SSE、Memory 和本 Feature 不新增迁移；新增架构结构契约测试。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** ruff format/check tests/test_advisor_message_action_docs.py; pytest tests/test_advisor_message_action_docs.py (5 passed)
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_advisor_message_action_docs.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_cleaning_release_contract.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-09T12:52:43+08:00 — 修正工具重生成从 Dify 顶层 query 重建 request、商业 progress-only 停止片段持久化、Streamlit 流式 HTTP 错误预读和完整发布成功路径 OCR 对称恢复；对外接口与既定产品语义不变。
+
+- **Purpose:** 修正工具重生成从 Dify 顶层 query 重建 request、商业 progress-only 停止片段持久化、Streamlit 流式 HTTP 错误预读和完整发布成功路径 OCR 对称恢复；对外接口与既定产品语义不变。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** 真实验收中工具重生成返回 502、商业停止片段未落库、测试页错误线程二次异常，完整发布成功后 OCR 未恢复。
+- **After:** 四条路径均有根因级最小修复和稳定回归，Dify/query、SSE 停止、httpx 流式错误及 OCR 发布恢复经验已进入长期排障文档。
+- **Impact / Notes:** None
+- **Validation:** 4 个定向回归通过；三类顾问相关 9 个测试文件共 194 项通过，2 条第三方弃用警告。
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_advisor_message_action_docs.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_cleaning_release_contract.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-09T13:42:03+08:00 — Streamlit 终态以 app-scope rerun 刷新持久答案和消息操作控件；工具相同 Dify conversation ID 的重复 token 不再逐条提交，只保留首次绑定与终态提交。接口和产品语义不变。
+
+- **Purpose:** Streamlit 终态以 app-scope rerun 刷新持久答案和消息操作控件；工具相同 Dify conversation ID 的重复 token 不再逐条提交，只保留首次绑定与终态提交。接口和产品语义不变。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** fragment 结束后结果控件可能不稳定出现；重复 conversation ID token 会造成数据库写放大。
+- **After:** 三入口终态结果稳定进入整页区域；工具流提交次数不随 token 数增长。
+- **Impact / Notes:** None
+- **Validation:** test_ui 与 tool_conversations_contract 两文件共 66 项通过；100 个重复 ID 增量请求 session 固定提交 2 次。
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_advisor_message_action_docs.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_cleaning_release_contract.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`
+
+## 2026-09-09T13:47:27+08:00 — 新增入口级持久错误状态：HTTP 预检失败保留旧答案和 message ID，已受理失败保留错误并清空答案，成功/停止清除旧错误；页面结果区独立渲染错误。
+
+- **Purpose:** 新增入口级持久错误状态：HTTP 预检失败保留旧答案和 message ID，已受理失败保留错误并清空答案，成功/停止清除旧错误；页面结果区独立渲染错误。
+- **Affected modules:**
+  - `business-regeneration — 商业严格重新生成`
+  - `summary-safety — 摘要安全边界`
+  - `tool-message-actions — 工具远端消息操作`
+  - `entry-test-ui — 入口能力与测试页`
+  - `message-action-tests — 消息操作测试`
+  - `dify-memory-contract — Dify Memory 契约`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** test_ui 与 tool_conversations_contract 两文件 67 项通过。
+- **Changed paths:**
+  - `ai_management/api/routers/business.py`
+  - `ai_management/api/routers/entry.py`
+  - `ai_management/api/routers/tools.py`
+  - `ai_management/context.py`
+  - `ai_management/conversations.py`
+  - `ai_management/dify.py`
+  - `ai_management/test_ui.py`
+  - `ai_management/workers/tasks/summary.py`
+  - `dify/dsl/moments_advisor.yml`
+  - `dify/dsl/writing_advisor.yml`
+  - `tests/test_advisor_message_action_docs.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_app_routing.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_cleaning_release_contract.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_moments_run_contract.py`
+  - `tests/test_test_ui.py`
+  - `tests/test_tool_conversations_contract.py`

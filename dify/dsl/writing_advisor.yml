@@ -48,6 +48,10 @@ workflow:
             mode: chat
             completion_params: {temperature: 0.4}
           context: {enabled: false, variable_selector: []}
+          memory:
+            window:
+              enabled: true
+              size: 6
           prompt_template:
             - role: system
               text: |-

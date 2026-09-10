@@ -1011,3 +1011,42 @@ This is a semantic change log, not a copy of Git diff.
   - `测试111.md`
   - `测试2.md`
   - `测试66.md`
+
+## 2026-09-09T12:54:00+08:00 — 完整 release 在发布前 OCR Worker 正在运行时，成功路径经资源门禁具名恢复新 OCR 镜像；Qwen Batch、清洗队列和 Methodology Worker 行为不变。
+
+- **Purpose:** 完整 release 在发布前 OCR Worker 正在运行时，成功路径经资源门禁具名恢复新 OCR 镜像；Qwen Batch、清洗队列和 Methodology Worker 行为不变。
+- **Affected modules:**
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** 失败回滚会恢复 OCR，但成功路径可能留下 OCR exited/旧镜像。
+- **After:** 成功与失败路径均按发布前状态恢复 OCR，且只操作具名 OCR Worker。
+- **Impact / Notes:** None
+- **Validation:** 发布契约回归和三类顾问相关测试 194 项通过；真实 jx 增量发布后继续核对同源。
+- **Changed paths:**
+  - `scripts/jx_deploy_release.sh`
+
+## 2026-09-09T13:42:38+08:00 — 新增顾问测试页与 SSE 排障经验；Qwen Batch、清洗队列和发布语义无变化。
+
+- **Purpose:** 新增顾问测试页与 SSE 排障经验；Qwen Batch、清洗队列和发布语义无变化。
+- **Affected modules:**
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 本轮顾问工具与测试页两文件 66 项通过。
+- **Changed paths:**
+  - `scripts/jx_deploy_release.sh`
+
+## 2026-09-09T13:47:42+08:00 — 补充 Streamlit fragment 终态错误持久化排障；Qwen Batch、清洗与发布语义不变。
+
+- **Purpose:** 补充 Streamlit fragment 终态错误持久化排障；Qwen Batch、清洗与发布语义不变。
+- **Affected modules:**
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 本轮相关回归 67 项通过。
+- **Changed paths:**
+  - `scripts/jx_deploy_release.sh`

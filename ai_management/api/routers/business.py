@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from ...cache import cache
 from ...config import get_settings
 from ...conversations import (
+    _claim_business_terminal,
     delete_user_conversation,
     list_conversation_messages,
     list_user_conversations,
@@ -39,6 +40,50 @@ router = APIRouter(
     tags=["business"],
     dependencies=[Depends(require_internal_token)],
 )
+
+
+@router.post("/messages/{message_id}/regenerate", response_class=StreamingResponse)
+def regenerate_business_message(
+    message_id: str,
+    request: Request,
+    raw_user_id: str = Depends(require_user_id),
+    user_display_name: str = Depends(optional_user_name),
+    session: Session = Depends(get_session),
+) -> StreamingResponse:
+    row = session.scalar(
+        select(BusinessMessage)
+        .join(BusinessConversation)
+        .where(
+            BusinessMessage.id == message_id,
+            BusinessMessage.role == "assistant",
+            BusinessConversation.user_hash == user_hash(raw_user_id),
+        )
+    )
+    if row is None:
+        raise ServiceError("MESSAGE_NOT_FOUND", "消息不存在", 404, False)
+    stream = prepare_business_chat(
+        session,
+        user_id=raw_user_id,
+        user_hash=user_hash(raw_user_id),
+        query="regenerate",
+        conversation_id=row.conversation_id,
+        request_id=request.state.request_id,
+        user_display_name=user_display_name,
+        regenerate_message_id=message_id,
+    )
+    record_event(
+        level="INFO",
+        category="operation",
+        component="business_api",
+        event_code="BUSINESS_MESSAGE_REGENERATE_ACCEPTED",
+        status="accepted",
+        message="商业消息重新生成已受理",
+        request_id=request.state.request_id,
+        actor_hash=user_hash(raw_user_id),
+        resource_type="message",
+        resource_id=message_id,
+    )
+    return StreamingResponse(stream, media_type="text/event-stream", headers=SSE_HEADERS)
 
 
 @router.post(
@@ -81,13 +126,28 @@ def stop_business_chat(
     mapping = cache.get_json(f"ai:business-task:{task_id}")
     if not isinstance(mapping, dict) or mapping.get("user_hash") != current_hash:
         raise ServiceError("TASK_NOT_FOUND", "生成任务不存在", 404, False)
+    claim = _claim_business_terminal(task_id)
+    if claim is None:
+        raise ServiceError("TASK_NOT_FOUND", "生成任务不存在", 404, False)
+    mapping = cache.get_json(f"ai:business-task:{task_id}")
+    if not isinstance(mapping, dict) or mapping.get("user_hash") != current_hash:
+        claim.__exit__(None, None, None)
+        raise ServiceError("TASK_NOT_FOUND", "生成任务不存在", 404, False)
+    stopping_key = f"ai:business-task-stopping:{task_id}:{current_hash}"
     stop_key = f"ai:business-task-stopped:{task_id}:{current_hash}"
-    cache.set_json(stop_key, True, ttl=600)
+    if cache.get_json(stopping_key) or cache.get_json(stop_key):
+        claim.__exit__(None, None, None)
+        raise ServiceError("TASK_NOT_FOUND", "生成任务不存在", 404, False)
+    # Publish intent before the remote call, but only publish the stopped
+    # terminal marker after Dify confirms success.  The stream can therefore
+    # distinguish an accepted/in-flight stop from a completed stop.
+    cache.set_json(stopping_key, True, ttl=600)
     try:
         result = DifyAppClient(
             settings.dify_url,
             settings.dify_business_app_api_key,
         ).stop_chat(task_id, dify_user(raw_user_id))
+        cache.set_json(stop_key, True, ttl=600)
         record_event(
             level="INFO",
             category="operation",
@@ -102,8 +162,11 @@ def stop_business_chat(
         )
         return result
     except Exception:
-        cache.delete(stop_key)
+        # Keep the stopping marker for the stream to converge the task to a
+        # failed terminal state if Dify subsequently closes with EOF/error.
         raise
+    finally:
+        claim.__exit__(None, None, None)
 
 
 @router.get("/conversations")
@@ -200,32 +263,53 @@ def feedback(
     raw_user_id: str = Depends(require_user_id),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    message = session.scalar(
-        select(BusinessMessage)
+    conversation_id = session.scalar(
+        select(BusinessMessage.conversation_id)
         .join(BusinessConversation)
         .where(
             BusinessMessage.id == message_id,
             BusinessConversation.user_hash == user_hash(raw_user_id),
         )
     )
-    if message is None or not message.dify_message_id:
+    if conversation_id is None:
         raise ServiceError("VALIDATION_ERROR", "该消息暂不支持反馈", 400, False)
-    settings = get_settings()
-    result = DifyAppClient(
-        settings.dify_url,
-        settings.dify_business_app_api_key,
-    ).feedback(
-        message.dify_message_id,
-        dify_user(raw_user_id),
-        payload.rating,
-        payload.content,
-    )
-    message.feedback = {
-        "rating": payload.rating,
-        "content": payload.content,
-        "updated_at": request.state.request_id,
-    }
-    session.commit()
+    lock = cache.lock(f"ai:conversation-lock:{conversation_id}", ttl=600)
+    state = lock.__enter__()
+    if not state.acquired:
+        lock.__exit__(None, None, None)
+        raise ServiceError("CONVERSATION_BUSY", "当前对话正在生成回答，请稍后再试", 409, True)
+    try:
+        # Re-read under the generation lock: regeneration clears/replaces this
+        # exact local row, so a stale Dify message ID must never receive feedback.
+        message = session.scalar(
+            select(BusinessMessage).where(
+                BusinessMessage.id == message_id,
+                BusinessMessage.conversation_id == conversation_id,
+                BusinessMessage.role == "assistant",
+            )
+        )
+        if message is None or message.status not in {"completed", "stopped"}:
+            raise ServiceError("CONVERSATION_BUSY", "消息当前不可反馈", 409, True)
+        if not message.dify_message_id:
+            raise ServiceError("VALIDATION_ERROR", "该消息暂不支持反馈", 400, False)
+        settings = get_settings()
+        result = DifyAppClient(
+            settings.dify_url,
+            settings.dify_business_app_api_key,
+        ).feedback(
+            message.dify_message_id,
+            dify_user(raw_user_id),
+            payload.rating,
+            payload.content,
+        )
+        message.feedback = {
+            "rating": payload.rating,
+            "content": payload.content,
+            "updated_at": request.state.request_id,
+        }
+        session.commit()
+    finally:
+        lock.__exit__(None, None, None)
     record_event(
         level="INFO",
         category="operation",

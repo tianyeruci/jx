@@ -126,6 +126,8 @@ X-Internal-Token: <内部服务令牌>
       ],
       "history": true,
       "feedback": true,
+      "regenerate": true,
+      "stop": true,
       "course_recommendation": false
     },
     {
@@ -134,7 +136,9 @@ X-Internal-Token: <内部服务令牌>
       "opening_statement": "",
       "suggested_questions": [],
       "history": false,
-      "feedback": false,
+      "feedback": true,
+      "regenerate": true,
+      "stop": true,
       "course_recommendation": false
     },
     {
@@ -143,7 +147,9 @@ X-Internal-Token: <内部服务令牌>
       "opening_statement": "",
       "suggested_questions": [],
       "history": false,
-      "feedback": false,
+      "feedback": true,
+      "regenerate": true,
+      "stop": true,
       "course_recommendation": false
     }
   ]
@@ -283,7 +289,18 @@ data: {"schema_version":"2.0","request_id":"req-001","sequence":9,"code":"DIFY_U
 
 - 同一会话正在生成时，接口返回 `409 CONVERSATION_BUSY`。
 
-- `message_end.status` 当前可能为 `completed`、`failed`、`stopped`。
+- `message_end.status` 仅可能为 `completed` 或 `stopped`；失败通过终态 `error.status=failed` 表示，客户端必须丢弃本轮累计的 `answer_delta`。
+
+#### 2.2.1 商业顾问消息反馈与重新生成
+
+```HTTP
+POST /internal/v1/business/messages/{message_id}/feedback
+POST /internal/v1/business/messages/{message_id}/regenerate
+```
+
+反馈请求体：`{"rating":"like|dislike|null","content":"可选，最多1000字"}`；`content` 最长 1000 字。重生成无请求体，返回 SSE。商业 `message_id` 是本地助手消息 ID；仅当前会话最新且未进入摘要的回答允许重生成，并在消息列表通过 `can_regenerate=true` 表示。
+
+商业重生成严格替换：受理后旧答案立即失效，原用户/助手二元组从新上下文排除；成功覆盖同一本地助手消息，停止保留新片段，失败清空旧答案和本轮片段。找不到消息返回 `404 MESSAGE_NOT_FOUND`，不可重生成返回 `409 MESSAGE_NOT_REGENERATABLE`，并发返回 `409 CONVERSATION_BUSY`/`409 CONFLICT`；Dify 不可达或响应非法分别返回 `502 DIFY_UNAVAILABLE`/`502 DIFY_RESPONSE_INVALID`。
 
 ### 2\.3 停止商业顾问生成
 
@@ -546,6 +563,8 @@ X-User-Id: <稳定用户ID>
 
 - `error`
 
+朋友圈和日常写作普通生成、重生成都在首次取得任务 ID 后发送 `status(code=task_started,task_id)`；成功或停止发送 `message_end`，包含本地 `conversation_id`、不透明 Dify `message_id`、`task_id`、`status=completed|stopped`。失败发送 `error(status=failed)`，客户端清空本轮全部 `answer_delta`；停止则保留已收到片段。
+
 ### 2\.10 日常写作
 
 > **当前接口修订（2026-08-30）**：先创建写作会话选择类型和成稿格式，再调用 `/run`；`inputs.format` 已废止，成稿格式由服务端会话读取。缺少顶层 `conversation_id` 或传入未知字段时返回 `422`。
@@ -597,6 +616,28 @@ X-User-Id: <稳定用户ID>
 - `message_end`
 
 - `error`
+
+### 2\.10.2 工具消息反馈与重新生成
+
+```HTTP
+POST /internal/v1/tools/{kind}/messages/{message_id}/feedback
+POST /internal/v1/tools/{kind}/messages/{message_id}/regenerate
+```
+
+`kind` 为 `moments` 或 `writing`。反馈请求体：`{"rating":"like|dislike|null","content":"可选，最多1000字"}`，`content` 最长 1000 字；重生成无请求体。工具 `message_id` 是不透明 Dify ID，服务端校验当前用户、当天有效会话和同一 Dify `conversation_id`。
+
+重生成回读原消息 `query/inputs`，按当前白名单重新校验并覆盖历史控制字段，在同一 Dify 会话重发，返回新的消息 ID；非最新消息返回 `409 MESSAGE_NOT_REGENERATABLE`。找不到会话或消息返回 `404 MESSAGE_NOT_FOUND`，并发返回 `409 CONVERSATION_BUSY`/`409 CONFLICT`，Dify 错误返回 `502 DIFY_UNAVAILABLE`/`502 DIFY_RESPONSE_INVALID`。
+
+工具旧问答可能继续留在 Dify Memory；目标 Memory window 为 6。商业顾问则由服务显式组装上下文且关闭 Dify Memory。客户端失败时清空累计增量，停止时保留片段。
+
+预检失败发生在 `StreamingResponse` 建立前，调用方收到 HTTP 4xx/5xx JSON；预检通过后为 HTTP 200，即使 Dify 随后失败也不改变 HTTP 状态，而是发送 `event: error`，包含 `status=failed`、`retryable` 及可取得的会话/消息/任务 ID。客户端不得把该次累计 `answer_delta` 当作答案；`stopped` 才保留片段。
+
+流中失败示例（HTTP 已为 200）：
+
+```text
+event: error
+data: {"code":"DIFY_UNAVAILABLE","status":"failed","retryable":true,"conversation_id":"local-c1","message_id":"opaque-m1","task_id":"task-1"}
+```
 
 ### 2\.11 停止工具生成
 
@@ -1602,3 +1643,9 @@ Alembic：e11c7f4a2d90 (head)
 ```
 
 接口契约 `37/37`、真实样本清洗 `15/15`、公开聊天与引用 `3/3`、RAG 检索门槛均通过。测试数据已精确清理，正式 9 门课程、2 条路线及配置保留。
+
+### 消息操作交互约定
+
+商业重生成只接受最新未摘要助手，旧答案立即消失；completed 替换、stopped 保留片段、failed 清空且可重试。朋友圈/写作重生成回读 Dify 当前会话 query/inputs，使用同 conversation_id 返回新 opaque message_id，旧远端 Memory 记录可能保留。三类入口均可 feedback；工具 stop 需先取得 task_started 后调用既有 stop 路由。
+
+工具 feedback 的 `rating` 支持 `like`、`dislike` 或 `null`，`content` 最长 1000 字。工具 regenerate 成功/停止的 `message_end` 包含 conversation_id、opaque message_id、task_id 和 status；Dify 错误、非法 SSE 或会话不一致返回 `error(status=failed)`，客户端丢弃本次全部增量。商业失败同样返回原本地 message_id 与 `status=failed`。

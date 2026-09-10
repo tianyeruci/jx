@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import os
-import time
+import queue
+import threading
 import uuid
 from collections.abc import MutableMapping
 from typing import Any
@@ -26,6 +27,48 @@ CLEANING_BATCH_VIEW_STATE_KEY = "cleaning_batch_view_state"
 CLEANING_BATCH_INPUT_KEY = "cleaning_batch_id_input"
 CLEANING_UPLOAD_NONCE_KEY = "cleaning_upload_nonce"
 CLEANING_UPLOAD_CONTEXT_KEY = "cleaning_upload_context"
+STREAM_QUEUE_KEY = "_stream_queue"
+
+
+def reduce_sse_event(state: dict[str, Any], event_name: str, payload: Any) -> dict[str, Any]:
+    """Pure SSE reducer used by both the worker queue and Streamlit renderer."""
+    if event_name == "answer_delta" and isinstance(payload, dict):
+        delta = str(payload.get("delta", payload.get("text", "")))
+        if state.get("answer_segment") == "progress":
+            state["progress_answer"] = state.get("progress_answer", "") + delta
+        else:
+            state["answer"] = state.get("answer", "") + delta
+    elif event_name == "status":
+        state.setdefault("status_events", []).append(payload)
+        state["status"] = payload
+        if isinstance(payload, dict):
+            if payload.get("code") == "progress_answer_started":
+                state["answer_segment"] = "progress"
+            elif payload.get("code") == "final_answer_started":
+                state["answer_segment"] = "final"
+            if payload.get("task_id") and not state.get("task_id"):
+                state["task_id"] = payload["task_id"]
+    elif event_name == "message_end" and isinstance(payload, dict):
+        state["message_end"] = payload
+        for key in ("message_id", "conversation_id", "task_id", "status"):
+            if payload.get(key) is not None:
+                state[key] = payload[key]
+    elif event_name == "error":
+        # Failed generations must never leave a misleading partial answer.
+        if state.get("request_accepted", True):
+            state["answer"] = ""
+            state["progress_answer"] = ""
+        state["error"] = payload
+    elif event_name == "request_started":
+        # Receiving this event proves the SSE endpoint accepted the request;
+        # preflight HTTP errors never emit it and must not replace an old answer.
+        state["request_accepted"] = True
+        if isinstance(payload, dict):
+            state.update({k: v for k, v in payload.items() if v is not None})
+    else:
+        state[event_name] = payload
+    return state
+
 
 # The UI needs the business Metadata to verify the publish result, but the
 # local provenance and provider mappings must not be rendered back from a
@@ -365,28 +408,31 @@ def consume_sse(
             payload = json.loads(raw)
         except json.JSONDecodeError:
             payload = {"raw": raw}
+        reduced = reduce_sse_event(
+            {
+                "answer": answer,
+                "progress_answer": progress_answer,
+                "answer_segment": answer_segment,
+                **diagnostics,
+            },
+            event_name,
+            payload,
+        )
+        answer = reduced.get("answer", "")
+        progress_answer = reduced.get("progress_answer", "")
+        answer_segment = reduced.get("answer_segment", "final")
+        diagnostics.update(
+            {
+                k: v
+                for k, v in reduced.items()
+                if k not in {"answer", "progress_answer", "answer_segment"}
+            }
+        )
         if event_name == "answer_delta":
-            delta = str(payload.get("delta", payload.get("text", "")))
             if answer_segment == "progress":
-                progress_answer += delta
                 (progress_placeholder or placeholder).markdown(progress_answer)
             else:
-                answer += delta
                 placeholder.markdown(answer)
-        elif event_name == "status":
-            diagnostics.setdefault("status_events", []).append(payload)
-            diagnostics["status"] = payload
-            if isinstance(payload, dict):
-                if payload.get("code") == "progress_answer_started":
-                    answer_segment = "progress"
-                elif payload.get("code") == "final_answer_started":
-                    answer_segment = "final"
-            if (
-                isinstance(payload, dict)
-                and payload.get("task_id")
-                and not diagnostics.get("task_id")
-            ):
-                diagnostics["task_id"] = payload.get("task_id")
         elif event_name in {
             "request_started",
             "message_end",
@@ -396,14 +442,10 @@ def consume_sse(
             "course_recommendation_note",
             "retriever_resources",
         }:
-            diagnostics[event_name] = payload
-            if (
-                event_name == "message_end"
-                and isinstance(payload, dict)
-                and payload.get("task_id")
-                and not diagnostics.get("task_id")
-            ):
-                diagnostics["task_id"] = payload.get("task_id")
+            if event_name == "error":
+                placeholder.markdown("")
+                if progress_placeholder is not None:
+                    progress_placeholder.markdown("")
 
     for line in response.iter_lines():
         if line.startswith("event:"):
@@ -441,8 +483,214 @@ def stream_post(
             )
 
 
+def start_stream_post(
+    path: str, payload: dict[str, Any], user_id: str
+) -> queue.Queue[tuple[str, Any]]:
+    """Start SSE I/O off the Streamlit script thread; worker never touches st/session_state."""
+    events: queue.Queue[tuple[str, Any]] = queue.Queue()
+
+    def worker() -> None:
+        event_name = "message"
+        data_lines: list[str] = []
+        try:
+            with httpx.Client(timeout=None) as client:
+                with client.stream(
+                    "POST", f"{API_BASE}{path}", headers=headers(user_id), json=payload
+                ) as response:
+                    if not response.is_success:
+                        # Streaming responses are intentionally unread. Read an
+                        # HTTP preflight error while the response context is
+                        # still open so the worker can decode and render it.
+                        response.read()
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if line.startswith("event:"):
+                            event_name = line[6:].strip()
+                        elif line.startswith("data:"):
+                            data_lines.append(line[5:].strip())
+                        elif not line:
+                            raw = "\n".join(data_lines)
+                            try:
+                                decoded = json.loads(raw)
+                            except json.JSONDecodeError:
+                                decoded = {"raw": raw}
+                            events.put((event_name, decoded))
+                            event_name, data_lines = "message", []
+                    if data_lines:
+                        raw = "\n".join(data_lines)
+                        events.put((event_name, json.loads(raw)))
+        except httpx.HTTPStatusError as exc:
+            detail: dict[str, Any] = {
+                "status_code": exc.response.status_code,
+                "transport": "http_preflight",
+            }
+            try:
+                body = exc.response.json()
+                if isinstance(body, dict):
+                    source = body.get("detail") if isinstance(body.get("detail"), dict) else body
+                    if isinstance(source, dict):
+                        detail.update(
+                            {
+                                key: source[key]
+                                for key in ("code", "message")
+                                if source.get(key) is not None
+                            }
+                        )
+            except (ValueError, json.JSONDecodeError):
+                pass
+            events.put(
+                (
+                    "error",
+                    {
+                        "message": str(exc),
+                        "code": detail.get("code", "HTTP_PREFLIGHT_ERROR"),
+                        **detail,
+                    },
+                )
+            )
+        except Exception as exc:
+            events.put(("error", {"message": str(exc), "code": "CLIENT_STREAM_ERROR"}))
+        finally:
+            events.put(("__done__", None))
+
+    threading.Thread(target=worker, name="test-ui-sse", daemon=True).start()
+    return events
+
+
+def drain_stream_queue(events: queue.Queue[tuple[str, Any]], state: dict[str, Any]) -> bool:
+    """Drain available events on the Streamlit thread; return whether worker is done."""
+    done = False
+    while True:
+        try:
+            event_name, payload = events.get_nowait()
+        except queue.Empty:
+            break
+        if event_name == "__done__":
+            done = True
+            continue
+        reduce_sse_event(state, event_name, payload)
+    return done
+
+
+def stream_stop_url(stop_path: str, task_id: str) -> str:
+    """Build the existing entry-specific stop endpoint without adding kind."""
+    return f"{stop_path.rstrip('/')}/{task_id}/stop"
+
+
+def render_saved_answer(result: dict[str, Any]) -> None:
+    """Keep the completed answer visible after the polling fragment exits."""
+    progress_answer = str(result.get("progress_answer") or "")
+    answer = str(result.get("answer") or "")
+    if progress_answer:
+        st.markdown(progress_answer)
+    if answer:
+        st.markdown(answer)
+
+
+def render_saved_error(error: Any) -> None:
+    """Render a terminal error from durable session state."""
+    if not error:
+        return
+    if isinstance(error, dict):
+        code = error.get("code") or "CLIENT_STREAM_ERROR"
+        message = error.get("message") or "请求失败"
+        status_code = error.get("status_code")
+        suffix = f"（HTTP {status_code}）" if status_code else ""
+        st.error(f"{code}{suffix}：{message}")
+    else:
+        st.error(str(error))
+
+
+@st.fragment(run_every="200ms")
+def render_active_stream(entry: str) -> None:
+    """Refresh one active generation without blocking the Streamlit script."""
+    active = st.session_state.get("_active_streams", {}).get(entry)
+    if not isinstance(active, dict):
+        return
+    events = active.get("queue")
+    state = active.get("state")
+    if not isinstance(events, queue.Queue) or not isinstance(state, dict):
+        st.session_state.setdefault("_active_streams", {}).pop(entry, None)
+        return
+    done = drain_stream_queue(events, state)
+    if state.get("request_accepted") and not active.get("accepted_applied"):
+        st.session_state.pop(active["result_key"], None)
+        active["accepted_applied"] = True
+    st.markdown(state.get("progress_answer", ""))
+    st.markdown(state.get("answer", ""))
+    error = state.get("error")
+    render_saved_error(error)
+    task_id = state.get("task_id")
+    if task_id and not state.get("stop_requested") and state.get("status") != "completed":
+        if st.button("停止当前生成", key=f"active_stream_stop_{entry}"):
+            try:
+                api_json(
+                    "POST", stream_stop_url(active["stop_path"], task_id), user_id=active["user_id"]
+                )
+                state["stop_requested"] = True
+            except httpx.HTTPError as exc:
+                st.error(f"停止失败：{exc}")
+    if done:
+        result = {
+            "answer": state.get("answer", ""),
+            "progress_answer": state.get("progress_answer", ""),
+            **{
+                key: value
+                for key, value in state.items()
+                if key not in {"answer", "progress_answer", "answer_segment"}
+            },
+        }
+        if active.get("replace_result_on_terminal", True) or state.get("request_accepted"):
+            st.session_state[active["result_key"]] = result
+        error_key = active["error_key"]
+        if error:
+            st.session_state[error_key] = error
+        else:
+            st.session_state.pop(error_key, None)
+        if active["result_key"] == "last_business_result":
+            conversation_id = conversation_id_from_sse_result(result)
+            if conversation_id:
+                st.session_state["business_conversation_id"] = conversation_id
+        st.session_state.setdefault("_active_streams", {}).pop(entry, None)
+        # Fragment reruns do not refresh the result/actions rendered by the
+        # enclosing tab. Complete the terminal transition with one app rerun.
+        st.rerun(scope="app")
+
+
+def launch_stream_request(
+    path: str,
+    payload: dict[str, Any],
+    user_id: str,
+    *,
+    stop_path: str,
+    result_key: str,
+    entry: str,
+    replace_result_on_terminal: bool = True,
+) -> None:
+    active_streams = st.session_state.setdefault("_active_streams", {})
+    if entry in active_streams:
+        st.warning("当前入口已有生成任务，请等待其结束或先停止。")
+        return
+    active_streams[entry] = {
+        "queue": start_stream_post(path, payload, user_id),
+        "state": {
+            "answer": "",
+            "progress_answer": "",
+            "answer_segment": "final",
+            "request_accepted": False,
+        },
+        "stop_path": stop_path,
+        "user_id": user_id,
+        "result_key": result_key,
+        "error_key": f"{entry}_last_error",
+        "replace_result_on_terminal": replace_result_on_terminal,
+    }
+    st.session_state.pop(f"{entry}_last_error", None)
+
+
 def business_tab(user_id: str) -> None:
     st.subheader("商业顾问")
+    render_active_stream("business")
     normalized_user_id = user_id.strip()
     if st.session_state.get("business_active_user_id") != normalized_user_id:
         st.session_state["business_active_user_id"] = normalized_user_id
@@ -511,40 +759,36 @@ def business_tab(user_id: str) -> None:
     with col2:
         question = st.text_area("问题", "请帮我判断当前经营最该优先解决什么？")
         if st.button("发送", type="primary"):
-            st.caption("即时提示")
-            progress_output = st.empty()
-            st.caption("最终回答")
-            output = st.empty()
-            started = time.perf_counter()
             try:
-                result = stream_post(
+                launch_stream_request(
                     "/internal/v1/business/chat",
                     {"query": question, "conversation_id": conversation_id},
                     user_id,
-                    output,
-                    progress_placeholder=progress_output,
+                    stop_path="/internal/v1/business/chat",
+                    result_key="last_business_result",
+                    entry="business",
                 )
-                result["client_elapsed_ms"] = round((time.perf_counter() - started) * 1000, 1)
-                st.session_state["last_business_result"] = result
-                returned_conversation_id = conversation_id_from_sse_result(result)
-                if returned_conversation_id:
-                    st.session_state["business_conversation_id"] = returned_conversation_id
-                if result.get("task_id"):
-                    st.session_state["last_business_task_id"] = result["task_id"]
-                    st.session_state["business_stop_task_id"] = result["task_id"]
+                st.rerun()
             except httpx.HTTPError as exc:
                 st.error(str(exc))
+        render_saved_error(st.session_state.get("business_last_error"))
         if result := st.session_state.get("last_business_result"):
+            render_saved_answer(result)
             if result.get("task_id"):
                 st.caption(f"最近任务 ID：{result['task_id']}")
             render_result_diagnostics(result, label="引用和诊断")
-            message_id = (
+            message_id = result.get("message_id") or (
                 result.get("message_end", {}).get("message_id")
                 if isinstance(result.get("message_end"), dict)
                 else None
             )
             if message_id:
-                feedback = st.radio("回答反馈", ["like", "dislike"], horizontal=True)
+                feedback = st.radio(
+                    "回答反馈",
+                    ["like", "dislike", None],
+                    format_func=lambda x: x or "取消反馈",
+                    horizontal=True,
+                )
                 reason = st.text_input("反馈原因（可选）")
                 if st.button("提交反馈"):
                     st.json(
@@ -555,6 +799,20 @@ def business_tab(user_id: str) -> None:
                             json={"rating": feedback, "content": reason},
                         )
                     )
+                if st.button("重新生成商业回答", key="business_regenerate"):
+                    try:
+                        launch_stream_request(
+                            f"/internal/v1/business/messages/{message_id}/regenerate",
+                            {},
+                            user_id,
+                            stop_path="/internal/v1/business/chat",
+                            result_key="last_business_result",
+                            entry="business",
+                            replace_result_on_terminal=False,
+                        )
+                        st.rerun()
+                    except httpx.HTTPError as exc:
+                        st.error(str(exc))
         task_to_stop = st.text_input("要停止的商业任务 ID", key="business_stop_task_id")
         if st.button("停止商业任务") and task_to_stop:
             st.json(
@@ -582,6 +840,7 @@ def tool_tab(user_id: str, kind: str) -> None:
         "writing": [("polish", "文章润色"), ("expand", "文章扩充")],
     }
     st.subheader(labels[kind])
+    render_active_stream(kind)
     stop_key = f"{kind}_stop_id"
     if stop_key not in st.session_state:
         st.session_state[stop_key] = ""
@@ -635,10 +894,8 @@ def tool_tab(user_id: str, kind: str) -> None:
     )
     run_requested = st.button("生成成稿", key=f"{kind}_run")
     if run_requested:
-        output = st.empty()
-        started = time.perf_counter()
         try:
-            result = stream_post(
+            launch_stream_request(
                 f"/internal/v1/tools/{kind}/run",
                 {
                     "conversation_id": conversation_id,
@@ -647,17 +904,54 @@ def tool_tab(user_id: str, kind: str) -> None:
                     },
                 },
                 user_id,
-                output,
+                stop_path="/internal/v1/tools",
+                result_key=f"{kind}_last_result",
+                entry=kind,
             )
-            result["client_elapsed_ms"] = round((time.perf_counter() - started) * 1000, 1)
-            if result.get("task_id"):
-                st.session_state[f"{kind}_last_task_id"] = result["task_id"]
-                st.session_state[stop_key] = result["task_id"]
-            st.session_state[f"{kind}_last_result"] = result
+            st.rerun()
         except httpx.HTTPError as exc:
             st.error(str(exc))
+    render_saved_error(st.session_state.get(f"{kind}_last_error"))
     if result := st.session_state.get(f"{kind}_last_result"):
+        render_saved_answer(result)
         render_result_diagnostics(result)
+        tool_message_id = result.get("message_id") or (
+            result.get("message_end", {}).get("message_id")
+            if isinstance(result.get("message_end"), dict)
+            else None
+        )
+        if tool_message_id:
+            feedback = st.radio(
+                "消息反馈",
+                ["like", "dislike", None],
+                format_func=lambda x: x or "取消反馈",
+                horizontal=True,
+                key=f"{kind}_feedback_rating",
+            )
+            feedback_text = st.text_input("反馈内容（可选）", key=f"{kind}_feedback_content")
+            if st.button("提交消息反馈", key=f"{kind}_feedback"):
+                st.json(
+                    api_json(
+                        "POST",
+                        f"/internal/v1/tools/{kind}/messages/{tool_message_id}/feedback",
+                        user_id=user_id,
+                        json={"rating": feedback, "content": feedback_text},
+                    )
+                )
+            if st.button("重新生成", key=f"{kind}_regenerate"):
+                try:
+                    launch_stream_request(
+                        f"/internal/v1/tools/{kind}/messages/{tool_message_id}/regenerate",
+                        {},
+                        user_id,
+                        stop_path="/internal/v1/tools",
+                        result_key=f"{kind}_last_result",
+                        entry=kind,
+                        replace_result_on_terminal=False,
+                    )
+                    st.rerun()
+                except httpx.HTTPError as exc:
+                    st.error(str(exc))
     last_task_id = st.session_state.get(f"{kind}_last_task_id")
     if last_task_id:
         st.caption(f"最近任务 ID：{last_task_id}")

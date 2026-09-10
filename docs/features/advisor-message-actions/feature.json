@@ -1,0 +1,194 @@
+{
+  "schema_version": 4,
+  "id": "advisor-message-actions",
+  "title": "三类 AI 顾问消息操作",
+  "kind": "feature",
+  "risk": "standard",
+  "status": "done",
+  "retired": false,
+  "retired_status": null,
+  "retired_at": null,
+  "retire_reason": null,
+  "superseded_by": [],
+  "requirements_approved": true,
+  "requirements_fingerprint": "d924ffdf24a77f85fed9bd4cbfb8feae4e448eca5a5bd637f4297587051a93a3",
+  "requirements_approved_at": "2026-09-08T20:22:41+08:00",
+  "implementation_approved": true,
+  "implementation_fingerprint": "12ee3bb85f1388204a7bd3d32d24167f2367ad0063dac06cc54e2b7057d4902a",
+  "architecture_fingerprint": "738b074cd9e2190b21c22b622e10cb27f0b1e76ef7b49daceda2a6c1a24c5983",
+  "quality_config_fingerprint": "235301f5f87555eaa08b1965560c87b35f7bd6e881f6d97fd19e6e52f0dfa45b",
+  "feature_validation_fingerprint": "5a5e5fc55f1e3f51000b953399f47d1c724ff6a5cf79a5e67d713a22befb1331",
+  "module_plan_fingerprint": "b136a035044618d80bb8d08028cbdc6674948777a49954dbae12e9035cb9a523",
+  "implementation_approved_at": "2026-09-09T06:29:46+08:00",
+  "ready_for_luna": true,
+  "prototype": {
+    "decision": "not-needed",
+    "status": "skipped",
+    "path": null,
+    "based_on_requirements_fingerprint": "d924ffdf24a77f85fed9bd4cbfb8feae4e448eca5a5bd637f4297587051a93a3",
+    "artifact_fingerprint": null
+  },
+  "review_required": true,
+  "review_status": "passed",
+  "review_fingerprint": "e543bce91a07408bbc042dd874d9efeb5bb9831a0cb1a0951588f632491826b3",
+  "reviewed_at": "2026-09-09T14:05:24+08:00",
+  "modules": [
+    {
+      "id": "business-regeneration",
+      "title": "商业严格重新生成",
+      "status": "done",
+      "paths": [
+        "ai_management/conversations.py",
+        "ai_management/context.py",
+        "ai_management/api/routers/business.py"
+      ],
+      "acceptance_ids": [
+        "AC-001",
+        "AC-002"
+      ],
+      "optional": false,
+      "updated_at": "2026-09-09T14:52:12+08:00",
+      "last_change_summary": "新增入口级持久错误状态：HTTP 预检失败保留旧答案和 message ID，已受理失败保留错误并清空答案，成功/停止清除旧错误；页面结果区独立渲染错误。",
+      "last_changed_at": "2026-09-09T13:47:27+08:00"
+    },
+    {
+      "id": "summary-safety",
+      "title": "摘要安全边界",
+      "status": "done",
+      "paths": [
+        "ai_management/workers/tasks/summary.py"
+      ],
+      "acceptance_ids": [
+        "AC-003"
+      ],
+      "optional": false,
+      "updated_at": "2026-09-09T14:52:12+08:00",
+      "last_change_summary": "新增入口级持久错误状态：HTTP 预检失败保留旧答案和 message ID，已受理失败保留错误并清空答案，成功/停止清除旧错误；页面结果区独立渲染错误。",
+      "last_changed_at": "2026-09-09T13:47:27+08:00"
+    },
+    {
+      "id": "tool-message-actions",
+      "title": "工具远端消息操作",
+      "status": "done",
+      "paths": [
+        "ai_management/dify.py",
+        "ai_management/api/routers/tools.py",
+        "ai_management/schemas.py"
+      ],
+      "acceptance_ids": [
+        "AC-001",
+        "AC-004",
+        "AC-005"
+      ],
+      "optional": false,
+      "updated_at": "2026-09-09T14:52:12+08:00",
+      "last_change_summary": "新增入口级持久错误状态：HTTP 预检失败保留旧答案和 message ID，已受理失败保留错误并清空答案，成功/停止清除旧错误；页面结果区独立渲染错误。",
+      "last_changed_at": "2026-09-09T13:47:27+08:00"
+    },
+    {
+      "id": "entry-test-ui",
+      "title": "入口能力与测试页",
+      "status": "done",
+      "paths": [
+        "ai_management/api/routers/entry.py",
+        "ai_management/test_ui.py"
+      ],
+      "acceptance_ids": [
+        "AC-001",
+        "AC-005",
+        "AC-007"
+      ],
+      "optional": false,
+      "updated_at": "2026-09-09T14:52:12+08:00",
+      "last_change_summary": "新增入口级持久错误状态：HTTP 预检失败保留旧答案和 message ID，已受理失败保留错误并清空答案，成功/停止清除旧错误；页面结果区独立渲染错误。",
+      "last_changed_at": "2026-09-09T13:47:27+08:00"
+    },
+    {
+      "id": "message-action-tests",
+      "title": "消息操作测试",
+      "status": "done",
+      "paths": [
+        "tests/test_ai_management.py",
+        "tests/test_tool_conversations_contract.py",
+        "tests/test_app_routing.py",
+        "tests/test_dify_client.py",
+        "tests/test_moments_run_contract.py",
+        "tests/test_test_ui.py",
+        "tests/test_cleaning_release_contract.py",
+        "tests/test_advisor_message_action_docs.py"
+      ],
+      "acceptance_ids": [
+        "AC-001",
+        "AC-002",
+        "AC-003",
+        "AC-004",
+        "AC-005",
+        "AC-007",
+        "AC-008"
+      ],
+      "optional": false,
+      "updated_at": "2026-09-09T14:52:12+08:00",
+      "last_change_summary": "新增入口级持久错误状态：HTTP 预检失败保留旧答案和 message ID，已受理失败保留错误并清空答案，成功/停止清除旧错误；页面结果区独立渲染错误。",
+      "last_changed_at": "2026-09-09T13:47:27+08:00"
+    },
+    {
+      "id": "dify-memory-contract",
+      "title": "Dify Memory 契约",
+      "status": "done",
+      "paths": [
+        "dify/dsl/moments_advisor.yml",
+        "dify/dsl/writing_advisor.yml",
+        "tests/test_business_advisor_optimized_dsl.py",
+        "tests/test_business_advisor_unified_dsl.py"
+      ],
+      "acceptance_ids": [
+        "AC-006"
+      ],
+      "optional": false,
+      "updated_at": "2026-09-09T14:52:12+08:00",
+      "last_change_summary": "新增入口级持久错误状态：HTTP 预检失败保留旧答案和 message ID，已受理失败保留错误并清空答案，成功/停止清除旧错误；页面结果区独立渲染错误。",
+      "last_changed_at": "2026-09-09T13:47:27+08:00"
+    },
+    {
+      "id": "contract-docs",
+      "title": "接口与交付文档",
+      "status": "not_started",
+      "paths": [
+        "docs/API与SSE说明.md",
+        "docs/小程序后端与AI管理服务接口对接标准.md",
+        "docs/Dify创建导入绑定与契约测试.md",
+        "docs/功能与接口索引.md",
+        "AI管理服务当前状态与后续测试交接.md",
+        "docs/features/advisor-message-actions/**",
+        "docs/architecture/PROFILE.md",
+        "docs/小程序后端与 AI 管理服务接口对接交互版本.md",
+        "docs/小程序后端与 AI 管理服务接口对接交互版本（修改后接口影响版）.md",
+        "docs/测试与验收指南.md",
+        "docs/README.md"
+      ],
+      "acceptance_ids": [
+        "AC-008"
+      ],
+      "optional": true,
+      "updated_at": "2026-09-09T05:54:26+08:00"
+    }
+  ],
+  "validation_commands": [
+    {
+      "phase": "feature",
+      "command": "uv run python -m pytest -q tests/test_ai_management.py tests/test_tool_conversations_contract.py tests/test_app_routing.py tests/test_dify_client.py tests/test_moments_run_contract.py tests/test_business_advisor_optimized_dsl.py tests/test_business_advisor_unified_dsl.py",
+      "cwd": ".",
+      "timeout": 600
+    }
+  ],
+  "documentation": {
+    "status": "current",
+    "last_code_change_at": "2026-09-09T13:47:26+08:00",
+    "last_synced_at": "2026-09-09T13:47:27+08:00",
+    "last_sync_summary": "新增入口级持久错误状态：HTTP 预检失败保留旧答案和 message ID，已受理失败保留错误并清空答案，成功/停止清除旧错误；页面结果区独立渲染错误。",
+    "pending_changed_paths": [],
+    "changelog_fingerprint": "8d0328f18fb00bc55f265613465e8826d90885ac866700923e75f7e6d912c250"
+  },
+  "created_at": "2026-09-08T20:18:54+08:00",
+  "updated_at": "2026-09-09T14:52:12+08:00"
+}

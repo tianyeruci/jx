@@ -101,3 +101,279 @@ This is a semantic change log, not a copy of Git diff.
 - **Changed paths:**
   - `dify/dsl/moments_advisor.yml`
   - `dify/prompts/朋友圈顾问提示词.md`
+
+## 2026-09-08T22:12:43+08:00 — 朋友圈顾问继续使用原 Dify App 和既有 Prompt/案例链路；仅为实际生成节点声明 Memory window 6，并由共享工具路由补齐同会话消息反馈、重生成和停止的兼容接口。
+
+- **Purpose:** 朋友圈顾问继续使用原 Dify App 和既有 Prompt/案例链路；仅为实际生成节点声明 Memory window 6，并由共享工具路由补齐同会话消息反馈、重生成和停止的兼容接口。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-08T22:29:59+08:00 — 朋友圈顾问的原 App、Prompt 与案例边界保持不变；Memory window 6 和同会话消息操作已完成本地契约回归，线上发布事实仍待 Release Gate 后核验。
+
+- **Purpose:** 朋友圈顾问的原 App、Prompt 与案例边界保持不变；Memory window 6 和同会话消息操作已完成本地契约回归，线上发布事实仍待 Release Gate 后核验。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-08T23:12:15+08:00 — 朋友圈顾问保持现有 IP 方法论与本地不持久化正文边界；新增的同会话回读重生成、Dify 反馈和受限停止只扩展当前工具会话操作，不改变方法论输入或持久化模型。
+
+- **Purpose:** 朋友圈顾问保持现有 IP 方法论与本地不持久化正文边界；新增的同会话回读重生成、Dify 反馈和受限停止只扩展当前工具会话操作，不改变方法论输入或持久化模型。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 针对性回归已通过；完整 gov quality 将在所有相关 Feature 同步后从头执行。
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-08T23:15:47+08:00 — 朋友圈顾问保持现有 IP 方法论与本地不持久化正文边界；同会话回读重生成、Dify 反馈和受限停止只扩展会话操作，测试页活跃状态按入口隔离。
+
+- **Purpose:** 朋友圈顾问保持现有 IP 方法论与本地不持久化正文边界；同会话回读重生成、Dify 反馈和受限停止只扩展会话操作，测试页活跃状态按入口隔离。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 当前完整质量门从格式阶段重新开始；Ruff 格式已修正，完整结果待执行。
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-08T23:22:35+08:00 — 朋友圈顾问保持 IP 方法论和本地不持久化正文边界；同会话回读重生成、反馈、受限停止及入口隔离测试页不改变方法论输入或数据模型。
+
+- **Purpose:** 朋友圈顾问保持 IP 方法论和本地不持久化正文边界；同会话回读重生成、反馈、受限停止及入口隔离测试页不改变方法论输入或数据模型。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 完整质量门已执行至第二单元组；冻结摘要基线修正后将从头重跑。
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-08T23:44:11+08:00 — 朋友圈顾问保留既有本地无正文持久化边界，新增通过有效 Dify 会话回读消息后的反馈、重生成和停止契约，并更新接口与验收说明。
+
+- **Purpose:** 朋友圈顾问保留既有本地无正文持久化边界，新增通过有效 Dify 会话回读消息后的反馈、重生成和停止契约，并更新接口与验收说明。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-08T23:44:24+08:00 — 朋友圈顾问保留既有本地无正文持久化边界，新增通过有效 Dify 会话回读消息后的反馈、重生成和停止契约，并更新接口与验收说明。
+
+- **Purpose:** 朋友圈顾问保留既有本地无正文持久化边界，新增通过有效 Dify 会话回读消息后的反馈、重生成和停止契约，并更新接口与验收说明。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-08T23:58:05+08:00 — 确认朋友圈工具消息操作的正式接口正文和接口索引与当前实现一致。
+
+- **Purpose:** 确认朋友圈工具消息操作的正式接口正文和接口索引与当前实现一致。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-09T00:04:09+08:00 — 工具会话跨日删除测试改为显式构造北京时间前一日，保持既有生产清理与精确 Dify 会话删除语义不变。
+
+- **Purpose:** 工具会话跨日删除测试改为显式构造北京时间前一日，保持既有生产清理与精确 Dify 会话删除语义不变。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-09T00:33:39+08:00 — 朋友圈顾问工具会话的反馈、重生成与停止文档改为正文级契约，并在工具终态、时间与SSE校验收敛后同步测试说明。
+
+- **Purpose:** 朋友圈顾问工具会话的反馈、重生成与停止文档改为正文级契约，并在工具终态、时间与SSE校验收敛后同步测试说明。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-09T00:48:18+08:00 — 同步朋友圈顾问的 Memory=6、同会话远端消息反馈/重生成/停止的兼容边界；不改变既有方法论或正文持久化范围。
+
+- **Purpose:** 同步朋友圈顾问的 Memory=6、同会话远端消息反馈/重生成/停止的兼容边界；不改变既有方法论或正文持久化范围。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-09T00:54:12+08:00 — 同步最终文档/测试指纹；朋友圈顾问保持同一 Dify 会话、远端消息操作及 Memory=6 的已批准边界。
+
+- **Purpose:** 同步最终文档/测试指纹；朋友圈顾问保持同一 Dify 会话、远端消息操作及 Memory=6 的已批准边界。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-09T02:05:00+08:00 — 商业顾问同本地ID严格替换/静默EOF failed；工具同Dify会话远端feedback+regenerate+task_started/stop终态；Streamlit accepted时序；Moments/Writing Memory窗口6；无迁移。
+
+- **Purpose:** 商业顾问同本地ID严格替换/静默EOF failed；工具同Dify会话远端feedback+regenerate+task_started/stop终态；Streamlit accepted时序；Moments/Writing Memory窗口6；无迁移。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** 三类顾问消息操作未完成本次增量契约同步。
+- **After:** 商业顾问同本地ID严格替换并将静默EOF标记failed；工具同Dify会话支持远端feedback与regenerate并返回task_started和stop终态；Streamlit按accepted时序处理；Moments/Writing Memory窗口6；无迁移。
+- **Impact / Notes:** 同步共享接口路径、SSE契约、DSL约束与测试记录。
+- **Validation:** 聚焦pytest、Ruff、索引确定性检查已完成。
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-09T02:41:46+08:00 — 朋友圈/写作 canonical DSL 的实际生成节点保持 Memory window=6；共享工具 SSE/停止并发修复、接口索引和契约测试已最终同步；不改用户保留 DSL、不新增迁移。
+
+- **Purpose:** 朋友圈/写作 canonical DSL 的实际生成节点保持 Memory window=6；共享工具 SSE/停止并发修复、接口索引和契约测试已最终同步；不改用户保留 DSL、不新增迁移。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Ruff format/check; advisor focused pytest; generate_project_index --check
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-09T03:18:55+08:00 — 朋友圈顾问权威 DSL 的实际生成 LLM 节点启用 Dify Memory window 6；本次只同步 canonical DSL、其契约测试和接口索引，不改用户保留 DSL 文件、知识库、App Key 或数据库。
+
+- **Purpose:** 朋友圈顾问权威 DSL 的实际生成 LLM 节点启用 Dify Memory window 6；本次只同步 canonical DSL、其契约测试和接口索引，不改用户保留 DSL 文件、知识库、App Key 或数据库。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-09T03:58:23+08:00 — 朋友圈顾问权威 DSL 保持实际生成LLM节点Memory window 6；本次仅同步canonical DSL、契约测试和索引，不改用户保留DSL、知识库、App Key或数据库。
+
+- **Purpose:** 朋友圈顾问权威 DSL 保持实际生成LLM节点Memory window 6；本次仅同步canonical DSL、契约测试和索引，不改用户保留DSL、知识库、App Key或数据库。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-09T05:11:20+08:00 — 朋友圈顾问的权威 DSL 仅对实际生成 LLM 启用 Memory window 6；共享工具路由新增受当前匿名用户、kind 和 Dify conversation 约束的远端消息反馈、同会话重生成、早期 task_started 和可靠 stopped/failed SSE 终态。未改工具正文持久化、App Key 或非 canonical DSL 文件。
+
+- **Purpose:** 朋友圈顾问的权威 DSL 仅对实际生成 LLM 启用 Memory window 6；共享工具路由新增受当前匿名用户、kind 和 Dify conversation 约束的远端消息反馈、同会话重生成、早期 task_started 和可靠 stopped/failed SSE 终态。未改工具正文持久化、App Key 或非 canonical DSL 文件。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-09T05:55:48+08:00 — 正式共享小程序接口文档修正终态契约：message_end 仅 completed/stopped，流中失败仅 error.status=failed 并清空本轮 answer_delta；不改变朋友圈输入、会话创建或方法论生成语义。
+
+- **Purpose:** 正式共享小程序接口文档修正终态契约：message_end 仅 completed/stopped，流中失败仅 error.status=failed 并清空本轮 answer_delta；不改变朋友圈输入、会话创建或方法论生成语义。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest tests/test_advisor_message_action_docs.py (4 passed)
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-09T06:06:09+08:00 — 朋友圈共享文档与测试证据同步：正式接口冻结值反映已审查 SSE 失败终态，且不改变朋友圈方法论、DSL 输入或生成语义。
+
+- **Purpose:** 朋友圈共享文档与测试证据同步：正式接口冻结值反映已审查 SSE 失败终态，且不改变朋友圈方法论、DSL 输入或生成语义。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest test_cleaning_release_contract.py (27 passed); pytest Other/event_rag_cleaner (45 passed)
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-09T06:30:10+08:00 — 恢复项目级 cleaning/RAG/activity 架构事实并保留 recent-activity 的现有 ownership、record_type=event、metadata 与测试 seams；本 Feature 的业务语义、DSL 和实现不变。
+
+- **Purpose:** 恢复项目级 cleaning/RAG/activity 架构事实并保留 recent-activity 的现有 ownership、record_type=event、metadata 与测试 seams；本 Feature 的业务语义、DSL 和实现不变。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest tests/test_advisor_message_action_docs.py (5 passed)
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-09T12:53:26+08:00 — 朋友圈实际生成节点启用 Dify Memory 窗口 6，以支持同会话消息重生成；方法论节点、Prompt、输入和发布绑定不变。
+
+- **Purpose:** 朋友圈实际生成节点启用 Dify Memory 窗口 6，以支持同会话消息重生成；方法论节点、Prompt、输入和发布绑定不变。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** 仓库权威 DSL 未显式固化工具会话 Memory 窗口。
+- **After:** 权威 DSL 与线上已核验状态一致，实际生成节点 Memory enabled 且 window size=6。
+- **Impact / Notes:** None
+- **Validation:** DSL 契约与三类顾问相关测试 194 项通过。
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-09T13:42:34+08:00 — 朋友圈方法论 Prompt/节点不变；工具消息完成后页面稳定刷新，conversation ID 持久化提交次数改为常数级。
+
+- **Purpose:** 朋友圈方法论 Prompt/节点不变；工具消息完成后页面稳定刷新，conversation ID 持久化提交次数改为常数级。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 工具与测试页两文件 66 项通过。
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`
+
+## 2026-09-09T13:47:38+08:00 — 方法论 Prompt 与节点不变；朋友圈工具错误状态跨 app rerun 保持可见。
+
+- **Purpose:** 方法论 Prompt 与节点不变；朋友圈工具错误状态跨 app rerun 保持可见。
+- **Affected modules:**
+  - `prompt-dsl — 朋友圈 Prompt 与 DSL`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 共享测试页与工具契约 67 项通过。
+- **Changed paths:**
+  - `dify/dsl/moments_advisor.yml`

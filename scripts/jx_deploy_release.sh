@@ -501,6 +501,12 @@ grep -q "$CORE_IMAGE" "$REPORT_DIR/container-images.txt"
 grep -q "$UI_IMAGE" "$REPORT_DIR/container-images.txt"
 docker image inspect "$OCR_IMAGE" --format '{{.Id}} {{.RepoTags}}' \
   > "$REPORT_DIR/ocr-image-ref.txt"
+if test "$OCR_WORKER_WAS_RUNNING" -eq 1; then
+  bash "$RESOURCE_GUARD" check --phase=release-ocr-restore \
+    > "$REPORT_DIR/ocr-restore-resource-guard.txt"
+  docker compose -f docker-compose.ai.yml up -d --no-deps --force-recreate ai-ocr-worker \
+    > "$REPORT_DIR/ocr-worker-restore.txt" 2>&1
+fi
 bash scripts/jx_install_ocr_autoscaler.sh \
   > "$REPORT_DIR/ocr-autoscaler-install.txt" 2>&1
 OCR_AUTOSCALER_INSTALLED=1
@@ -508,6 +514,17 @@ systemctl is-enabled jx-ocr-autoscaler.timer > "$REPORT_DIR/ocr-autoscaler-enabl
 systemctl is-active jx-ocr-autoscaler.timer > "$REPORT_DIR/ocr-autoscaler-active.txt"
 docker compose -f docker-compose.ai.yml ps -q ai-ocr-worker \
   > "$REPORT_DIR/ocr-worker-container-id.txt"
+if test "$OCR_WORKER_WAS_RUNNING" -eq 1; then
+  test -s "$REPORT_DIR/ocr-worker-container-id.txt"
+  docker inspect \
+    "$(cat "$REPORT_DIR/ocr-worker-container-id.txt")" \
+    --format '{{.Config.Image}} {{.Image}} {{.State.Status}}' \
+    > "$REPORT_DIR/ocr-worker-image.txt"
+  grep -q "$OCR_IMAGE" "$REPORT_DIR/ocr-worker-image.txt"
+  grep -q ' running$' "$REPORT_DIR/ocr-worker-image.txt"
+else
+  : > "$REPORT_DIR/ocr-worker-image.txt"
+fi
 if test "${JX_RUN_DOCKER_STORAGE_MAINTENANCE:-false}" = true; then
   bash "$APP_DIR/scripts/jx_docker_storage_maintenance.sh" run \
     --trigger=post-release --confirm=MAINTAIN_JX_DOCKER_STORAGE \
@@ -517,6 +534,7 @@ sha256sum \
   "$REPORT_DIR/core-image-id.txt" \
   "$REPORT_DIR/ui-image-id.txt" \
   "$REPORT_DIR/ocr-image-id.txt" \
+  "$REPORT_DIR/ocr-worker-image.txt" \
   "$REPORT_DIR/ocr-autoscaler-enabled.txt" \
   "$REPORT_DIR/ocr-autoscaler-active.txt" \
   "$REPORT_DIR/health-ready.json" \

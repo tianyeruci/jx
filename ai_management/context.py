@@ -12,6 +12,7 @@ from .cache import cache
 from .config import get_settings
 from .models import (
     BusinessConversation,
+    BusinessConversationSegment,
     BusinessMessage,
     BusinessProfile,
 )
@@ -31,6 +32,7 @@ def messages_after_summary(
     conversation: BusinessConversation,
     *,
     exclude_message_id: str | None = None,
+    exclude_message_ids: set[str] | None = None,
     limit: int | None = None,
     newest: bool = False,
 ) -> list[BusinessMessage]:
@@ -51,8 +53,11 @@ def messages_after_summary(
                 ),
             )
         )
+    excluded = set(exclude_message_ids or ())
     if exclude_message_id:
-        conditions.append(BusinessMessage.id != exclude_message_id)
+        excluded.add(exclude_message_id)
+    if excluded:
+        conditions.append(BusinessMessage.id.not_in(excluded))
     order = (
         (BusinessMessage.created_at.desc(), BusinessMessage.id.desc())
         if newest
@@ -73,19 +78,30 @@ def build_context(
     user_hash: str,
     *,
     exclude_message_id: str | None = None,
+    exclude_message_ids: set[str] | None = None,
 ) -> BuiltContext:
     settings = get_settings()
     # The model only receives today's raw turns.  Older material is represented
     # by the verified rolling summary, not a seven-day transcript.
     today_start = datetime.combine(business_today(), time.min, tzinfo=BUSINESS_TIMEZONE)
     today_start_utc = today_start.astimezone(ZoneInfo("UTC"))
+    current_segment_ids = select(BusinessConversationSegment.id).where(
+        BusinessConversationSegment.conversation_id == conversation.id,
+        BusinessConversationSegment.segment_date == business_today(),
+    )
     conditions = [
         BusinessMessage.conversation_id == conversation.id,
         BusinessMessage.status.in_(["completed", "stopped"]),
-        BusinessMessage.created_at >= today_start_utc,
+        or_(
+            BusinessMessage.created_at >= today_start_utc,
+            BusinessMessage.segment_id.in_(current_segment_ids),
+        ),
     ]
+    excluded = set(exclude_message_ids or ())
     if exclude_message_id:
-        conditions.append(BusinessMessage.id != exclude_message_id)
+        excluded.add(exclude_message_id)
+    if excluded:
+        conditions.append(BusinessMessage.id.not_in(excluded))
     statement = (
         select(BusinessMessage)
         .where(*conditions)

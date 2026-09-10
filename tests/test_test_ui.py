@@ -1,4 +1,6 @@
 import ast
+import queue
+import time
 from pathlib import Path
 
 import pytest
@@ -78,6 +80,222 @@ def test_conversation_id_from_sse_result_prefers_terminal_then_started_event():
         == "started"
     )
     assert test_ui.conversation_id_from_sse_result({}) is None
+
+
+def test_sse_reducer_failed_clears_final_and_progress_but_stopped_keeps_delta():
+    state = {"answer": "partial", "progress_answer": "progress", "answer_segment": "final"}
+    test_ui.reduce_sse_event(state, "error", {"code": "DIFY_UNAVAILABLE"})
+    assert state["answer"] == ""
+    assert state["progress_answer"] == ""
+
+    state = {"answer": "partial", "progress_answer": "progress", "answer_segment": "final"}
+    test_ui.reduce_sse_event(state, "message_end", {"status": "stopped", "task_id": "t"})
+    assert state["answer"] == "partial"
+    assert state["progress_answer"] == "progress"
+
+
+def test_regeneration_replaces_only_after_sse_request_is_accepted():
+    state = {
+        "answer": "旧答案",
+        "progress_answer": "旧提示",
+        "answer_segment": "final",
+        "request_accepted": False,
+    }
+    test_ui.reduce_sse_event(state, "error", {"code": "MESSAGE_NOT_FOUND"})
+    assert state["answer"] == "旧答案"
+
+    state = {"answer": "旧答案", "progress_answer": "旧提示", "answer_segment": "final"}
+    test_ui.reduce_sse_event(state, "request_started", {"conversation_id": "c"})
+    assert state["request_accepted"] is True
+
+
+def test_active_stream_renders_preflight_and_accepted_errors_and_terminal_delta(monkeypatch):
+    session_state: dict[str, object] = {
+        "last_business_result": {"answer": "旧答案"},
+        "_active_streams": {
+            "business": {
+                "queue": queue.Queue(),
+                "state": {
+                    "answer": "",
+                    "progress_answer": "",
+                    "answer_segment": "final",
+                    "request_accepted": False,
+                    "error": {
+                        "code": "MESSAGE_NOT_FOUND",
+                        "message": "消息不存在",
+                        "status_code": 404,
+                        "transport": "http_preflight",
+                    },
+                },
+                "stop_path": "/stop",
+                "user_id": "u",
+                "result_key": "last_business_result",
+                "error_key": "business_last_error",
+            }
+        },
+    }
+    errors: list[str] = []
+    reruns: list[str | None] = []
+    monkeypatch.setattr(test_ui.st, "session_state", session_state)
+    monkeypatch.setattr(test_ui.st, "markdown", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(test_ui.st, "error", lambda value: errors.append(str(value)))
+    monkeypatch.setattr(test_ui.st, "button", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(test_ui.st, "rerun", lambda *, scope=None: reruns.append(scope))
+
+    render = test_ui.render_active_stream.__wrapped__
+    render("business")
+    assert session_state["last_business_result"] == {"answer": "旧答案"}
+    assert "MESSAGE_NOT_FOUND（HTTP 404）：消息不存在" in errors[-1]
+
+    active = session_state["_active_streams"]["business"]
+    active["queue"].put(("request_started", {"conversation_id": "c"}))
+    render("business")
+    assert "last_business_result" not in session_state
+
+    active["state"]["request_accepted"] = True
+    active["queue"].put(("answer_delta", {"delta": "新片段"}))
+    active["queue"].put(("error", {"code": "DIFY_UNAVAILABLE", "message": "失败"}))
+    active["queue"].put(("__done__", None))
+    render("business")
+    assert session_state["last_business_result"]["answer"] == ""
+    assert "DIFY_UNAVAILABLE：失败" in errors[-1]
+    assert session_state["business_last_error"]["code"] == "DIFY_UNAVAILABLE"
+    assert reruns[-1] == "app"
+
+    session_state["_active_streams"]["business"] = {
+        **active,
+        "state": {"answer": "", "progress_answer": "", "answer_segment": "final"},
+        "queue": queue.Queue(),
+    }
+    active = session_state["_active_streams"]["business"]
+    active["queue"].put(("answer_delta", {"delta": "停止片段"}))
+    active["queue"].put(("message_end", {"status": "stopped", "task_id": "t"}))
+    active["queue"].put(("__done__", None))
+    render("business")
+    assert session_state["last_business_result"]["answer"] == "停止片段"
+    assert "business_last_error" not in session_state
+    assert reruns == ["app", "app"]
+
+
+def test_saved_answer_remains_in_normal_page_region(monkeypatch):
+    rendered: list[str] = []
+    monkeypatch.setattr(test_ui.st, "markdown", lambda value: rendered.append(str(value)))
+
+    test_ui.render_saved_answer({"progress_answer": "即时提示", "answer": "最终答案"})
+
+    assert rendered == ["即时提示", "最终答案"]
+
+
+def test_preflight_error_survives_app_rerun_without_replacing_old_result(monkeypatch):
+    events: queue.Queue[tuple[str, object]] = queue.Queue()
+    events.put(
+        (
+            "error",
+            {
+                "code": "MESSAGE_NOT_REGENERATABLE",
+                "message": "该消息不可重新生成",
+                "status_code": 409,
+                "transport": "http_preflight",
+            },
+        )
+    )
+    events.put(("__done__", None))
+    session_state: dict[str, object] = {
+        "last_business_result": {"answer": "旧答案", "message_id": "old-message"},
+        "_active_streams": {
+            "business": {
+                "queue": events,
+                "state": {
+                    "answer": "",
+                    "progress_answer": "",
+                    "answer_segment": "final",
+                    "request_accepted": False,
+                },
+                "stop_path": "/stop",
+                "user_id": "u",
+                "result_key": "last_business_result",
+                "error_key": "business_last_error",
+                "replace_result_on_terminal": False,
+            }
+        },
+    }
+    errors: list[str] = []
+    monkeypatch.setattr(test_ui.st, "session_state", session_state)
+    monkeypatch.setattr(test_ui.st, "markdown", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(test_ui.st, "error", lambda value: errors.append(str(value)))
+    monkeypatch.setattr(test_ui.st, "button", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(test_ui.st, "rerun", lambda *, scope=None: None)
+
+    test_ui.render_active_stream.__wrapped__("business")
+    assert session_state["last_business_result"] == {
+        "answer": "旧答案",
+        "message_id": "old-message",
+    }
+    test_ui.render_saved_error(session_state["business_last_error"])
+    assert errors[-1] == "MESSAGE_NOT_REGENERATABLE（HTTP 409）：该消息不可重新生成"
+
+
+def test_drain_stream_queue_reduces_events_without_streamlit_calls():
+    events: queue.Queue[tuple[str, object]] = queue.Queue()
+    events.put(("status", {"code": "task_started", "task_id": "t"}))
+    events.put(("answer_delta", {"delta": "x"}))
+    events.put(("message_end", {"status": "completed", "message_id": "m"}))
+    events.put(("__done__", None))
+    state = {"answer": "", "progress_answer": "", "answer_segment": "final"}
+    assert test_ui.drain_stream_queue(events, state) is True
+    assert state["answer"] == "x" and state["task_id"] == "t" and state["status"] == "completed"
+
+
+def test_background_stream_reads_http_error_before_decoding(monkeypatch):
+    def handler(request):
+        return test_ui.httpx.Response(
+            502,
+            request=request,
+            headers={"content-type": "application/json"},
+            stream=test_ui.httpx.ByteStream(
+                b'{"code":"DIFY_RESPONSE_INVALID","message":"invalid shape"}'
+            ),
+        )
+
+    original_client = test_ui.httpx.Client
+
+    def client_factory(*_args, **kwargs):
+        return original_client(
+            timeout=kwargs.get("timeout"),
+            transport=test_ui.httpx.MockTransport(handler),
+        )
+
+    monkeypatch.setattr(test_ui.httpx, "Client", client_factory)
+    events = test_ui.start_stream_post("/regenerate", {}, "synthetic-user")
+    observed = []
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        try:
+            item = events.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        observed.append(item)
+        if item[0] == "__done__":
+            break
+
+    assert observed[-1] == ("__done__", None)
+    error = next(payload for event, payload in observed if event == "error")
+    assert error["status_code"] == 502
+    assert error["code"] == "DIFY_RESPONSE_INVALID"
+    assert error["message"] == "invalid shape"
+
+
+def test_stream_stop_urls_and_active_entries_are_scoped():
+    assert (
+        test_ui.stream_stop_url("/internal/v1/business/chat", "b-task")
+        == "/internal/v1/business/chat/b-task/stop"
+    )
+    assert (
+        test_ui.stream_stop_url("/internal/v1/tools", "t-task") == "/internal/v1/tools/t-task/stop"
+    )
+    source = Path(test_ui.__file__).read_text(encoding="utf-8")
+    assert 'get("_active_streams", {}).get(entry)' in source
+    assert 'key=f"active_stream_stop_{entry}"' in source
 
 
 def test_load_all_cleaning_items_follows_cursor_pages(monkeypatch):
@@ -350,3 +568,11 @@ def test_test_ui_contains_non_enter_submit_form_and_no_old_api_caption():
     assert "enter_to_submit=False" in source
     assert 'st.caption(f"API: {API_BASE}。此页面仅用于测试环境。")' not in source
     assert "st.json(result)" not in source
+
+
+def test_test_ui_contains_advisor_message_actions():
+    source = (ROOT / "ai_management" / "test_ui.py").read_text(encoding="utf-8")
+    for marker in ("/regenerate", "提交消息反馈", "取消反馈", "停止任务", "message_id"):
+        assert marker in source
+    assert "replace_result_on_terminal=False" in source
+    assert "request_accepted" in source
