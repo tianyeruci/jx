@@ -180,3 +180,15 @@
 - 预防：验收脚本保留脱敏 JSON 证据；Batch 测试完成后恢复 `BAILIAN_BATCH_ENABLED=false`，不删除用户要求保留的测试数据/任务。
 - 证据：[`full_remote_metadata_parity.safe.json`](../../var/reports/20260820-qwen-activity/full_remote_metadata_parity.safe.json)、`scripts/verify_qwen_activity_e2e.py`。
 - 最后验证：2026-08-20。
+
+## TEST-016：北京时间业务日测试必须从同一时区构造日期边界
+
+- 适用：按 `Asia/Shanghai` 自然日判断会话过期、重置或清理的测试。
+- 触发：北京时间 00:00–08:00 运行时，“UTC 当前时间减一天”仍可能落在北京时间当天，导致上一业务日断言稳定失败。
+- 根因：测试用 UTC 日期构造历史时间，却用北京时间日期判断业务日，两个基准在 UTC 跨日前不等价。
+- 解决：先取得北京时间业务日，再从该日期减一天并附加 `BUSINESS_TIMEZONE`，最后按需要转换为 UTC 入库；被测 `business_today` 固定为同一业务日。
+- 非解决：增加等待、重复运行，或修改生产过期逻辑以迁就 UTC 测试数据。
+- 验证：聚焦回归与完整 `gov quality` 均通过，且测试在北京时间凌晨执行。
+- 预防：涉及自然日的夹具必须由业务时区日期派生，不得用 UTC `now() - timedelta(days=1)` 代替“上一业务日”。
+- 证据：[`test_tool_conversations_contract.py`](../../tests/test_tool_conversations_contract.py)。
+- 最后验证：2026-09-11。

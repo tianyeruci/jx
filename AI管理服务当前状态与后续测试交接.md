@@ -1,5 +1,23 @@
 # AI 管理服务当前状态与后续测试交接
 
+## 0.85 2026-09-09 三类 AI 顾问消息操作发布与真实验收（当前最新）
+
+- 已完成商业顾问“重新生成”，以及朋友圈顾问、日常写作的“重新生成、消息反馈、消息停止”和对应 `/internal/v1` 增量接口。商业顾问保持 Dify Memory 关闭并在同一本地助手消息上严格替换；朋友圈/写作继续使用同一 Dify conversation、远端 opaque message ID 和 Memory 窗口 6，不在本地持久化工具正文。
+- 本地最终 `gov quality` 完整通过，指纹为 `3245a9970f6bd254e35ad4c9008abcb60c7438e4764bb6092520febf6275e35b`；独立代码审查和发布脚本审查均 PASS。测试中发现的 Dify 顶层 query 回读、商业 progress-only stop、Streamlit 流式错误读取/整页终态刷新、工具 token 数据库写放大和发布成功路径 OCR 恢复等根因均已修复并写入对应排障文档。
+- jx 增量发布 `advisor-actions-fix-20260909-131919` 成功，发布前可恢复备份为 `advisor-actions-fix-20260909-131919-predeploy`；正式 wheel SHA-256 为 `1d965c2c1cc0b00d0fce6f91fd39d8c31173ef86307f06e339ae7941ce951c66`，发布报告位于 `/opt/ai-management/var/reports/v2/advisor-actions-fix-20260909-131919-deploy`，未出现 rollback marker。
+- 发布后 API、普通 Worker、Scheduler、Realtime/Batch Worker、Publication Worker、test-ui 和 OCR Worker 均运行在本次同源 Core/UI/OCR 镜像上，restart count 为 0；Alembic 为唯一 head `n0e1f2g3h4i5`；`jx-ocr-autoscaler.timer` 为 enabled/active。两个 Methodology Worker 仍使用原专用镜像，启动时间保持 2026-08-26 且 restart count 为 0，发布和验收过程中未停止、删除或重建。
+- API 容器内真实 Dify/API/SSE 验收为 `58 passed / 0 failed`：覆盖商业严格重生成、反馈、停止片段持久化，朋友圈/写作同会话重生成、三态反馈、提前 task ID、停止/重复停止、跨用户/跨 kind/reset 拒绝及本地正文零持久化。全部 runner 合成会话按精确 ID 清理，未留下 cleanup manifest。
+- Streamlit 真实浏览器复验确认商业、朋友圈和写作完成后答案在整页刷新后持续显示，反馈/重新生成控件立即可用，三类重新生成均完成；唯一合成页面用户对应的商业和工具会话已按接口返回的精确会话 ID 清理，复核 `remaining_business=0`、`remaining_tools=0`。
+- 线上绑定的朋友圈/写作生成节点此前已核验为 Memory enabled、window 6，商业节点 Memory off；本次没有无意义地重新导入或发布 Dify DSL，也未更换 App/Key。实际小程序后端主机仍缺少受控远程执行身份，因此“从调用方主机发起私网 E2E”保留为外部接入阻塞；不得用 jx 本机探针冒充完成。
+
+### 本节变更记录
+
+- 修改原因：记录三类顾问消息操作的最终发布、真实 API/SSE/浏览器验收、精确清理、回滚点和剩余外部接入阻塞。
+- 修改前：顶部最新事实仍停留在 2026-08-31 Docker 清理，未记录本 Feature 的正式 release、质量审查结果和真实消息操作验收。
+- 修改后：明确当前 jx release、备份、wheel 指纹、服务/迁移/OCR/Methodology Worker 状态、58/0 验收、页面复验和零残留清理；不写入 Token、正文、query、inputs 或真实用户 ID。
+
+> 更新时间：2026-09-09
+
 ## 0.84 2026-08-31 jx 未引用 Docker 镜像清理（当前最新）
 
 - 按用户确认并以“不影响正常使用、至少保留最近一套回滚”为约束，逐个核验无容器引用且不在当前 Compose 配置中的镜像后，删除：`jx-dify-sandbox-pdf-probe:20260804`、`jx-now-ai-management-ocr:toolconv-20260826-135020`、`redis:7-alpine`、`redis:6.2-alpine`、`alpine:3.20`。
@@ -2505,3 +2523,9 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改前：仅完成命令行部署后健康检查，尚未从已登录测试页触发页面级诊断。
 - 修改后：在 `http://112.74.37.111/ai-management-test/` 的“文件清洗”页面确认当前默认策略显示为 `书籍 (book)`；切换到“诊断”并点击“就绪检查”，页面返回 `status=ready`，`database`、`redis`、`dify_apps_configured`、`dify_knowledge_configured`、`dify_reachable` 均为 `true`。浏览器扩展的文件选择事件未能稳定落到 Streamlit 控件，因此未重复提交上传或引入未知样本；命名规则已由容器内合成调用和本地集成测试覆盖。
 - 验证：jx 最近 20 分钟 `api`、`worker`、`publication-worker`、`test-ui` 日志未发现 `error`、`exception` 或 `failed`；未修改数据库、Redis、Dify 文档或 DSL，未执行清理操作。浏览器测试过程中没有产生新的清洗批次或外部数据写入。
+
+### 文档修改记录（2026-09-09 三类 AI 顾问消息操作发布与验收）
+
+- 修改原因：依据项目级 `AGENTS.md`，在代码、完整质量门、独立审查、jx 发布、真实 Dify/API/SSE/Streamlit 验收及精确清理全部结束后更新当前运行事实。
+- 修改前：滚动交接尚未记录商业严格重新生成、工具消息反馈/重新生成/停止的最终发布状态，也未记录本次回滚备份、线上验收和 Methodology Worker 未中断证据。
+- 修改后：顶部新增 0.85，记录 release `advisor-actions-fix-20260909-131919`、备份、wheel SHA、唯一迁移 head、同源服务、OCR timer、Methodology Worker 原状态、58/0 API 验收、三入口页面复验、精确零残留清理和小程序调用方外部接入阻塞；未修改主工作区 DSL，未写入敏感数据。
