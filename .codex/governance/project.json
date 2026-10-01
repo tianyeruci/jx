@@ -12,7 +12,7 @@
     "commands": {
       "format": [
         {
-          "command": "uv run ruff format --check ai_management/model_cleaning.py ai_management/activity_cleaning.py ai_management/cleaning.py ai_management/workers/tasks/cleaning.py ai_management/workers/tasks/model_cleaning.py ai_management/workers/tasks/maintenance.py ai_management/api/routers/knowledge_admin.py tests/test_model_cleaning_workflow.py tests/test_ai_management.py tests/test_activity_cleaning.py tests/test_dify_activity_contract.py ai_management/services/bailian_cleanup.py ai_management/services/tool_examples.py ai_management/schemas.py ai_management/api/routers/tools.py ai_management/api/routers/admin_management.py ai_management/test_ui.py tests/test_tool_examples.py tests/test_moments_run_contract.py tests/test_app_routing.py tests/test_v2_hardening.py",
+          "command": "uv run ruff format --check ai_management/model_cleaning.py ai_management/activity_cleaning.py ai_management/cleaning.py ai_management/config.py ai_management/models.py ai_management/workers/tasks/cleaning.py ai_management/workers/tasks/model_cleaning.py ai_management/workers/tasks/maintenance.py ai_management/api/routers/knowledge_admin.py ai_management/api/routers/health.py ai_management/services/bailian_cleanup.py ai_management/services/dify_references.py knowledge_cleaner/consultation_rag.py knowledge_cleaner/dify.py knowledge_cleaner/pdf_convert.py knowledge_cleaner/rapidocr_backend.py scripts/generate_project_index.py migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py tests/test_model_cleaning_workflow.py tests/test_ai_management.py tests/test_activity_cleaning.py tests/test_dify_activity_contract.py tests/test_business_advisor_unified_dsl.py tests/test_business_advisor_optimized_dsl.py tests/test_consultation_rag_integration.py tests/test_cleaning_tolerance_methodology_regression.py tests/test_cleaning_test_deploy_contract.py tests/test_dify_client.py tests/test_large_scale_cleaning.py tests/test_pdf_ocr_quality.py tests/test_release_acceptance_contract.py ai_management/services/tool_examples.py ai_management/schemas.py ai_management/api/routers/tools.py ai_management/api/routers/admin_management.py ai_management/test_ui.py tests/test_tool_examples.py tests/test_moments_run_contract.py tests/test_app_routing.py tests/test_v2_hardening.py ai_management/acceptance_budget.py scripts/full_cleaning_acceptance.py tests/test_acceptance_budget.py tests/test_acceptance_runner_budget.py tests/test_acceptance_publish_orm.py",
           "cwd": ".",
           "timeout": 600,
           "required": true
@@ -20,7 +20,13 @@
       ],
       "lint": [
         {
-          "command": "uv run ruff check ai_management/model_cleaning.py ai_management/activity_cleaning.py ai_management/cleaning.py ai_management/workers/tasks/cleaning.py ai_management/workers/tasks/model_cleaning.py ai_management/workers/tasks/maintenance.py ai_management/api/routers/knowledge_admin.py tests/test_model_cleaning_workflow.py tests/test_ai_management.py tests/test_activity_cleaning.py tests/test_dify_activity_contract.py tests/test_business_advisor_unified_dsl.py ai_management/services/bailian_cleanup.py ai_management/schemas.py ai_management/api/routers/tools.py ai_management/api/routers/admin_management.py ai_management/test_ui.py tests/test_tool_examples.py tests/test_moments_run_contract.py tests/test_app_routing.py tests/test_v2_hardening.py",
+          "command": "uv run ruff check ai_management/model_cleaning.py ai_management/activity_cleaning.py ai_management/cleaning.py ai_management/config.py ai_management/models.py ai_management/workers/tasks/cleaning.py ai_management/workers/tasks/model_cleaning.py ai_management/workers/tasks/maintenance.py ai_management/api/routers/knowledge_admin.py ai_management/api/routers/health.py ai_management/services/bailian_cleanup.py ai_management/services/dify_references.py knowledge_cleaner/consultation_rag.py knowledge_cleaner/dify.py knowledge_cleaner/pdf_convert.py knowledge_cleaner/rapidocr_backend.py scripts/generate_project_index.py migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py tests/test_model_cleaning_workflow.py tests/test_ai_management.py tests/test_activity_cleaning.py tests/test_dify_activity_contract.py tests/test_business_advisor_unified_dsl.py tests/test_business_advisor_optimized_dsl.py tests/test_consultation_rag_integration.py tests/test_cleaning_tolerance_methodology_regression.py tests/test_cleaning_test_deploy_contract.py tests/test_dify_client.py tests/test_large_scale_cleaning.py tests/test_pdf_ocr_quality.py tests/test_release_acceptance_contract.py ai_management/schemas.py ai_management/api/routers/tools.py ai_management/api/routers/admin_management.py ai_management/test_ui.py tests/test_tool_examples.py tests/test_moments_run_contract.py tests/test_app_routing.py tests/test_v2_hardening.py ai_management/acceptance_budget.py scripts/full_cleaning_acceptance.py tests/test_acceptance_budget.py tests/test_acceptance_runner_budget.py tests/test_acceptance_publish_orm.py",
+          "cwd": ".",
+          "timeout": 600,
+          "required": true
+        },
+        {
+          "command": "uv run ruff check --select E9,F63,F7,F82 .codex/governance/gov.py .codex/governance/govlib.py tests/test_governance_contract.py",
           "cwd": ".",
           "timeout": 600,
           "required": true
@@ -28,22 +34,35 @@
       ],
       "typecheck": [
         {
-          "command": "uv run python -m compileall -q ai_management knowledge_cleaner/dify.py",
+          "command": "uv run python -m compileall -q ai_management knowledge_cleaner .codex/governance scripts migrations",
           "cwd": ".",
           "timeout": 600,
           "required": true
         }
       ],
-      "build": [],
+      "build": [
+        {
+          "command": "uv lock --check",
+          "cwd": ".",
+          "timeout": 600,
+          "required": true
+        }
+      ],
       "unit": [
         {
-          "command": "uv run python -m pytest -q tests --ignore=tests/test_cleaning_release_contract.py --ignore=tests/test_consultation_v2.py -k \"not test_project_agents_is_small_and_does_not_store_dynamic_state\"",
+          "command": "$runKey=[guid]::NewGuid().ToString('N').Substring(0,8); $env:PYTHONUTF8='1'; uv run python -m pytest -q tests/test_model_cleaning_workflow.py tests/test_cleaning_tolerance_methodology_regression.py tests/test_large_scale_cleaning.py tests/test_consultation_rag_integration.py --basetemp ('tmp/pytest-q-'+$runKey) --junitxml ('var/reports/W-20260924-151708/scope-A-'+$runKey+'.xml') --durations=10",
           "cwd": ".",
           "timeout": 600,
           "required": true
         },
         {
-          "command": "uv run python -m pytest -q tests/test_tool_examples.py tests/test_app_routing.py tests/test_v2_hardening.py tests/test_cleaning_release_contract.py -k \"not test_course_route_catalog_reset_is_exact_recoverable_and_isolated and not test_all_document_data_reset_is_explicit_defaulted_and_preserves_business_data\"",
+          "command": "$runKey=[guid]::NewGuid().ToString('N').Substring(0,8); $env:PYTHONUTF8='1'; uv run python -m pytest -q tests/test_ai_management.py tests/test_dify_client.py tests/test_activity_cleaning.py tests/test_tool_examples.py tests/test_app_routing.py tests/test_v2_hardening.py --basetemp ('tmp/pytest-q-'+$runKey) --junitxml ('var/reports/W-20260924-151708/scope-B-'+$runKey+'.xml') --durations=10",
+          "cwd": ".",
+          "timeout": 600,
+          "required": true
+        },
+        {
+          "command": "uv run python -m pytest -q tests/test_acceptance_budget.py tests/test_acceptance_runner_budget.py tests/test_acceptance_publish_orm.py tests/test_release_acceptance_contract.py tests/test_release_data_cleanup.py",
           "cwd": ".",
           "timeout": 600,
           "required": true
@@ -51,7 +70,7 @@
       ],
       "integration": [
         {
-          "command": "uv run python -m pytest -q Other/event_rag_cleaner",
+          "command": "$runKey=[guid]::NewGuid().ToString('N').Substring(0,8); $env:PYTHONUTF8='1'; uv run python -m pytest -q tests/test_pdf_ocr_quality.py tests/test_pdf_cleaning_policy.py tests/test_business_advisor_unified_dsl.py tests/test_business_advisor_optimized_dsl.py tests/test_dify_activity_contract.py tests/test_jx_consultation_model_cleaning.py Other/event_rag_cleaner --basetemp ('tmp/pytest-q-'+$runKey) --junitxml ('var/reports/W-20260924-151708/scope-C-'+$runKey+'.xml') --durations=10",
           "cwd": ".",
           "timeout": 600,
           "required": true

@@ -1,5 +1,29 @@
 # 数据清理与清洗排障
 
+## DATA-056：历史 Batch 账本不完整时不得以当前价格或日期重建 repair 费用
+
+- 适用：已进入 `batch_running`/`validating` 的 Provider Batch 任务，需要因结果契约失败提交 repair JSONL。
+- 触发：旧任务缺少 `_provider_budget_reservations`，或其条目为空、外来 document、重复 call ID、调用次数不一致；历史条目还可能使用过去日期、价格或 transport。
+- 根因：旧 repair 路径曾把当前日期、当前价格和当前 transport 反向写入历史账本，再继续发起新的 Provider Batch；这既不能证明历史调用事实，也可能错误改变预算和调用上限。
+- 解决：repair admission 只接受可验证的 durable list ledger，并要求每个候选文档的 `model_attempts` 与精确 reservation 一致。任一历史证据不完整/不一致都在读取当前价格前阻断 Provider create；已经上传的 repair JSONL 保留为精确 `bailian_file` outbox，标记 `manual_intervention_required` 与 `historical_ledger_inconsistent`，不由维护任务自动删除或重提。
+- 非解决：以当前设置补写历史 reservation、以今天替代历史日期、按当前 Batch/realtime 定价猜测旧调用、仅因本地结果终态存在就假定历史调用已计费，或删除输入文件来掩盖证据缺口。
+- 验证：本地 SQLite/fake Provider 聚焦组 18 passed，覆盖直接 admission 的 5 类坏账本、真实 poll repair 入口的 7 个 100 文档变体（null/foreign/duplicate/count/cross-day/price/transport）和有效账本下的双 JSONL 4xx/timeout/cancel 生命周期。
+- 预防：新增 repair、redelivery 或账本迁移逻辑时，先断言“未验证历史绝不发起新 paid create、账本与 attempts 不重写、输入仅有精确人工 outbox”；测试夹具需要显式构造有效 ledger，不能依赖 runtime backfill。
+- 证据：`var/reports/W-20260912-041700/pytest-terra-s4c-combined-r1.xml`、`var/reports/W-20260912-041700/issues.jsonl`。
+- 最后验证：2026-09-14。
+
+## DATA-057：终态 Batch 文件清理必须收敛 owner、outbox 与任务状态
+
+- 适用：Provider Batch 已终态、管理员取消或维护 Worker 重试时的 `bailian_batch`/`bailian_file` 外部清理。
+- 触发：file 删除成功但 `provider_batch_file_ids` 仍保留；一个终态 Batch 的部分文件删除失败后 Batch outbox 消失；mixed terminal/active Batch 下一轮 reconcile 又创建终态 Batch 清理并重复删除文件。
+- 根因：旧 standalone file outbox 只有 `model_task_id`，不能精确消费对应 Batch/category owner；Batch cleanup 在 `close_successful_bailian_batch_owner()` 返回 false 后仍删除自身 outbox，既没有保留 Batch 责任，也没有将所有残余文件可靠转移。
+- 解决：每个 standalone `bailian_file` outbox 必须持久化 `model_task_id`、`batch_id` 和 `category`（`input`/`output`/`error`）；delete 成功后在同一事务消费精确 owner。终态 Batch 仅在全部 owner 文件已删除，或每个残余文件都已写入精确 standalone outbox 后才能移除 Batch owner/outbox；无法证明关闭时保持 fail-closed。
+- 非解决：只删 outbox、通过 task 聚合文件列表猜 owner、忽略 close 返回值、让 reconcile 重建已终态 Batch，或把终态 sibling 的文件归给仍 active 的 Batch。
+- 验证：本地 SQLite/fake Provider 直接 red 3 项，绿 3 项；管理员 mixed terminal/active、partial file failure、terminal owner 和 orphan Batch 回归合计 6 项通过。连续 2–3 次 maintenance 后每个文件只删一次、owner/outbox 清空且 `cleanup_status=completed`。
+- 预防：新增 cleanup 分支必须同时断言“删除次数、file payload 三元归属、owner map、Batch/file outbox、后续 reconcile inert 状态”；所有 Provider 终态分支必须处理 owner close 的 false 返回值。
+- 证据：`var/reports/W-20260912-041700/pytest-terra-s4d-red-r1.xml`、`var/reports/W-20260912-041700/pytest-terra-s4d-regression-r2.xml`、`var/reports/W-20260912-041700/issues.jsonl`。
+- 最后验证：2026-09-14。
+
 ## DATA-052：上传门禁与 Provider Batch JSONL 上限必须分开配置
 
 - 适用：本地或 jx 使用 Qwen/百炼 Batch 的文档清洗上传。
@@ -647,6 +671,18 @@
 - 预防：每次活动更新保存稳定 `event_id`、新旧版本摘要和精确远端 ID；验收清理必须以批次/文件/文档关联或显式 manifest 为依据，不以活动名称作为删除授权。
 - 证据：`ai_management/workers/tasks/cleaning.py`、`tests/test_release_acceptance_contract.py`、`var/reports/recent-activity-impl/issues.jsonl`、jx release `quick-20260818-050347-ab578b3727b3`。
 - 最后验证：2026-08-18。
+
+## DATA-049：共享 Dify 成果必须在每次删除前重查本地 live 引用
+
+- 适用：跨来源复用同一已验证 Dify 发布成果、来源删除和 `ExternalDeletionTask` 延迟清理。
+- 触发：删除一个来源或执行陈旧的延迟删除任务时，另一个来源已关联同一精确远端 ID。
+- 根因：远端 ID 可以在不同本地来源间复用；来源删除时的局部关联、或创建删除任务时的旧快照，都不能证明执行删除时它仍无引用。
+- 解决：来源删除仅解除当前来源关联，并以精确 remote ID 重查其他 live `DifyPublicationShard`；延迟 `dify_document` 任务在远端调用前再次重查，存在引用时只移除陈旧任务。陈旧 `retrying` 源文件在重新投递前先原子标记为 `retry_requeued`，避免维护轮询双重入队。
+- 非解决：按文件名、最新批次或旧任务创建时间推断所有权；因远端删除失败而整批删除本地关联；跳过运行时引用检查。
+- 验证：`PYTHONPATH=<repo> .venv\\Scripts\\python.exe -m pytest -q tests/test_model_cleaning_workflow.py --basetemp <isolated>`，2026-09-13 本地 fake-only `119 passed`；定点引用/重试回归 `3 passed`。
+- 预防：任何精确远端删除都以执行时的本地 live reference 为权威；将“先 claim 状态、后队列投递、投递失败可恢复”用于可重试清洗源。
+- 证据：`var/reports/W-20260912-041700/pytest-model-workflow-r2.xml`、`ai_management/services/dify_references.py`、`ai_management/workers/tasks/maintenance.py`。
+- 最后验证：2026-09-13。
 
 ## DATA-050：咨询会议 v3 页面批量验收要区分候选方法与通用方法论
 

@@ -774,3 +774,433 @@ This is a semantic change log, not a copy of Git diff.
 - **Changed paths:**
   - `AI管理服务当前状态与后续测试交接.md`
   - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-13T15:16:26+08:00 — 工具案例功能行为、接口和数据边界未改变；本轮仅执行其既有质量回归并刷新受共享工作影响的治理文档指纹。
+
+- **Purpose:** 工具案例功能行为、接口和数据边界未改变；本轮仅执行其既有质量回归并刷新受共享工作影响的治理文档指纹。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** gov quality fingerprint afd869245354162a534f163e018c99308ff131c5ff4942ebe116a7e7110de28d
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-13T15:58:25+08:00 — 仅同步受共享测试覆盖变更影响的当前状态；工具示例功能语义和接口契约未改变。
+
+- **Purpose:** 仅同步受共享测试覆盖变更影响的当前状态；工具示例功能语义和接口契约未改变。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-review-remediation.xml
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-13T16:09:44+08:00 — 仅刷新共享测试变更后的当前文档指纹；工具示例功能语义未改变。
+
+- **Purpose:** 仅刷新共享测试变更后的当前文档指纹；工具示例功能语义未改变。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-crossdrive-test.xml
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-13T16:21:32+08:00 — 仅刷新共享测试变更后的文档指纹；工具示例功能语义未改变。
+
+- **Purpose:** 仅刷新共享测试变更后的文档指纹；工具示例功能语义未改变。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-cleanup-contract.xml
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-13T17:11:17+08:00 — 隔离清洗启动验证新增cleaning、model realtime与publication worker的存在和running状态检查；不触碰Docker或远端。
+
+- **Purpose:** 隔离清洗启动验证新增cleaning、model realtime与publication worker的存在和running状态检查；不触碰Docker或远端。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-13T17:20:55+08:00 — 隔离启动健康检查测试的fake Compose响应覆盖三个必需worker，并确保失败时也清理本地临时脚本和日志；不运行Docker或远端。
+
+- **Purpose:** 隔离启动健康检查测试的fake Compose响应覆盖三个必需worker，并确保失败时也清理本地临时脚本和日志；不运行Docker或远端。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-13T17:34:18+08:00 — 隔离worker健康检查语义不变；仅咨询错误信息兼容修复。
+
+- **Purpose:** 隔离worker健康检查语义不变；仅咨询错误信息兼容修复。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-13T20:49:25+08:00 — 仅格式化 U12 已覆盖的共享质量路径；案例目录、会话与接口语义未改变。
+
+- **Purpose:** 仅格式化 U12 已覆盖的共享质量路径；案例目录、会话与接口语义未改变。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-14T02:54:34+08:00 — 本轮共享 tests/test_app_routing.py 仅作为清理回归范围的验证关联；tool-examples 的案例目录、接口、鉴权、DSL、持久化和产品语义均未改变。
+
+- **Purpose:** 本轮共享 tests/test_app_routing.py 仅作为清理回归范围的验证关联；tool-examples 的案例目录、接口、鉴权、DSL、持久化和产品语义均未改变。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-24T16:00:57+08:00 — 共享 tests/test_app_routing.py 继续覆盖工具案例入口与现有路由合同；本周期未改变 tool-examples 运行时行为、API 或数据语义，仅重新绑定当前完整差异的验证证据。
+
+- **Purpose:** 共享 tests/test_app_routing.py 继续覆盖工具案例入口与现有路由合同；本周期未改变 tool-examples 运行时行为、API 或数据语义，仅重新绑定当前完整差异的验证证据。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** 旧 Quality 与复审指纹不能证明当前完整差异下的共享路由验证状态。
+- **After:** tool-examples 的共享路由测试仍纳入当前 Quality 与独立复审范围，产品语义保持不变。
+- **Impact / Notes:** None
+- **Validation:** 共享路由测试将在当前完整 Quality 中重跑；本次未以历史结果替代。
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-24T16:51:52+08:00 — tool-examples 运行时与 API 语义未变；共享 app-routing 验证继续绑定到修复后完整差异和后续 Quality。
+
+- **Purpose:** tool-examples 运行时与 API 语义未变；共享 app-routing 验证继续绑定到修复后完整差异和后续 Quality。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 完整 Quality 待重跑。
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-24T17:33:30+08:00 — 接口索引、治理契约和隔离测试入口已按当前实现重新生成并检查；清理 owner/outbox payload 兼容旧单 owner 和新 owners 列表。
+
+- **Purpose:** 接口索引、治理契约和隔离测试入口已按当前实现重新生成并检查；清理 owner/outbox payload 兼容旧单 owner 和新 owners 列表。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-24T18:14:37+08:00 — 功能与接口索引按最终代码行号重新生成；治理与工具示例测试包含 cleanup outbox owner 合并及 source delete 跨请求状态机覆盖。
+
+- **Purpose:** 功能与接口索引按最终代码行号重新生成；治理与工具示例测试包含 cleanup outbox owner 合并及 source delete 跨请求状态机覆盖。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-24T23:16:47+08:00 — 工具案例业务语义未改变；共享部署合同测试补充无 Git 远端目录、候选证明与篡改失败用例，维持当前完整差异的文档和测试指纹一致。
+
+- **Purpose:** 工具案例业务语义未改变；共享部署合同测试补充无 Git 远端目录、候选证明与篡改失败用例，维持当前完整差异的文档和测试指纹一致。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-25T00:07:41+08:00 — 隔离启动校验外部固定 bundle 摘要、冻结 env 并使用不可变镜像 ID，严格验证正式健康；补充无 Git 远端布局及篡改测试。
+
+- **Purpose:** 隔离启动校验外部固定 bundle 摘要、冻结 env 并使用不可变镜像 ID，严格验证正式健康；补充无 Git 远端布局及篡改测试。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-25T00:43:45+08:00 — 三镜像 ID 由精确批准命令的外部值固定，bundle 摘要覆盖镜像身份；正式健康拒绝任意主机使用隔离端口；部署契约在仓库外验证无 Git 远端布局，并覆盖协调篡改。
+
+- **Purpose:** 三镜像 ID 由精确批准命令的外部值固定，bundle 摘要覆盖镜像身份；正式健康拒绝任意主机使用隔离端口；部署契约在仓库外验证无 Git 远端布局，并覆盖协调篡改。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-25T00:46:58+08:00 — 部署契约测试代码仅按 Ruff 要求调整格式；镜像外部身份、正式健康和无 Git 布局语义保持不变。
+
+- **Purpose:** 部署契约测试代码仅按 Ruff 要求调整格式；镜像外部身份、正式健康和无 Git 布局语义保持不变。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-25T01:24:00+08:00 — 正式健康使用结构化 URL 解析拒绝数值等价的隔离端口；完整部署契约执行真实 parser，验证外部镜像 ID 信任锚和无 Git 环境；Windows 与 Linux 选择可用 Python 解释器。
+
+- **Purpose:** 正式健康使用结构化 URL 解析拒绝数值等价的隔离端口；完整部署契约执行真实 parser，验证外部镜像 ID 信任锚和无 Git 环境；Windows 与 Linux 选择可用 Python 解释器。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-25T02:17:00+08:00 — 清洗隔离部署合同补充独立外部批准的三镜像协调篡改反例；唯一接续计划、实施模块 ownership 和文档导航对齐，既有共享差异继续纳入本轮 Quality 与独立复审。
+
+- **Purpose:** 清洗隔离部署合同补充独立外部批准的三镜像协调篡改反例；唯一接续计划、实施模块 ownership 和文档导航对齐，既有共享差异继续纳入本轮 Quality 与独立复审。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-25T03:03:30+08:00 — 共享工作树的治理复审记录和回归测试更新；本 Feature 业务语义未改变。
+
+- **Purpose:** 共享工作树的治理复审记录和回归测试更新；本 Feature 业务语义未改变。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 完整 Quality PASSED
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-25T05:29:41+08:00 — Record current tool-examples implementation approval and include this active contract in the shared release gate; tool behavior unchanged
+
+- **Purpose:** Record current tool-examples implementation approval and include this active contract in the shared release gate; tool behavior unchanged
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Focused governance contract: 24 passed; full Quality pending rerun
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-25T05:54:41+08:00 — 质量与复审指纹纳入原始 pytest 证据；源码/实施范围继续排除运行时目录；无审批的 approved/done 元数据 fail-closed；治理测试写入临时目录并移出两份合成记录。
+
+- **Purpose:** 质量与复审指纹纳入原始 pytest 证据；源码/实施范围继续排除运行时目录；无审批的 approved/done 元数据 fail-closed；治理测试写入临时目录并移出两份合成记录。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** pytest 证据目录和根 XML 未绑定质量/复审指纹，合成元数据污染正式 Feature 状态。
+- **After:** quality/review scope 绑定 .pytest-terra/.pytest-canonical 原始证据，source/implementation 保持排除；无审批终态显示 stale_approval；合成记录已保全移离。
+- **Impact / Notes:** 未改变产品 API、数据结构或远端行为；所有既有工作树差异继续保留。
+- **Validation:** tests/test_governance_contract.py: 27 passed
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-25T06:57:30+08:00 — 新增严格一次 continuation-reapproval；普通首次实施审批保留 source baseline fail-closed；当前主 Feature 已以原始 baseline 恢复 content-bound 实施审批并写结构化 gate event。
+
+- **Purpose:** 新增严格一次 continuation-reapproval；普通首次实施审批保留 source baseline fail-closed；当前主 Feature 已以原始 baseline 恢复 content-bound 实施审批并写结构化 gate event。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** 需求再审批后主 Feature 实施审批被清空，普通 approve-implementation 受既有 source baseline 保护阻止。
+- **After:** 主 Feature 通过严格 work/feature/branch/时间顺序/一次性条件恢复实施审批；原始 baseline 未修改，gate event 绑定原始与当前 source 及合同指纹。
+- **Impact / Notes:** 不改变产品 API、远端、部署或费用边界；所有现有差异继续纳入 Quality 和独立复审。
+- **Validation:** tests/test_governance_contract.py: 29 passed
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-25T07:22:12+08:00 — Feature 审批、模块和文档语义纳入 quality/review canonical projection；review 自写字段不参与；损坏 event fail-closed，审批与 event 追加失败可恢复。
+
+- **Purpose:** Feature 审批、模块和文档语义纳入 quality/review canonical projection；review 自写字段不参与；损坏 event fail-closed，审批与 event 追加失败可恢复。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** feature.json 与生成状态被排除在质量/复审指纹外；损坏 event 可被静默跳过；审批先写元数据再写 event。
+- **After:** 关键 Feature 元数据绑定质量/复审指纹，review 自写字段不自失效；event 日志严格解析，审批写入在 event 失败时回滚。
+- **Impact / Notes:** 保留所有既有代码、文档、证据和原始 source baseline；无远端/付费/部署动作。
+- **Validation:** tests/test_governance_contract.py: 33 passed
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-25T07:47:57+08:00 — 当前实施审批必须有匹配 work/feature/branch/baseline/合同指纹的 committed gate event；event 损坏 fail-closed，写入失败回滚；release approval 测试使用隔离 tmp state。
+
+- **Purpose:** 当前实施审批必须有匹配 work/feature/branch/baseline/合同指纹的 committed gate event；event 损坏 fail-closed，写入失败回滚；release approval 测试使用隔离 tmp state。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** gate_status 仅验证元数据与 Quality/review 指纹，审批 event 缺失或损坏可能未阻断；测试曾污染 release-approval live state。
+- **After:** gate_status 及 review/release/complete 继承匹配 event 校验；event 有稳定 id/digest 并原子追加；release approval 测试不写 live state。
+- **Impact / Notes:** 完整保留既有代码、文档、未提交差异和测试证据；不捕获 baseline，不执行远端/付费/部署。
+- **Validation:** tests/test_governance_contract.py: 36 passed
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-25T08:47:06+08:00 — 测试运行证据 tmp/pytest-* 仅绑定 Quality/Review；source/implementation 排除运行产物；接续审批事件绑定新 SPEC 合同指纹并保留原始 source baseline。
+
+- **Purpose:** 测试运行证据 tmp/pytest-* 仅绑定 Quality/Review；source/implementation 排除运行产物；接续审批事件绑定新 SPEC 合同指纹并保留原始 source baseline。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** 保留全部现有差异与测试证据；未执行远端写入、部署、付费调用或 push。
+- **Validation:** tests/test_governance_contract.py focused regression
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-26T17:46:00+08:00 — PROFILE 与唯一计划同步当前 project.json/Feature validation Quality scope；无业务 FR/AC 变化，本轮仅本地验证
+
+- **Purpose:** PROFILE 与唯一计划同步当前 project.json/Feature validation Quality scope；无业务 FR/AC 变化，本轮仅本地验证
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** PROFILE 与计划未完整反映当前 bounded Quality scope
+- **After:** 同步 A-E 直接相关集合、静态增量、600 秒、非全仓 PASS 和本轮 no-paid/no-remote 边界
+- **Impact / Notes:** 未运行 Quality；不授权付费、远端写入、部署、发布或 push；不手改 state/fingerprint
+- **Validation:** 未运行；沿用 5 组、24 个唯一测试路径配置
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-28T14:43:00+08:00 — The current ys deployment and review-waiver changes do not alter tool-examples behavior or its public contract
+
+- **Purpose:** The current ys deployment and review-waiver changes do not alter tool-examples behavior or its public contract
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-28T15:00:10+08:00 — Current ys deployment and governance test repair do not change tool-examples behavior
+
+- **Purpose:** Current ys deployment and governance test repair do not change tool-examples behavior
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-28T16:18:42+08:00 — Shared runtime paths now reject course writes when the ys course dataset is disabled, while keeping existing enabled-course behavior unchanged.
+
+- **Purpose:** Shared runtime paths now reject course writes when the ys course dataset is disabled, while keeping existing enabled-course behavior unchanged.
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Focused readiness and course-boundary tests passed
+- **Changed paths:**
+  - `tests/test_app_routing.py`
+
+## 2026-09-28T18:22:46+08:00 — The ys release is deployed with seven same-image services, general dataset and four App read-only checks, course disabled, and model calls deferred under placeholder key.
+
+- **Purpose:** The ys release is deployed with seven same-image services, general dataset and four App read-only checks, course disabled, and model calls deferred under placeholder key.
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** ys ready/UI/Dify/OCR smoke; real model tests deferred
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `tests/test_app_routing.py`
+
+## 2026-09-30T04:32:16+08:00 — Bound ys acceptance operations to sealed sample and transport evidence; preserve publication, retrieval, and paid-call resume safeguards on shared implementation paths.
+
+- **Purpose:** Bound ys acceptance operations to sealed sample and transport evidence; preserve publication, retrieval, and paid-call resume safeguards on shared implementation paths.
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Current local gov quality passed; ys paid and remote acceptance not run
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `tests/test_app_routing.py`
+
+## 2026-09-30T04:57:09+08:00 — 验收 runner 预算封存、付费调用 receipt 与跨重启证据重放、来源检索及 App 判定已按本轮计划修复；当前本地 Quality 与定向复审通过，ys 真实验收未执行。
+
+- **Purpose:** 验收 runner 预算封存、付费调用 receipt 与跨重启证据重放、来源检索及 App 判定已按本轮计划修复；当前本地 Quality 与定向复审通过，ys 真实验收未执行。
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** gov quality: b1ed8518c4739d10fa2167ccbf8e36cbeb30cb35c7cad788d68a68c634442ae2
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `tests/test_app_routing.py`
+
+## 2026-09-30T21:31:26+08:00 — Shared Bailian client paid chat POST sends one HTTP attempt; existing outer retry reservations remain bounded. No tool API or business behavior changes; local transport regressions pass.
+
+- **Purpose:** Shared Bailian client paid chat POST sends one HTTP attempt; existing outer retry reservations remain bounded. No tool API or business behavior changes; local transport regressions pass.
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `tests/test_app_routing.py`
+
+## 2026-09-30T22:00:04+08:00 — Bind final shared client paid POST fix to current candidate after verified local retry checks. No tool business API changes.
+
+- **Purpose:** Bind final shared client paid POST fix to current candidate after verified local retry checks. No tool business API changes.
+- **Affected modules:**
+  - `examples-tests — 案例与路由回归测试`
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `tests/test_app_routing.py`

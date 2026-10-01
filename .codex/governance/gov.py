@@ -502,6 +502,39 @@ def review_required_for(kind, risk, project):
     return bool((project.get("review") or {}).get("standard_independent_review", True))
 
 
+def review_waiver_reasons(state, events=None, current=None):
+    """Validate the explicit, current-work review waiver, if any."""
+    waiver = state.get("review_waiver") or {}
+    if not waiver:
+        return ["required independent review is missing or stale for the current diff"]
+    current = current or git_fingerprint(ROOT, scope="review")
+    reasons = []
+    if waiver.get("work_id") != state.get("work_id"):
+        reasons.append("review waiver does not match the active work id")
+    if waiver.get("work_branch") != state.get("work_branch"):
+        reasons.append("review waiver does not match the active work branch")
+    if waiver.get("review_fingerprint") != current:
+        reasons.append("review waiver is stale for the current diff")
+    if waiver.get("confirmed_by_user") is not True:
+        reasons.append("review waiver lacks explicit user confirmation")
+    if not str(waiver.get("reason") or "").strip():
+        reasons.append("review waiver reason is missing")
+    events = _load_gate_events() if events is None else events
+    matching = [event for event in events if event.get("event_type") == "review_waiver"
+                and event.get("work_id") == state.get("work_id")
+                and event.get("work_branch") == state.get("work_branch")
+                and event.get("review_fingerprint") == waiver.get("review_fingerprint")
+                and event.get("reason") == waiver.get("reason")
+                and event.get("recorded_at") == waiver.get("recorded_at")]
+    if not matching:
+        reasons.append("review waiver has no matching committed gate event")
+    elif any(_seal_gate_event(event).get("event_digest") != event.get("event_digest") for event in matching):
+        reasons.append("matching review waiver gate event digest does not match")
+    elif any(event.get("confirmed_by_user") is not True for event in matching):
+        reasons.append("matching review waiver gate event lacks explicit user confirmation")
+    return reasons
+
+
 def approval_reasons(state, meta=None):
     reasons = []
     if requires_contract(state.get("kind"), state.get("risk")):
@@ -540,6 +573,36 @@ def ownership_reasons(state, meta):
     return []
 
 
+def affected_feature_approval_reasons(state, primary_fid):
+    """Check approval freshness for every current Feature touched by this work cycle.
+
+    ``feature_id`` is the task's primary feature, while ``affected_feature_ids`` also
+    contains current Features whose owned paths were changed through shared modules.
+    Their requirements and implementation approvals are independent gates. Retired
+    records remain historical and must not block a later cycle.
+    """
+    ids = list(state.get("affected_feature_ids") or [])
+    if primary_fid and primary_fid not in ids:
+        ids.insert(0, primary_fid)
+    reasons = []
+    for fid in ids:
+        if not fid or fid == primary_fid:
+            continue
+        meta = load_feature(fid, required=False)
+        if not meta:
+            reasons.append(f"affected feature {fid}: feature metadata is missing")
+            continue
+        if meta.get("retired") or meta.get("status") in {"archived", "superseded"}:
+            continue
+        if not requires_contract(meta.get("kind"), meta.get("risk")):
+            continue
+        feature_state = dict(state)
+        feature_state.update({"feature_id": fid, "kind": meta.get("kind"), "risk": meta.get("risk")})
+        for reason in approval_reasons(feature_state, meta):
+            reasons.append(f"affected feature {fid}: {reason}")
+    return reasons
+
+
 def gate_status(phase_override=None):
     project=load_project(); state=active_state(required=False)
     if not state: return {"ready":True,"reasons":[]}
@@ -547,7 +610,13 @@ def gate_status(phase_override=None):
     if phase in {"implementation","review","release"}:
         expected=state.get("work_branch"); actual=current_branch()
         if expected and actual!=expected: reasons.append(f"active work belongs to branch {expected!r}, but the checkout is currently on {actual!r}; switch back or finish/abandon the task explicitly")
-        reasons.extend(approval_reasons(state,meta)); reasons.extend(ownership_reasons(state,meta))
+        reasons.extend(approval_reasons(state, meta))
+        try:
+            reasons.extend(approval_event_reasons(state, meta))
+        except SystemExit as exc:
+            reasons.append(f"governance gate event log is invalid: {exc}")
+        reasons.extend(affected_feature_approval_reasons(state, fid))
+        reasons.extend(ownership_reasons(state, meta))
         if phase in {"review","release"}: reasons.extend(module_completion_reasons(state,meta))
         if state.get("concurrency_conflict"): reasons.append("a cross-session write conflict is unresolved; inspect the diff and run gov resolve-concurrency")
         current_impl=git_fingerprint(ROOT,scope="implementation")
@@ -557,15 +626,20 @@ def gate_status(phase_override=None):
             if q.get("status")!="passed" or q.get("fingerprint")!=current: reasons.append("quality gate is missing, failed, or stale for the current implementation diff")
         if state.get("review_required"):
             current=git_fingerprint(ROOT,scope="review")
-            if state.get("review_status")!="passed" or state.get("review_fingerprint")!=current: reasons.append("required independent review is missing or stale for the current diff")
+            if state.get("review_status")=="waived":
+                reasons.extend(review_waiver_reasons(state, current=current))
+            elif state.get("review_status")!="passed" or state.get("review_fingerprint")!=current:
+                reasons.append("required independent review is missing or stale for the current diff")
     return {"ready":not reasons,"reasons":reasons,"work_id":state.get("work_id")}
 
 def effective_feature_status(meta):
     raw=meta.get("status","unknown")
     if meta.get("retired") or raw in {"archived","superseded"}: return meta.get("retired_status") or raw
-    if raw in {"done","blocked"}: return raw
+    if raw in {"approved", "done"} and not (meta.get("requirements_approved") and meta.get("implementation_approved")):
+        return "stale_approval"
     if meta.get("requirements_approved") and not requirements_current(meta): return "stale_requirements"
     if meta.get("implementation_approved") and not implementation_current(meta): return "stale_implementation"
+    if raw in {"done","blocked"}: return raw
     return raw
 
 def render_status():
@@ -738,6 +812,21 @@ def cmd_approve_requirements(args):
     replacement = """## 14. Approval\n- Material questions resolved: YES\n- Acceptance/Test Intent approved: YES\n- Requirements approved: YES"""
     text = replace_marker_block(text, "<!-- gov:requirements-approval:begin -->", "<!-- gov:requirements-approval:end -->", replacement)
     p.write_text(text, encoding="utf-8")
+    prior_impl = {
+        "implementation_approved": bool(meta.get("implementation_approved")),
+        "implementation_approved_at": meta.get("implementation_approved_at"),
+        "implementation_fingerprint": meta.get("implementation_fingerprint"),
+        "architecture_fingerprint": meta.get("architecture_fingerprint"),
+    }
+    meta.setdefault("implementation_approval_lineage", [])
+    if prior_impl["implementation_approved"] or prior_impl["implementation_approved_at"]:
+        meta["implementation_approval_lineage"].append({
+            "event_type": "implementation_approval_invalidated_by_requirements_reapproval",
+            "at": now(),
+            "work_id": (active_state(required=False) or {}).get("work_id"),
+            "feature_id": fid,
+            **prior_impl,
+        })
     meta["requirements_approved"] = True; meta["requirements_fingerprint"] = content_hash(p); meta["requirements_approved_at"] = now()
     # Any new requirements approval invalidates the downstream implementation/review chain.
     meta["implementation_approved"] = False; meta["ready_for_luna"] = False; meta["implementation_fingerprint"] = None; meta["architecture_fingerprint"] = None; meta["quality_config_fingerprint"] = None; meta["feature_validation_fingerprint"] = None; meta["module_plan_fingerprint"] = None
@@ -800,6 +889,221 @@ def cmd_set_prototype(args):
     save_feature(fid, meta)
     print(json.dumps(meta["prototype"], ensure_ascii=False))
 
+def _gate_events_path():
+    return STATE / "gate-events.jsonl"
+
+
+def _seal_gate_event(event):
+    payload = {key: value for key, value in event.items() if key not in {"event_id", "event_digest"}}
+    digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    sealed = dict(payload)
+    sealed["event_digest"] = digest
+    sealed["event_id"] = "gate-" + digest[:20]
+    return sealed
+
+
+def _write_gate_events(events):
+    path = _gate_events_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = "".join(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n" for item in events)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _load_gate_events():
+    path = _gate_events_path()
+    if not path.exists():
+        return []
+    events = []
+    needs_seal = False
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            raise SystemExit(f"Malformed governance gate event log: {path}")
+        if isinstance(item, dict):
+            sealed = _seal_gate_event(item) if not item.get("event_id") or not item.get("event_digest") else item
+            needs_seal = needs_seal or sealed != item
+            events.append(sealed)
+        else:
+            raise SystemExit(f"Malformed governance gate event log: {path}")
+    if needs_seal:
+        _write_gate_events(events)
+    return events
+
+
+def _append_gate_event(event):
+    events = _load_gate_events()
+    events.append(_seal_gate_event(event))
+    _write_gate_events(events)
+
+
+def approval_event_reasons(state, meta, events=None):
+    if not meta or not meta.get("implementation_approved"):
+        return []
+    events = _load_gate_events() if events is None else events
+    fid = str(meta.get("id") or state.get("feature_id") or "")
+    candidates = [event for event in events if event.get("event_type") in {"implementation_approval", "continuation_implementation_reapproval"}]
+    matching = []
+    for event in candidates:
+        expected = {
+            "work_id": state.get("work_id"),
+            "feature_id": fid,
+            "work_branch": state.get("work_branch"),
+            "original_source_baseline": state.get("preimplementation_source_fingerprint"),
+            "requirements_fingerprint": meta.get("requirements_fingerprint"),
+            "implementation_fingerprint": meta.get("implementation_fingerprint"),
+            "architecture_fingerprint": meta.get("architecture_fingerprint"),
+        }
+        if all(event.get(key) == value for key, value in expected.items()):
+            matching.append(event)
+    if not matching:
+        return ["implementation approval has no matching committed gate event"]
+    reasons = []
+    for event in matching:
+        if not event.get("event_id") or not event.get("event_digest"):
+            reasons.append("matching implementation approval gate event is missing id/digest")
+            continue
+        if _seal_gate_event(event).get("event_digest") != event.get("event_digest"):
+            reasons.append("matching implementation approval gate event digest does not match")
+    return reasons
+
+
+def continuation_reapproval_reasons(state, meta, branch, events, reason=""):
+    reasons = []
+    if not str(reason or "").strip():
+        reasons.append("continuation reapproval reason is required")
+    if not state:
+        reasons.append("active work is required")
+        return reasons
+    fid = str(meta.get("id") or "")
+    if state.get("feature_id") != fid:
+        reasons.append("active work feature does not match the requested feature")
+    if not state.get("work_id"):
+        reasons.append("active work id is missing")
+    if not state.get("work_branch") or branch != state.get("work_branch"):
+        reasons.append("current branch does not match the active work branch")
+    if not state.get("preimplementation_source_fingerprint"):
+        reasons.append("original source baseline is missing")
+    if not meta.get("requirements_approved"):
+        reasons.append("current requirements approval is missing")
+    if meta.get("implementation_approved"):
+        reasons.append("implementation approval is already current")
+    impl_at = meta.get("implementation_approved_at")
+    req_at = meta.get("requirements_approved_at")
+    started_at = state.get("started_at")
+    prior_continuations = [
+        event for event in events or []
+        if event.get("event_type") == "continuation_implementation_reapproval"
+        and event.get("work_id") == state.get("work_id")
+        and event.get("feature_id") == fid
+        and event.get("work_branch") == state.get("work_branch")
+    ]
+    if any(event.get("requirements_fingerprint") == meta.get("requirements_fingerprint")
+           for event in prior_continuations):
+        reasons.append("continuation reapproval was already used for this work/feature/branch/requirements contract")
+    # A requirements reapproval deliberately invalidates the old downstream approval.
+    # Permit one new continuation event for the new SPEC contract while preserving the
+    # original source baseline; the event itself binds the new contract fingerprints.
+    if not prior_continuations:
+        try:
+            started = datetime.datetime.fromisoformat(str(started_at))
+            implementation = datetime.datetime.fromisoformat(str(impl_at))
+            requirements = datetime.datetime.fromisoformat(str(req_at))
+            if not (started <= implementation < requirements):
+                reasons.append("legacy approval timestamps are not ordered as started_at <= implementation_approved_at < requirements_approved_at")
+        except (TypeError, ValueError):
+            reasons.append("legacy approval timestamps are missing or invalid")
+    return reasons
+
+
+def _implementation_contract_approval(meta, fid, active, mode, reason=None):
+    ip = feature_dir(fid) / "IMPLEMENTATION.md"
+    prior_meta = json.loads(json.dumps(meta, ensure_ascii=False))
+    text = ip.read_text(encoding="utf-8")
+    prior_text = text
+    ensure_no_governance_placeholders(text, "IMPLEMENTATION.md")
+    spec_text = (feature_dir(fid) / "SPEC.md").read_text(encoding="utf-8")
+    impl_reasons = implementation_contract_reasons(text, spec_text, meta)
+    if impl_reasons:
+        raise SystemExit("IMPLEMENTATION.md is not approval-ready: " + "; ".join(impl_reasons))
+    if not open_questions_resolved(text):
+        raise SystemExit("IMPLEMENTATION.md Open Questions must be None before approval.")
+    replacement = """## 13. Approval
+- Requirements approved and current: YES
+- Architecture ready: YES
+- Implementation plan approved: YES
+- Ready for Luna: YES"""
+    text = replace_marker_block(text, "<!-- gov:implementation-approval:begin -->", "<!-- gov:implementation-approval:end -->", replacement)
+    ip.write_text(text, encoding="utf-8")
+    prior_impl_at = meta.get("implementation_approved_at")
+    meta["implementation_approved"] = True
+    meta["ready_for_luna"] = True
+    meta["implementation_fingerprint"] = content_hash(ip)
+    meta["architecture_fingerprint"] = content_hash(ARCH)
+    meta["quality_config_fingerprint"] = quality_config_fingerprint()
+    meta["feature_validation_fingerprint"] = feature_validation_fingerprint(meta)
+    meta["module_plan_fingerprint"] = module_plan_fingerprint(meta)
+    meta["implementation_approved_at"] = now()
+    meta["status"] = "approved"
+    event = {
+        "event_type": "continuation_implementation_reapproval" if mode == "continuation" else "implementation_approval",
+        "approval_mode": mode,
+        "at": now(),
+        "work_id": active.get("work_id") if active else None,
+        "feature_id": fid,
+        "work_branch": active.get("work_branch") if active else current_branch(),
+        "original_source_baseline": active.get("preimplementation_source_fingerprint") if active else None,
+        "current_source_fingerprint": git_fingerprint(ROOT, scope="source"),
+        "prior_implementation_approved_at": prior_impl_at,
+        "requirements_fingerprint": meta.get("requirements_fingerprint"),
+        "implementation_fingerprint": meta.get("implementation_fingerprint"),
+        "architecture_fingerprint": meta.get("architecture_fingerprint"),
+        "quality_config_fingerprint": meta.get("quality_config_fingerprint"),
+        "feature_validation_fingerprint": meta.get("feature_validation_fingerprint"),
+        "module_plan_fingerprint": meta.get("module_plan_fingerprint"),
+    }
+    if reason:
+        event["reason"] = reason.strip()
+    try:
+        save_feature(fid, meta)
+        _append_gate_event(event)
+    except Exception as exc:
+        ip.write_text(prior_text, encoding="utf-8")
+        write_json(feature_json(fid), prior_meta)
+        render_status()
+        raise SystemExit(f"Implementation approval transaction rolled back because gate event append failed: {exc}") from exc
+    print(meta["implementation_fingerprint"])
+
+
+def cmd_continuation_reapproval(args):
+    if not args.confirmed_by_user:
+        raise SystemExit("Continuation implementation reapproval is a human gate. Re-run only after explicit user approval with --confirmed-by-user.")
+    active = active_state()
+    fid = args.feature_id or active.get("feature_id")
+    if not fid:
+        raise SystemExit("Feature id required.")
+    meta = load_feature(fid)
+    branch = current_branch()
+    reasons = continuation_reapproval_reasons(active, meta, branch, _load_gate_events(), args.reason)
+    if reasons:
+        raise SystemExit("Cannot record continuation implementation reapproval: " + "; ".join(reasons))
+    if not requirements_current(meta):
+        raise SystemExit("Requirements are not approved/current; approve SPEC.md first.")
+    if meta.get("kind") == "feature" and not prototype_gate_ready(meta):
+        raise SystemExit("Prototype decision is unresolved.")
+    if not architecture_ready():
+        raise SystemExit("Architecture profile is uninitialized/incomplete or project architecture metadata has not been registered with gov set-architecture.")
+    if not has_configured_quality(meta):
+        raise SystemExit("No verified quality/validation command is configured.")
+    if active.get("kind") in {"greenfield", "feature"}:
+        ok, detail = contract_modules_ready(meta)
+        if not ok:
+            raise SystemExit("Implementation approval requires explicit product/module ownership mapping: " + detail)
+    _implementation_contract_approval(meta, fid, active, "continuation", args.reason)
+
+
 def cmd_approve_implementation(args):
     if not args.confirmed_by_user: raise SystemExit("Implementation approval is a human gate. Re-run only after explicit user approval with --confirmed-by-user.")
     fid=args.feature_id or active_state().get("feature_id")
@@ -813,19 +1117,36 @@ def cmd_approve_implementation(args):
     if active_kind in {"greenfield","feature"}:
         ok,detail=contract_modules_ready(meta)
         if not ok: raise SystemExit("Implementation approval requires explicit product/module ownership mapping before coding: "+detail+". Register each planned module with gov set-module --id ... --status not_started --path <glob> [--acceptance AC-*].")
+    # If a semantically identical implementation approval was invalidated by a
+    # no-op prototype bookkeeping write, restore only from its sealed event.
+    if active and active.get("feature_id") == fid and not meta.get("implementation_approved"):
+        impl_fp = content_hash(feature_dir(fid) / "IMPLEMENTATION.md")
+        arch_fp = content_hash(ARCH)
+        for event in reversed(_load_gate_events()):
+            if (event.get("event_type") in {"implementation_approval", "continuation_implementation_reapproval"}
+                    and event.get("work_id") == active.get("work_id")
+                    and event.get("feature_id") == fid
+                    and event.get("work_branch") == active.get("work_branch")
+                    and event.get("original_source_baseline") == active.get("preimplementation_source_fingerprint")
+                    and event.get("requirements_fingerprint") == meta.get("requirements_fingerprint")
+                    and event.get("implementation_fingerprint") == impl_fp
+                    and event.get("architecture_fingerprint") == arch_fp):
+                meta["implementation_approved"] = True
+                meta["ready_for_luna"] = True
+                meta["implementation_fingerprint"] = impl_fp
+                meta["architecture_fingerprint"] = arch_fp
+                meta["quality_config_fingerprint"] = quality_config_fingerprint()
+                meta["feature_validation_fingerprint"] = feature_validation_fingerprint(meta)
+                meta["module_plan_fingerprint"] = module_plan_fingerprint(meta)
+                meta["status"] = "approved"
+                save_feature(fid, meta)
+                print(impl_fp)
+                return
     if active and active.get("feature_id")==fid and active.get("risk") in {"standard","high"}:
         baseline=active.get("preimplementation_source_fingerprint"); current=git_fingerprint(ROOT,scope="source")
         if baseline and current!=baseline and not meta.get("implementation_approved"):
             raise SystemExit("Production source/tests/project configuration changed after this Standard/High task started but before the Implementation Gate. Revert or isolate those pre-approval code changes, then approve the implementation contract before coding.")
-    ip=feature_dir(fid)/"IMPLEMENTATION.md"; text=ip.read_text(encoding="utf-8"); ensure_no_governance_placeholders(text,"IMPLEMENTATION.md")
-    spec_text=(feature_dir(fid)/"SPEC.md").read_text(encoding="utf-8")
-    impl_reasons=implementation_contract_reasons(text,spec_text,meta)
-    if impl_reasons:
-        raise SystemExit("IMPLEMENTATION.md is not approval-ready: " + "; ".join(impl_reasons))
-    if not open_questions_resolved(text): raise SystemExit("IMPLEMENTATION.md Open Questions must be None before approval.")
-    replacement="""## 13. Approval\n- Requirements approved and current: YES\n- Architecture ready: YES\n- Implementation plan approved: YES\n- Ready for Luna: YES"""
-    text=replace_marker_block(text,"<!-- gov:implementation-approval:begin -->","<!-- gov:implementation-approval:end -->",replacement); ip.write_text(text,encoding="utf-8")
-    meta["implementation_approved"]=True; meta["ready_for_luna"]=True; meta["implementation_fingerprint"]=content_hash(ip); meta["architecture_fingerprint"]=content_hash(ARCH); meta["quality_config_fingerprint"]=quality_config_fingerprint(); meta["feature_validation_fingerprint"]=feature_validation_fingerprint(meta); meta["module_plan_fingerprint"]=module_plan_fingerprint(meta); meta["implementation_approved_at"]=now(); meta["status"]="approved"; save_feature(fid,meta); print(meta["implementation_fingerprint"])
+    _implementation_contract_approval(meta, fid, active, "initial")
 
 def current_branch():
     if not is_git_repo(ROOT):
@@ -1110,8 +1431,8 @@ def cmd_retire_feature(args):
 def cmd_mark_review(args):
     s = active_state()
     if args.status == "passed":
-        if s.get("phase") != "review":
-            raise SystemExit("A passing review can only be recorded in review phase after current quality/docs gates are satisfied.")
+        if s.get("phase") not in {"review", "release"}:
+            raise SystemExit("A passing review can only be recorded in review/release phase after current quality/docs gates are satisfied.")
         g = gate_status()
         # gate_status will report review itself as missing; all other blockers must already be clear.
         non_review = [r for r in g["reasons"] if "review" not in r.lower()]
@@ -1126,6 +1447,42 @@ def cmd_mark_review(args):
         meta = load_feature(fid); meta["review_status"] = args.status; meta["review_fingerprint"] = s["review_fingerprint"]; meta["reviewed_at"] = s["reviewed_at"]
         save_feature(fid, meta)
     print(args.status)
+
+
+def cmd_waive_review(args):
+    s = active_state()
+    if s.get("phase") not in {"implementation", "review", "release"}:
+        raise SystemExit("A review waiver can only be recorded for active implementation/review/release work.")
+    if not args.confirmed_by_user:
+        raise SystemExit("Review waiver requires --confirmed-by-user.")
+    if s.get("review_status") == "waived" and s.get("review_waiver"):
+        raise SystemExit("A review waiver can only be recorded once for the active work; it expires when the diff changes.")
+    reason = str(args.reason or "").strip()
+    if not reason:
+        raise SystemExit("Review waiver requires a non-empty --reason.")
+    current = git_fingerprint(ROOT, scope="review")
+    event = {
+        "event_type": "review_waiver",
+        "work_id": s.get("work_id"), "work_branch": s.get("work_branch"),
+        "feature_id": s.get("feature_id"), "review_fingerprint": current,
+        "reason": reason, "confirmed_by_user": True, "recorded_at": now(),
+    }
+    previous = dict(s)
+    s["review_status"] = "waived"
+    s["review_fingerprint"] = None
+    s["reviewed_at"] = None
+    s["review_waiver"] = {
+        "work_id": s.get("work_id"), "work_branch": s.get("work_branch"),
+        "review_fingerprint": current, "reason": reason,
+        "confirmed_by_user": True, "recorded_at": event["recorded_at"],
+    }
+    try:
+        _append_gate_event(event)
+        save_active(s)
+    except Exception as exc:
+        save_active(previous)
+        raise SystemExit(f"Review waiver was rolled back: {exc}")
+    print(json.dumps(s["review_waiver"], ensure_ascii=False))
 
 def cmd_resolve_concurrency(args):
     s = active_state()
@@ -1238,6 +1595,28 @@ def _refresh_doc_cycle_from_current_diff(state):
     return current
 
 
+def _repair_legacy_implementation_lineage(meta):
+    """Normalize the one legacy continuation record without changing approval state."""
+    changed = False
+    lineage = meta.get("implementation_approval_lineage") or []
+    for item in lineage:
+        if not isinstance(item, dict) or item.get("event_type") != "implementation_approval_invalidated_by_requirements_reapproval":
+            continue
+        was_missing_fingerprint = item.get("implementation_fingerprint") is None
+        if was_missing_fingerprint and meta.get("implementation_fingerprint"):
+            item["implementation_fingerprint"] = meta.get("implementation_fingerprint")
+            item["architecture_fingerprint"] = meta.get("architecture_fingerprint")
+            if meta.get("requirements_approved_at"):
+                item["at"] = meta.get("requirements_approved_at")
+            changed = True
+        if item.get("at") == item.get("implementation_approved_at") and meta.get("requirements_approved_at"):
+            item["at"] = meta.get("requirements_approved_at")
+            changed = True
+    if changed:
+        meta["implementation_approval_lineage"] = lineage
+    return changed
+
+
 def cmd_sync_docs(args):
     s=active_state(); current=_refresh_doc_cycle_from_current_diff(s); s=active_state()
     affected=list(s.get("affected_feature_ids") or [])
@@ -1246,6 +1625,10 @@ def cmd_sync_docs(args):
         if fid==s.get("feature_id") and not feature_json(fid).exists(): pass
         else: raise SystemExit(f"Feature {fid} is not affected by the current implementation diff according to declared module ownership.")
     meta=load_feature(fid,required=False) if fid else None
+    if meta and _repair_legacy_implementation_lineage(meta):
+        save_feature(fid, meta, render=False)
+        render_status()
+        meta=load_feature(fid,required=False)
     effective_dirty=bool(s.get("docs_dirty") or (s.get("docs_required",True) and s.get("docs_sync_fingerprint")!=current))
     if effective_dirty and meta:
         if s.get("risk") in {"standard","high"} and not args.summary: raise SystemExit("Documentation synchronization refused: Standard/High affected feature work requires --summary so governance appends a semantic CHANGELOG entry for this implementation cycle.")
@@ -1619,6 +2002,7 @@ def build_parser():
     x=sp.add_parser("approve-requirements"); x.add_argument("--feature-id"); x.add_argument("--confirmed-by-user",action="store_true"); x.set_defaults(func=cmd_approve_requirements)
     x=sp.add_parser("set-prototype"); x.add_argument("--feature-id"); x.add_argument("--decision",choices=["generate","skip","not-needed"],required=True); x.add_argument("--status",choices=["not_started","in_progress","approved","superseded","skipped"],required=True); x.add_argument("--path"); x.add_argument("--confirmed-by-user",action="store_true"); x.set_defaults(func=cmd_set_prototype)
     x=sp.add_parser("approve-implementation"); x.add_argument("--feature-id"); x.add_argument("--confirmed-by-user",action="store_true"); x.set_defaults(func=cmd_approve_implementation)
+    x=sp.add_parser("continuation-reapproval"); x.add_argument("--feature-id"); x.add_argument("--reason",required=True); x.add_argument("--confirmed-by-user",action="store_true"); x.set_defaults(func=cmd_continuation_reapproval)
     x=sp.add_parser("set-architecture"); x.add_argument("--level",choices=["L1","L2","L3","L4"],required=True); x.add_argument("--application-shape",required=True); x.add_argument("--runtime-mode",choices=["windows-native","wsl2","linux","macos"]); x.set_defaults(func=cmd_set_architecture)
     x=sp.add_parser("start-work"); x.add_argument("--kind",required=True,choices=KINDS); x.add_argument("--risk",choices=RISKS,default="standard"); x.add_argument("--title",required=True); x.add_argument("--feature-id"); x.add_argument("--work-id"); x.add_argument("--phase",choices=["discovery","requirements","prototype","architecture","planning","implementation","blocked"],default="requirements"); x.set_defaults(func=cmd_start_work)
     x=sp.add_parser("capture-preimplementation-baseline"); x.set_defaults(func=cmd_capture_preimplementation_baseline)
@@ -1628,6 +2012,7 @@ def build_parser():
     x=sp.add_parser("retire-feature"); x.add_argument("--feature-id",required=True); x.add_argument("--status",choices=["archived","superseded"],required=True); x.add_argument("--reason",required=True); x.add_argument("--replacement",action="append"); x.add_argument("--confirmed-by-user",action="store_true"); x.set_defaults(func=cmd_retire_feature)
     x=sp.add_parser("set-feature-status"); x.add_argument("--feature-id"); x.add_argument("status",choices=["draft","requirements_approved","approved","in_progress","blocked","done"]); x.set_defaults(func=cmd_set_feature_status)
     x=sp.add_parser("mark-review"); x.add_argument("status",choices=["pending","passed","failed","skipped"]); x.set_defaults(func=cmd_mark_review)
+    x=sp.add_parser("waive-review"); x.add_argument("--reason",required=True); x.add_argument("--confirmed-by-user",action="store_true"); x.set_defaults(func=cmd_waive_review)
     x=sp.add_parser("resolve-concurrency"); x.add_argument("--reason",required=True); x.set_defaults(func=cmd_resolve_concurrency)
     x=sp.add_parser("add-change"); x.add_argument("--feature-id"); x.add_argument("--summary",required=True); x.add_argument("--before"); x.add_argument("--after"); x.add_argument("--notes"); x.add_argument("--tests"); x.set_defaults(func=cmd_add_change)
     x=sp.add_parser("sync-docs"); x.add_argument("--feature-id"); x.add_argument("--reason",required=True); x.add_argument("--summary"); x.add_argument("--before"); x.add_argument("--after"); x.add_argument("--notes"); x.add_argument("--tests"); x.add_argument("--no-semantic-change",action="store_true"); x.set_defaults(func=cmd_sync_docs)

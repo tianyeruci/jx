@@ -31,6 +31,7 @@ from knowledge_cleaner.sources import (
     parse_wechat_public_account,
 )
 
+from .acceptance_budget import AcceptanceCampaignLedger, stable_operation_id
 from .activity_cleaning import ActivityCleaningStrategy
 from .cache import cache
 from .config import get_settings
@@ -93,6 +94,27 @@ def _reject_disabled_course_write(*, strategy_code: str, knowledge_base_code: st
         )
 
 
+def _reject_non_general_cleaning_test_batch_write(batch: CleaningBatch) -> None:
+    """Fail closed for legacy generic writes in the isolated test profile.
+
+    New admin routes receive ``kb_code`` and guard it at their HTTP boundary,
+    but the older generic retry routes identify their target only by batch ID.
+    Resolve the durable owner before changing retry state so a guessed course
+    batch ID cannot bypass the general-only isolation boundary.
+    """
+
+    settings = get_settings()
+    if batch.knowledge_base_code != "general" and (
+        settings.cleaning_general_only or not settings.dify_course_dataset_enabled
+    ):
+        raise ServiceError(
+            "STRATEGY_DISABLED",
+            "cleaning-test general-only:非通用知识库重试入口已禁用",
+            403,
+            False,
+        )
+
+
 def _review_force_strategy_codes(value: str | None) -> frozenset[str]:
     return frozenset(item.strip() for item in str(value or "").split(",") if item.strip())
 
@@ -113,6 +135,98 @@ def review_policy_snapshot(strategy_code: str) -> dict[str, Any]:
         "force_review": enabled
         and strategy_code
         in _review_force_strategy_codes(settings.cleaning_review_force_strategies),
+    }
+
+
+def _validate_acceptance_campaign_context(
+    context: object,
+    *,
+    strategy_code: str,
+    rows: list[CleaningFile],
+    settings: Any,
+) -> dict[str, Any] | None:
+    """Bind a sealed runner operation to the exact uploaded source bytes."""
+    if context is None:
+        return None
+    if not settings.cleaning_acceptance_budget_enabled:
+        raise ServiceError("CONFLICT", "未启用验收预算，禁止提交campaign上下文", 409, False)
+    if not isinstance(context, dict):
+        raise ServiceError("VALIDATION_ERROR", "campaign上下文格式无效", 422, False)
+    sample_id = str(context.get("sample_id") or "").strip()
+    declared_strategy = str(context.get("strategy_code") or "").strip()
+    source_sha = str(context.get("source_sha256") or "").strip().lower()
+    if (
+        not sample_id
+        or declared_strategy != strategy_code
+        or not re.fullmatch(r"[0-9a-f]{64}", source_sha)
+        or len(rows) != 1
+        or rows[0].status != "pending"
+        or str(rows[0].source_sha256).lower() != source_sha
+    ):
+        raise ServiceError("CONFLICT", "campaign上下文与上传来源不匹配", 409, False)
+    if context.get("sealed") is not True:
+        raise ServiceError("CONFLICT", "campaign未封存", 409, False)
+    realtime_raw = context.get("realtime_operation_id")
+    batch_raw = context.get("batch_operation_id")
+    realtime_ids = (
+        [str(value) for value in realtime_raw if str(value)]
+        if isinstance(realtime_raw, list)
+        else [str(realtime_raw or "")]
+    )
+    batch_ids = (
+        [str(value) for value in batch_raw if str(value)]
+        if isinstance(batch_raw, list)
+        else ([str(batch_raw)] if batch_raw else [])
+    )
+    if not realtime_ids or any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in realtime_ids):
+        raise ServiceError("VALIDATION_ERROR", "realtime operation ID无效", 422, False)
+    if any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in batch_ids):
+        raise ServiceError("VALIDATION_ERROR", "batch operation ID无效", 422, False)
+    ledger = AcceptanceCampaignLedger(settings.acceptance_campaign_ledger_path)
+    manifest_sha = str(context.get("manifest_sha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", manifest_sha) or ledger.manifest_sha256() != manifest_sha:
+        raise ServiceError("CONFLICT", "campaign manifest指纹不匹配", 409, False)
+    declared_units = context.get("unit_keys")
+    if not isinstance(declared_units, list) or not declared_units:
+        raise ServiceError("CONFLICT", "campaign缺少logical unit绑定", 409, False)
+    expected_operations = [
+        *[(value, "model_realtime") for value in realtime_ids],
+        *[(value, "model_batch") for value in batch_ids],
+    ]
+    for operation_id, expected_kind in expected_operations:
+        try:
+            operation = ledger.get_operation(operation_id)
+        except (KeyError, OSError, ValueError, RuntimeError) as exc:
+            raise ServiceError("CONFLICT", "campaign operation不可验证", 409, False) from exc
+        binding = operation.get("binding")
+        if (
+            not ledger.is_sealed(operation_id)
+            or operation.get("operation_kind") != expected_kind
+            or not isinstance(binding, dict)
+            or binding.get("strategy_code") != strategy_code
+            or str(binding.get("sample_id") or "") != sample_id
+            or str(binding.get("source_sha256") or "").lower() != source_sha
+            or str(binding.get("unit_key") or "") not in {str(item) for item in declared_units}
+            or stable_operation_id(
+                "ys-cleaning-acceptance",
+                f"model:{binding.get('unit_key')}:{expected_kind.removeprefix('model_')}",
+            )
+            != operation_id
+        ):
+            raise ServiceError("CONFLICT", "campaign operation未按transport封存", 409, False)
+    return {
+        "sealed": True,
+        "sample_id": sample_id,
+        "strategy_code": declared_strategy,
+        "source_sha256": source_sha,
+        "unit_keys": [str(item) for item in declared_units],
+        "realtime_operation_id": realtime_ids[0] if len(realtime_ids) == 1 else realtime_ids,
+        **(
+            {"batch_operation_id": batch_ids[0] if len(batch_ids) == 1 else batch_ids}
+            if batch_ids
+            else {}
+        ),
+        "manifest_sha256": manifest_sha,
     }
 
 
@@ -138,7 +252,7 @@ def source_markdown_fallback_enabled(
 ) -> bool:
     """Whether a new batch may publish its non-empty cleaned Markdown source."""
 
-    if strategy_code == "course_route_catalog":
+    if strategy_code == "course_route_catalog" or strategy_code in CONTENT_MODEL_STRATEGIES:
         return False
     policy = (metadata or {}).get("_cleaning_review_policy")
     if not isinstance(policy, dict):
@@ -429,6 +543,10 @@ _PDF_HARD_BLOCK_PREFIXES = (
     "PDF读取失败",
     "PDF_TYPE_REVIEW_REQUIRED",
     "OCR_PAGE_LIMIT_REVIEW",
+    "OCR_PAGE_COVERAGE_MISMATCH",
+    "OCR_LOW_CONFIDENCE_REVIEW",
+    "OCR_BACKEND_UNAVAILABLE",
+    "OCR缺少置信度证据",
     "PDF缺少可用文字层",
     "OCR执行失败",
     "OCR_KEY_FACT_CONFLICT",
@@ -438,21 +556,43 @@ _PDF_HARD_BLOCK_PREFIXES = (
     "不支持的OCR后端",
 )
 
+# A failed consultation conversion must be recoverable by its actual failed
+# stage.  In particular, do not turn ordinary OCR or PDF read failures into a
+# privacy finding: that would make an operator choose the wrong recovery path
+# and obscures the evidence for the publication block.
+_PDF_BLOCKING_ERROR_CODES: tuple[tuple[str, str], ...] = (
+    ("OCR_PAGE_LIMIT_REVIEW", "OCR_PAGE_LIMIT_REVIEW"),
+    ("OCR_PAGE_COVERAGE_MISMATCH", "OCR_PAGE_COVERAGE_MISMATCH"),
+    ("OCR_LOW_CONFIDENCE_REVIEW", "OCR_LOW_CONFIDENCE_REVIEW"),
+    ("OCR_BACKEND_UNAVAILABLE", "OCR_BACKEND_UNAVAILABLE"),
+    ("OCR_KEY_FACT_CONFLICT", "OCR_KEY_FACT_CONFLICT"),
+    ("PDF读取失败", "PDF_READ_FAILED"),
+    ("OCR缺少置信度证据", "OCR_CONFIDENCE_EVIDENCE_MISSING"),
+    ("PDF缺少可用文字层", "PDF_NO_TEXT_LAYER"),
+    ("OCR执行失败", "OCR_EXECUTION_FAILED"),
+    ("未生成可入库正文", "EMPTY_CLEANING_OUTPUT"),
+    ("脱敏后仍检测到", "PRIVACY_REVIEW_REQUIRED"),
+    ("OCR离线模型", "OCR_BACKEND_UNAVAILABLE"),
+    ("不支持的OCR后端", "OCR_BACKEND_UNAVAILABLE"),
+)
+
 
 def _pdf_blocking_reasons(reasons: Iterable[Any], markdown: str) -> list[str]:
     values = [str(reason) for reason in reasons]
-    blocking = [
-        reason
-        for reason in values
-        if reason.startswith(_PDF_HARD_BLOCK_PREFIXES)
-        and not any(
-            marker in reason.lower()
-            for marker in ("table", "表格", "版面", "格式", "低置信", "confidence")
-        )
-    ]
+    blocking = [reason for reason in values if reason.startswith(_PDF_HARD_BLOCK_PREFIXES)]
     if not markdown.strip() and "未生成可入库正文" not in blocking:
         blocking.append("未生成可入库正文")
     return list(dict.fromkeys(blocking))
+
+
+def _pdf_blocking_error_code(reasons: Iterable[Any]) -> str:
+    """Return the stable reason for a PDF hard block, never a privacy default."""
+
+    values = [str(reason) for reason in reasons]
+    for prefix, code in _PDF_BLOCKING_ERROR_CODES:
+        if any(value.startswith(prefix) for value in values):
+            return code
+    return "PDF_CONVERSION_FAILED"
 
 
 def _is_pdf_table_warning(value: Any) -> bool:
@@ -684,7 +824,17 @@ class PersonalBusinessConsultationStrategy:
     supported_extensions = {".md", ".markdown", ".docx", ".pdf"}
     sensitive = True
     knowledge_base_code = "general"
-    dify_metadata_fields = frozenset({"record_type", "topic", "source_title", "case_id"})
+    dify_metadata_fields = frozenset(
+        {
+            "record_type",
+            "topic",
+            "source_title",
+            "case_id",
+            "case_group_id",
+            "candidate_for_case_id",
+            "methodology_scope",
+        }
+    )
 
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
         from knowledge_cleaner.pdf_convert import (
@@ -791,10 +941,13 @@ class PersonalBusinessConsultationStrategy:
         else:
             raise ValueError(f"个人商业咨询不支持 {suffix} 文件")
 
-        disposition = "review_required" if needs_review else "awaiting_model"
+        # A consultation PDF that has failed OCR/quality/privacy validation
+        # must never enter the model queue. New content paths use failed with
+        # the specific conversion code, not review_required or a source-text
+        # fallback.
+        disposition = "failed" if needs_review else "awaiting_model"
         safe_markdown = markdown.strip()
-        if not safe_markdown:
-            safe_markdown = "# 匿名商业咨询案例\n\n内容需人工复核后发布。"
+        blocking_code = _pdf_blocking_error_code(review_reasons)
         redaction_summary = {
             str(getattr(item, "category", "unknown")): int(getattr(item, "count", 0))
             for item in redactions
@@ -820,9 +973,9 @@ class PersonalBusinessConsultationStrategy:
                     child_chunk_overlap=0,
                 ),
                 disposition=disposition,
-                error_code=("PRIVACY_REVIEW_REQUIRED" if needs_review else None),
+                error_code=(blocking_code if needs_review else None),
                 error_message=(
-                    "；".join(review_reasons[:3]) or "隐私或版面检查需要人工确认"
+                    "；".join(review_reasons[:3]) or "咨询PDF转换或隐私检查失败"
                     if needs_review
                     else None
                 ),
@@ -1698,11 +1851,136 @@ ALLOWED_COMMON_METADATA = {
     # provenance and is deliberately absent from every strategy's Dify
     # metadata allow-list.
     "_test_ui_cleanup_run_id",
+    "_acceptance_campaign",
 }
+
+_ACCEPTANCE_PARITY_STRATEGIES = frozenset({"personal_business_consultation", "zsxq_post"})
+
+
+def _validate_acceptance_parity_context(
+    context_json: str,
+    *,
+    strategy_code: str,
+    rows: list[CleaningFile],
+    settings: Any,
+) -> dict[str, Any] | None:
+    """Validate the protected parity selection after source bytes are hashed.
+
+    The context is an admission hint only until the server compares it with
+    the uploaded SHA and the configured campaign ledger.  It is stored under
+    a private batch metadata key and never projected to Dify.
+    """
+    if not context_json.strip():
+        return None
+    if not settings.cleaning_acceptance_budget_enabled:
+        raise ServiceError("CONFLICT", "未启用验收预算，禁止提交protected parity上下文", 409, False)
+    try:
+        context = json.loads(context_json)
+    except (TypeError, ValueError) as exc:
+        raise ServiceError(
+            "VALIDATION_ERROR", "protected parity上下文格式无效", 422, False
+        ) from exc
+    if not isinstance(context, dict) or context.get("schema_version") != 1:
+        raise ServiceError("VALIDATION_ERROR", "protected parity上下文版本无效", 422, False)
+    if (
+        context.get("strategy_code") != strategy_code
+        or strategy_code not in _ACCEPTANCE_PARITY_STRATEGIES
+    ):
+        raise ServiceError("CONFLICT", "protected parity策略不在受限范围", 409, False)
+    selected = context.get("selected_source_sha256")
+    if (
+        not isinstance(selected, list)
+        or len(selected) != 1
+        or not all(
+            isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) for value in selected
+        )
+    ):
+        raise ServiceError("VALIDATION_ERROR", "protected parity必须精确选择一个SHA", 422, False)
+    actual = [str(row.source_sha256).lower() for row in rows if row.status == "pending"]
+    if actual != [selected[0].lower()] or len(rows) != 1:
+        raise ServiceError("CONFLICT", "protected parity来源与上传文件不匹配", 409, False)
+    campaign = context.get("campaign")
+    if not isinstance(campaign, dict) or campaign.get("sealed") is not True:
+        raise ServiceError("CONFLICT", "protected parity campaign未封存", 409, False)
+    operation_id = str(campaign.get("batch_operation_id") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", operation_id):
+        raise ServiceError("VALIDATION_ERROR", "protected parity operation ID无效", 422, False)
+    ledger = AcceptanceCampaignLedger(settings.acceptance_campaign_ledger_path)
+    try:
+        operation = ledger.get_operation(operation_id)
+    except (KeyError, OSError, ValueError, RuntimeError) as exc:
+        raise ServiceError("CONFLICT", "protected parity campaign账本不可验证", 409, False) from exc
+    if not ledger.is_sealed(operation_id):
+        raise ServiceError("CONFLICT", "protected parity operation未封存", 409, False)
+    if operation.get("operation_kind") != "model_batch":
+        raise ServiceError("CONFLICT", "protected parity operation类型无效", 409, False)
+    manifest_sha = str(campaign.get("manifest_sha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", manifest_sha) or ledger.manifest_sha256() != manifest_sha:
+        raise ServiceError("CONFLICT", "protected parity campaign manifest已变化", 409, False)
+    return {
+        "schema_version": 1,
+        "strategy_code": strategy_code,
+        "selected_source_sha256": [selected[0].lower()],
+        "campaign": {
+            "sealed": True,
+            "batch_operation_id": operation_id,
+            "manifest_sha256": manifest_sha,
+        },
+    }
+
+
 ITEM_TERMINAL_STATUSES = {"succeeded", "excluded", "review_required", "failed"}
 ITEM_SUCCESS_STATUSES = {"succeeded"}
 ITEM_PROCESSED_WITHOUT_ERROR = {"succeeded", "excluded"}
+# ``failed`` spans several very different recovery paths.  The ordinary item
+# retry is a Dify-publication retry and must never be used to skip OCR,
+# anonymisation or the model contract.  ``retryable`` carries that narrower
+# fact on the persisted item; keep this status set only for API compatibility.
 ITEM_RETRYABLE_STATUSES = {"failed"}
+_PUBLICATION_RETRYABLE_ERROR_CODES = {
+    # These are the only terminal errors produced after the source content has
+    # already passed conversion, OCR, anonymisation and (when required) model
+    # admission.  A direct item retry may therefore resume publication.
+    "DIFY_PUBLICATION_FAILED",
+    "DIFY_DUPLICATE_VERIFICATION_FAILED",
+    "SOURCE_ATOMIC_ROLLBACK",
+}
+_MODEL_RETRY_ONLY_ERROR_CODES = {
+    "MODEL_CONTRACT_INVALID",
+    "MODEL_NO_RESPONSE",
+    "MODEL_INPUT_TOO_LARGE",
+    "MODEL_REVIEW_SKIPPED",
+    "MODEL_FALLBACK_SOURCE_EMPTY",
+    "MODEL_BATCH_SUBMIT_FAILED",
+    "MODEL_PROVIDER_RETRY_APPROVAL_REQUIRED",
+    "MODEL_CALL_LIMIT_EXCEEDED",
+    "MODEL_DAILY_BUDGET_EXCEEDED",
+    "MODEL_ACCEPTANCE_BUDGET_EXCEEDED",
+    "MODEL_BUDGET_LOCK_UNAVAILABLE",
+    "MODEL_BATCH_RESULT_INVALID",
+    "MODEL_BATCH_RESULT_MISSING",
+    "MODEL_BATCH_SUBMIT_UNCERTAIN",
+    "CONTENT_EMPTY_AFTER_MODEL",
+    "METHODOLOGY_SOURCE_CASE_FAILED",
+}
+
+
+def _is_publication_retryable(item: CleaningDocument) -> bool:
+    """Return whether a failed item can safely resume from publication.
+
+    ``retryable`` alone is not sufficient: historical rows used it for every
+    failed item, including failed OCR/source conversion.  Keep retry fail
+    closed for those rows and only allow error codes produced after all source
+    gates have completed.
+    """
+
+    return (
+        item.status in ITEM_RETRYABLE_STATUSES
+        and item.retryable
+        and item.error_code in _PUBLICATION_RETRYABLE_ERROR_CODES
+    )
+
+
 FILE_TERMINAL_STATUSES = {"succeeded", "excluded", "review_required", "failed", "mixed"}
 
 _ALLOWED_CONTENT_TYPES = {
@@ -1984,6 +2262,7 @@ def _summarize_file(file_row: CleaningFile) -> dict[str, Any]:
 def _serialize_model_task(task: ModelCleaningTask) -> dict[str, Any]:
     return {
         "task_id": task.id,
+        "strategy_code": task.batch.strategy_code if task.batch is not None else "",
         "mode": task.mode,
         "model": task.model,
         "prompt_version": task.prompt_version,
@@ -2179,6 +2458,11 @@ def _preflight_local_duplicates(
                 | CleaningFile.source_name_key.in_(source_names)
                 | CleaningFile.source_name_key.is_(None)
             ),
+            # A terminal source still owns its local duplicate-protection
+            # lease.  The exact source-delete workflow sets
+            # ``dedupe_released_at`` only after its remote replicas and local
+            # source state have been reconciled, which is the sole safe way to
+            # permit a re-upload.
             CleaningFile.status.in_(
                 [
                     "pending",
@@ -2189,6 +2473,7 @@ def _preflight_local_duplicates(
                     "review_required",
                     "mixed",
                     "excluded",
+                    "failed",
                 ]
             ),
             CleaningFile.dedupe_released_at.is_(None),
@@ -2256,6 +2541,7 @@ async def create_cleaning_batch(
     knowledge_base_code: str = Form(...),
     upload_mode: str = Form(default="cleaned"),
     common_metadata: str = Form(default="{}"),
+    acceptance_context_json: str = Form(default=""),
     files: list[UploadFile] = File(...),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
@@ -2458,6 +2744,42 @@ async def create_cleaning_batch(
             else:
                 pending_ids.append(row.id)
 
+    all_rows_for_parity = session.scalars(
+        select(CleaningFile).where(CleaningFile.batch_id == batch.id)
+    ).all()
+    try:
+        parity_context = _validate_acceptance_parity_context(
+            acceptance_context_json,
+            strategy_code=strategy_code,
+            rows=list(all_rows_for_parity),
+            settings=settings,
+        )
+    except ServiceError:
+        session.rollback()
+        shutil.rmtree(batch_dir, ignore_errors=True)
+        raise
+    if parity_context is not None:
+        batch.common_metadata = {
+            **(batch.common_metadata or {}),
+            "_acceptance_parity": parity_context,
+        }
+    try:
+        campaign_context = _validate_acceptance_campaign_context(
+            (parsed_metadata or {}).get("_acceptance_campaign"),
+            strategy_code=strategy_code,
+            rows=list(all_rows_for_parity),
+            settings=settings,
+        )
+    except ServiceError:
+        session.rollback()
+        shutil.rmtree(batch_dir, ignore_errors=True)
+        raise
+    if campaign_context is not None:
+        batch.common_metadata = {
+            **(batch.common_metadata or {}),
+            "_acceptance_campaign": campaign_context,
+        }
+
     try:
         pending_rows = [session.get(CleaningFile, file_id) for file_id in pending_ids]
         _preflight_local_duplicates(
@@ -2641,6 +2963,10 @@ def retry_cleaning_file(
     file_id: str,
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
+    batch = session.get(CleaningBatch, batch_id)
+    if batch is None:
+        raise ServiceError("VALIDATION_ERROR", "清洗批次不存在", 404, False)
+    _reject_non_general_cleaning_test_batch_write(batch)
     row = session.scalar(
         select(CleaningFile).where(
             CleaningFile.id == file_id,
@@ -2650,7 +2976,20 @@ def retry_cleaning_file(
     if row is None:
         raise ServiceError("VALIDATION_ERROR", "清洗文件不存在", 404, False)
     review_required_documents = [item for item in row.documents if item.status == "review_required"]
-    retryable_documents = [item for item in row.documents if item.status in ITEM_RETRYABLE_STATUSES]
+    retryable_documents = [item for item in row.documents if _is_publication_retryable(item)]
+    model_retry_only_documents = [
+        item
+        for item in row.documents
+        if item.status in ITEM_RETRYABLE_STATUSES
+        and item.error_code in _MODEL_RETRY_ONLY_ERROR_CODES
+    ]
+    source_retry_documents = [
+        item
+        for item in row.documents
+        if item.status in ITEM_RETRYABLE_STATUSES
+        and item.error_code not in _MODEL_RETRY_ONLY_ERROR_CODES
+        and not _is_publication_retryable(item)
+    ]
     if (
         review_required_documents
         and not retryable_documents
@@ -2659,9 +2998,66 @@ def retry_cleaning_file(
         raise ServiceError(
             "VALIDATION_ERROR", "待复核条目不能直接重试，请先执行人工复核", 409, False
         )
-    if row.status != "failed" and not retryable_documents:
+    if row.status != "failed" and not retryable_documents and not source_retry_documents:
         raise ServiceError("VALIDATION_ERROR", "当前文件没有失败条目可重试", 409, False)
+    if model_retry_only_documents and not retryable_documents:
+        raise ServiceError(
+            "VALIDATION_ERROR",
+            "模型失败不能走普通重试，请使用模型契约精确重试",
+            409,
+            False,
+        )
     target = get_settings().upload_root.resolve() / batch_id / row.storage_filename
+    if source_retry_documents:
+        if not target.exists():
+            raise ServiceError("CLEANING_FAILED", "失败文件已经过期，无法重试", 410, False)
+        previous_state = (
+            row.status,
+            row.outcome,
+            row.stage,
+            row.error_code,
+            row.error_message,
+        )
+        row.status = "pending"
+        row.outcome = "pending"
+        # Commit an explicitly recoverable state before the broker handoff.
+        # A failed handoff therefore remains visible to the reconciler rather
+        # than being stuck forever in a state which says it is being cleaned.
+        row.stage = "retrying"
+        row.error_code = None
+        row.error_message = None
+        session.commit()
+        cache.delete(cleaning_batch_cache_key(batch_id))
+        try:
+            _enqueue_cleaning_file(file_id, row.original_filename)
+        except Exception as exc:
+            (
+                row.status,
+                row.outcome,
+                row.stage,
+                row.error_code,
+                row.error_message,
+            ) = previous_state
+            session.commit()
+            cache.delete(cleaning_batch_cache_key(batch_id))
+            raise ServiceError(
+                "TASK_QUEUE_UNAVAILABLE",
+                "清洗任务重新提交失败，状态已恢复",
+                503,
+                True,
+            ) from exc
+        record_event(
+            level="INFO",
+            category="operation",
+            component="cleaning",
+            event_code="CLEANING_FILE_RETRIED",
+            status="accepted",
+            message="失败清洗文件已从源文件重新提交",
+            resource_type="cleaning_file",
+            resource_id=file_id,
+            details={"batch_id": batch_id, "recovery": "source"},
+        )
+        return {"file_id": file_id, "status": "pending"}
     if not target.exists() and not retryable_documents:
         raise ServiceError("CLEANING_FAILED", "失败文件已经过期，无法重试", 410, False)
     row.status = "pending"
@@ -2699,6 +3095,10 @@ def retry_cleaning_file(
 def retry_cleaning_item(
     batch_id: str, file_id: str, item_id: str, session: Session
 ) -> dict[str, Any]:
+    batch = session.get(CleaningBatch, batch_id)
+    if batch is None:
+        raise ServiceError("VALIDATION_ERROR", "清洗批次不存在", 404, False)
+    _reject_non_general_cleaning_test_batch_write(batch)
     row = session.scalar(
         select(CleaningDocument)
         .join(CleaningFile, CleaningDocument.file_id == CleaningFile.id)
@@ -2713,6 +3113,20 @@ def retry_cleaning_item(
     if row.status not in ITEM_RETRYABLE_STATUSES:
         raise ServiceError(
             "VALIDATION_ERROR", "只有失败条目可以重试；待复核条目请先执行人工复核", 409, False
+        )
+    if row.error_code in _MODEL_RETRY_ONLY_ERROR_CODES:
+        raise ServiceError(
+            "VALIDATION_ERROR",
+            "模型失败不能走普通重试，请使用模型契约精确重试",
+            409,
+            False,
+        )
+    if not _is_publication_retryable(row):
+        raise ServiceError(
+            "VALIDATION_ERROR",
+            "该失败需要从源文件重新清洗，不能直接发布现有正文",
+            409,
+            False,
         )
     row.status = "pending"
     row.stage = "pending"
@@ -2761,6 +3175,7 @@ def retry_model_contract_item(
     batch = session.get(CleaningBatch, batch_id)
     if task is None or document is None or batch is None:
         raise ValueError("模型重试目标不存在")
+    _reject_non_general_cleaning_test_batch_write(batch)
     if task.mode != "realtime":
         raise ValueError("仅允许重试 realtime 模型任务，避免意外产生 Batch 调用")
     if task.status != "completed":
@@ -2772,7 +3187,27 @@ def retry_model_contract_item(
         "MODEL_NO_RESPONSE",
     }:
         raise ValueError("只有模型契约或模型无响应失败条目可以精确重试")
+    from .workers.tasks.model_cleaning import model_attempt_count_for_document
 
+    try:
+        valid_document_ids = set(
+            session.scalars(
+                select(CleaningDocument.id)
+                .join(CleaningFile)
+                .where(CleaningFile.batch_id == batch_id)
+            )
+        )
+        if str(document.id) not in valid_document_ids:
+            raise ValueError("模型调用条目不属于当前任务批次")
+        model_attempts = model_attempt_count_for_document(
+            document,
+            task,
+            valid_document_ids=valid_document_ids,
+        )
+    except Exception as exc:
+        raise ValueError("该条目的模型调用次数不可核验，不能自动重试") from exc
+    if model_attempts >= 2:
+        raise ValueError("该条目已达到两次模型调用上限，不能再次精确重试")
     previous_document_state = (
         document.status,
         document.stage,
@@ -2791,9 +3226,15 @@ def retry_model_contract_item(
     document.error_message = None
     document.retryable = False
     task.status = "queued"
-    task.result_counts = {}
-    task.actual_usage = {}
+    from .workers.tasks.model_cleaning import merge_result_counts_preserving_provider_ledger
+
+    task.result_counts = merge_result_counts_preserving_provider_ledger(task, {})
     task.last_error = ""
+    # Delivery attempts are not provider-call attempts.  Releasing a terminal
+    # lease lets a fresh worker claim this exact retry while the durable
+    # document counter/ledger remains the only two-call authority.
+    task.lease_token = None
+    task.lease_expires_at = None
     batch.status = "model_validating"
     session.commit()
     cache.delete(cleaning_batch_cache_key(batch_id))

@@ -1,0 +1,18 @@
+name: ai-management-cleaning-test
+
+services:
+  test-ui-cleaning:
+    image: ${AI_CLEANING_TEST_UI_IMAGE:-jx-now-ai-management-ui:cleaning-test}
+    env_file: ${CLEANING_TEST_ENV_FILE:-.env.cleaning-test}
+    environment:
+      AI_MANAGEMENT_BASE_URL: http://ai-management-cleaning-test-api:8000
+    command: streamlit run ai_management/test_ui.py --server.address 0.0.0.0 --server.port 8501 --server.baseUrlPath ai-management-test --server.headless true
+    ports:
+      # Never compete with the formal test page on 8501.  This endpoint is
+      # loopback-only and may be reached through an operator SSH tunnel.
+      - "127.0.0.1:18501:8501"
+    networks: [cleaning_test]
+
+networks:
+  cleaning_test:
+    name: ai-management-cleaning-test-network

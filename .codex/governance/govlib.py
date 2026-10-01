@@ -3,6 +3,7 @@ import hashlib
 import fnmatch
 import json
 import os
+import re
 import subprocess
 from typing import Iterable
 
@@ -126,6 +127,23 @@ def _scope_includes(rel: str, scope: str):
     generated_names = {".coverage", "coverage.xml", ".DS_Store", "Thumbs.db"}
     generated_suffixes = (".pyc", ".pyo", ".class", ".o")
     if any(part in generated_dirs for part in parts) or (parts and parts[-1] in generated_names) or rel.endswith(generated_suffixes):
+        return False
+    # Isolated test runs intentionally use a root-level, named basetemp.  Keep
+    # them out of source/implementation fingerprints so runtime output cannot
+    # become a product module, but bind the original evidence to quality/review
+    # fingerprints for traceability.
+    pytest_run_dir = bool(
+        parts
+        and (
+            re.fullmatch(r"\.pytest-(?:terra|canonical)-[A-Za-z0-9._-]+", parts[0])
+            or (
+                len(parts) >= 2
+                and parts[0] == "tmp"
+                and re.fullmatch(r"pytest-[A-Za-z0-9._-]+", parts[1])
+            )
+        )
+    )
+    if pytest_run_dir and scope not in {"quality", "review"}:
         return False
     always_excluded = (
         ".codex/state/",
@@ -294,6 +312,16 @@ def git_fingerprint(root, scope="review"):
     h = hashlib.sha256()
     h.update(f"scope:{scope}\0".encode())
 
+    if scope in {"quality", "review"}:
+        # feature.json and PROJECT_STATUS.md are generated/control-plane files and
+        # are excluded from the ordinary path walk below. Bind only the semantic
+        # Feature projection here so approval, module, and documentation changes
+        # stale the gate without making review self-writing fields self-invalidating.
+        projection = feature_governance_projection(root)
+        h.update(b"feature-governance-projection\0")
+        h.update(projection.encode("utf-8"))
+        h.update(b"\0")
+
     if is_git_repo(root):
         snapshot = _worktree_index_snapshot(root)
         for rel in sorted(p for p in snapshot if _scope_includes(p, scope)):
@@ -320,6 +348,50 @@ def git_fingerprint(root, scope="review"):
             h.update(b"<unreadable>")
         h.update(b"\0")
     return h.hexdigest()
+
+
+def feature_governance_projection(root):
+    """Return stable semantic Feature metadata for quality/review fingerprints."""
+    rows = []
+    for path in feature_metadata_files(root):
+        meta = read_json(path, {}, strict=False) or {}
+        modules = []
+        for module in meta.get("modules") or []:
+            if not isinstance(module, dict):
+                continue
+            modules.append({key: module.get(key) for key in (
+                "id", "title", "status", "paths", "acceptance_ids", "optional",
+                "last_change_summary", "last_changed_at",
+            )})
+        doc = meta.get("documentation") or {}
+        rows.append({
+            "id": meta.get("id") or path.parent.name,
+            "title": meta.get("title"),
+            "kind": meta.get("kind"),
+            "risk": meta.get("risk"),
+            "status": meta.get("status"),
+            "retired": bool(meta.get("retired")),
+            "retired_status": meta.get("retired_status"),
+            "superseded_by": meta.get("superseded_by") or [],
+            "requirements_approved": bool(meta.get("requirements_approved")),
+            "requirements_fingerprint": meta.get("requirements_fingerprint"),
+            "implementation_approved": bool(meta.get("implementation_approved")),
+            "implementation_fingerprint": meta.get("implementation_fingerprint"),
+            "architecture_fingerprint": meta.get("architecture_fingerprint"),
+            "quality_config_fingerprint": meta.get("quality_config_fingerprint"),
+            "feature_validation_fingerprint": meta.get("feature_validation_fingerprint"),
+            "module_plan_fingerprint": meta.get("module_plan_fingerprint"),
+            "ready_for_luna": bool(meta.get("ready_for_luna")),
+            "prototype": meta.get("prototype") or {},
+            "modules": sorted(modules, key=lambda item: str(item.get("id"))),
+            "documentation": {
+                "status": doc.get("status"),
+                "pending_changed_paths": sorted(doc.get("pending_changed_paths") or []),
+                "last_sync_summary": doc.get("last_sync_summary"),
+                "changelog_fingerprint": doc.get("changelog_fingerprint"),
+            },
+        })
+    return json.dumps(sorted(rows, key=lambda item: str(item.get("id"))), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 

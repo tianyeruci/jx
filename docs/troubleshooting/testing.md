@@ -192,3 +192,15 @@
 - 预防：涉及自然日的夹具必须由业务时区日期派生，不得用 UTC `now() - timedelta(days=1)` 代替“上一业务日”。
 - 证据：[`test_tool_conversations_contract.py`](../../tests/test_tool_conversations_contract.py)。
 - 最后验证：2026-09-11。
+
+## TEST-017：Windows shell 合同测试不得通过 WSL 启动器执行
+
+- 适用：在 Windows 工作区中以 Bash fake 验证部署/Compose shell 合同的 pytest。
+- 触发：`subprocess.run(["bash", "-c", ...])` 解析到 `C:\\Windows\\System32\\bash.exe`，测试在 fake Compose 失败补偿分支中长时间无终态，并残留 WSL 子进程。
+- 根因：该 `bash.exe` 是 WSL 启动器，不是能以 Windows 工作区相对路径稳定执行本地 shell harness 的 Git Bash；测试 fake 还必须使用真实的 `$1` 等位置变量，不能写成字面量 `\\$1`。
+- 解决：Windows shell-contract test 显式使用 `C:\\Program Files\\Git\\bin\\bash.exe`；缺失时跳过测试。对 Linux 专有 `hostname -s` 在 local fake 中注入确定性 short hostname。
+- 非解决：增加 API health 等待、让无界 WSL 子进程继续运行，或修改目标 Linux 部署脚本以迁就 Windows `hostname` 参数差异。
+- 验证：`tests/test_cleaning_test_deploy_contract.py` 在隔离 basetemp 中 `42 passed`，其中 startup-compensation 回归约 5 秒结束。
+- 预防：对 Windows shell-contract 测试集中使用 Bash 解析 helper；每个 fake 失败分支须在本地完成而不调用 Docker/Compose。
+- 证据：[`pytest-startup-compensation-file-r2.xml`](../../var/reports/W-20260912-041700/pytest-startup-compensation-file-r2.xml)。
+- 最后验证：2026-09-13。

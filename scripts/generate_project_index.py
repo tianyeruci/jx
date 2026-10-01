@@ -95,8 +95,7 @@ def is_name(node: ast.AST, value: str) -> bool:
 def relative_module(import_node: ast.ImportFrom) -> str:
     if import_node.level != 1 or not import_node.module:
         raise IndexGenerationError(
-            "ai_management/main.py 的 Router 导入必须使用一级相对导入，"
-            "以便索引器确认实际注册来源。"
+            "ai_management/main.py 的 Router 导入必须使用一级相对导入，以便索引器确认实际注册来源。"
         )
     return f"ai_management.{import_node.module}"
 
@@ -187,9 +186,7 @@ def router_prefix(tree: ast.Module, source: Path) -> str:
 
 
 def decorator_methods(decorator: ast.Call, source: Path) -> list[str] | None:
-    if not isinstance(decorator.func, ast.Attribute) or not is_name(
-        decorator.func.value, "router"
-    ):
+    if not isinstance(decorator.func, ast.Attribute) or not is_name(decorator.func.value, "router"):
         return None
     operation = decorator.func.attr
     if operation in HTTP_METHODS:
@@ -197,9 +194,12 @@ def decorator_methods(decorator: ast.Call, source: Path) -> list[str] | None:
     if operation == "api_route":
         for keyword in decorator.keywords:
             if keyword.arg == "methods":
-                return [method.upper() for method in literal_string_sequence(
-                    keyword.value, f"{source.relative_to(ROOT)} 的 api_route methods"
-                )]
+                return [
+                    method.upper()
+                    for method in literal_string_sequence(
+                        keyword.value, f"{source.relative_to(ROOT)} 的 api_route methods"
+                    )
+                ]
         raise IndexGenerationError(
             f"{source.relative_to(ROOT)} 的 @router.api_route 必须声明静态 methods。"
         )
@@ -307,9 +307,7 @@ def collect_worker_tasks(root: Path = ROOT) -> list[WorkerTask]:
                     (keyword.value for keyword in decorator.keywords if keyword.arg == "name"),
                     None,
                 )
-                name = literal_string(
-                    name_node, f"{relative_source} 的 Celery task name"
-                )
+                name = literal_string(name_node, f"{relative_source} 的 Celery task name")
                 module = ".".join(source.relative_to(root).with_suffix("").parts)
                 tasks.append(
                     WorkerTask(
@@ -328,7 +326,17 @@ def collect_compose_services(root: Path = ROOT) -> list[tuple[str, str, str]]:
         raise IndexGenerationError("索引器需要项目依赖 PyYAML 来读取 Compose 入口。") from exc
 
     services: list[tuple[str, str, str]] = []
-    for filename in ("docker-compose.ai.yml", "docker-compose.ui.yml"):
+    # Keep the documented service inventory complete for both the formal
+    # stack and the isolated cleaning-test stack. Profiles still define real
+    # runnable service entries, so OCR and Batch workers must not disappear
+    # merely because they are opt-in at runtime.
+    for filename in (
+        "docker-compose.ai.yml",
+        "docker-compose.ui.yml",
+        "docker-compose.cleaning-test.yml",
+        "docker-compose.cleaning-test-ui.yml",
+        "docker-compose.ys.yml",
+    ):
         source = root / filename
         data = yaml.safe_load(read_text(source))
         service_map = data.get("services", {}) if isinstance(data, dict) else {}
@@ -384,10 +392,7 @@ def escape_cell(value: str) -> str:
 def markdown_table(headers: list[str], rows: list[list[str]]) -> str:
     head = "| " + " | ".join(headers) + " |"
     separator = "| " + " | ".join("---" for _ in headers) + " |"
-    body = [
-        "| " + " | ".join(escape_cell(value) for value in row) + " |"
-        for row in rows
-    ]
+    body = ["| " + " | ".join(escape_cell(value) for value in row) + " |" for row in rows]
     return "\n".join([head, separator, *body])
 
 
@@ -435,16 +440,13 @@ def render_generated_sections(root: Path = ROOT) -> dict[str, str]:
             ["功能域", "方法", "路径", "处理函数", "源码"],
             http_rows,
         ),
-        "CLI": "### 命令与界面入口\n\n"
-        + markdown_table(["入口", "目标", "定义"], cli_rows),
+        "CLI": "### 命令与界面入口\n\n" + markdown_table(["入口", "目标", "定义"], cli_rows),
         "WORKERS": "### Celery 任务\n\n"
         + markdown_table(["任务名", "处理函数", "源码"], worker_rows),
         "COMPOSE": "### Compose 服务入口\n\n"
         + markdown_table(["服务", "定义", "命令"], compose_rows),
-        "DIFY": "### Dify 资产\n\n"
-        + markdown_table(["类型", "路径"], dify_rows),
-        "SCRIPTS": "### 发布、验收与 RAG 脚本\n\n"
-        + markdown_table(["脚本"], script_rows),
+        "DIFY": "### Dify 资产\n\n" + markdown_table(["类型", "路径"], dify_rows),
+        "SCRIPTS": "### 发布、验收与 RAG 脚本\n\n" + markdown_table(["脚本"], script_rows),
     }
 
 
@@ -469,9 +471,7 @@ def replace_generated_sections(root: Path, document: str) -> str:
             )
         body = content.replace("\n", newline).rstrip("\r\n")
         replacement = (
-            f"<!-- GENERATED:{name}:START -->{newline}"
-            f"{body}{newline}"
-            f"<!-- GENERATED:{name}:END -->"
+            f"<!-- GENERATED:{name}:START -->{newline}{body}{newline}<!-- GENERATED:{name}:END -->"
         )
         updated = pattern.sub(replacement, updated, count=1)
     return updated

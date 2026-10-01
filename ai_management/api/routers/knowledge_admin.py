@@ -3,13 +3,14 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from knowledge_cleaner.dify import DifyKnowledgeClient
@@ -47,9 +48,16 @@ from ...schemas import CleaningReviewDecisionRequest, DeleteDocumentRequest, Doc
 from ...security import require_admin_token, require_internal_token
 from ...services.admin_settings import bump_catalog_revision
 from ...services.bailian_cleanup import (
+    clear_successful_bailian_batch_tasks,
     clear_successful_bailian_file_tasks,
+    close_successful_bailian_batch_owner,
     ensure_bailian_cleanup_tasks,
+    get_provider_batch_file_owners,
+    provider_batch_owned_file_ids,
+    set_provider_batch_file_owners,
+    update_provider_batch_file_owner,
 )
+from ...services.dify_references import has_other_live_dify_reference
 from ...services.observability import record_event
 
 router = APIRouter(
@@ -62,6 +70,32 @@ _BASES = {
     "general": {"name": "通用知识库"},
     "course": {"name": "课程知识库"},
 }
+
+
+@router.post("/acceptance/model-tasks/{task_id}/parity-review")
+def apply_acceptance_parity_review(
+    task_id: str,
+    payload: dict[str, Any] = Body(...),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Apply a protected parity decision; ordinary quality review is separate."""
+
+    task = session.get(ModelCleaningTask, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="模型任务不存在")
+    try:
+        from ...workers.tasks.model_cleaning import apply_acceptance_manual_review
+
+        applied = apply_acceptance_manual_review(
+            session,
+            task,
+            reviewer=str(payload.get("reviewer") or ""),
+            decision=str(payload.get("decision") or ""),
+            evidence_fingerprint=str(payload.get("evidence_fingerprint") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"task_id": task_id, "applied": applied, "status": task.status}
 
 
 async def _read_upload_bounded(upload: UploadFile, limit: int) -> bytes:
@@ -80,9 +114,16 @@ async def _read_upload_bounded(upload: UploadFile, limit: int) -> bytes:
 
 def _dataset_id(kb_code: str) -> str:
     settings = get_settings()
+    if settings.cleaning_general_only and kb_code != "general":
+        raise HTTPException(
+            status_code=403,
+            detail="cleaning-test general-only:该知识库写入入口已禁用",
+        )
     if kb_code == "general":
         return settings.dify_general_dataset_id
     if kb_code == "course":
+        if not settings.dify_course_dataset_enabled:
+            raise HTTPException(status_code=403, detail="课程知识库当前未启用")
         return settings.dify_course_dataset_id
     raise ServiceError("VALIDATION_ERROR", "知识库代码只能是 general 或 course", 422, False)
 
@@ -304,6 +345,7 @@ async def upload_batch(
     upload_mode: str = Form(default="cleaned"),
     strategy_code: str = Form(default="standard_document"),
     common_metadata: str = Form(default="{}"),
+    acceptance_context_json: str = Form(default=""),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     _dataset_id(kb_code)
@@ -312,6 +354,7 @@ async def upload_batch(
         knowledge_base_code=kb_code,
         upload_mode=upload_mode,
         common_metadata=common_metadata,
+        acceptance_context_json=acceptance_context_json,
         files=files,
         session=session,
     )
@@ -508,6 +551,7 @@ def approve_model_task(
     batch_id: str,
     task_id: str,
     candidate_fingerprint: str = Form(...),
+    acceptance_manifest_json: str = Form(default=""),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     _dataset_id(kb_code)
@@ -545,6 +589,41 @@ def approve_model_task(
         raise ServiceError("CONFLICT", "模型任务当前不可批准", 409, False)
     if candidate_fingerprint != task.candidate_fingerprint:
         raise ServiceError("CONFLICT", "候选集已变化，请重新确认费用", 409, False)
+    if get_settings().cleaning_acceptance_budget_enabled:
+        if not acceptance_manifest_json:
+            raise ServiceError("CONFLICT", "付费验收缺少封存manifest", 409, False)
+        try:
+            acceptance_manifest = json.loads(acceptance_manifest_json)
+        except (TypeError, ValueError) as exc:
+            raise ServiceError("VALIDATION_ERROR", "验收manifest格式无效", 422, False) from exc
+        if not isinstance(acceptance_manifest, dict):
+            raise ServiceError("VALIDATION_ERROR", "验收manifest必须是对象", 422, False)
+        if acceptance_manifest.get("task_id") != str(task.id):
+            raise ServiceError("CONFLICT", "验收manifest任务不匹配", 409, False)
+        if acceptance_manifest.get("strategy_code") != batch.strategy_code:
+            raise ServiceError("CONFLICT", "验收manifest策略不匹配", 409, False)
+        if batch.strategy_code not in {"personal_business_consultation", "zsxq_post"}:
+            raise ServiceError("CONFLICT", "策略不在受限Batch白名单", 409, False)
+        campaign = acceptance_manifest.get("campaign")
+        if not isinstance(campaign, dict) or campaign.get("sealed") is not True:
+            raise ServiceError("CONFLICT", "付费验收campaign未封存", 409, False)
+        operation_id = str(campaign.get("operation_id") or "")
+        if not re.fullmatch(r"[0-9a-f]{64}", operation_id):
+            raise ServiceError("VALIDATION_ERROR", "验收operation ID无效", 422, False)
+        source_ids = acceptance_manifest.get("source_document_ids")
+        candidate_ids = (task.result_counts or {}).get("provider_candidate_document_ids")
+        if not isinstance(source_ids, list) or source_ids != candidate_ids:
+            raise ServiceError("CONFLICT", "验收来源集合不匹配", 409, False)
+        server_manifest = (task.result_counts or {}).get("acceptance_manifest")
+        if not isinstance(server_manifest, dict):
+            raise ServiceError("CONFLICT", "服务端验收manifest缺失", 409, False)
+        if json.dumps(acceptance_manifest, ensure_ascii=False, sort_keys=True) != json.dumps(
+            server_manifest, ensure_ascii=False, sort_keys=True
+        ):
+            raise ServiceError("CONFLICT", "验收manifest与服务端封存上下文不一致", 409, False)
+        counts = dict(task.result_counts or {})
+        counts["_acceptance_parity"] = {"phase": "batch_submitting"}
+        task.result_counts = counts
     settings = get_settings()
     if (
         not task.price_version
@@ -650,7 +729,10 @@ def cancel_model_task(
         "validating",
     }:
         raise ServiceError("CONFLICT", "模型任务当前不可取消", 409, False)
-    provider_ids = get_provider_batch_ids(task)
+    # Terminal Batch rows remain owners until their exact I/O/E resources are
+    # cleaned.  Ignoring them while a sibling Batch is active leaks their
+    # cleanup work and loses the only precise ownership record.
+    provider_ids = get_provider_batch_ids(task, include_terminal=True)
     provider_file_ids = {
         *(task.provider_input_file_ids or []),
         *(task.provider_output_file_ids or []),
@@ -703,8 +785,11 @@ def cancel_model_task(
         from ...model_cleaning import BailianClient
 
         settings = get_settings()
+        active_provider_ids = set(get_provider_batch_ids(task))
         file_ids = set(provider_file_ids)
         pending_batch_ids: set[str] = set()
+        terminal_batch_ids: set[str] = set()
+        terminal_file_ids: set[str] = set()
         cancel_errors: dict[str, str] = {}
         client = None
         try:
@@ -723,11 +808,64 @@ def cancel_model_task(
                 for field in ("output_file_id", "error_file_id"):
                     if cancelled.get(field):
                         file_ids.add(str(cancelled[field]))
-                provider_status = str(cancelled.get("status") or "cancelled")
+                existing_owner = get_provider_batch_file_owners(task).get(provider_id)
+                if existing_owner is None:
+                    # Legacy rows only have task-level aggregate I/O/E IDs.
+                    # They belong to an active remote Batch when one is
+                    # recorded, or to the sole known Batch.  A terminal
+                    # sibling must not claim those aggregates: assigning them
+                    # to both would either double-delete a file or violate the
+                    # fail-closed exact-owner invariant.
+                    owns_aggregate_files = (
+                        provider_id in active_provider_ids or len(provider_ids) == 1
+                    )
+                    existing_owner = {
+                        "input_file_ids": (
+                            list(task.provider_input_file_ids or []) if owns_aggregate_files else []
+                        ),
+                        "output_file_ids": (
+                            list(task.provider_output_file_ids or [])
+                            if owns_aggregate_files
+                            else []
+                        ),
+                        "error_file_ids": (
+                            list(task.provider_error_file_ids or []) if owns_aggregate_files else []
+                        ),
+                    }
+                update_provider_batch_file_owner(
+                    task,
+                    provider_id,
+                    input_file_ids=existing_owner.get("input_file_ids", []),
+                    output_file_ids=(
+                        [str(cancelled["output_file_id"])]
+                        if cancelled.get("output_file_id")
+                        else existing_owner.get("output_file_ids", [])
+                    ),
+                    error_file_ids=(
+                        [str(cancelled["error_file_id"])]
+                        if cancelled.get("error_file_id")
+                        else existing_owner.get("error_file_ids", [])
+                    ),
+                )
+                provider_status = str(cancelled.get("status") or "").strip()
                 if provider_status not in {"completed", "failed", "expired", "cancelled"}:
                     pending_batch_ids.add(provider_id)
                     cancel_errors[provider_id] = (
-                        f"供应商取消仍处于 {provider_status}，保留 Batch 和文件引用"
+                        f"供应商取消状态缺失或未终态（{provider_status or 'empty'}），保留 Batch 和文件引用"
+                    )
+                else:
+                    terminal_batch_ids.add(provider_id)
+                    terminal_file_ids.update(
+                        {
+                            *existing_owner.get("input_file_ids", []),
+                            *existing_owner.get("output_file_ids", []),
+                            *existing_owner.get("error_file_ids", []),
+                            *[
+                                str(cancelled[field])
+                                for field in ("output_file_id", "error_file_id")
+                                if cancelled.get(field)
+                            ],
+                        }
                     )
         except Exception as exc:
             pending_batch_ids.update(provider_ids)
@@ -743,6 +881,15 @@ def cancel_model_task(
             raise ServiceError("VALIDATION_ERROR", "模型任务不存在", 404, False)
         if pending_batch_ids:
             task.cleanup_status = "pending_retry"
+            # These Batches already reached a terminal state.  Consume their
+            # Batch work and queue their exact I/O/E IDs separately while the
+            # nonterminal sibling keeps only its own owner map/outbox.
+            ensure_bailian_cleanup_tasks(
+                session,
+                task,
+                provider_file_ids=terminal_file_ids,
+                last_error="管理员取消时已终态 Batch 的文件待精确清理",
+            )
             ensure_bailian_cleanup_tasks(
                 session,
                 task,
@@ -754,6 +901,24 @@ def cancel_model_task(
                     for provider_id in sorted(pending_batch_ids)
                 ),
             )
+            terminal_closed: set[str] = set()
+            for terminal_batch_id in sorted(terminal_batch_ids):
+                owner_file_ids = provider_batch_owned_file_ids(task, terminal_batch_id)
+                if not close_successful_bailian_batch_owner(
+                    session,
+                    model_task_id=task.id,
+                    batch_id=terminal_batch_id,
+                    deleted_file_ids=(),
+                    transferred_file_ids=owner_file_ids,
+                ):
+                    raise ServiceError(
+                        "CLEANUP_PENDING",
+                        "终态Batch文件未能建立精确清理责任，保留Batch清理任务",
+                        503,
+                        True,
+                    )
+                terminal_closed.add(terminal_batch_id)
+            clear_successful_bailian_batch_tasks(session, terminal_closed)
             session.commit()
         else:
             cleanup_failed = False
@@ -790,6 +955,7 @@ def cancel_model_task(
                     cleanup_client.close()
             task.cleanup_status = "pending_retry" if cleanup_failed else "completed"
             if not cleanup_failed:
+                clear_successful_bailian_batch_tasks(session, provider_ids)
                 clear_successful_bailian_file_tasks(session, deleted_file_ids)
                 task.provider_batch_ids = []
                 task.provider_batch_id = None
@@ -799,6 +965,7 @@ def cancel_model_task(
                 counts = dict(task.result_counts or {})
                 counts.pop("provider_terminal_batches", None)
                 task.result_counts = counts
+                set_provider_batch_file_owners(task, {})
             session.commit()
     return {"task_id": task.id, "status": task.status}
 
@@ -1076,6 +1243,7 @@ def set_document_status(
     payload: DocumentStatusRequest,
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
+    _dataset_id(kb_code)
     matches = [item for item in _documents(kb_code) if str(item.get("id") or "") == document_id]
     if not matches:
         raise ServiceError("VALIDATION_ERROR", "知识库文档不存在", 404, False)
@@ -1147,6 +1315,7 @@ def delete_document(
     payload: DeleteDocumentRequest,
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
+    _dataset_id(kb_code)
     matches = [item for item in _documents(kb_code) if str(item.get("id") or "") == document_id]
     if not matches:
         raise ServiceError("VALIDATION_ERROR", "知识库文档不存在", 404, False)
@@ -1168,25 +1337,40 @@ def delete_document(
         raise ServiceError("DIFY_UNAVAILABLE", "Dify 删除失败，未标记为成功", 502, True) from exc
     finally:
         client.close()
-    local_document = session.scalar(
-        select(CleaningDocument)
-        .where(CleaningDocument.dify_document_id == document_id)
-        .options(selectinload(CleaningDocument.file))
+    local_documents = list(
+        session.scalars(
+            select(CleaningDocument)
+            .where(CleaningDocument.dify_document_id == document_id)
+            .options(selectinload(CleaningDocument.file))
+        )
     )
-    if local_document is not None:
-        local_document.remote_deleted_at = datetime.now(timezone.utc)
-        local_document.dify_document_id = None
-        for shard in session.scalars(
-            select(DifyPublicationShard).where(DifyPublicationShard.dify_document_id == document_id)
-        ):
-            shard.remote_deleted_at = datetime.now(timezone.utc)
+    local_shards = list(
+        session.scalars(
+            select(DifyPublicationShard)
+            .where(DifyPublicationShard.dify_document_id == document_id)
+            .options(selectinload(DifyPublicationShard.file))
+        )
+    )
+    if local_documents or local_shards:
+        # This endpoint deliberately deletes the exact remote object.  Every
+        # local direct reference to that exact ID must be unlinked in the same
+        # transaction; clearing only an arbitrary first row leaves a stale
+        # reference that a later cleanup can mistake for a live canonical.
+        deleted_at = datetime.now(timezone.utc)
+        affected_files = {
+            item.file for item in [*local_documents, *local_shards] if item.file is not None
+        }
+        for local_document in local_documents:
+            local_document.remote_deleted_at = deleted_at
+            local_document.dify_document_id = None
+        for shard in local_shards:
+            shard.remote_deleted_at = deleted_at
             shard.dify_document_id = None
-        if local_document.file and not any(
-            item.dify_document_id
-            for item in local_document.file.documents
-            if item.id != local_document.id
-        ):
-            local_document.file.dedupe_released_at = datetime.now(timezone.utc)
+        for file_row in affected_files:
+            if not any(item.dify_document_id for item in file_row.documents) and not any(
+                item.dify_document_id for item in file_row.publication_shards
+            ):
+                file_row.dedupe_released_at = deleted_at
         session.commit()
     record_event(
         level="INFO",
@@ -1215,6 +1399,7 @@ def delete_uploaded_source(
     The source file is the duplicate-protection unit: re-upload is released
     only after all known remote document IDs have been deleted successfully.
     """
+    _dataset_id(kb_code)
     file_row = session.scalar(
         select(CleaningFile)
         .join(CleaningBatch, CleaningBatch.id == CleaningFile.batch_id)
@@ -1231,17 +1416,97 @@ def delete_uploaded_source(
         raise ServiceError("VALIDATION_ERROR", "上传源文件不存在", 404, False)
     if payload.confirm_name != file_row.original_filename:
         raise ServiceError("CONFLICT", "confirm_name 与上传源文件名不一致", 409, False)
+    if file_row.source_deleted_at is not None:
+        return {
+            "deleted": True,
+            "file_id": file_id,
+            "deleted_document_count": 0,
+            "shared_document_count": 0,
+        }
+    # Persist the tombstone before looking at remote IDs.  A queued publisher
+    # will now refuse its claim, while an inflight publisher must compensate
+    # rather than resurrecting a just-deleted source with a new remote ID.
+    if file_row.stage != "source_deleting":
+        claimed = session.execute(
+            update(CleaningFile)
+            .where(
+                CleaningFile.id == file_row.id,
+                CleaningFile.source_deleted_at.is_(None),
+                CleaningFile.stage != "source_deleting",
+            )
+            .values(
+                source_delete_generation=CleaningFile.source_delete_generation + 1,
+                source_delete_requested_at=datetime.now(timezone.utc),
+                stage="source_deleting",
+                lease_token=None,
+                lease_expires_at=None,
+            )
+        ).rowcount
+        if claimed != 1:
+            raise ServiceError("CONFLICT", "源文件删除正在处理或已完成", 409, False)
+        session.commit()
+    session.expire(file_row)
+    file_row = session.scalar(
+        select(CleaningFile)
+        .where(CleaningFile.id == file_id)
+        .options(
+            selectinload(CleaningFile.documents),
+            selectinload(CleaningFile.publication_shards),
+        )
+    )
+    assert file_row is not None  # durable tombstone row was just claimed
+    active_documents = [
+        item
+        for item in file_row.documents
+        if item.status in {"pending", "processing", "staged", "shard_pending", "shard_indexing"}
+    ]
+    active_shards = [
+        item
+        for item in file_row.publication_shards
+        if item.status in {"shard_pending", "shard_indexing"}
+    ]
+    if active_documents or active_shards:
+        # Do not race an unknown/inflight Dify create.  The tombstone fences
+        # further work; an operator may retry only after the publisher has
+        # compensated or the maintenance path has resolved the exact ID.
+        raise ServiceError("CONFLICT", "源文件仍有发布任务，已阻止并等待精确补偿", 409, True)
     ids = {str(item.dify_document_id) for item in file_row.documents if item.dify_document_id} | {
         str(item.dify_document_id) for item in file_row.publication_shards if item.dify_document_id
     }
     client = _client(kb_code) if ids else None
+    shared_ids: set[str] = set()
     try:
         for document_id in sorted(ids):
-            try:
-                client.delete_document(document_id)
-            except Exception as exc:
-                if not (getattr(getattr(exc, "response", None), "status_code", None) == 404):
-                    raise
+            if has_other_live_dify_reference(session, document_id, excluding_file_id=file_row.id):
+                shared_ids.add(document_id)
+            else:
+                try:
+                    client.delete_document(document_id)
+                except Exception as exc:
+                    if getattr(getattr(exc, "response", None), "status_code", None) == 404:
+                        pass
+                    else:
+                        from ...workers.tasks.cleaning import _ensure_document_cleanup_task
+
+                        for item in file_row.documents:
+                            if item.dify_document_id == document_id:
+                                _ensure_document_cleanup_task(
+                                    session,
+                                    document_id,
+                                    _dataset_id(kb_code),
+                                    owner_document_id=item.id,
+                                    owner_shard_id=item.shard_id,
+                                )
+                        for item in file_row.publication_shards:
+                            if item.dify_document_id == document_id:
+                                _ensure_document_cleanup_task(
+                                    session,
+                                    document_id,
+                                    _dataset_id(kb_code),
+                                    owner_shard_id=item.id,
+                                )
+                        session.commit()
+                        raise
             for item in file_row.documents:
                 if item.dify_document_id == document_id:
                     item.remote_deleted_at = datetime.now(timezone.utc)
@@ -1300,6 +1565,15 @@ def delete_uploaded_source(
         actor_hash="admin",
         resource_type="cleaning_file",
         resource_id=file_id,
-        details={"kb_code": kb_code, "deleted_document_count": len(ids)},
+        details={
+            "kb_code": kb_code,
+            "deleted_document_count": len(ids) - len(shared_ids),
+            "shared_document_count": len(shared_ids),
+        },
     )
-    return {"deleted": True, "file_id": file_id, "deleted_document_count": len(ids)}
+    return {
+        "deleted": True,
+        "file_id": file_id,
+        "deleted_document_count": len(ids) - len(shared_ids),
+        "shared_document_count": len(shared_ids),
+    }

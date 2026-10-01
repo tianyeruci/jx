@@ -48,7 +48,7 @@ def test_cleanup_requires_a_verified_plan_before_writes():
 
 def test_cleanup_uses_exact_redis_keys_and_never_flushes_database():
     assert "redis_keys" in SOURCE
-    assert "startswith(\"ai:\")" in SOURCE
+    assert 'startswith("ai:")' in SOURCE
     assert "flushdb" not in SOURCE
 
 
@@ -88,6 +88,33 @@ def test_cleanup_candidates_are_manifest_only_not_all_local_associations(monkeyp
         "course": {},
     }
     assert preserved == {"general": ["local-only"], "course": []}
+
+
+def test_cleanup_preserves_reused_or_retained_documents_even_when_manifest_lists_them():
+    documents = {
+        "general": [
+            {"id": "created", "metadata": {}},
+            {"id": "reused", "metadata": {}},
+            {"id": "retained", "metadata": {}},
+        ],
+        "course": [],
+    }
+    ownership = {
+        "general": {
+            "created": {"created_by_run": True, "live_owner_count": 0},
+            "reused": {"created_by_run": False, "live_owner_count": 0},
+            "retained": {"created_by_run": True, "retained_reference": True, "live_owner_count": 0},
+        },
+        "course": {},
+    }
+    candidates, reasons, preserved = RELEASE_DATA._planned_document_candidates(
+        documents,
+        {"general": {"created", "reused", "retained"}, "course": set()},
+        ownership,
+    )
+    assert candidates == {"general": ["created"], "course": []}
+    assert reasons["general"]["created"] == ["explicit_run_manifest", "ownership_proof"]
+    assert preserved["general"] == ["retained", "reused"]
 
 
 def test_manifest_rejects_legacy_shared_id_list(tmp_path):
@@ -224,9 +251,7 @@ def test_manual_test_ui_manifest_requires_its_own_scope_and_run_id(tmp_path):
             "chat_user_ids": [],
         },
     }
-    payload["integrity"] = {
-        "manifest_sha256": RELEASE_DATA._canonical_fingerprint(payload)
-    }
+    payload["integrity"] = {"manifest_sha256": RELEASE_DATA._canonical_fingerprint(payload)}
     manifest = _write_manifest(tmp_path, payload)
 
     loaded = RELEASE_DATA._load_v3_manifest(manifest)
@@ -253,14 +278,47 @@ def test_manual_incident_manifest_requires_its_own_scope_and_run_id(tmp_path):
             "chat_user_ids": [],
         },
     }
-    payload["integrity"] = {
-        "manifest_sha256": RELEASE_DATA._canonical_fingerprint(payload)
-    }
+    payload["integrity"] = {"manifest_sha256": RELEASE_DATA._canonical_fingerprint(payload)}
 
     loaded = RELEASE_DATA._load_v3_manifest(_write_manifest(tmp_path, payload))
 
     assert loaded["scope"] == "manual_incident_cleanup"
     assert loaded["run_id"] == payload["run_id"]
+
+
+def test_v3_manifest_filters_reused_and_retained_dify_ids_from_delete_targets(tmp_path):
+    payload = {
+        "schema_version": 3,
+        "kind": "acceptance_cleanup_manifest",
+        "run_id": "cleaning-" + "a" * 32,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "build_version": "test-build",
+        "scope": "automated_cleaning_acceptance",
+        "targets": {
+            "dify_documents": {"general": ["created", "reused", "retained"], "course": []},
+            "dify_document_ownership": {
+                "general": {
+                    "created": {"created_by_run": True, "live_owner_count": 0},
+                    "reused": {"created_by_run": False, "live_owner_count": 0},
+                    "retained": {
+                        "created_by_run": True,
+                        "retained_reference": True,
+                        "live_owner_count": 0,
+                    },
+                },
+                "course": {},
+            },
+            "cleaning_batch_ids": [],
+            "course_ids": [],
+            "route_ids": [],
+            "direction_codes": [],
+            "redis_keys": [],
+            "chat_user_ids": [],
+        },
+    }
+    payload["integrity"] = {"manifest_sha256": RELEASE_DATA._canonical_fingerprint(payload)}
+    loaded = RELEASE_DATA._load_v3_manifest(_write_manifest(tmp_path, payload))
+    assert loaded["targets"]["dify_documents"] == {"general": ["created"], "course": []}
 
 
 def test_manual_test_ui_capture_has_no_name_or_time_window_delete_fallback():
@@ -311,12 +369,8 @@ def test_incident_capture_refuses_catalog_data_not_owned_by_exact_batches():
 
 def test_backup_and_cleanup_mount_the_current_release_data_script():
     """Backup evidence and cleanup must share the deployed release contract."""
-    backup = (ROOT / "scripts" / "jx_prebaseline_backup.sh").read_text(
-        encoding="utf-8"
-    )
-    cleanup = (ROOT / "scripts" / "jx_prebaseline_clean.sh").read_text(
-        encoding="utf-8"
-    )
+    backup = (ROOT / "scripts" / "jx_prebaseline_backup.sh").read_text(encoding="utf-8")
+    cleanup = (ROOT / "scripts" / "jx_prebaseline_clean.sh").read_text(encoding="utf-8")
 
     for source in (backup, cleanup):
         assert 'DATA_SCRIPT="$APP_DIR/scripts/jx_release_data.py"' in source

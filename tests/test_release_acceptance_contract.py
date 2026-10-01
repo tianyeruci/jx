@@ -864,12 +864,13 @@ def test_recent_activity_process_preflight_beats_identical_content_dedupe(
         assert row.status == "failed"
         assert row.error_code == "DUPLICATE_ACTIVITY_EVENT_ID"
         assert batch.status == "completed"
-        assert (
-            list(
-                session.scalars(select(CleaningDocument).where(CleaningDocument.file_id == file_id))
-            )
-            == []
+        documents = list(
+            session.scalars(select(CleaningDocument).where(CleaningDocument.file_id == file_id))
         )
+        assert len(documents) == 2
+        assert all(document.status == "failed" for document in documents)
+        assert all(document.error_code == "DUPLICATE_ACTIVITY_EVENT_ID" for document in documents)
+        assert all(document.retryable is False for document in documents)
 
 
 def _course_payload(course_id: str, name: str) -> dict[str, object]:

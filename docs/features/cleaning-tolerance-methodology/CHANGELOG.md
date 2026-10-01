@@ -1,0 +1,2550 @@
+# 文档清洗容错、咨询方案方法与隔离测试修复 — Change Log
+
+This is a semantic change log, not a copy of Git diff.
+
+## 2026-09-12T06:05:23+08:00 — 在既有清洗链路内实现单元级容错和咨询案例方案/候选方法；内容模型失败仅按两次上限后失败，不再发布原文或创建新的 review_required；混合 PDF 保留可靠 native 页；过期/未成功远端关联不再阻挡重传；隔离测试环境对 general-only、DB/Redis/端口 fail-closed。
+
+- **Purpose:** 在既有清洗链路内实现单元级容错和咨询案例方案/候选方法；内容模型失败仅按两次上限后失败，不再发布原文或创建新的 review_required；混合 PDF 保留可靠 native 页；过期/未成功远端关联不再阻挡重传；隔离测试环境对 general-only、DB/Redis/端口 fail-closed。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** final-regression-r3: 231 passed, 1 skipped; Ruff format/check; compileall; project index --write/--check
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-12T06:07:35+08:00 — cleaning-tolerance-methodology 已实施单元级容错、咨询方案/候选方法、两次上限 fail-closed、逐页 OCR、有效远端去重和 general-only 隔离保护；qwen-batch-cleaning 的 Batch 持续关闭，recent-activity 和 tool-examples 未发生功能语义、DSL 或 API 行为变更，仅同步共享路径触及的当前状态。
+
+- **Purpose:** cleaning-tolerance-methodology 已实施单元级容错、咨询方案/候选方法、两次上限 fail-closed、逐页 OCR、有效远端去重和 general-only 隔离保护；qwen-batch-cleaning 的 Batch 持续关闭，recent-activity 和 tool-examples 未发生功能语义、DSL 或 API 行为变更，仅同步共享路径触及的当前状态。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** final-regression-r3: 231 passed, 1 skipped; Ruff format/check; compileall; project index --write/--check; 未执行外部发布。
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-12T19:21:50+08:00 — 普通重试改为发布阶段allowlist；历史OCR/source失败仅回源或410；每次provider reservation按实际transport计价；general-only拒绝Redis db query；咨询候选方法和PDF/去重边界保持既有最小实现；隔离UI不接管正式服务。
+
+- **Purpose:** 普通重试改为发布阶段allowlist；历史OCR/source失败仅回源或410；每次provider reservation按实际transport计价；general-only拒绝Redis db query；咨询候选方法和PDF/去重边界保持既有最小实现；隔离UI不接管正式服务。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-cleaning-review-r2-20260912.xml: 241 passed, 0 failed/errors/skipped; independent review PASS; index --write/--check and focused static checks passed; gov quality has 16 unrelated current-DSL contract failures.
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-12T20:05:11+08:00 — 完成清洗容错、咨询方案/候选方法、混合 PDF OCR、有效远端去重和隔离环境 fail-closed；补齐当前权威商业顾问 DSL 的派生文件与行为契约测试，未改权威 DSL 或 recent_activity 清洗逻辑。
+
+- **Purpose:** 完成清洗容错、咨询方案/候选方法、混合 PDF OCR、有效远端去重和隔离环境 fail-closed；补齐当前权威商业顾问 DSL 的派生文件与行为契约测试，未改权威 DSL 或 recent_activity 清洗逻辑。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 241 项清洗相关回归、14 项当前 DSL 契约、完整 gov quality、文档契约与接口索引均通过。
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-12T20:32:06+08:00 — 治理工具在内容指纹前排除 tmp 与 pytest 生成物，避免本地临时文件拖慢质量/同步；清洗、OCR、去重、咨询方案与候选方法的产品语义不变。
+
+- **Purpose:** 治理工具在内容指纹前排除 tmp 与 pytest 生成物，避免本地临时文件拖慢质量/同步；清洗、OCR、去重、咨询方案与候选方法的产品语义不变。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 生成物不再进入 implementation 路径，治理模块编译和差异检查通过；后续完整质量将复跑。
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T00:10:04+08:00 — 明确新创建且从未调用的 realtime 文档须显式 model_attempts=0；历史缺失或损坏计数仍拒绝调用，结果统计保留预算预留账本。
+
+- **Purpose:** 明确新创建且从未调用的 realtime 文档须显式 model_attempts=0；历史缺失或损坏计数仍拒绝调用，结果统计保留预算预留账本。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-u06-fixture-r2-20260913.xml; var/reports/W-20260912-041700/pytest-model-workflow-r3-20260913.xml
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T00:15:19+08:00 — 仅格式化已验证的 U06 fixture 与账本断言；行为边界、实现范围和远端门禁不变。
+
+- **Purpose:** 仅格式化已验证的 U06 fixture 与账本断言；行为边界、实现范围和远端门禁不变。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-u06-fixture-r3-20260913.xml
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T00:26:53+08:00 — 记录 U06 测试合同已验证、canonical quality 通过及实施再批准 fail-closed 阻塞；不改变产品语义或远端边界。
+
+- **Purpose:** 记录 U06 测试合同已验证、canonical quality 通过及实施再批准 fail-closed 阻塞；不改变产品语义或远端边界。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-u06-fixture-r3-20260913.xml; var/reports/W-20260912-041700/pytest-model-workflow-r3-20260913.xml; .codex/state/quality.json
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T00:36:50+08:00 — 治理指纹仅排除根级 var/reports 与指定动态交接，保留其他 var 源码；新增行为测试并纳入 canonical 覆盖。
+
+- **Purpose:** 治理指纹仅排除根级 var/reports 与指定动态交接，保留其他 var 源码；新增行为测试并纳入 canonical 覆盖。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-u11-report-scope-20260913.xml; var/reports/W-20260912-041700/pytest-u11-dynamic-scope-20260913.xml
+- **Changed paths:**
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T02:02:34+08:00 — 每个新 provider reservation 记录稳定 call ID、文档、实际 transport 和定价快照；realtime usage 仅结算匹配调用，未知 usage 保留 reservation，旧账本 fail-closed。活动契约测试补充 analysis/case 负向路由及有界补查，不改权威 DSL。
+
+- **Purpose:** 每个新 provider reservation 记录稳定 call ID、文档、实际 transport 和定价快照；realtime usage 仅结算匹配调用，未知 usage 保留 reservation，旧账本 fail-closed。活动契约测试补充 analysis/case 负向路由及有界补查，不改权威 DSL。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-model-workflow-round6-20260913.xml=101 passed; pytest-dify-activity-round3-20260913.xml=9 passed; pytest-feature-round7-20260913.xml=233 passed
+- **Changed paths:**
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T02:54:16+08:00 — 咨询 advice grounding 对同案例未出现的服务费、费用、佣金、订金、定金、支付、购买、续费等新付费条件 fail-closed，方案/方法字段剔除而 case 保留，无额外模型调用；U02/U04/U07/U08/U09/U11 当前行为反例复验通过，仍未进行远端验收。
+
+- **Purpose:** 咨询 advice grounding 对同案例未出现的服务费、费用、佣金、订金、定金、支付、购买、续费等新付费条件 fail-closed，方案/方法字段剔除而 case 保留，无额外模型调用；U02/U04/U07/U08/U09/U11 当前行为反例复验通过，仍未进行远端验收。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-u03-consultation-after-20260913.xml: 37 passed; pytest-u08-u11-after-20260913.xml: 31 passed; pytest-u02-u04-u07-u09-after-20260913.xml: 11 passed
+- **Changed paths:**
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T03:20:03+08:00 — 隔离 manifest future timestamp 行为反例在执行时构造，确认短时效清单拒绝未来时间；未改变 Compose、Worker、远端或费用行为。
+
+- **Purpose:** 隔离 manifest future timestamp 行为反例在执行时构造，确认短时效清单拒绝未来时间；未改变 Compose、Worker、远端或费用行为。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-u08-manifest-time-after-20260913.xml: 11 passed
+- **Changed paths:**
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T03:21:33+08:00 — future manifest 时间在用例执行时构造并被 fail-closed 拒绝；本次仅按仓库 formatter 做等价排版，无远端、Worker、模型或费用操作。
+
+- **Purpose:** future manifest 时间在用例执行时构造并被 fail-closed 拒绝；本次仅按仓库 formatter 做等价排版，无远端、Worker、模型或费用操作。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-u08-manifest-time-after-20260913.xml: 11 passed
+- **Changed paths:**
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T03:33:06+08:00 — manifest 正负例使用工作区短生命周期临时目录并清理；默认 pytest 临时根仍可运行，隔离脚本语义不变。
+
+- **Purpose:** manifest 正负例使用工作区短生命周期临时目录并清理；默认 pytest 临时根仍可运行，隔离脚本语义不变。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-u08-manifest-default-temp-after-20260913.xml: 12 passed
+- **Changed paths:**
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T03:56:49+08:00 — 咨询派生字段在当前 case advice 未出现明确角色时 fail closed；隔离启动 manifest 绑定并在启动前比对 API/UI/OCR Docker image ID，保持现有费用、队列、Redis 与正式健康门禁。
+
+- **Purpose:** 咨询派生字段在当前 case advice 未出现明确角色时 fail closed；隔离启动 manifest 绑定并在启动前比对 API/UI/OCR Docker image ID，保持现有费用、队列、Redis 与正式健康门禁。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-u03-u08-boundary-full-after-20260913.xml: 58 passed
+- **Changed paths:**
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T03:59:21+08:00 — 仅格式化当前隔离 manifest 测试夹具；咨询主体 fail-closed 与 image ID 比对行为不变。
+
+- **Purpose:** 仅格式化当前隔离 manifest 测试夹具；咨询主体 fail-closed 与 image ID 比对行为不变。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-u03-u08-boundary-full-after-20260913.xml: 58 passed
+- **Changed paths:**
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T04:51:48+08:00 — 收紧远端正文见证、咨询行动锚定、OCR/预算/lease fail-closed 与隔离镜像工作树及 wheel 同源门禁；recent_activity 保持既有运行发布链路。
+
+- **Purpose:** 收紧远端正文见证、咨询行动锚定、OCR/预算/lease fail-closed 与隔离镜像工作树及 wheel 同源门禁；recent_activity 保持既有运行发布链路。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `scripts/jx_consultation_model_cleaning.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T05:47:23+08:00 — 核心咨询字段按来源职责锚定；可检索父子块 witness 版本化；本地 shard 不再作为终态去重证明；delivery lease 与 provider 两次上限分离并 token-fence 副作用。
+
+- **Purpose:** 核心咨询字段按来源职责锚定；可检索父子块 witness 版本化；本地 shard 不再作为终态去重证明；delivery lease 与 provider 两次上限分离并 token-fence 副作用。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-review5-failure-collection-20260913.xml: 7 expected failures; pytest-review5-focused-pass-20260913.xml: 7 passed; pytest-review5-affected-full-r3-20260913.xml: 153 passed
+- **Changed paths:**
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `scripts/jx_consultation_model_cleaning.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T06:21:59+08:00 — Realtime 在条目和限流后以当前 token 续租，lease 丢失透传；post shard 以受控 metadata 与 v2 parent/child witness 验证远端复用，并在新发布后持久保存 witness。
+
+- **Purpose:** Realtime 在条目和限流后以当前 token 续租，lease 丢失透传；post shard 以受控 metadata 与 v2 parent/child witness 验证远端复用，并在新发布后持久保存 witness。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `scripts/jx_consultation_model_cleaning.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T07:17:47+08:00 — 活动保持既有发布行为；分片远端验证区分确定性失效与读取不确定，分页和审计写入受当前围栏约束。
+
+- **Purpose:** 活动保持既有发布行为；分片远端验证区分确定性失效与读取不确定，分页和审计写入受当前围栏约束。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-review7-affected-full-20260913.xml: 173 passed; pytest-review7-doc-contract-r2-20260913.xml: 13 passed
+- **Changed paths:**
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `scripts/jx_consultation_model_cleaning.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T08:07:32+08:00 — Nested Dify pagination/accounting, strict per-document provider ledger reconciliation, specific consultation evidence anchors, and PROFILE-aligned Quality coverage.
+
+- **Purpose:** Nested Dify pagination/accounting, strict per-document provider ledger reconciliation, specific consultation evidence anchors, and PROFILE-aligned Quality coverage.
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `scripts/jx_consultation_model_cleaning.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T09:17:39+08:00 — Review8 remediation rejects generic four-character and single ASCII anchors while preserving advice-only faithful shortening; fail-closes foreign-batch reservation entries; carries cross-file shard remote IDs only for Worker live verification; classifies duplicate verification uncertainty as publication-only retry; and records local regressions.
+
+- **Purpose:** Review8 remediation rejects generic four-character and single ASCII anchors while preserving advice-only faithful shortening; fail-closes foreign-batch reservation entries; carries cross-file shard remote IDs only for Worker live verification; classifies duplicate verification uncertainty as publication-only retry; and records local regressions.
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-review8-new-findings-focused-r7-after-20260913.xml; pytest-review8-consultation-full-r6-after-20260913.xml; pytest-review8-model-full-r5-after-20260913.xml
+- **Changed paths:**
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `scripts/jx_consultation_model_cleaning.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T09:31:50+08:00 — Cross-file shard candidate selection and provider cost aggregation now fail closed by batch ownership; local regressions pass while Quality, review, approval and remote acceptance remain pending.
+
+- **Purpose:** Cross-file shard candidate selection and provider cost aggregation now fail closed by batch ownership; local regressions pass while Quality, review, approval and remote acceptance remain pending.
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `scripts/jx_consultation_model_cleaning.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T10:39:00+08:00 — 固定Dify parent/child分页total；以task-wide ledger阻断历史漏账的新provider reservation；共享/候选远端ID禁止成为错误replacement删除目标且延迟删除复查live引用；咨询按单条advice方向校验并要求独立非重叠证据锚点，同时保留忠实缩写。
+
+- **Purpose:** 固定Dify parent/child分页total；以task-wide ledger阻断历史漏账的新provider reservation；共享/候选远端ID禁止成为错误replacement删除目标且延迟删除复查live引用；咨询按单条advice方向校验并要求独立非重叠证据锚点，同时保留忠实缩写。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-review10-focused-r5-after-20260913.xml; pytest-review10-regression-r1-20260913.xml; pytest-review10-affected-full-r2-20260913.xml (182 passed)
+- **Changed paths:**
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `scripts/jx_consultation_model_cleaning.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T11:22:22+08:00 — 将跨来源远端删除保护限定为 live publication shard 引用，避免 recent_activity 历史 replacement 行阻断既有精确 outbox cleanup；保留 shared shard 最后引用删除和延迟任务复查。
+
+- **Purpose:** 将跨来源远端删除保护限定为 live publication shard 引用，避免 recent_activity 历史 replacement 行阻断既有精确 outbox cleanup；保留 shared shard 最后引用删除和延迟任务复查。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** 共享引用 guard 将历史 CleaningDocument replacement 行误判为 shared live reference，活动旧远端删除被跳过。
+- **After:** guard 只按 live DifyPublicationShard 判断跨来源共享；活动 replacement 继续由既有精确 outbox cleanup 删除。
+- **Impact / Notes:** None
+- **Validation:** pytest-review10-activity-cleanup-r1 4 passed；pytest-review10-affected-full-r3 202 passed
+- **Changed paths:**
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `scripts/jx_consultation_model_cleaning.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T14:12:59+08:00 — 修复维护Worker遗漏的陈旧retrying源文件回收和共享Dify远端ID删除保护；补四个内容策略Batch/Realtime canonical request parity反例；更新隔离部署、接口索引、排障记录与源锁定文档。未执行Docker、Provider、Dify或远端操作。
+
+- **Purpose:** 修复维护Worker遗漏的陈旧retrying源文件回收和共享Dify远端ID删除保护；补四个内容策略Batch/Realtime canonical request parity反例；更新隔离部署、接口索引、排障记录与源锁定文档。未执行Docker、Provider、Dify或远端操作。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest feature r4: 282 passed; model workflow r2: 119 passed; provider origin: 42 passed; witness: 5 passed; consultation grounding: 46 passed; PDF OCR: 28 passed; canonical parity: 1 passed
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T14:16:44+08:00 — 仅将maintenance与knowledge_admin格式化为仓库Ruff规范；行为、接口和远端边界不变。保留已验证的陈旧源重试回收、共享Dify引用删除保护和四策略canonical request parity。
+
+- **Purpose:** 仅将maintenance与knowledge_admin格式化为仓库Ruff规范；行为、接口和远端边界不变。保留已验证的陈旧源重试回收、共享Dify引用删除保护和四策略canonical request parity。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest feature r5: 282 passed; ruff format --check: 2 files formatted then clean
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T15:15:58+08:00 — 恢复未释放终态源记录参与本地 SHA/名称去重，只有精确源删除写入 dedupe_released_at 才允许重传；活动同源重复 event_id 保留 failed/DUPLICATE_ACTIVITY_EVENT_ID 条目与文件级错误以提供可审计阻断，且不进入远端发布。同步当前 consultation-rag-v1 提示词与局部来源块覆盖测试前提、重试错误码夹具和自动接口索引。
+
+- **Purpose:** 恢复未释放终态源记录参与本地 SHA/名称去重，只有精确源删除写入 dedupe_released_at 才允许重传；活动同源重复 event_id 保留 failed/DUPLICATE_ACTIVITY_EVENT_ID 条目与文件级错误以提供可审计阻断，且不进入远端发布。同步当前 consultation-rag-v1 提示词与局部来源块覆盖测试前提、重试错误码夹具和自动接口索引。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-quality-unit-r4.xml; pytest-quality-a-r3.xml; pytest-quality-b-r1.xml; pytest-quality-c-final.xml; pytest-quality-d-full-r1.xml; gov quality fingerprint afd869245354162a534f163e018c99308ff131c5ff4942ebe116a7e7110de28d
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T15:58:12+08:00 — 未释放失败源参与去重；派生案例和方法候选不继承 Provider 调用状态；Batch repair 在 reservation 锁内校验状态和 generation；隔离测试脚本精确管理测试 Batch worker。
+
+- **Purpose:** 未释放失败源参与去重；派生案例和方法候选不继承 Provider 调用状态；Batch repair 在 reservation 锁内校验状态和 generation；隔离测试脚本精确管理测试 Batch worker。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-review-remediation.xml
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T16:09:18+08:00 — 隔离测试脚本契约的 fake 临时文件固定在仓库 tmp，避免 Windows canonical runner 的跨盘相对路径异常；产品和脚本行为不变。
+
+- **Purpose:** 隔离测试脚本契约的 fake 临时文件固定在仓库 tmp，避免 Windows canonical runner 的跨盘相对路径异常；产品和脚本行为不变。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-crossdrive-test.xml
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T16:21:18+08:00 — 跨盘契约测试将 fake env、Compose 脚本和调用日志固定在仓库 tmp 并在断言后移除，避免 Quality 运行污染治理范围；隔离开关行为不变。
+
+- **Purpose:** 跨盘契约测试将 fake env、Compose 脚本和调用日志固定在仓库 tmp 并在断言后移除，避免 Quality 运行污染治理范围；隔离开关行为不变。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-cleanup-contract.xml
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T17:11:04+08:00 — 咨询证据逐声明块校验；Provider 仅核对不可变原始候选；Batch JSONL 构造后以 generation/status 围栏再 reserve；取消缺失状态 fail-closed；精确 Batch-file 清理与隔离 worker 健康检查；Quality 覆盖咨询、PDF/OCR及回归测试。仅本地 fake/SQLite 验证。
+
+- **Purpose:** 咨询证据逐声明块校验；Provider 仅核对不可变原始候选；Batch JSONL 构造后以 generation/status 围栏再 reserve；取消缺失状态 fail-closed；精确 Batch-file 清理与隔离 worker 健康检查；Quality 覆盖咨询、PDF/OCR及回归测试。仅本地 fake/SQLite 验证。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T17:20:50+08:00 — 隔离worker健康检查的本地fake Compose夹具补齐三个service_container响应并以finally精确清理临时脚本和日志；Provider、Batch、咨询、DSL语义不变。
+
+- **Purpose:** 隔离worker健康检查的本地fake Compose夹具补齐三个service_container响应并以finally精确清理临时脚本和日志；Provider、Batch、咨询、DSL语义不变。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T17:34:05+08:00 — 咨询证据仍要求每个声明来源块存在、唯一且匹配；错误信息同时保留既有未知来源块和所声明来源块关键词，避免改变稳定调用方断言。
+
+- **Purpose:** 咨询证据仍要求每个声明来源块存在、唯一且匹配；错误信息同时保留既有未知来源块和所声明来源块关键词，避免改变稳定调用方断言。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-13T20:48:47+08:00 — 仅格式化 U12 已覆盖的质量路径；未改变清洗、Batch、OCR、Dify 或隔离部署语义。
+
+- **Purpose:** 仅格式化 U12 已覆盖的质量路径；未改变清洗、Batch、OCR、Dify 或隔离部署语义。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-14T02:52:09+08:00 — 咨询核心字段改为完整来源锚定；历史 ledger 不一致在新 Batch 创建前 fail-closed 并进入人工 outbox；terminal Batch/file 仅在精确删除或可靠转移后收敛，避免 active sibling 或残余 file 被提前丢弃。
+
+- **Purpose:** 咨询核心字段改为完整来源锚定；历史 ledger 不一致在新 Batch 创建前 fail-closed 并进入人工 outbox；terminal Batch/file 仅在精确删除或可靠转移后收敛，避免 active sibling 或残余 file 被提前丢弃。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+
+## 2026-09-24T15:58:43+08:00 — SQLite 迁移通过 batch recreate 保持无 server default；Dify 替换清理携带精确 owner 并只排除待删目标自身，保留共享引用保护；统一 DSL 与功能索引按当前源确定性重建；完整差异模块所有权已补齐。
+
+- **Purpose:** SQLite 迁移通过 batch recreate 保持无 server default；Dify 替换清理携带精确 owner 并只排除待删目标自身，保留共享引用保护；统一 DSL 与功能索引按当前源确定性重建；完整差异模块所有权已补齐。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** 迁移在 SQLite 直接 DROP DEFAULT 失败；recent_activity 清理将旧 owner 自身误判为其他活引用并丢弃 outbox；两个生成资产过期；部分当前差异没有模块所有权。
+- **After:** 迁移跨 SQLite/PostgreSQL 保持一致；清理重试可删除精确旧目标且仍保护其他活引用；生成资产与当前源一致；未映射实现路径为零。
+- **Impact / Notes:** None
+- **Validation:** 迁移定点 1 passed；recent_activity 替换/清理 5 passed；DSL与文档合同 18 passed；相关 model-cleaning 6 passed；清洗容错回归 39 passed。
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-24T16:49:26+08:00 — Dify replacement cleanup 以精确 document/shard owner 排除自身并保留同文件 sibling 共享引用保护；recent_activity 即时与延迟清理统一 tombstone/解绑/outbox 终态，失败和多 ID 场景保留未完成 marker；source delete 支持同 generation 幂等 finalization。
+
+- **Purpose:** Dify replacement cleanup 以精确 document/shard owner 排除自身并保留同文件 sibling 共享引用保护；recent_activity 即时与延迟清理统一 tombstone/解绑/outbox 终态，失败和多 ID 场景保留未完成 marker；source delete 支持同 generation 幂等 finalization。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** 整文件排除可能误删共享远端；即时清理绕过共享引用并留下僵尸本地绑定；source_deleting 无法重入 finalization；清理失败会提前清除 pending marker。
+- **After:** 只排除精确 owner，其他引用继续阻止远端删除；即时和延迟路径终态一致；source delete 可重试收敛且 generation 不增长；未完成 remote ID 保持 outbox 与审计标记。
+- **Impact / Notes:** None
+- **Validation:** 聚焦 source delete、replacement、queued deletion、tombstone 回归 7 passed；lint/compile 通过；Ruff 格式化和索引重建完成；完整 Quality 待重跑。
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-24T17:29:30+08:00 — 统一 recent_activity 单文档与整源发布的精确 owner 共享引用裁决；同一 remote 的多 owner 可一致解绑并 tombstone，外部共享 owner 保持 live；多 remote 部分失败只保留失败 marker、owner map 与 outbox，maintenance 后续收敛；source delete 支持首次 409 后同 generation 完成及幂等重试。
+
+- **Purpose:** 统一 recent_activity 单文档与整源发布的精确 owner 共享引用裁决；同一 remote 的多 owner 可一致解绑并 tombstone，外部共享 owner 保持 live；多 remote 部分失败只保留失败 marker、owner map 与 outbox，maintenance 后续收敛；source delete 支持首次 409 后同 generation 完成及幂等重试。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-24T17:29:31+08:00 — 统一 recent_activity 单文档与整源发布的精确 owner 共享引用裁决；同一 remote 的多 owner 可一致解绑并 tombstone，外部共享 owner 保持 live；多 remote 部分失败只保留失败 marker、owner map 与 outbox，maintenance 后续收敛；source delete 支持首次 409 后同 generation 完成及幂等重试。
+
+- **Purpose:** 统一 recent_activity 单文档与整源发布的精确 owner 共享引用裁决；同一 remote 的多 owner 可一致解绑并 tombstone，外部共享 owner 保持 live；多 remote 部分失败只保留失败 marker、owner map 与 outbox，maintenance 后续收敛；source delete 支持首次 409 后同 generation 完成及幂等重试。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-24T18:09:31+08:00 — 同一 remote 的 cleanup outbox 分次 upsert 会合并并去重已有 owners、legacy owner 与新增 owners，maintenance 可完整收敛；source delete 已覆盖首次 409、active 收敛、同 generation 完成和后续幂等。
+
+- **Purpose:** 同一 remote 的 cleanup outbox 分次 upsert 会合并并去重已有 owners、legacy owner 与新增 owners，maintenance 可完整收敛；source delete 已覆盖首次 409、active 收敛、同 generation 完成和后续幂等。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-24T23:13:39+08:00 — 隔离启动以本地已复审候选 attestation、实际 wheel SHA、最新运行态 manifest 及三镜像内容 ID/label 共同核验；不要求远端目录有 Git 或 govlib。新增无 Git 目录与证明、wheel、manifest 篡改失败测试。
+
+- **Purpose:** 隔离启动以本地已复审候选 attestation、实际 wheel SHA、最新运行态 manifest 及三镜像内容 ID/label 共同核验；不要求远端目录有 Git 或 govlib。新增无 Git 目录与证明、wheel、manifest 篡改失败测试。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-25T00:06:02+08:00 — 隔离启动要求外部固定 bundle 摘要并校验真实资产；冻结 env 快照、按不可变镜像 ID 启动并核对运行容器，严格验证正式健康 JSON，仓库外测试无 Git 目录。
+
+- **Purpose:** 隔离启动要求外部固定 bundle 摘要并校验真实资产；冻结 env 快照、按不可变镜像 ID 启动并核对运行容器，严格验证正式健康 JSON，仓库外测试无 Git 目录。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-25T00:42:31+08:00 — 三镜像 ID 由精确批准命令的外部值固定，bundle 摘要覆盖镜像身份；正式健康拒绝任意主机使用隔离端口；部署契约在仓库外验证无 Git 远端布局，并覆盖协调篡改。
+
+- **Purpose:** 三镜像 ID 由精确批准命令的外部值固定，bundle 摘要覆盖镜像身份；正式健康拒绝任意主机使用隔离端口；部署契约在仓库外验证无 Git 远端布局，并覆盖协调篡改。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-25T00:45:35+08:00 — 部署契约测试代码仅按 Ruff 要求调整格式；镜像外部身份、正式健康和无 Git 布局语义保持不变。
+
+- **Purpose:** 部署契约测试代码仅按 Ruff 要求调整格式；镜像外部身份、正式健康和无 Git 布局语义保持不变。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-25T01:22:30+08:00 — 正式健康使用结构化 URL 解析拒绝数值等价的隔离端口；完整部署契约执行真实 parser，验证外部镜像 ID 信任锚和无 Git 环境；Windows 与 Linux 选择可用 Python 解释器。
+
+- **Purpose:** 正式健康使用结构化 URL 解析拒绝数值等价的隔离端口；完整部署契约执行真实 parser，验证外部镜像 ID 信任锚和无 Git 环境；Windows 与 Linux 选择可用 Python 解释器。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/preflight-contract-4tlcanoy/isolated.env`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/preflight-contract-m7xwl496/isolated.env`
+  - `tmp/preflight-contract-sz0h1ajx/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-25T02:15:44+08:00 — 将当前唯一计划精确登记为 contract-docs ownership 并从 docs/README 导航；IMPLEMENTATION 与 feature.json 对齐回归、Dify reference、maintenance Worker、三个 Dockerfile 和精确测试证据路径；部署合同测试新增三镜像协调篡改的独立外部信任锚反例。
+
+- **Purpose:** 将当前唯一计划精确登记为 contract-docs ownership 并从 docs/README 导航；IMPLEMENTATION 与 feature.json 对齐回归、Dify reference、maintenance Worker、三个 Dockerfile 和精确测试证据路径；部署合同测试新增三镜像协调篡改的独立外部信任锚反例。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/attest-debug/a`
+  - `tmp/f.env`
+  - `tmp/preflight-contract-4tlcanoy/isolated.env`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/preflight-contract-m7xwl496/isolated.env`
+  - `tmp/preflight-contract-sz0h1ajx/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-25T03:02:39+08:00 — 允许 release 阶段在全部上游门禁当前时记录当前独立复审；补齐治理状态和复审门禁回归测试，保留完整周期差异。
+
+- **Purpose:** 允许 release 阶段在全部上游门禁当前时记录当前独立复审；补齐治理状态和复审门禁回归测试，保留完整周期差异。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 16 项治理合同测试及完整 Quality PASSED
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/attest-debug/a`
+  - `tmp/f.env`
+  - `tmp/preflight-contract-4tlcanoy/isolated.env`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/preflight-contract-m7xwl496/isolated.env`
+  - `tmp/preflight-contract-sz0h1ajx/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-25T05:28:20+08:00 — Require current approvals for every active affected Feature before review and release; product behavior unchanged
+
+- **Purpose:** Require current approvals for every active affected Feature before review and release; product behavior unchanged
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Focused governance contract: 24 passed; full Quality pending rerun
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/attest-debug/a`
+  - `tmp/f.env`
+  - `tmp/preflight-contract-4tlcanoy/isolated.env`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/preflight-contract-m7xwl496/isolated.env`
+  - `tmp/preflight-contract-sz0h1ajx/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-25T05:53:36+08:00 — 质量与复审指纹纳入原始 pytest 证据；源码/实施范围继续排除运行时目录；无审批的 approved/done 元数据 fail-closed；治理测试写入临时目录并移出两份合成记录。
+
+- **Purpose:** 质量与复审指纹纳入原始 pytest 证据；源码/实施范围继续排除运行时目录；无审批的 approved/done 元数据 fail-closed；治理测试写入临时目录并移出两份合成记录。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** pytest 证据目录和根 XML 未绑定质量/复审指纹，合成元数据污染正式 Feature 状态。
+- **After:** quality/review scope 绑定 .pytest-terra/.pytest-canonical 原始证据，source/implementation 保持排除；无审批终态显示 stale_approval；合成记录已保全移离。
+- **Impact / Notes:** 未改变产品 API、数据结构或远端行为；所有既有工作树差异继续保留。
+- **Validation:** tests/test_governance_contract.py: 27 passed
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/attest-debug/a`
+  - `tmp/f.env`
+  - `tmp/preflight-contract-4tlcanoy/isolated.env`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/preflight-contract-m7xwl496/isolated.env`
+  - `tmp/preflight-contract-sz0h1ajx/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-25T06:56:25+08:00 — 新增严格一次 continuation-reapproval；普通首次实施审批保留 source baseline fail-closed；当前主 Feature 已以原始 baseline 恢复 content-bound 实施审批并写结构化 gate event。
+
+- **Purpose:** 新增严格一次 continuation-reapproval；普通首次实施审批保留 source baseline fail-closed；当前主 Feature 已以原始 baseline 恢复 content-bound 实施审批并写结构化 gate event。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** 需求再审批后主 Feature 实施审批被清空，普通 approve-implementation 受既有 source baseline 保护阻止。
+- **After:** 主 Feature 通过严格 work/feature/branch/时间顺序/一次性条件恢复实施审批；原始 baseline 未修改，gate event 绑定原始与当前 source 及合同指纹。
+- **Impact / Notes:** 不改变产品 API、远端、部署或费用边界；所有现有差异继续纳入 Quality 和独立复审。
+- **Validation:** tests/test_governance_contract.py: 29 passed
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/attest-debug/a`
+  - `tmp/f.env`
+  - `tmp/preflight-contract-4tlcanoy/isolated.env`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/preflight-contract-m7xwl496/isolated.env`
+  - `tmp/preflight-contract-sz0h1ajx/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-25T07:21:12+08:00 — Feature 审批、模块和文档语义纳入 quality/review canonical projection；review 自写字段不参与；损坏 event fail-closed，审批与 event 追加失败可恢复。
+
+- **Purpose:** Feature 审批、模块和文档语义纳入 quality/review canonical projection；review 自写字段不参与；损坏 event fail-closed，审批与 event 追加失败可恢复。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** feature.json 与生成状态被排除在质量/复审指纹外；损坏 event 可被静默跳过；审批先写元数据再写 event。
+- **After:** 关键 Feature 元数据绑定质量/复审指纹，review 自写字段不自失效；event 日志严格解析，审批写入在 event 失败时回滚。
+- **Impact / Notes:** 保留所有既有代码、文档、证据和原始 source baseline；无远端/付费/部署动作。
+- **Validation:** tests/test_governance_contract.py: 33 passed
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/attest-debug/a`
+  - `tmp/f.env`
+  - `tmp/preflight-contract-4tlcanoy/isolated.env`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/preflight-contract-m7xwl496/isolated.env`
+  - `tmp/preflight-contract-sz0h1ajx/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-25T07:46:53+08:00 — 当前实施审批必须有匹配 work/feature/branch/baseline/合同指纹的 committed gate event；event 损坏 fail-closed，写入失败回滚；release approval 测试使用隔离 tmp state。
+
+- **Purpose:** 当前实施审批必须有匹配 work/feature/branch/baseline/合同指纹的 committed gate event；event 损坏 fail-closed，写入失败回滚；release approval 测试使用隔离 tmp state。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** gate_status 仅验证元数据与 Quality/review 指纹，审批 event 缺失或损坏可能未阻断；测试曾污染 release-approval live state。
+- **After:** gate_status 及 review/release/complete 继承匹配 event 校验；event 有稳定 id/digest 并原子追加；release approval 测试不写 live state。
+- **Impact / Notes:** 完整保留既有代码、文档、未提交差异和测试证据；不捕获 baseline，不执行远端/付费/部署。
+- **Validation:** tests/test_governance_contract.py: 36 passed
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/attest-debug/a`
+  - `tmp/f.env`
+  - `tmp/preflight-contract-4tlcanoy/isolated.env`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/preflight-contract-m7xwl496/isolated.env`
+  - `tmp/preflight-contract-sz0h1ajx/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-25T08:46:02+08:00 — 测试运行证据 tmp/pytest-* 仅绑定 Quality/Review；source/implementation 排除运行产物；接续审批事件绑定新 SPEC 合同指纹并保留原始 source baseline。
+
+- **Purpose:** 测试运行证据 tmp/pytest-* 仅绑定 Quality/Review；source/implementation 排除运行产物；接续审批事件绑定新 SPEC 合同指纹并保留原始 source baseline。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** 保留全部现有差异与测试证据；未执行远端写入、部署、付费调用或 push。
+- **Validation:** tests/test_governance_contract.py focused regression
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/attest-debug/a`
+  - `tmp/f.env`
+  - `tmp/preflight-contract-4tlcanoy/isolated.env`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/preflight-contract-m7xwl496/isolated.env`
+  - `tmp/preflight-contract-sz0h1ajx/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-26T17:44:07+08:00 — PROFILE §12 与唯一计划明确 project.json/Feature validation 为命令权威、A-E 直接相关集合及静态增量；本轮仅本地修复验证，无业务 FR/AC 变化
+
+- **Purpose:** PROFILE §12 与唯一计划明确 project.json/Feature validation 为命令权威、A-E 直接相关集合及静态增量；本轮仅本地修复验证，无业务 FR/AC 变化
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** PROFILE 描述全目录 ruff、全 tests、Other compile 且 build 未配置；计划授权文字未明确本轮不付费/不远端
+- **After:** PROFILE 描述 A-E scope、fatal lint、compile 目录、uv lock --check、600 秒、非全仓 PASS 和旧失败证据；计划明确本轮仅本地，¥5/¥4 仅历史预算约束
+- **Impact / Notes:** 未运行 Quality；不授权付费、远端写入、部署、发布或 push；不手改 state/fingerprint
+- **Validation:** 未运行；沿用主线程已核对的 5 组、24 个唯一测试路径、600 秒、无嵌套 PowerShell 配置
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/attest-debug/a`
+  - `tmp/f.env`
+  - `tmp/preflight-contract-4tlcanoy/isolated.env`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/preflight-contract-m7xwl496/isolated.env`
+  - `tmp/preflight-contract-sz0h1ajx/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-28T14:40:19+08:00 — Clarified first deployment on ys with dedicated PostgreSQL/Redis resources and two Dify datasets; registered ys Compose ownership and bound review waiver to the current diff and sealed event
+
+- **Purpose:** Clarified first deployment on ys with dedicated PostgreSQL/Redis resources and two Dify datasets; registered ys Compose ownership and bound review waiver to the current diff and sealed event
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** review waiver focused tests: 2 passed; ys Compose syntax previously checked
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `docker-compose.ys.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/attest-debug/a`
+  - `tmp/f.env`
+  - `tmp/preflight-contract-4tlcanoy/isolated.env`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/preflight-contract-m7xwl496/isolated.env`
+  - `tmp/preflight-contract-sz0h1ajx/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-28T14:56:59+08:00 — ys Compose requires explicit offline OCR assets and strong credentials; governance test checks state isolation without deleting existing approval, and the project index matches the Compose entry
+
+- **Purpose:** ys Compose requires explicit offline OCR assets and strong credentials; governance test checks state isolation without deleting existing approval, and the project index matches the Compose entry
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `docker-compose.ys.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/attest-debug/a`
+  - `tmp/f.env`
+  - `tmp/preflight-contract-4tlcanoy/isolated.env`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/preflight-contract-m7xwl496/isolated.env`
+  - `tmp/preflight-contract-sz0h1ajx/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-28T16:05:50+08:00 — Course dataset is explicitly disabled on ys; readiness requires only the enabled general dataset while API and worker course writes fail closed. Existing shared resources remain protected.
+
+- **Purpose:** Course dataset is explicitly disabled on ys; readiness requires only the enabled general dataset while API and worker course writes fail closed. Existing shared resources remain protected.
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Focused readiness and course-boundary tests passed
+- **Changed paths:**
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `docker-compose.ys.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tmp/attest-debug/a`
+  - `tmp/f.env`
+  - `tmp/preflight-contract-4tlcanoy/isolated.env`
+  - `tmp/preflight-contract-621z3g9m/isolated.env`
+  - `tmp/preflight-contract-m7xwl496/isolated.env`
+  - `tmp/preflight-contract-sz0h1ajx/isolated.env`
+  - `tmp/start-compensation-contract-ogh15v07/compose-calls.log`
+  - `tmp/start-compensation-contract-xbzoe9zj/compose-calls.log`
+  - `uv.lock`
+
+## 2026-09-28T18:22:28+08:00 — Documented deployed ys candidate, seven same-image services, ready/UI/Dify/OCR evidence, and explicit untested model and positive RAG boundaries.
+
+- **Purpose:** Documented deployed ys candidate, seven same-image services, ready/UI/Dify/OCR evidence, and explicit untested model and positive RAG boundaries.
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** ys live read-only API and offline OCR smoke; model cleaning skipped with placeholder key
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `docker-compose.ys.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `uv.lock`
+
+## 2026-09-30T04:32:03+08:00 — Bound ys acceptance operations to sealed sample and transport evidence; preserve publication, retrieval, and paid-call resume safeguards on shared implementation paths.
+
+- **Purpose:** Bound ys acceptance operations to sealed sample and transport evidence; preserve publication, retrieval, and paid-call resume safeguards on shared implementation paths.
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+  - `acceptance-runner — 真实验收与精确清理`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Current local gov quality passed; ys paid and remote acceptance not run
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/acceptance_budget.py`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `docker-compose.ys.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/full_cleaning_acceptance.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `scripts/jx_release_data.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tests/test_release_acceptance_contract.py`
+  - `uv.lock`
+
+## 2026-09-30T04:56:49+08:00 — 验收 runner 预算封存、付费调用 receipt 与跨重启证据重放、来源检索及 App 判定已按本轮计划修复；当前本地 Quality 与定向复审通过，ys 真实验收未执行。
+
+- **Purpose:** 验收 runner 预算封存、付费调用 receipt 与跨重启证据重放、来源检索及 App 判定已按本轮计划修复；当前本地 Quality 与定向复审通过，ys 真实验收未执行。
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+  - `acceptance-runner — 真实验收与精确清理`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** gov quality: b1ed8518c4739d10fa2167ccbf8e36cbeb30cb35c7cad788d68a68c634442ae2
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/acceptance_budget.py`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `docker-compose.ys.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/full_cleaning_acceptance.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `scripts/jx_release_data.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tests/test_release_acceptance_contract.py`
+  - `uv.lock`
+
+## 2026-09-30T21:29:36+08:00 — Paid chat completions POST now sends one HTTP attempt per durable reservation; existing outer full retry and two-call limit remain unchanged. Local MockTransport regression covers timeout, 429 and 500, with GET and Batch retry compatibility.
+
+- **Purpose:** Paid chat completions POST now sends one HTTP attempt per durable reservation; existing outer full retry and two-call limit remain unchanged. Local MockTransport regression covers timeout, 429 and 500, with GET and Batch retry compatibility.
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+  - `acceptance-runner — 真实验收与精确清理`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/acceptance_budget.py`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `docker-compose.ys.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/full_cleaning_acceptance.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `scripts/jx_release_data.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tests/test_release_acceptance_contract.py`
+  - `uv.lock`
+
+## 2026-09-30T21:58:56+08:00 — Bind current final paid POST defect fix to its shared owners after complete Quality; one HTTP generation attempt per reservation, existing outer two-call limit preserved. No further product behavior changes.
+
+- **Purpose:** Bind current final paid POST defect fix to its shared owners after complete Quality; one HTTP generation attempt per reservation, existing outer two-call limit preserved. No further product behavior changes.
+- **Affected modules:**
+  - `semantic-contract — 模型语义与合同`
+  - `cleaning-workers — 清洗 Worker 与去重`
+  - `pdf-ocr-route — PDF 混合页 OCR 路由`
+  - `isolated-test-deploy — 隔离测试部署`
+  - `contract-docs — 计划与验证文档`
+  - `acceptance-runner — 真实验收与精确清理`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+  - `Dockerfile.cleaning-test`
+  - `Dockerfile.cleaning-test-ocr`
+  - `Dockerfile.cleaning-test-ui`
+  - `ai_management/acceptance_budget.py`
+  - `ai_management/api/routers/health.py`
+  - `ai_management/api/routers/knowledge_admin.py`
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/models.py`
+  - `ai_management/services/dify_references.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `ai_management/workers/tasks/maintenance.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `docker-compose.cleaning-test-ui.yml`
+  - `docker-compose.cleaning-test.yml`
+  - `docker-compose.ys.yml`
+  - `knowledge_cleaner/consultation_rag.py`
+  - `knowledge_cleaner/pdf_convert.py`
+  - `knowledge_cleaner/rapidocr_backend.py`
+  - `migrations/versions/o2p3q4r5s6t7_source_delete_tombstone_generation.py`
+  - `scripts/full_cleaning_acceptance.py`
+  - `scripts/generate_project_index.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `scripts/jx_release_data.py`
+  - `tests/test_ai_management.py`
+  - `tests/test_cleaning_test_deploy_contract.py`
+  - `tests/test_cleaning_tolerance_methodology_regression.py`
+  - `tests/test_consultation_rag_integration.py`
+  - `tests/test_dify_client.py`
+  - `tests/test_governance_contract.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_pdf_ocr_quality.py`
+  - `tests/test_release_acceptance_contract.py`
+  - `uv.lock`

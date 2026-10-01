@@ -1,0 +1,134 @@
+name: ai-management-cleaning-test
+
+x-cleaning-test-runtime: &cleaning_test_runtime
+  env_file: ${CLEANING_TEST_ENV_FILE:-.env.cleaning-test}
+  environment: &cleaning_test_runtime_environment
+    APP_ENV: test
+    CLEANING_GENERAL_ONLY: "true"
+    CLEANING_TEST_ISOLATION_ID: ${CLEANING_TEST_ISOLATION_ID:?set CLEANING_TEST_ISOLATION_ID}
+    CLEANING_TEST_DATABASE_NAME: ai_management_cleaning_test
+    CLEANING_TEST_DATABASE_USER: ai_management_cleaning_test
+    CLEANING_TEST_REDIS_DB: "6"
+    CLEANING_DAILY_BUDGET_YUAN: ${CLEANING_DAILY_BUDGET_YUAN:?set CLEANING_DAILY_BUDGET_YUAN}
+    JX_ACCEPTANCE_CLEANING_BUDGET_MAX_YUAN: ${JX_ACCEPTANCE_CLEANING_BUDGET_MAX_YUAN:?set JX_ACCEPTANCE_CLEANING_BUDGET_MAX_YUAN}
+    DATABASE_URL: ${CLEANING_TEST_DATABASE_URL:?set CLEANING_TEST_DATABASE_URL}
+    REDIS_URL: ${CLEANING_TEST_REDIS_URL:?set CLEANING_TEST_REDIS_URL}
+    DIFY_GENERAL_DATASET_ID: 19206ce0-80a4-4a93-aa86-63e3385d2b2a
+    DIFY_COURSE_DATASET_ID: 19206ce0-80a4-4a93-aa86-63e3385d2b2a
+    CLEANING_TEST_BATCH_ACCEPTANCE_ENABLED: ${CLEANING_TEST_BATCH_ACCEPTANCE_ENABLED:-false}
+    BAILIAN_BATCH_ENABLED: ${CLEANING_TEST_BATCH_ACCEPTANCE_ENABLED:-false}
+
+services:
+  api-cleaning-test:
+    <<: *cleaning_test_runtime
+    image: ${AI_CLEANING_TEST_IMAGE:-jx-now-ai-management:cleaning-test}
+    # The opt-in isolated OCR worker initializes this shared, isolated
+    # conversion volume as root. Keep the two services that read/write the
+    # same diagnostic files on that identity; no formal volume is mounted.
+    user: "0:0"
+    environment:
+      <<: *cleaning_test_runtime_environment
+      AI_MANAGEMENT_BASE_URL: http://ai-management-cleaning-test-api:8000
+    command: uvicorn ai_management.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "127.0.0.1:18080:8000"
+    volumes:
+      - ai_management_cleaning_test_uploads:/app/var/uploads
+      - ai_management_cleaning_test_conversion:/app/var/conversion-markdown
+      - ai_management_cleaning_test_audit:/app/var/audit
+    networks:
+      cleaning_test:
+        aliases:
+          - ai-management-cleaning-test-api
+      # Reuse only the existing Dify infrastructure DNS endpoints (PostgreSQL,
+      # Redis and Knowledge API).  This service never acquires the formal
+      # ai-management API alias and keeps its application traffic isolated.
+      dify_backend: {}
+
+  cleaning-worker-test:
+    <<: *cleaning_test_runtime
+    image: ${AI_CLEANING_TEST_IMAGE:-jx-now-ai-management:cleaning-test}
+    user: "0:0"
+    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_default,ai_cleaning --concurrency=1
+    volumes:
+      - ai_management_cleaning_test_uploads:/app/var/uploads
+      - ai_management_cleaning_test_conversion:/app/var/conversion-markdown
+      - ai_management_cleaning_test_audit:/app/var/audit
+    networks: [cleaning_test, dify_backend]
+
+  model-realtime-worker-test:
+    <<: *cleaning_test_runtime
+    image: ${AI_CLEANING_TEST_IMAGE:-jx-now-ai-management:cleaning-test}
+    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_model_realtime --concurrency=1
+    volumes:
+      - ai_management_cleaning_test_uploads:/app/var/uploads
+    networks: [cleaning_test, dify_backend]
+
+  # Batch is never part of the default test stack. `start` adds this profile
+  # only after the environment switch and read-only manifest agree on an
+  # explicit isolated acceptance run.
+  model-batch-worker-test:
+    <<: *cleaning_test_runtime
+    image: ${AI_CLEANING_TEST_IMAGE:-jx-now-ai-management:cleaning-test}
+    profiles: ["batch"]
+    user: "0:0"
+    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_model_batch --concurrency=1
+    volumes:
+      - ai_management_cleaning_test_uploads:/app/var/uploads
+      - ai_management_cleaning_test_audit:/app/var/audit
+    networks: [cleaning_test, dify_backend]
+
+  publication-worker-test:
+    <<: *cleaning_test_runtime
+    image: ${AI_CLEANING_TEST_IMAGE:-jx-now-ai-management:cleaning-test}
+    # Publishing clears the same isolated upload artifacts that the API and
+    # cleaning workers create.  Keep the shared isolated volume on one UID so
+    # terminal file-state aggregation cannot fail after Dify succeeds.
+    user: "0:0"
+    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_publication --concurrency=1
+    volumes:
+      - ai_management_cleaning_test_uploads:/app/var/uploads
+    networks: [cleaning_test, dify_backend]
+
+  # This worker is intentionally opt-in.  The default isolated stack only
+  # starts API/realtime/publication; the operator enables the `ocr` profile
+  # exclusively while exercising mixed-PDF samples.
+  ocr-worker-test:
+    <<: *cleaning_test_runtime
+    image: ${AI_CLEANING_TEST_OCR_IMAGE:-jx-now-ai-management-ocr:cleaning-test}
+    profiles: ["ocr"]
+    # OCR is opt-in and bounded independently from the ordinary workers so a
+    # scanned-PDF acceptance run cannot starve the API or realtime queue.
+    mem_limit: 3g
+    memswap_limit: 3g
+    cpus: "2.0"
+    pids_limit: 256
+    stop_grace_period: 660s
+    restart: "no"
+    init: true
+    # Conversion/OCR scratch data is bounded and never written to a host or
+    # formal-service volume. Diagnostics that must survive a task remain in
+    # the isolated named volumes below.
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m,mode=1777
+    # The OCR base image writes conversion diagnostics and must initialize its
+    # own isolated named volume. No host or formal-service volume is mounted.
+    user: "0:0"
+    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_ocr --concurrency=1 --prefetch-multiplier=1 --hostname=ai-ocr-cleaning-test@%h
+    volumes:
+      - ai_management_cleaning_test_uploads:/app/var/uploads
+      - ai_management_cleaning_test_conversion:/app/var/conversion-markdown
+      - ai_management_cleaning_test_audit:/app/var/audit
+    networks: [cleaning_test, dify_backend]
+
+volumes:
+  ai_management_cleaning_test_uploads:
+  ai_management_cleaning_test_conversion:
+  ai_management_cleaning_test_audit:
+
+networks:
+  cleaning_test:
+    name: ai-management-cleaning-test-network
+  dify_backend:
+    external: true
+    name: docker_default

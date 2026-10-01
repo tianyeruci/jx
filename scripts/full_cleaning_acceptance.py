@@ -17,9 +17,17 @@ import httpx
 from docx import Document
 from openpyxl import Workbook, load_workbook
 
-from ai_management.acceptance_budget import AcceptanceBudget
+from ai_management.acceptance_budget import (
+    AcceptanceBudget,
+    AcceptanceCampaignLedger,
+    build_historical_model_operations,
+    build_paid_operation_plan,
+    stable_operation_id,
+)
 from ai_management.cleaning import dify_activity_document_name, dify_document_name
 from ai_management.config import get_settings
+from ai_management.db import SessionLocal
+from ai_management.models import ModelCleaningTask
 from knowledge_cleaner.dify import DifyKnowledgeClient
 
 TERMINAL_FILE_STATUSES = {
@@ -168,6 +176,9 @@ CASE_SPECS: dict[str, dict[str, Any]] = {
         "strategy": "personal_business_consultation",
         "kb": "general",
         "expected_items": 1,
+        "batch_eligible": True,
+        "batch_manifest_id": "consult_real_docx",
+        "acceptance_parity": True,
         "allow_review": True,
         "forbidden": ["陈垚", "觉醒"],
     },
@@ -188,6 +199,9 @@ CASE_SPECS: dict[str, dict[str, Any]] = {
         "strategy": "zsxq_post",
         "kb": "general",
         "expected_items": 1,
+        "batch_eligible": True,
+        "batch_manifest_id": "zsxq_real",
+        "acceptance_parity": True,
         "forbidden": [],
     },
     "lead_synthetic": {
@@ -225,6 +239,204 @@ CASE_SPECS: dict[str, dict[str, Any]] = {
         "forbidden": [],
     },
 }
+
+# These operation keys are frozen before any paid operation starts.
+APP_OPERATION_KEYS = (
+    "business_advisor:general",
+    "business_advisor:case",
+    "business_advisor:method",
+    "moments",
+    "writing",
+    "summary",
+)
+
+
+def _load_frozen_retrieval_checks() -> list[dict[str, str]]:
+    """Load source keyed queries frozen outside the runner before paid work."""
+    path = os.environ.get("ACCEPTANCE_RETRIEVAL_QUERIES_JSON", "").strip()
+    if not path:
+        raise RuntimeError("缺少冻结的原始来源检索查询清单")
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    checks = payload.get("queries") if isinstance(payload, dict) else payload
+    if not isinstance(checks, list) or not checks:
+        raise ValueError("冻结检索查询清单必须是非空数组")
+    result = []
+    for item in checks:
+        if not isinstance(item, dict):
+            raise ValueError("冻结检索查询项必须是对象")
+        query_id = str(item.get("query_id") or "").strip()
+        kb = str(item.get("kb") or "").strip()
+        query = str(item.get("query") or "").strip()
+        sample_id = str(item.get("sample_id") or "").strip()
+        source_sha256 = str(item.get("source_sha256") or "").strip().lower()
+        key_points = item.get("key_points")
+        if (
+            not isinstance(key_points, list)
+            or not key_points
+            or not all(isinstance(value, str) and value.strip() for value in key_points)
+        ):
+            raise ValueError("冻结检索查询缺少预标关键点")
+        if (
+            not query_id
+            or kb not in {"general", "course"}
+            or not query
+            or not sample_id
+            or not re.fullmatch(r"[0-9a-f]{64}", source_sha256)
+        ):
+            raise ValueError("冻结检索查询缺少 query_id、kb、query、sample_id 或 source_sha256")
+        if kb == "course":
+            raise ValueError("本轮课程关闭，不能配置 course 检索")
+        result.append(
+            {
+                "query_id": query_id,
+                "kb": kb,
+                "query": query,
+                "sample_id": sample_id,
+                "source_sha256": source_sha256,
+                "key_points": [value.strip() for value in key_points],
+            }
+        )
+    return result
+
+
+def _load_frozen_chat_expectations() -> list[dict[str, Any]]:
+    """Load source and branch expectations frozen outside the runner."""
+    path = os.environ.get("ACCEPTANCE_CHAT_EXPECTATIONS_JSON", "").strip()
+    if not path:
+        raise RuntimeError("缺少冻结的business chat验收expectations")
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    checks = payload.get("checks") if isinstance(payload, dict) else payload
+    if not isinstance(checks, list) or not checks:
+        raise ValueError("business chat expectations必须是非空数组")
+    result = []
+    seen: set[str] = set()
+    for item in checks:
+        if not isinstance(item, dict):
+            raise ValueError("business chat expectation必须是对象")
+        case_id = str(item.get("case_id") or "").strip()
+        sample_id = str(item.get("sample_id") or "").strip()
+        source_sha256 = str(item.get("source_sha256") or "").strip().lower()
+        branch = str(item.get("branch") or "").strip()
+        key_points = item.get("key_points")
+        if (
+            not case_id
+            or case_id in seen
+            or not sample_id
+            or not re.fullmatch(r"[0-9a-f]{64}", source_sha256)
+            or not branch
+            or not isinstance(key_points, list)
+            or not key_points
+            or not all(isinstance(value, str) and value.strip() for value in key_points)
+        ):
+            raise ValueError("business chat expectation缺少case、sample/SHA、branch或关键点")
+        seen.add(case_id)
+        result.append(
+            {
+                "case_id": case_id,
+                "sample_id": sample_id,
+                "source_sha256": source_sha256,
+                "branch": branch,
+                "key_points": [value.strip() for value in key_points],
+            }
+        )
+    return result
+
+
+def _load_real_sample_manifest(path: Path) -> list[dict[str, Any]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("status") != "byte_inventory_only_not_content_expectations":
+        raise ValueError("样本 manifest 状态不允许作为本轮输入白名单")
+    entries = payload.get("entries")
+    if not isinstance(entries, list) or len(entries) != 15:
+        raise ValueError("本轮必须固定 15 份真实样本")
+    if len({str(item.get("sha256")) for item in entries}) != 15:
+        raise ValueError("真实样本 SHA 必须全部唯一")
+    # Keep the protected selection attached to the in-memory manifest without
+    # treating an ordinary sample entry as its trust root.
+    if isinstance(payload.get("parity_selection"), dict):
+        entries[0] = {**entries[0], "parity_selection": payload["parity_selection"]}
+    return entries
+
+
+def _resolve_manifest_sample_path(item: dict[str, Any], input_root: Path) -> Path:
+    """Resolve one frozen sample through an explicit input-root mapping."""
+    mapping_path = os.environ.get("ACCEPTANCE_SAMPLE_PATHS_JSON", "").strip()
+    if not mapping_path:
+        raise RuntimeError("缺少 sample_id 到 input_root 的显式映射")
+    mapping = json.loads(Path(mapping_path).read_text(encoding="utf-8"))
+    sample_id = str(item.get("sample_id") or "")
+    relative = mapping.get(sample_id) if isinstance(mapping, dict) else None
+    if not isinstance(relative, str) or not relative.strip():
+        raise ValueError(f"样本缺少 input_root 映射: {sample_id}")
+    root = input_root.resolve()
+    candidate = (root / relative).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"样本路径越出 input_root: {sample_id}") from exc
+    if not candidate.is_file():
+        raise FileNotFoundError(f"样本文件不存在: {sample_id}")
+    expected_sha = str(item.get("sha256") or "").lower()
+    actual_sha = _file_sha256(candidate)
+    if actual_sha != expected_sha:
+        raise ValueError(f"样本 SHA 不匹配: {sample_id}")
+    expected_ext = str(item.get("extension") or "").lower()
+    if candidate.suffix.lower() != expected_ext:
+        raise ValueError(f"样本扩展名不匹配: {sample_id}")
+    return candidate
+
+
+def _apply_protected_parity_selection(
+    samples: list[dict[str, Any]],
+    specs: dict[str, dict[str, Any]],
+) -> dict[str, str]:
+    """Mark exactly the two real15 parity samples declared by the manifest."""
+    selection = samples[0].get("parity_selection") if samples else None
+    if not isinstance(selection, dict):
+        raise RuntimeError("real15 protected parity manifest缺少显式选择")
+    selected = {str(key): str(value) for key, value in selection.items()}
+    expected = {"personal_business_consultation", "zsxq_post"}
+    if set(selected) != expected or len(set(selected.values())) != 2:
+        raise RuntimeError("real15 protected parity必须精确选择一个consultation和一个zsxq样本")
+    by_id = {str(item.get("sample_id")): item for item in samples}
+    for strategy, sample_id in selected.items():
+        item = by_id.get(sample_id)
+        if item is None or str(item.get("strategy")) != strategy:
+            raise RuntimeError("real15 protected parity选择与sample manifest策略不匹配")
+        extension = str(item.get("extension") or "").lower()
+        if strategy == "personal_business_consultation" and extension != ".pdf":
+            raise RuntimeError("real15 consultation parity样本必须是PDF")
+        if strategy == "zsxq_post" and extension not in {".md", ".markdown"}:
+            raise RuntimeError("real15 zsxq parity样本必须是Markdown")
+        specs[sample_id].update(
+            {"batch_eligible": True, "batch_manifest_id": sample_id, "acceptance_parity": True}
+        )
+    return selected
+
+
+def _assert_shared_acceptance_mount() -> None:
+    """Require the one-off runner to share the audit volume with ys workers."""
+    if os.environ.get("ACCEPTANCE_RUNNER_CONTAINER", "").strip().lower() != "true":
+        raise RuntimeError(
+            "付费验收必须在 acceptance-runner 容器执行；本地 runner 与 ys worker 不共享audit volume"
+        )
+    audit_path = Path(
+        os.environ.get(
+            "JX_ACCEPTANCE_CAMPAIGN_LEDGER_PATH", "var/audit/acceptance-campaign-ledger.json"
+        )
+    )
+    input_root = Path(os.environ.get("ACCEPTANCE_INPUT_ROOT", "/app/acceptance-input"))
+    if not str(audit_path).startswith("/app/var/audit"):
+        raise RuntimeError("acceptance runner 未使用共享 /app/var/audit mount")
+    if not str(input_root).startswith("/app/acceptance-input"):
+        raise RuntimeError("acceptance runner 未使用只读 /app/acceptance-input mount")
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    marker = audit_path.parent / ".acceptance-audit-mount-id"
+    marker.write_text("ys-acceptance-shared-audit-v1", encoding="ascii")
+    if marker.read_text(encoding="ascii") != "ys-acceptance-shared-audit-v1":
+        raise RuntimeError("acceptance audit mount identity readback failed")
+    if not input_root.is_dir():
+        raise RuntimeError("acceptance input mount 不存在")
 
 
 def _fingerprint(value: str) -> str:
@@ -297,7 +509,12 @@ def _remote_name_matches_strategy_contract(
         if not sentinel.endswith(sentinel_suffix):
             return False
         base = sentinel[: -len(sentinel_suffix)]
-        return bool(re.fullmatch(re.escape(base) + r"__" + re.escape(safe_event_id) + r"__[A-Za-z0-9_-]{1,16}\.md", remote_name))
+        return bool(
+            re.fullmatch(
+                re.escape(base) + r"__" + re.escape(safe_event_id) + r"__[A-Za-z0-9_-]{1,16}\.md",
+                remote_name,
+            )
+        )
     if is_shard:
         source_title = str(
             metadata.get("source_title") or item.get("title") or original_filename
@@ -318,16 +535,17 @@ def _remote_name_matches_strategy_contract(
         case_id = str(metadata.get("case_id") or "")
         case_match = re.search(r"_c(\d{2})$", case_id)
         sequence = int(item.get("sequence") or 1)
-        case_index = int(case_match.group(1)) if case_match else (
-            sequence % 1000 if sequence >= 1000 else sequence
+        case_index = (
+            int(case_match.group(1))
+            if case_match
+            else (sequence % 1000 if sequence >= 1000 else sequence)
         )
         if case_index <= 1:
             expected_name = consultation_base
         else:
             child_name_path = Path(consultation_base or "consulting_case.md")
             expected_name = (
-                f"{child_name_path.stem}__{case_index:02d}"
-                f"{child_name_path.suffix or '.md'}"
+                f"{child_name_path.stem}__{case_index:02d}{child_name_path.suffix or '.md'}"
             )[:300]
         return remote_name == expected_name
     expected_name = _expected_remote_name(
@@ -376,9 +594,7 @@ def _single_input(case_root: Path, case_id: str) -> Path:
     return entries[0]
 
 
-def _write_simple_text_pdf(
-    path: Path, text: str, *, source_marker: str = ""
-) -> None:
+def _write_simple_text_pdf(path: Path, text: str, *, source_marker: str = "") -> None:
     """Create a minimal text-layer PDF without a report-generation dependency."""
     escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
     content = f"BT\n/F1 14 Tf\n72 720 Td\n({escaped}) Tj\nET\n".encode("ascii")
@@ -389,7 +605,9 @@ def _write_simple_text_pdf(
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
             b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
         ),
-        b"<< /Length " + str(len(content)).encode("ascii") + b" >>\nstream\n"
+        b"<< /Length "
+        + str(len(content)).encode("ascii")
+        + b" >>\nstream\n"
         + content
         + b"endstream",
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
@@ -407,10 +625,9 @@ def _write_simple_text_pdf(
     for offset in offsets[1:]:
         payload.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
     payload.extend(
-        (
-            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
-            f"startxref\n{xref}\n%%EOF\n"
-        ).encode("ascii")
+        (f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").encode(
+            "ascii"
+        )
     )
     # A PDF comment after EOF changes only the source bytes.  Parsers ignore
     # it, so each controlled upload exercises the full path without adding
@@ -707,14 +924,78 @@ def _parse_sse(
     return events
 
 
+def _manifest_payload_for_hash(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the exact canonical payload used by the cleanup manifest hash."""
+    canonical = dict(payload)
+    canonical.pop("integrity", None)
+    raw_targets = canonical.get("targets") or {}
+    canonical["targets"] = {
+        key: (
+            {
+                code: (
+                    {str(document_id): proof for document_id, proof in sorted(values.items())}
+                    if key == "dify_document_ownership"
+                    else sorted(set(values))
+                )
+                for code, values in raw.items()
+            }
+            if isinstance(raw, dict)
+            else sorted(set(raw))
+        )
+        for key, raw in raw_targets.items()
+    }
+    return canonical
+
+
+def _manifest_hash(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            _manifest_payload_for_hash(payload),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _validate_resumable_manifest(payload: dict[str, Any], ledger: AcceptanceCampaignLedger) -> None:
+    if (
+        payload.get("kind") != "acceptance_cleanup_manifest"
+        or payload.get("schema_version") != 3
+        or payload.get("integrity", {}).get("manifest_sha256") != _manifest_hash(payload)
+    ):
+        raise RuntimeError("已有验收manifest不可恢复，拒绝重新创建付费campaign")
+    if not payload.get("paid_campaign_sealed"):
+        return
+    ledger_sha = ledger.manifest_sha256()
+    sealed_ids = set(ledger._read().get("sealed_operation_ids") or [])
+    planned_ids = {
+        str(
+            operation.get("operation_id")
+            or stable_operation_id(
+                str(operation.get("campaign") or "ys-cleaning-acceptance"),
+                str(operation.get("key") or ""),
+            )
+        )
+        for operation in payload.get("planned_operations") or []
+        if isinstance(operation, dict)
+    }
+    if not ledger_sha or not sealed_ids or planned_ids != sealed_ids:
+        raise RuntimeError("已封存campaign与canonical manifest不一致，拒绝恢复")
+
+
 class AcceptanceRunner:
-    def __init__(
-        self, *, base_url: str, input_root: Path, manifest_path: Path
-    ) -> None:
+    def __init__(self, *, base_url: str, input_root: Path, manifest_path: Path) -> None:
         settings = get_settings()
         self.settings = settings
         self.budget = AcceptanceBudget.from_settings(settings)
+        self.campaign_ledger = AcceptanceCampaignLedger(
+            settings.acceptance_campaign_ledger_path,
+            max_yuan=settings.acceptance_cleaning_budget_max_yuan,
+            daily_max_yuan=settings.cleaning_daily_budget_yuan,
+        )
         self._budget_reserved_task_ids: set[str] = set()
+        self._baseline_dify_ids: dict[str, set[str]] = {}
         self.input_root = input_root
         self.manifest_path = manifest_path
         self.client = httpx.Client(
@@ -747,11 +1028,13 @@ class AcceptanceRunner:
             "build_version": settings.build_version,
             "cases": [],
             "chat_checks": [],
+            "retrieval_checks": [],
             "model_batch_approvals": 0,
             "acceptance_budget": {
                 "max_yuan": f"{self.budget.max_yuan:.2f}",
                 "spent_yuan": "0.00",
                 "remaining_yuan": f"{self.budget.max_yuan:.2f}",
+                "campaign_ledger": self.campaign_ledger.summary(),
             },
         }
         self._manifest: dict[str, Any] = {
@@ -761,8 +1044,10 @@ class AcceptanceRunner:
             "created_at": self.report["tested_at"],
             "build_version": settings.build_version,
             "scope": "automated_cleaning_acceptance",
+            "planned_operations": [],
             "targets": {
                 "dify_documents": {"general": [], "course": []},
+                "dify_document_ownership": {"general": {}, "course": {}},
                 "cleaning_batch_ids": [],
                 "course_ids": [],
                 "route_ids": [],
@@ -771,8 +1056,412 @@ class AcceptanceRunner:
                 "chat_user_ids": [],
             },
         }
+        self._manifest["planned_operations"] = self._default_paid_operation_plan()
         self._initial_direction_codes = self._direction_codes()
+        if self.manifest_path.exists():
+            existing = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+            _validate_resumable_manifest(existing, self.campaign_ledger)
+            self._manifest = existing
+            self._free_parse_inventory = existing.get("free_parse_inventory")
+            self.report["run_id"] = str(existing.get("run_id") or self.report["run_id"])
+            self._baseline_dify_ids = {
+                key: {str(value) for value in values}
+                for key, values in (existing.get("dify_baseline") or {}).items()
+                if isinstance(values, list)
+            }
+            return
         self._write_manifest()
+
+    def _default_paid_operation_plan(self) -> list[dict[str, Any]]:
+        """Freeze every paid category before the first external side effect."""
+        inventory = getattr(self, "_free_parse_inventory", None)
+        if not inventory:
+            return []
+        return build_paid_operation_plan(
+            inventory.get("logical_units", []),
+            shards=inventory.get("shards", []),
+            retrieval_queries=inventory.get("retrieval_queries", []),
+            app_operations=inventory.get("app_operations", []),
+        )
+
+    def set_free_parse_inventory(self, inventory: dict[str, Any]) -> None:
+        if self._manifest.get("paid_campaign_sealed"):
+            if self._manifest.get("free_parse_inventory") != inventory:
+                raise RuntimeError("已封存campaign的free-parse inventory不可变更")
+            return
+        self._free_parse_inventory = inventory
+        self._manifest["free_parse_inventory"] = inventory
+        self._manifest["planned_operations"] = self._default_paid_operation_plan()
+        self._write_manifest()
+
+    def prepare_sample_inventory(
+        self,
+        samples: list[tuple[str, Path | list[Path], dict[str, Any]]],
+        *,
+        retrieval_queries: list[dict[str, Any]] | None = None,
+        app_operations: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Freeze the free-parse inventory used by the actual runner path."""
+        logical_units = []
+        shards = []
+        for case_id, raw_paths, spec in samples:
+            paths = [raw_paths] if isinstance(raw_paths, Path) else list(raw_paths)
+            if not paths:
+                raise ValueError(f"sample inventory is empty: {case_id}")
+            for index, path in enumerate(paths, start=1):
+                source_sha = _file_sha256(path)
+                unit_count = int(spec.get("logical_unit_count", 1))
+                if unit_count < 1:
+                    raise ValueError(f"free parse inventory is incomplete: {case_id}")
+                for unit_index in range(1, unit_count + 1):
+                    if len(paths) > 1:
+                        suffix = f":file:{index}:unit:{unit_index}"
+                    elif unit_count > 1:
+                        suffix = f":unit:{unit_index}"
+                    else:
+                        suffix = ""
+                    logical_units.append(
+                        {
+                            "sample_id": case_id,
+                            "unit_key": f"{case_id}{suffix}",
+                            "source_sha256": source_sha,
+                            "strategy": spec["strategy"],
+                            "batch_eligible": bool(spec.get("batch_eligible")),
+                            "batch_manifest_id": spec.get("batch_manifest_id"),
+                            "realtime_cost_yuan": spec.get("realtime_cost_yuan"),
+                            "batch_cost_yuan": spec.get("batch_cost_yuan"),
+                        }
+                    )
+            shards.append(
+                {
+                    "shard_key": case_id,
+                    "source_sha256": _file_sha256(paths[0]),
+                    "index_cost_yuan": spec.get("index_cost_yuan"),
+                }
+            )
+        self.set_free_parse_inventory(
+            {
+                "logical_units": logical_units,
+                "shards": shards,
+                "retrieval_queries": retrieval_queries or [],
+                "app_operations": app_operations or [],
+            }
+        )
+
+    def _ensure_paid_campaign_sealed(self) -> None:
+        if self._manifest.get("paid_campaign_sealed"):
+            return
+        prices_path = os.environ.get("ACCEPTANCE_OPERATION_PRICES_JSON", "").strip()
+        operations = list(self._manifest.get("planned_operations") or [])
+        if not operations:
+            raise RuntimeError("付费阶段缺少实际逻辑单元/分片/查询 inventory")
+        if prices_path:
+            prices = json.loads(Path(prices_path).read_text(encoding="utf-8"))
+            for operation in operations:
+                key = operation.get("key")
+                if key in prices:
+                    operation["cost_yuan"] = prices[key]
+        # Persist the exact pre-write Dify inventory before any upload can
+        # create a remote document.  Cleanup ownership is derived only from
+        # this snapshot and the post-upload response IDs.
+        for kb in self.knowledge_clients:
+            self._capture_dify_baseline(kb)
+        historical = self._historical_model_operations()
+        operations = historical + operations
+        entries = self.campaign_ledger.seal_operations(operations)
+        for operation in historical:
+            if operation.get("settled_yuan") is not None:
+                self.campaign_ledger.settle(operation["operation_id"], operation["settled_yuan"])
+        self._manifest["planned_operations"] = operations
+        self._manifest["paid_campaign_sealed"] = True
+        self._manifest["paid_campaign_operation_count"] = len(entries)
+        self._write_manifest()
+
+    def _historical_model_operations(self) -> list[dict[str, Any]]:
+        tasks: list[dict[str, Any]] = []
+        with SessionLocal() as session:
+            for task in session.query(ModelCleaningTask).all():
+                reservations = (task.result_counts or {}).get("_provider_budget_reservations") or []
+                if reservations:
+                    tasks.append({"task_id": str(task.id), "reservations": reservations})
+        return build_historical_model_operations(tasks)
+
+    def claim_paid_operation(self, operation_key: str, *, operation_kind: str) -> dict:
+        if operation_kind == "app_call" and not operation_key.startswith("app:"):
+            operation_key = f"app:{operation_key}"
+        operation_id = stable_operation_id("ys-cleaning-acceptance", operation_key)
+        operation = self.campaign_ledger.get_operation(operation_id)
+        if operation.get("operation_kind") != operation_kind:
+            raise RuntimeError(f"验收operation类型不匹配: {operation_key} != {operation_kind}")
+        return self.campaign_ledger.claim(operation_id)
+
+    @staticmethod
+    def _claim_allows_external(entry: dict[str, Any]) -> bool:
+        return entry.get("state") not in {"settled", "completed"}
+
+    def _mark_external_started(self, claim: dict[str, Any]) -> None:
+        self.campaign_ledger.mark_external_started(str(claim["operation_id"]))
+
+    def _record_external_completion(
+        self, claim: dict[str, Any], *, receipt: dict[str, Any], usage: dict[str, Any] | None = None
+    ) -> None:
+        self.campaign_ledger.record_completed_receipt(
+            str(claim["operation_id"]), receipt=receipt, usage=usage
+        )
+
+    def settle_paid_operation(
+        self, operation_key: str, *, operation_kind: str, actual_yuan: object
+    ) -> dict:
+        if operation_kind == "app_call" and not operation_key.startswith("app:"):
+            operation_key = f"app:{operation_key}"
+        operation_id = stable_operation_id("ys-cleaning-acceptance", operation_key)
+        return self.campaign_ledger.settle(operation_id, actual_yuan)
+
+    def _acceptance_campaign_metadata(self, case_id: str, spec: dict[str, Any]) -> dict[str, Any]:
+        """Attach stable transport operation IDs before a model task is queued."""
+        unit_keys = [
+            str(unit.get("unit_key") or "")
+            for unit in (getattr(self, "_free_parse_inventory", {}) or {}).get("logical_units", [])
+            if str(unit.get("unit_key") or "") == case_id
+            or str(unit.get("unit_key") or "").startswith(f"{case_id}:")
+        ]
+        if not unit_keys:
+            raise RuntimeError("campaign context缺少样本logical unit")
+        realtime_ids = [
+            stable_operation_id("ys-cleaning-acceptance", f"model:{key}:realtime")
+            for key in unit_keys
+        ]
+        campaign = {
+            "sealed": True,
+            "sample_id": case_id,
+            "strategy_code": spec["strategy"],
+            "unit_keys": unit_keys,
+            "source_sha256": next(
+                str(unit.get("source_sha256") or "")
+                for unit in (getattr(self, "_free_parse_inventory", {}) or {}).get(
+                    "logical_units", []
+                )
+                if str(unit.get("unit_key") or "") == case_id
+                or str(unit.get("unit_key") or "").startswith(f"{case_id}:")
+            ),
+            "realtime_operation_id": realtime_ids[0] if len(realtime_ids) == 1 else realtime_ids,
+            "manifest_sha256": self.campaign_ledger.manifest_sha256(),
+        }
+        if spec.get("acceptance_parity"):
+            batch_ids = [
+                stable_operation_id("ys-cleaning-acceptance", f"model:{key}:batch")
+                for key in unit_keys
+            ]
+            campaign["batch_operation_id"] = batch_ids[0] if len(batch_ids) == 1 else batch_ids
+        return {"_acceptance_campaign": campaign}
+
+    def retrieve_dify(self, *, query_id: str, kb: str, query: str) -> list[dict[str, Any]]:
+        """Perform a real Dataset retrieve only after its frozen query claim."""
+        claim = self.claim_paid_operation(
+            f"dify:retrieval:{query_id}", operation_kind="dify_retrieval"
+        )
+        self._last_retrieval_claim = claim
+        if not self._claim_allows_external(claim):
+            projection = (claim.get("completed_receipt") or {}).get("projection") or []
+            return [
+                {
+                    "document_id": item.get("document_id"),
+                    "segment": {
+                        "id": item.get("segment_id"),
+                        "content": "[validated-content-redacted]",
+                    },
+                }
+                for item in projection
+                if isinstance(item, dict) and item.get("document_id") and item.get("segment_id")
+            ]
+        self._mark_external_started(claim)
+        records = self.knowledge_clients[kb].retrieve(query)
+        projection = []
+        for record in records:
+            segment = record.get("segment") or {}
+            document_id = str(
+                (record.get("document") or {}).get("id") or record.get("document_id") or ""
+            ).strip()
+            segment_id = str(
+                segment.get("id") if isinstance(segment, dict) else record.get("segment_id") or ""
+            ).strip()
+            content = str(
+                (segment.get("content") or segment.get("text") or "")
+                if isinstance(segment, dict)
+                else ""
+            )
+            if document_id and segment_id and content.strip():
+                projection.append(
+                    {
+                        "document_id": document_id,
+                        "segment_id": segment_id,
+                        "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    }
+                )
+        self._record_external_completion(
+            claim,
+            receipt={
+                "kind": "dify_retrieval",
+                "query_id": query_id,
+                "projection": projection,
+            },
+            usage={"record_count": len(records)},
+        )
+        self._last_retrieval_records = records
+        return records
+
+    def run_fixed_retrieval_checks(self, checks: list[dict[str, str]]) -> None:
+        """Run the predeclared Dataset queries after publication checks."""
+        for item in checks:
+            query_id = item["query_id"]
+            kb = item["kb"]
+            query = item["query"]
+            try:
+                sample_id = str(item.get("sample_id") or "")
+                source_sha256 = str(item.get("source_sha256") or "").lower()
+                mapping = (self._manifest.get("retrieval_sources") or {}).get(kb, {}).get(sample_id)
+                if (
+                    not isinstance(mapping, dict)
+                    or mapping.get("source_sha256") != source_sha256
+                    or not mapping.get("document_ids")
+                ):
+                    raise ValueError("冻结检索来源未映射到已发布Dify文档")
+                document_ids = {str(value) for value in mapping["document_ids"]}
+                ownership = (
+                    (self._manifest.get("targets") or {})
+                    .get("dify_document_ownership", {})
+                    .get(kb, {})
+                )
+                if any(
+                    not isinstance(ownership.get(document_id), dict)
+                    or ownership[document_id].get("retained_reference") is not True
+                    for document_id in document_ids
+                ):
+                    raise ValueError("冻结检索来源包含未保留的Dify文档")
+                records = self.retrieve_dify(query_id=query_id, kb=kb, query=query)
+                source_records = []
+                source_segments = []
+                segment_text_by_id: dict[str, str] = {}
+                for record in records:
+                    segment = record.get("segment") or {}
+                    segment_text = (
+                        segment.get("content") or segment.get("text") or ""
+                        if isinstance(segment, dict)
+                        else ""
+                    )
+                    segment_id = str(
+                        (segment.get("id") if isinstance(segment, dict) else "")
+                        or record.get("segment_id")
+                        or ""
+                    ).strip()
+                    segment_status = (
+                        str(segment.get("status") or "").strip().lower()
+                        if isinstance(segment, dict)
+                        else ""
+                    )
+                    segment_enabled = (
+                        segment.get("enabled", True) if isinstance(segment, dict) else False
+                    )
+                    document_id = str(
+                        (record.get("document") or {}).get("id")
+                        or record.get("document_id")
+                        or (record.get("segment") or {}).get("document_id")
+                        or ""
+                    )
+                    if (
+                        document_id in document_ids
+                        and segment_id
+                        and str(segment_text).strip()
+                        and segment_enabled is not False
+                        and segment_status not in {"disabled", "deleted", "archived", "inactive"}
+                    ):
+                        source_records.append(segment_text)
+                        source_segments.append(segment_id)
+                        segment_text_by_id[segment_id] = str(segment_text)
+                covered = {
+                    point: any(point in encoded for encoded in source_records)
+                    for point in item["key_points"]
+                }
+                replay_receipt = self._last_retrieval_claim.get("completed_receipt") or {}
+                if self._last_retrieval_claim.get("state") == "completed" and replay_receipt.get(
+                    "keypoint_segments"
+                ):
+                    receipt_points = replay_receipt["keypoint_segments"]
+                    covered = {
+                        point: bool(receipt_points.get(point)) for point in item["key_points"]
+                    }
+                    source_segments = [
+                        str(value.get("segment_id"))
+                        for value in replay_receipt.get("projection") or []
+                        if isinstance(value, dict) and value.get("segment_id")
+                    ]
+                    source_records = ["[validated-retrieval-proof]"] * len(source_segments)
+                    mapping["validated_segments"] = {
+                        str(item.get("segment_id")): {
+                            "content_sha256": str(item.get("content_sha256") or ""),
+                            "key_points": [
+                                point
+                                for point, segment_ids in replay_receipt[
+                                    "keypoint_segments"
+                                ].items()
+                                if str(item.get("segment_id"))
+                                in {str(value) for value in segment_ids}
+                            ],
+                        }
+                        for item in replay_receipt.get("projection") or []
+                        if isinstance(item, dict) and item.get("segment_id")
+                    }
+                    mapping["keypoint_segments"] = replay_receipt["keypoint_segments"]
+                self.report["retrieval_checks"].append(
+                    {
+                        "query_id": query_id,
+                        "sample_id": item.get("sample_id"),
+                        "source_sha256": item.get("source_sha256"),
+                        "kb": kb,
+                        "source_document_ids": sorted(document_ids),
+                        "segment_ids": sorted(set(source_segments)),
+                        "record_count": len(records),
+                        "source_record_count": len(source_records),
+                        "key_points": covered,
+                        "passed": bool(source_records) and all(covered.values()),
+                    }
+                )
+                if (
+                    source_records
+                    and all(covered.values())
+                    and self._last_retrieval_claim.get("state") != "completed"
+                ):
+                    mapping["validated_segments"] = {
+                        segment_id: {
+                            "content_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                            "key_points": [point for point in item["key_points"] if point in text],
+                        }
+                        for segment_id, text in segment_text_by_id.items()
+                    }
+                    mapping["keypoint_segments"] = {
+                        point: sorted(
+                            segment_id
+                            for segment_id, text in segment_text_by_id.items()
+                            if point in text
+                        )
+                        for point in item["key_points"]
+                    }
+                    if self._last_retrieval_claim.get("state") == "claimed":
+                        self.campaign_ledger.record_completed_receipt(
+                            str(self._last_retrieval_claim["operation_id"]),
+                            receipt={"keypoint_segments": mapping["keypoint_segments"]},
+                        )
+                    self._write_manifest()
+            except Exception as exc:
+                self.report["retrieval_checks"].append(
+                    {
+                        "query_id": query_id,
+                        "kb": kb,
+                        "sample_id": item.get("sample_id"),
+                        "passed": False,
+                        "failure_code": f"RETRIEVAL_EXCEPTION_{type(exc).__name__.upper()}",
+                    }
+                )
 
     def close(self) -> None:
         self.client.close()
@@ -781,31 +1470,10 @@ class AcceptanceRunner:
 
     def _write_manifest(self) -> None:
         payload = dict(self._manifest)
-        payload["targets"] = {
-            key: (
-                {
-                    code: sorted(set(values))
-                    for code, values in raw.items()
-                }
-                if isinstance(raw, dict)
-                else sorted(set(raw))
-            )
-            for key, raw in self._manifest["targets"].items()
-        }
-        payload["integrity"] = {
-            "manifest_sha256": hashlib.sha256(
-                json.dumps(
-                    payload,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest()
-        }
+        payload["targets"] = _manifest_payload_for_hash(payload)["targets"]
+        payload["integrity"] = {"manifest_sha256": _manifest_hash(payload)}
         self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.manifest_path.with_suffix(
-            f"{self.manifest_path.suffix}.tmp"
-        )
+        temporary = self.manifest_path.with_suffix(f"{self.manifest_path.suffix}.tmp")
         temporary.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
             encoding="utf-8",
@@ -814,7 +1482,7 @@ class AcceptanceRunner:
         temporary.replace(self.manifest_path)
         os.chmod(self.manifest_path, 0o600)
 
-    def _record_batch(self, batch_id: str) -> None:
+    def _record_batch(self, batch_id: str, *, case_id: str = "") -> None:
         targets = self._manifest["targets"]
         targets["cleaning_batch_ids"].append(batch_id)
         targets["redis_keys"].extend(
@@ -823,23 +1491,95 @@ class AcceptanceRunner:
                 f"ai:cleaning:batch:{batch_id}:files",
             ]
         )
+        if case_id:
+            self._manifest.setdefault("batch_by_case", {})[case_id] = {
+                "batch_id": str(batch_id),
+                "stage": "uploaded",
+            }
+        self._write_manifest()
+
+    def _register_chat_user(self, raw_user_id: str) -> None:
+        """Persist a synthetic user before its first conversation write."""
+        users = self._manifest["targets"]["chat_user_ids"]
+        if raw_user_id not in users:
+            users.append(raw_user_id)
         self._write_manifest()
 
     def _record_published_targets(
         self,
         *,
+        case_id: str,
         kb: str,
         document_ids: list[str],
         course_ids: list[str],
         route_ids: list[str],
     ) -> None:
+        baseline = self._capture_dify_baseline(kb)
         targets = self._manifest["targets"]
         targets["dify_documents"][kb].extend(document_ids)
+        ownership = targets["dify_document_ownership"][kb]
+        for document_id in document_ids:
+            document_id = str(document_id)
+            if document_id in ownership:
+                continue
+            created = document_id not in baseline
+            ownership[document_id] = {
+                "created_by_run": created,
+                "retained_reference": not created,
+                "live_owner_count": 1 if not created else 0,
+                "ownership_source": "post_upload_baseline_diff",
+            }
         targets["course_ids"].extend(course_ids)
         targets["route_ids"].extend(route_ids)
-        targets["direction_codes"] = sorted(
-            self._direction_codes() - self._initial_direction_codes
+        targets["direction_codes"] = sorted(self._direction_codes() - self._initial_direction_codes)
+        source_sha256 = next(
+            (
+                str(unit.get("source_sha256") or "")
+                for unit in (getattr(self, "_free_parse_inventory", {}) or {}).get(
+                    "logical_units", []
+                )
+                if str(unit.get("unit_key") or "") == case_id
+                or str(unit.get("unit_key") or "").startswith(f"{case_id}:")
+            ),
+            "",
         )
+        if not source_sha256:
+            raise RuntimeError("发布文档缺少可追溯的样本SHA")
+        self._manifest.setdefault("retrieval_sources", {}).setdefault(kb, {})[case_id] = {
+            "source_sha256": source_sha256,
+            "document_ids": sorted({str(value) for value in document_ids}),
+        }
+        self._write_manifest()
+
+    def _capture_dify_baseline(self, kb: str) -> set[str]:
+        """Capture and persist one immutable pre-upload Dify document baseline."""
+        baseline = self._baseline_dify_ids.get(kb)
+        if baseline is not None:
+            return baseline
+        persisted = (self._manifest.get("dify_baseline") or {}).get(kb)
+        if isinstance(persisted, list):
+            baseline = {str(value) for value in persisted}
+            self._baseline_dify_ids[kb] = baseline
+            return baseline
+        try:
+            baseline = {
+                str(item.get("id") or item.get("document_id"))
+                for item in self.knowledge_clients[kb].iter_documents()
+                if item.get("id") or item.get("document_id")
+            }
+        except Exception as exc:
+            raise RuntimeError("无法建立Dify发布前baseline，拒绝猜测ownership") from exc
+        self._baseline_dify_ids[kb] = baseline
+        self._manifest.setdefault("dify_baseline", {})[kb] = sorted(baseline)
+        self._write_manifest()
+        return baseline
+
+    def _retain_published_targets(self, *, kb: str, document_ids: list[str]) -> None:
+        ownership = self._manifest["targets"]["dify_document_ownership"][kb]
+        for document_id in document_ids:
+            proof = ownership.get(str(document_id))
+            if proof is not None:
+                proof["retained_reference"] = True
         self._write_manifest()
 
     def _direction_codes(self) -> set[str]:
@@ -847,11 +1587,7 @@ class AcceptanceRunner:
         if response.status_code != 200:
             raise RuntimeError("cannot read course catalog directions")
         payload = response.json()
-        return {
-            str(item.get("code"))
-            for item in payload.get("items") or []
-            if item.get("code")
-        }
+        return {str(item.get("code")) for item in payload.get("items") or [] if item.get("code")}
 
     def _upload(
         self,
@@ -860,19 +1596,54 @@ class AcceptanceRunner:
         path: Path,
         spec: dict[str, Any],
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        existing_batch = (self._manifest.get("batch_by_case") or {}).get(case_id)
+        if isinstance(existing_batch, dict) and existing_batch.get("batch_id"):
+            batch_id = str(existing_batch["batch_id"])
+            return (
+                {"case_id": case_id, "batch_id": batch_id, "passed": True, "resumed": True},
+                {"batch_id": batch_id, "resumed": True},
+            )
+        self._ensure_paid_campaign_sealed()
+        claim = self.claim_paid_operation(f"dify:index:{case_id}", operation_kind="dify_index")
+        if not self._claim_allows_external(claim):
+            return {"case_id": case_id, "passed": True, "replayed": True}, {"files": []}
         upload_mode = str(spec.get("upload_mode") or "cleaned")
-        with path.open("rb") as handle:
-            response = self.client.post(
-                f"/internal/v1/admin/knowledge-bases/{spec['kb']}/upload-batches",
-                data={
-                    "strategy_code": spec["strategy"],
-                    "upload_mode": upload_mode,
-                    "common_metadata": json.dumps(
-                        {
-                            "review_status": "approved",
-                        }
+        acceptance_context = spec.get("acceptance_context")
+        if acceptance_context is None and spec.get("acceptance_parity"):
+            campaign = self._acceptance_campaign_metadata(case_id, spec)["_acceptance_campaign"]
+            acceptance_context = {
+                "schema_version": 1,
+                "strategy_code": spec["strategy"],
+                "selected_source_sha256": [_file_sha256(path)],
+                "campaign": {
+                    **campaign,
+                    "source_sha256": _file_sha256(path),
+                    "batch_operation_id": spec.get(
+                        "parity_batch_operation_id", campaign.get("batch_operation_id")
+                    ),
+                    "manifest_sha256": spec.get(
+                        "parity_manifest_sha256", campaign["manifest_sha256"]
                     ),
                 },
+            }
+        with path.open("rb") as handle:
+            form_data = {
+                "strategy_code": spec["strategy"],
+                "upload_mode": upload_mode,
+                "common_metadata": json.dumps(
+                    {
+                        "review_status": "approved",
+                        **self._acceptance_campaign_metadata(case_id, spec),
+                    }
+                ),
+            }
+            if acceptance_context is not None:
+                form_data["acceptance_context_json"] = json.dumps(
+                    acceptance_context, ensure_ascii=False, sort_keys=True
+                )
+            response = self.client.post(
+                f"/internal/v1/admin/knowledge-bases/{spec['kb']}/upload-batches",
+                data=form_data,
                 files={
                     "files": (
                         path.name,
@@ -900,7 +1671,7 @@ class AcceptanceRunner:
             "passed": True,
             "failure_codes": [],
         }
-        self._record_batch(str(body["batch_id"]))
+        self._record_batch(str(body["batch_id"]), case_id=case_id)
         return result, body
 
     def _upload_many(
@@ -910,7 +1681,18 @@ class AcceptanceRunner:
         paths: list[Path],
         spec: dict[str, Any],
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        existing_batch = (self._manifest.get("batch_by_case") or {}).get(case_id)
+        if isinstance(existing_batch, dict) and existing_batch.get("batch_id"):
+            batch_id = str(existing_batch["batch_id"])
+            return (
+                {"case_id": case_id, "batch_id": batch_id, "passed": True, "resumed": True},
+                {"batch_id": batch_id, "resumed": True},
+            )
         upload_mode = str(spec.get("upload_mode") or "cleaned")
+        self._ensure_paid_campaign_sealed()
+        claim = self.claim_paid_operation(f"dify:index:{case_id}", operation_kind="dify_index")
+        if not self._claim_allows_external(claim):
+            return {"case_id": case_id, "passed": True, "replayed": True}, {"files": []}
         handles = [path.open("rb") for path in paths]
         try:
             response = self.client.post(
@@ -918,7 +1700,12 @@ class AcceptanceRunner:
                 data={
                     "strategy_code": spec["strategy"],
                     "upload_mode": upload_mode,
-                    "common_metadata": json.dumps({"review_status": "approved"}),
+                    "common_metadata": json.dumps(
+                        {
+                            "review_status": "approved",
+                            **self._acceptance_campaign_metadata(case_id, spec),
+                        }
+                    ),
                 },
                 files=[
                     (
@@ -944,7 +1731,7 @@ class AcceptanceRunner:
             result["failure_codes"].append("MULTI_UPLOAD_REJECTED")
             return result, body
         result["batch_id"] = str(body["batch_id"])
-        self._record_batch(result["batch_id"])
+        self._record_batch(result["batch_id"], case_id=case_id)
         return result, body
 
     def _approve_batch_model_tasks(
@@ -954,26 +1741,128 @@ class AcceptanceRunner:
         batch_id: str,
         tasks: list[dict[str, Any]],
     ) -> None:
+        pending: list[tuple[dict[str, Any], str, object, str]] = []
+        operation_by_task: dict[str, dict[str, list[str]]] = {}
+        campaign_by_task: dict[str, dict[str, Any]] = {}
+        for task in tasks:
+            if task.get("mode") != "batch" or task.get("status") != "awaiting_approval":
+                continue
+            if task.get("strategy_code") not in {
+                "personal_business_consultation",
+                "zsxq_post",
+            }:
+                raise RuntimeError("验收Batch只允许咨询和知识星球对照样本")
+            task_id = str(task.get("task_id") or "")
+            fingerprint = str(task.get("candidate_fingerprint") or "")
+            if not task_id or not fingerprint:
+                raise RuntimeError("model batch approval payload is incomplete")
+            # The upload admission path has already attached the protected
+            # parity context to this task.  Its batch operation is planned by
+            # prepare_sample_inventory and sealed by _ensure_paid_campaign_sealed
+            # before the upload.  Approval must reuse that operation verbatim:
+            # the worker is the sole claimant immediately before its provider
+            # call.  Planning or claiming here makes the sealed campaign
+            # unreachable (and consumes the worker's only bounded attempt).
+            parity_context = (task.get("result_counts") or {}).get("acceptance_parity_context")
+            campaign = parity_context.get("campaign") if isinstance(parity_context, dict) else None
+            if not isinstance(campaign, dict):
+                raise RuntimeError("model batch approval campaign is missing")
+            raw_batch_ids = campaign.get("batch_operation_id")
+            batch_operation_ids = (
+                [str(value) for value in raw_batch_ids if str(value)]
+                if isinstance(raw_batch_ids, list)
+                else [str(raw_batch_ids or "")]
+            )
+            if not batch_operation_ids or any(
+                not re.fullmatch(r"[0-9a-f]{64}", value) for value in batch_operation_ids
+            ):
+                raise RuntimeError("model batch approval lacks pre-sealed operation")
+            for operation_id in batch_operation_ids:
+                if not self.campaign_ledger.is_sealed(operation_id):
+                    raise RuntimeError("model batch approval operation is not pre-sealed")
+                operation = self.campaign_ledger.get_operation(operation_id)
+                if operation.get("operation_kind") != "model_batch":
+                    raise RuntimeError("model batch approval operation kind is invalid")
+            raw_realtime_ids = campaign.get("realtime_operation_id")
+            realtime_operation_ids = (
+                [str(value) for value in raw_realtime_ids if str(value)]
+                if isinstance(raw_realtime_ids, list)
+                else [str(raw_realtime_ids or "")]
+            )
+            if not realtime_operation_ids or any(
+                not re.fullmatch(r"[0-9a-f]{64}", value) for value in realtime_operation_ids
+            ):
+                raise RuntimeError("model batch approval lacks pre-sealed realtime operation")
+            for operation_id in realtime_operation_ids:
+                if not self.campaign_ledger.is_sealed(operation_id):
+                    raise RuntimeError("model realtime approval operation is not pre-sealed")
+                realtime_operation = self.campaign_ledger.get_operation(operation_id)
+                if realtime_operation.get("operation_kind") != "model_realtime":
+                    raise RuntimeError("model realtime approval operation kind is invalid")
+            operation_by_task[task_id] = {
+                "batch": batch_operation_ids,
+                "realtime": realtime_operation_ids,
+            }
+            campaign_by_task[task_id] = campaign
+            if task_id not in self._budget_reserved_task_ids:
+                estimated = task.get("estimated_cost_high") or task.get("estimated_cost") or 0
+                pending.append((task, task_id, estimated, batch_operation_ids[0]))
+        for task, task_id, estimated, _operation_id in pending:
+            self.budget.reserve(estimated)
+            self._budget_reserved_task_ids.add(task_id)
+            self.report["acceptance_budget"] = {
+                "max_yuan": f"{self.budget.max_yuan:.2f}",
+                "spent_yuan": f"{self.budget.spent_yuan:.2f}",
+                "remaining_yuan": f"{self.budget.remaining_yuan:.2f}",
+                "campaign_ledger": self.campaign_ledger.summary(),
+            }
         for task in tasks:
             if task.get("mode") != "batch" or task.get("status") != "awaiting_approval":
                 continue
             task_id = str(task.get("task_id") or "")
             fingerprint = str(task.get("candidate_fingerprint") or "")
-            if not task_id or not fingerprint:
-                raise RuntimeError("model batch approval payload is incomplete")
-            if task_id not in self._budget_reserved_task_ids:
-                estimated = task.get("estimated_cost_high") or task.get("estimated_cost") or 0
-                self.budget.reserve(estimated)
-                self._budget_reserved_task_ids.add(task_id)
-                self.report["acceptance_budget"] = {
-                    "max_yuan": f"{self.budget.max_yuan:.2f}",
-                    "spent_yuan": f"{self.budget.spent_yuan:.2f}",
-                    "remaining_yuan": f"{self.budget.remaining_yuan:.2f}",
-                }
+            operation_mapping = operation_by_task.get(task_id)
+            campaign = campaign_by_task.get(task_id)
+            if operation_mapping is None or campaign is None:
+                raise RuntimeError("model batch approval operation mapping is missing")
+            acceptance_manifest = {
+                "task_id": task_id,
+                "strategy_code": task.get("strategy_code") or "",
+                "source_document_ids": (task.get("result_counts") or {}).get(
+                    "provider_candidate_document_ids"
+                )
+                or [],
+                "candidate_fingerprint": fingerprint,
+                "prompt_version": task.get("prompt_version") or "",
+                "general_dataset_id": self.settings.dify_general_dataset_id,
+                "redis_db": 6,
+                "batch_enabled": True,
+                "campaign": {
+                    "sealed": True,
+                    "operation_id": operation_mapping["batch"][0],
+                    "operation_ids": {
+                        "batch": operation_mapping["batch"]
+                        if len(operation_mapping["batch"]) > 1
+                        else operation_mapping["batch"][0],
+                        "realtime": operation_mapping["realtime"]
+                        if len(operation_mapping["realtime"]) > 1
+                        else operation_mapping["realtime"][0],
+                    },
+                    "ledger_path": str(self.campaign_ledger.path),
+                    "manifest_sha256": json.loads(
+                        self.campaign_ledger.path.read_text(encoding="utf-8")
+                    ).get("campaign_manifest_sha256", ""),
+                },
+            }
             response = self.client.post(
                 f"/internal/v1/admin/knowledge-bases/{kb}/upload-batches/{batch_id}/"
                 f"model-tasks/{task_id}/approve",
-                data={"candidate_fingerprint": fingerprint},
+                data={
+                    "candidate_fingerprint": fingerprint,
+                    "acceptance_manifest_json": json.dumps(
+                        acceptance_manifest, ensure_ascii=False, sort_keys=True
+                    ),
+                },
             )
             if response.status_code != 200:
                 raise RuntimeError("model batch approval was rejected")
@@ -1145,11 +2034,7 @@ class AcceptanceRunner:
         status_counts = Counter(str(item.get("status") or "") for item in details)
         publication_shards = file_payload.get("publication_shards") or []
         document_ids = sorted(
-            {
-                str(item.get("dify_document_id"))
-                for item in details
-                if item.get("dify_document_id")
-            }
+            {str(item.get("dify_document_id")) for item in details if item.get("dify_document_id")}
         )
         course_ids = sorted(
             {
@@ -1166,6 +2051,7 @@ class AcceptanceRunner:
             }
         )
         self._record_published_targets(
+            case_id=case_id,
             kb=spec["kb"],
             document_ids=document_ids,
             course_ids=course_ids,
@@ -1177,12 +2063,10 @@ class AcceptanceRunner:
                 "item_count": len(details),
                 "item_status_counts": dict(status_counts),
                 "model_task_statuses": sorted(
-                    str(item.get("status") or "")
-                    for item in body.get("model_tasks") or []
+                    str(item.get("status") or "") for item in body.get("model_tasks") or []
                 ),
                 "publication_shard_statuses": sorted(
-                    str(item.get("status") or "")
-                    for item in publication_shards
+                    str(item.get("status") or "") for item in publication_shards
                 ),
             }
         )
@@ -1195,9 +2079,8 @@ class AcceptanceRunner:
             result["passed"] = False
             result["failure_codes"].append("ITEM_COUNT_BELOW_MINIMUM")
         minimum_succeeded = spec.get("min_succeeded_items")
-        if (
-            minimum_succeeded is not None
-            and status_counts.get("succeeded", 0) < int(minimum_succeeded)
+        if minimum_succeeded is not None and status_counts.get("succeeded", 0) < int(
+            minimum_succeeded
         ):
             result["passed"] = False
             result["failure_codes"].append("PUBLISHED_ITEM_COUNT_BELOW_MINIMUM")
@@ -1242,15 +2125,11 @@ class AcceptanceRunner:
             audit = item.get("audit") or {}
             forbidden = list(spec.get("forbidden") or [])
             forbidden.extend(
-                str(value)
-                for value in audit.get("forbidden_public_names") or []
-                if str(value)
+                str(value) for value in audit.get("forbidden_public_names") or [] if str(value)
             )
             forbidden = sorted(set(forbidden))
             public_metadata = {
-                key: value
-                for key, value in metadata.items()
-                if key not in SYSTEM_METADATA_FIELDS
+                key: value for key, value in metadata.items() if key not in SYSTEM_METADATA_FIELDS
             }
             leaks = _leak_fingerprints(
                 {
@@ -1278,9 +2157,7 @@ class AcceptanceRunner:
                 else:
                     remote_name = str(remote.get("name") or "")
                     remote_metadata = _remote_metadata(remote)
-                    custom_metadata_fields = (
-                        set(remote_metadata) - DIFY_BUILTIN_METADATA_FIELDS
-                    )
+                    custom_metadata_fields = set(remote_metadata) - DIFY_BUILTIN_METADATA_FIELDS
                     allowed = REMOTE_ALLOWED_FIELDS.get(spec["strategy"])
                     if allowed is not None:
                         allowed = allowed | REMOTE_PROVENANCE_FIELDS
@@ -1290,9 +2167,7 @@ class AcceptanceRunner:
                             item=item,
                             metadata=metadata,
                             remote_name=remote_name,
-                            original_filename=str(
-                                file_payload.get("original_filename") or ""
-                            ),
+                            original_filename=str(file_payload.get("original_filename") or ""),
                             source_sha256=result["source_sha256"],
                             details_count=len(details),
                         ),
@@ -1300,9 +2175,7 @@ class AcceptanceRunner:
                         "metadata_keys": sorted(remote_metadata),
                         "custom_metadata_keys": sorted(custom_metadata_fields),
                         "metadata_allowed": (
-                            True
-                            if allowed is None
-                            else custom_metadata_fields <= allowed
+                            True if allowed is None else custom_metadata_fields <= allowed
                         ),
                     }
                     if not remote_checks["name_matches"]:
@@ -1310,9 +2183,7 @@ class AcceptanceRunner:
                         result["failure_codes"].append("DIFY_NAME_MISMATCH")
                     if remote_checks["metadata_allowed"] is False:
                         result["passed"] = False
-                        result["failure_codes"].append(
-                            "DIFY_METADATA_OVEREXPOSED"
-                        )
+                        result["failure_codes"].append("DIFY_METADATA_OVEREXPOSED")
             if leaks:
                 result["passed"] = False
                 result["failure_codes"].append("IDENTITY_LEAK")
@@ -1320,8 +2191,7 @@ class AcceptanceRunner:
                 result["passed"] = False
                 result["failure_codes"].append("LOCAL_METADATA_INCOMPLETE")
             if forbidden and not (
-                isinstance(audit.get("identity_aliases"), dict)
-                or audit.get("privacy_level")
+                isinstance(audit.get("identity_aliases"), dict) or audit.get("privacy_level")
             ):
                 result["passed"] = False
                 result["failure_codes"].append("IDENTITY_AUDIT_MISSING")
@@ -1352,12 +2222,12 @@ class AcceptanceRunner:
             )
         result["items"] = detail_results
         result["failure_codes"] = sorted(set(result["failure_codes"]))
+        if result["passed"] and document_ids:
+            self._retain_published_targets(kb=spec["kb"], document_ids=document_ids)
         result.pop("batch_id", None)
         self.report["cases"].append(result)
 
-    def run_batch_submission_case(
-        self, case_id: str, path: Path, spec: dict[str, Any]
-    ) -> None:
+    def run_batch_submission_case(self, case_id: str, path: Path, spec: dict[str, Any]) -> None:
         result, _ = self._upload(case_id=case_id, path=path, spec=spec)
         if result["passed"]:
             result["batch_submission_accepted"] = self._wait_for_batch_submission(
@@ -1370,12 +2240,8 @@ class AcceptanceRunner:
         result.pop("batch_id", None)
         self.report["cases"].append(result)
 
-    def run_multi_case(
-        self, case_id: str, paths: list[Path], spec: dict[str, Any]
-    ) -> None:
-        result, upload_body = self._upload_many(
-            case_id=case_id, paths=paths, spec=spec
-        )
+    def run_multi_case(self, case_id: str, paths: list[Path], spec: dict[str, Any]) -> None:
+        result, upload_body = self._upload_many(case_id=case_id, paths=paths, spec=spec)
         if not result["passed"]:
             self.report["cases"].append(result)
             return
@@ -1427,6 +2293,7 @@ class AcceptanceRunner:
             result["passed"] = False
             result["failure_codes"].append("MULTI_DOCUMENT_COUNT_MISMATCH")
         self._record_published_targets(
+            case_id=case_id,
             kb=spec["kb"],
             document_ids=sorted(set(document_ids)),
             course_ids=[],
@@ -1434,36 +2301,109 @@ class AcceptanceRunner:
         )
         result["files"] = file_summaries
         result["failure_codes"] = sorted(set(result["failure_codes"]))
+        if result["passed"] and document_ids:
+            self._retain_published_targets(kb=spec["kb"], document_ids=sorted(set(document_ids)))
         result.pop("batch_id", None)
         self.report["cases"].append(result)
 
-    def run_public_chat_checks(self) -> None:
+    def run_public_chat_checks(self, expectations: list[dict[str, Any]] | None = None) -> None:
         checks = [
             (
-                "wechat_public_reference",
+                "business_advisor:general",
                 "根据投资学习资料，总结一套避免冲动决策的复盘方法。",
                 ["阿猫", "阿猫投资学"],
             ),
             (
-                "consultation_public_reference",
+                "business_advisor:case",
                 "根据咨询案例，总结验证客户问题和产品定位的方法。",
                 ["陈垚", "小淘气", "觉醒"],
             ),
             (
-                "xiaobot_public_reference",
+                "business_advisor:method",
                 "根据财富书单和精选笔记，总结可执行的读书复盘方法。",
                 ["阿猫", "鱼堂主"],
             ),
         ]
         raw_user_id = f"cleaning-acceptance-{uuid.uuid4().hex}"
-        self._manifest["targets"]["chat_user_ids"].append(raw_user_id)
-        self._write_manifest()
+        self._register_chat_user(raw_user_id)
         headers = {
             "X-Internal-Token": self.settings.internal_api_token,
             "X-User-Id": raw_user_id,
         }
+        expectation_by_case = {item["case_id"]: item for item in expectations or []}
         for case_id, query, forbidden in checks:
             try:
+                expectation = expectation_by_case.get(case_id)
+                if expectation is None:
+                    raise RuntimeError("缺少business chat冻结expectation")
+                source_mapping = (
+                    (self._manifest.get("retrieval_sources") or {})
+                    .get("general", {})
+                    .get(expectation["sample_id"])
+                )
+                if (
+                    not isinstance(source_mapping, dict)
+                    or source_mapping.get("source_sha256") != expectation["source_sha256"]
+                    or not source_mapping.get("document_ids")
+                ):
+                    raise RuntimeError("business chat来源未映射到保留Dify文档")
+                claim = self.claim_paid_operation(case_id, operation_kind="app_call")
+                if not self._claim_allows_external(claim):
+                    receipt = claim.get("completed_receipt") or {}
+                    expected_points = source_mapping.get("keypoint_segments") or {}
+                    receipt_evidence = receipt.get("evidence") or {}
+                    receipt_passed = receipt.get("passed") is True
+                    replay_valid = (
+                        claim.get("state") == "completed"
+                        and receipt.get("kind") == "business_chat"
+                        and receipt.get("case_id") == case_id
+                        and bool(receipt.get("conversation_id"))
+                        and bool(source_mapping.get("validated_segments"))
+                        and all(expected_points.get(point) for point in expectation["key_points"])
+                        and receipt_evidence.get("branch_passed") is True
+                        and not receipt_evidence.get("leak_fingerprints")
+                        and bool(receipt_evidence.get("source_document_ids"))
+                        and bool(receipt_evidence.get("source_segment_ids"))
+                        and isinstance(receipt_evidence.get("leak_fingerprints"), list)
+                        and set(receipt_evidence.get("source_document_ids") or {}).issubset(
+                            {str(value) for value in source_mapping["document_ids"]}
+                        )
+                        and set(receipt_evidence.get("source_segment_ids") or {}).issubset(
+                            set(source_mapping.get("validated_segments") or {})
+                        )
+                        and all(
+                            set(receipt_evidence.get("source_segment_ids") or {})
+                            & {
+                                str(value)
+                                for value in source_mapping.get("keypoint_segments", {}).get(
+                                    point, []
+                                )
+                            }
+                            for point in expectation["key_points"]
+                        )
+                        and all(
+                            receipt_evidence.get("answer_key_points", {}).get(point) is True
+                            for point in expectation["key_points"]
+                        )
+                    )
+                    if receipt.get("conversation_id"):
+                        self._last_business_conversation_id = str(receipt["conversation_id"])
+                    self.report["chat_checks"].append(
+                        {
+                            "case_id": case_id,
+                            "passed": replay_valid and receipt_passed,
+                            "replayed": True,
+                            "replay_verified": replay_valid,
+                            **(receipt.get("evidence") or {}),
+                            **(
+                                {"failure_code": "COMPLETED_RECEIPT_UNVERIFIED"}
+                                if not replay_valid
+                                else {}
+                            ),
+                        }
+                    )
+                    continue
+                self._mark_external_started(claim)
                 with self.client.stream(
                     "POST",
                     "/internal/v1/business/chat",
@@ -1471,11 +2411,67 @@ class AcceptanceRunner:
                     json={"query": query, "conversation_id": None},
                 ) as response:
                     events = _parse_sse(response, deadline_seconds=120.0)
+                resources = [
+                    resource
+                    for _name, payload in events
+                    for resource in payload.get("retriever_resources") or []
+                    if isinstance(resource, dict)
+                ]
+                retained_ids = {str(value) for value in source_mapping["document_ids"]}
+                ownership = (
+                    (self._manifest.get("targets") or {})
+                    .get("dify_document_ownership", {})
+                    .get("general", {})
+                )
+                if any(
+                    not isinstance(ownership.get(document_id), dict)
+                    or ownership[document_id].get("retained_reference") is not True
+                    for document_id in retained_ids
+                ):
+                    raise RuntimeError("business chat来源包含未保留的Dify文档")
+                validated_segments = {
+                    str(segment_id)
+                    for segment_id in (source_mapping.get("validated_segments") or {})
+                }
+                if not validated_segments:
+                    raise RuntimeError("business chat缺少冻结直检segment证据")
+                matched_resources = [
+                    resource
+                    for resource in resources
+                    if str(resource.get("document_id") or "") in retained_ids
+                    and str(resource.get("segment_id") or "").strip() in validated_segments
+                ]
+                cited_segment_ids = {
+                    str(resource.get("segment_id") or "") for resource in matched_resources
+                }
+                keypoint_segments = source_mapping.get("keypoint_segments") or {}
+                cited_points = {
+                    point: bool(cited_segment_ids & {str(value) for value in segment_ids})
+                    for point, segment_ids in keypoint_segments.items()
+                }
+                branches = {
+                    str(payload.get(key) or "").strip()
+                    for _name, payload in events
+                    for key in ("branch", "branch_code")
+                    if payload.get(key)
+                }
+                answers = "\n".join(
+                    str(payload.get(key) or "")
+                    for name, payload in events
+                    if name in {"message", "message_end"}
+                    for key in ("answer", "text", "content")
+                    if payload.get(key)
+                )
+                source_passed = bool(matched_resources)
+                branch_passed = expectation["branch"] in branches
+                answer_points = {point: point in answers for point in expectation["key_points"]}
                 request_started = next(
                     (payload for name, payload in events if name == "request_started"),
                     {},
                 )
                 conversation_id = str(request_started.get("conversation_id") or "")
+                if conversation_id:
+                    self._last_business_conversation_id = conversation_id
                 history = {}
                 if conversation_id:
                     history = self.client.get(
@@ -1486,18 +2482,46 @@ class AcceptanceRunner:
                     {"events": events, "history": history},
                     forbidden,
                 )
+                passed = (
+                    response.status_code == 200
+                    and not leaks
+                    and any(name == "message_end" for name, _ in events)
+                    and source_passed
+                    and all(cited_points.get(point) is True for point in expectation["key_points"])
+                    and branch_passed
+                    and all(answer_points.values())
+                )
+                evidence = {
+                    "source_document_ids": sorted(
+                        {str(resource.get("document_id")) for resource in matched_resources}
+                    ),
+                    "source_segment_ids": sorted(
+                        {str(resource.get("segment_id")) for resource in matched_resources}
+                    ),
+                    "branch_passed": branch_passed,
+                    "answer_key_points": answer_points,
+                    "leak_fingerprints": leaks,
+                }
                 self.report["chat_checks"].append(
                     {
                         "case_id": case_id,
                         "http_status": response.status_code,
                         "event_names": [name for name, _ in events],
-                        "leak_fingerprints": leaks,
-                        "passed": (
-                            response.status_code == 200
-                            and not leaks
-                            and any(name == "message_end" for name, _ in events)
-                        ),
+                        **evidence,
+                        "branch": expectation["branch"],
+                        "passed": passed,
                     }
+                )
+                self._record_external_completion(
+                    claim,
+                    receipt={
+                        "kind": "business_chat",
+                        "case_id": case_id,
+                        "conversation_id": conversation_id,
+                        "passed": passed,
+                        "evidence": evidence,
+                    },
+                    usage={"event_count": len(events), "http_status": response.status_code},
                 )
             except Exception as exc:
                 self.report["chat_checks"].append(
@@ -1508,11 +2532,198 @@ class AcceptanceRunner:
                     }
                 )
 
+    def run_tool_app_checks(self) -> None:
+        """Exercise the existing moments/writing chat contracts and summary worker."""
+        raw_user_id = f"cleaning-acceptance-tools-{uuid.uuid4().hex}"
+        self._register_chat_user(raw_user_id)
+        headers = {
+            "X-Internal-Token": self.settings.internal_api_token,
+            "X-User-Id": raw_user_id,
+        }
+        checks = (
+            (
+                "moments",
+                "moments",
+                "wechat_public_account",
+                "/internal/v1/tools/moments/run",
+                {
+                    "request": "请根据输入资料生成一条克制的朋友圈文案。",
+                    "source_material": "验收资料中的公开方法摘要。",
+                },
+            ),
+            (
+                "writing",
+                "writing",
+                "article",
+                "/internal/v1/tools/writing/run",
+                {
+                    "request": "请根据输入资料写一段结构清晰的短文。",
+                    "source_text": "验收资料中的公开方法摘要。",
+                },
+            ),
+        )
+        for kind, operation_key, output_format, path, inputs in checks:
+            try:
+                claim = self.claim_paid_operation(operation_key, operation_kind="app_call")
+                if not self._claim_allows_external(claim):
+                    receipt = claim.get("completed_receipt") or {}
+                    original_passed = receipt.get("passed") is True
+                    replay_valid = (
+                        claim.get("state") == "completed"
+                        and receipt.get("kind") == "tool_app"
+                        and receipt.get("operation_key") == operation_key
+                        and bool(receipt.get("conversation_id"))
+                        and isinstance(receipt.get("event_names"), list)
+                        and receipt.get("http_status") == 200
+                    )
+                    self.report["chat_checks"].append(
+                        {
+                            "case_id": operation_key,
+                            "passed": replay_valid and original_passed,
+                            "replayed": True,
+                            "replay_verified": replay_valid,
+                            "http_status": receipt.get("http_status"),
+                            "event_names": receipt.get("event_names") or [],
+                            **(
+                                {"failure_code": "COMPLETED_RECEIPT_UNVERIFIED"}
+                                if not replay_valid
+                                else {}
+                            ),
+                        }
+                    )
+                    continue
+                self._mark_external_started(claim)
+                created = self.client.post(
+                    f"/internal/v1/tools/{kind}/conversations",
+                    headers=headers,
+                    json={"type": kind, "output_format": output_format},
+                )
+                conversation_id = str(created.json().get("conversation_id") or "")
+                if created.status_code != 200 or not conversation_id:
+                    raise RuntimeError("tool conversation creation failed")
+                with self.client.stream(
+                    "POST",
+                    path,
+                    headers=headers,
+                    json={"inputs": inputs, "conversation_id": conversation_id},
+                ) as response:
+                    events = _parse_sse(response, deadline_seconds=120.0)
+                passed = response.status_code == 200 and any(
+                    name == "message_end" for name, _ in events
+                )
+                self.report["chat_checks"].append(
+                    {
+                        "case_id": operation_key,
+                        "http_status": response.status_code,
+                        "event_names": [name for name, _ in events],
+                        "passed": passed,
+                    }
+                )
+                self._record_external_completion(
+                    claim,
+                    receipt={
+                        "kind": "tool_app",
+                        "operation_key": operation_key,
+                        "conversation_id": conversation_id,
+                        "passed": passed,
+                        "event_names": [name for name, _ in events],
+                        "http_status": response.status_code,
+                    },
+                    usage={"event_count": len(events), "http_status": response.status_code},
+                )
+            except Exception as exc:
+                self.report["chat_checks"].append(
+                    {
+                        "case_id": operation_key,
+                        "passed": False,
+                        "failure_code": f"TOOL_EXCEPTION_{type(exc).__name__.upper()}",
+                    }
+                )
+        try:
+            conversation_id = str(getattr(self, "_last_business_conversation_id", ""))
+            claim = self.claim_paid_operation("summary", operation_kind="app_call")
+            if not conversation_id and claim.get("state") == "completed":
+                conversation_id = str(
+                    (claim.get("completed_receipt") or {}).get("conversation_id") or ""
+                )
+                if conversation_id:
+                    self._last_business_conversation_id = conversation_id
+            if not conversation_id:
+                raise RuntimeError("business conversation is required for summary worker")
+            if not self._claim_allows_external(claim):
+                receipt = claim.get("completed_receipt") or {}
+                replay_valid = (
+                    claim.get("state") == "completed"
+                    and receipt.get("kind") == "summary_worker"
+                    and receipt.get("conversation_id") == conversation_id
+                )
+                self.report["chat_checks"].append(
+                    {
+                        "case_id": "summary",
+                        "passed": replay_valid,
+                        "replayed": True,
+                        "replay_verified": replay_valid,
+                        **(
+                            {"failure_code": "COMPLETED_RECEIPT_UNVERIFIED"}
+                            if not replay_valid
+                            else {}
+                        ),
+                    }
+                )
+                return
+            from ai_management.workers.tasks.summary import summarize_conversation
+
+            self._mark_external_started(claim)
+            task = summarize_conversation.delay(conversation_id)
+            deadline = time.monotonic() + 120.0
+            while not task.ready() and time.monotonic() < deadline:
+                time.sleep(1)
+            if not task.ready() or not task.successful() or task.get(propagate=False) is not True:
+                raise RuntimeError("summary worker did not reach a successful terminal state")
+            from ai_management.models import BusinessConversation, BusinessProfile
+
+            with SessionLocal() as session:
+                conversation = session.get(BusinessConversation, conversation_id)
+                profile = (
+                    session.get(BusinessProfile, conversation.user_hash)
+                    if conversation is not None
+                    else None
+                )
+                if (
+                    conversation is None
+                    or not conversation.summary.strip()
+                    or not conversation.summary_through_message_id
+                    or profile is None
+                ):
+                    raise RuntimeError("summary worker persisted no summary/profile/cursor")
+            self._record_external_completion(
+                claim,
+                receipt={"kind": "summary_worker", "conversation_id": conversation_id},
+                usage={"worker_task_id": str(getattr(task, "id", ""))},
+            )
+            self.report["chat_checks"].append(
+                {
+                    "case_id": "summary",
+                    "task_id": str(getattr(task, "id", "")),
+                    "passed": True,
+                    "worker_dispatched": True,
+                    "worker_terminal": True,
+                    "summary_persisted": True,
+                }
+            )
+        except Exception as exc:
+            self.report["chat_checks"].append(
+                {
+                    "case_id": "summary",
+                    "passed": False,
+                    "failure_code": f"SUMMARY_EXCEPTION_{type(exc).__name__.upper()}",
+                }
+            )
+
     def finalize(self) -> dict[str, Any]:
         case_passed = sum(bool(item.get("passed")) for item in self.report["cases"])
-        chat_passed = sum(
-            bool(item.get("passed")) for item in self.report["chat_checks"]
-        )
+        chat_passed = sum(bool(item.get("passed")) for item in self.report["chat_checks"])
+        retrieval_passed = sum(bool(item.get("passed")) for item in self.report["retrieval_checks"])
         self.report["summary"] = {
             "case_total": len(self.report["cases"]),
             "case_passed": case_passed,
@@ -1520,6 +2731,9 @@ class AcceptanceRunner:
             "chat_total": len(self.report["chat_checks"]),
             "chat_passed": chat_passed,
             "chat_failed": len(self.report["chat_checks"]) - chat_passed,
+            "retrieval_total": len(self.report["retrieval_checks"]),
+            "retrieval_passed": retrieval_passed,
+            "retrieval_failed": len(self.report["retrieval_checks"]) - retrieval_passed,
         }
         self._manifest["targets"]["direction_codes"] = sorted(
             self._direction_codes() - self._initial_direction_codes
@@ -1530,10 +2744,7 @@ class AcceptanceRunner:
             "fingerprint": manifest["integrity"]["manifest_sha256"],
             "target_counts": {
                 key: (
-                    {
-                        code: len(values)
-                        for code, values in target.items()
-                    }
+                    {code: len(values) for code, values in target.items()}
                     if isinstance(target, dict)
                     else len(target)
                 )
@@ -1558,41 +2769,54 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    generated = _generate_consultation_docx(args.input_root)
+    _assert_shared_acceptance_mount()
+    args.input_root = Path(os.environ.get("ACCEPTANCE_INPUT_ROOT", str(args.input_root)))
+    sample_manifest_path = Path(
+        os.environ.get(
+            "ACCEPTANCE_SAMPLE_MANIFEST_JSON",
+            "/app/acceptance-staging/sample-byte-manifest.json",
+        )
+    )
+    samples = _load_real_sample_manifest(sample_manifest_path)
+    retrieval_checks = _load_frozen_retrieval_checks()
+    chat_expectations = _load_frozen_chat_expectations()
+    for item in samples:
+        if str(item.get("extension") or "").lower() == ".pdf" and not item.get("free_parse_units"):
+            raise RuntimeError("PDF OCR/free-parse inventory 尚未由 ys 生成，停止付费阶段")
     specs = {
-        **CASE_SPECS,
-        "consult_safe_docx": {
-            "strategy": "personal_business_consultation",
+        str(item["sample_id"]): {
+            "strategy": str(item["strategy"]),
             "kb": "general",
-            "expected_items": 1,
-            "forbidden": [],
-        },
-        "consult_gate_docx": {
-            "strategy": "personal_business_consultation",
-            "kb": "general",
-            "expected_items": 1,
+            "logical_unit_count": int(
+                item.get("free_parse_units") or item.get("free_clean_documents") or 0
+            ),
+            "min_items": 1,
+            "min_succeeded_items": 1,
             "allow_review": True,
-            "forbidden": ["林晓", "13800138000", "linxiao@example.com"],
-        },
-        "course_route_catalog_synthetic": {
-            "strategy": "course_route_catalog",
-            "kb": "course",
-            "expected_items": 3,
-            "catalog_review": True,
             "forbidden": [],
-        },
+        }
+        for item in samples
     }
+    _apply_protected_parity_selection(samples, specs)
     paths = {
-        case_id: _single_input(args.input_root, case_id)
-        for case_id in CASE_SPECS
-        if case_id not in generated
+        str(item["sample_id"]): _resolve_manifest_sample_path(item, args.input_root)
+        for item in samples
     }
-    paths.update(generated)
 
     runner = AcceptanceRunner(
         base_url=args.base_url,
         input_root=args.input_root,
         manifest_path=args.manifest_path,
+    )
+    inventory_samples = [(case_id, paths[case_id], spec) for case_id, spec in specs.items()]
+    runner.prepare_sample_inventory(
+        inventory_samples,
+        retrieval_queries=[
+            {"query_key": item["query_id"], "cost_yuan": None} for item in retrieval_checks
+        ],
+        app_operations=[
+            {"operation_key": case_id, "cost_yuan": None} for case_id in APP_OPERATION_KEYS
+        ],
     )
     report: dict[str, Any] = runner.report
     try:
@@ -1604,65 +2828,12 @@ def main() -> int:
                     {
                         "case_id": case_id,
                         "passed": False,
-                        "failure_codes": [
-                            f"RUNNER_EXCEPTION_{type(exc).__name__.upper()}"
-                        ],
+                        "failure_codes": [f"RUNNER_EXCEPTION_{type(exc).__name__.upper()}"],
                     }
                 )
-        if not args.skip_batch_submission:
-            try:
-                runner.run_batch_submission_case(
-                    "xiaobot_batch_submission",
-                    paths["xiaobot_batch_submission"],
-                    {"strategy": "xiaobot_post", "kb": "general"},
-                )
-            except Exception as exc:
-                runner.report["cases"].append(
-                    {
-                        "case_id": "xiaobot_batch_submission",
-                        "passed": False,
-                        "failure_codes": [
-                            f"RUNNER_EXCEPTION_{type(exc).__name__.upper()}"
-                        ],
-                    }
-                )
-        for case_id, case_paths in (
-            (
-                "consultation_docx_pdf_same_batch",
-                [
-                    paths["consult_safe_multi_docx"],
-                    paths["consult_safe_multi_pdf_one"],
-                ],
-            ),
-            (
-                "consultation_multiple_pdf_same_batch",
-                [
-                    paths["consult_safe_multi_pdf_two"],
-                    paths["consult_safe_multi_pdf_three"],
-                ],
-            ),
-        ):
-            try:
-                runner.run_multi_case(
-                    case_id,
-                    case_paths,
-                    {
-                        "strategy": "personal_business_consultation",
-                        "kb": "general",
-                        "expected_items_per_file": 1,
-                    },
-                )
-            except Exception as exc:
-                runner.report["cases"].append(
-                    {
-                        "case_id": case_id,
-                        "passed": False,
-                        "failure_codes": [
-                            f"RUNNER_EXCEPTION_{type(exc).__name__.upper()}"
-                        ],
-                    }
-                )
-        runner.run_public_chat_checks()
+        runner.run_fixed_retrieval_checks(retrieval_checks)
+        runner.run_public_chat_checks(chat_expectations)
+        runner.run_tool_app_checks()
     finally:
         try:
             report = runner.finalize()
@@ -1670,10 +2841,15 @@ def main() -> int:
             runner.close()
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
     summary = report.get("summary") or {}
-    return 1 if (
-        int(summary.get("case_failed") or 0)
-        or int(summary.get("chat_failed") or 0)
-    ) else 0
+    return (
+        1
+        if (
+            int(summary.get("case_failed") or 0)
+            or int(summary.get("chat_failed") or 0)
+            or int(summary.get("retrieval_failed") or 0)
+        )
+        else 0
+    )
 
 
 if __name__ == "__main__":

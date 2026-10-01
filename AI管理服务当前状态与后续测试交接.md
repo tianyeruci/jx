@@ -1,4 +1,31 @@
 # AI 管理服务当前状态与后续测试交接
+## 0.87 2026-09-30 ys 候选更新与固定样本免费验证（当前最新 ys 状态）
+
+- ys 已更新到 `ys-4c133cd3fb09e427`，`current` 实测为 `/home/admin/ai-management-ys/releases/ys-4c133cd3fb09e427`；七个默认服务均运行在 `sha256:a5812eab04f89efc178f2dddcdf9c2f4dddce520693a20d64412ff03a2755909`。wheel SHA 为 `4c133cd3fb09e4275406d4d6f075036ab8986c2e46e2bf846fedf1372cc970ba`，84 个 Python 源文件与冻结源码逐字节一致。jx 正式环境未修改，未 push/merge。
+- 本候选修复实时 `POST chat/completions` 的底层隐式重发：一次 HTTP attempt 对应一次费用 reservation，失败交给既有外层完整重试，两次调用上限保留。完整 Quality 在 `a9cf11d3e6c388bb4f2f07a5991828ef5f27a766a3e6a63abb8fb1fcf760417d` 通过，针对本次缺陷及部署资产的独立复核通过；这是更新前冻结候选证据，不代表真实付费验收。
+- 更新成功后 ready/UI、审计卷 appuser create/fsync/read/delete、七服务同镜像与共享服务未变均通过。数据库仍为 `ai_ys`、迁移 `o2p3q4r5s6t7`，Redis DB6；Batch 与课程保持关闭。运行 Key 已确认非占位，不写入其值。
+- 固定 15 份真实输入已完成免费解析/OCR：15/15 parsed、76 实际解析单元、486739 UTF8 bytes；其中 72 个模型单元，4 个目录/直接发布单元。原来源预标、15 source SHA、130 条检索查询和两份 parity 选择保持；17 张 Markdown 外链图不在本次范围。目录确认、真实清洗和索引尚未完成。
+- 免费迁移兼容、5 项 HTTP 负向检查、真实已有合成会话跨用户隔离子项已通过；临时 schema 和合成会话均精确清理并复核零残留。不能把这些子项表述为整个 EV-06/EV-07 通过。
+- 真实 Provider/Dify 付费调用为 0，15 份样本与 EV-01～EV-08 尚未完成。原文 bytes 不能作为最终 cleaned_markdown 的索引上界，旧中间总额已作废；清洗阶段保守预留为 3.0905628 元，整套费用尚不能证明满足累计5元/北京时间单日4元。现有流程会自动排队 publication，不能直接承诺仅清洗；已集中请求是否改为分阶段准入，回答前不执行付费。
+- 证据位于忽略目录 `var/reports/ys-diff-acceptance-handoff-20260929/`：`new-candidate-final-services.ys.json`、`new-candidate-post-images.ys.json`、`free-parse-inventory.ys.json`、`schema-compat-evidence.ys.json`、`offline-token-budget-final-evidence.json`、`CONTINUATION-20260930.md`。
+
+> 更新时间：2026-09-30
+
+## 0.86 2026-09-28 ys 独立 AI 管理服务首次部署与现场验收（当前最新 ys 状态）
+
+- ys 已部署候选 `ys-0d50839c7a838474`，当前目录 `/home/admin/ai-management-ys/releases/ys-0d50839c7a838474`；七个默认服务共用最终镜像 ID `sha256:cd6b184b22ea3182a8ad119affee088b89c143dc1d4436c978fc8b206042f4a3`。wheel SHA-256 为 `0d50839c7a838474d6e6d71af78aea79d9533e55eb42577936df61d36d3bdcb4`。未部署到 jx，未执行 Git push。
+- ys 专用 PostgreSQL 角色/库 `ai_ys` 已创建，Alembic 为 `o2p3q4r5s6t7 (head)`；Redis 使用 DB 6。API/UI 仅绑定回环端口 `18080`/`18501`。Batch Worker 未启动，Batch 功能关闭；课程 Dataset 关闭且 ID 为空，`BAILIAN_API_KEY=666` 是待替换占位值。
+- `/health/ready` 返回 ready 且 database、redis、Dify 配置与可达性均为 true；UI HTTP 200；四个 App 的 `/v1/parameters` 和 `general` 知识库只读文档 API 均为 HTTP 200。课程管理文档入口 HTTP 403，未鉴权入口 HTTP 401。
+- OCR Worker 校验 3 个离线模型并 ready；断网合成图片 OCR 识别成功。七个默认服务均运行，Dify API/Worker、PostgreSQL、Redis 共享容器保持原运行状态。现场证据见 `var/reports/W-20260924-151708/ys-acceptance-20260928.md`（本机忽略目录）。
+- `general` 唯一现有文档当前已禁用，正向 RAG 命中未验收；真实模型清洗及上传→模型→Dify 写入全链路因占位 Key 未运行，不得宣称模型效果通过。后续替换有效 Key 后按累计 ¥5、单日 ¥4 上限做受控样本验收，课程库仍保持关闭。
+
+### 本节变更记录
+
+- 修改原因：记录 ys 首次实际部署和同一候选的现场验收，明确当前可用能力及占位 Key 下的未验收项。
+- 修改前：顶部最新运行事实是 2026-09-09 jx 发布，未记载 ys 独立服务已部署的事实。
+- 修改后：顶部新增 ys 候选、镜像/迁移/端口、通用库与四 App 权限、OCR、共享服务保护及真实模型验收限制；不写入密钥或正文。
+
+> 更新时间：2026-09-28
 
 ## 0.85 2026-09-09 三类 AI 顾问消息操作发布与真实验收（当前最新）
 
@@ -2529,3 +2556,15 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改原因：依据项目级 `AGENTS.md`，在代码、完整质量门、独立审查、jx 发布、真实 Dify/API/SSE/Streamlit 验收及精确清理全部结束后更新当前运行事实。
 - 修改前：滚动交接尚未记录商业严格重新生成、工具消息反馈/重新生成/停止的最终发布状态，也未记录本次回滚备份、线上验收和 Methodology Worker 未中断证据。
 - 修改后：顶部新增 0.85，记录 release `advisor-actions-fix-20260909-131919`、备份、wheel SHA、唯一迁移 head、同源服务、OCR timer、Methodology Worker 原状态、58/0 API 验收、三入口页面复验、精确零残留清理和小程序调用方外部接入阻塞；未修改主工作区 DSL，未写入敏感数据。
+
+### 文档修改记录（2026-09-28 ys 首次部署与验收）
+
+- 修改原因：记录 ys 的实际部署、同源镜像、现场验收与占位模型 Key 的明确边界。
+- 修改前：顶部仍以 2026-09-09 jx 发布为最新事实，未记录 ys 独立服务的部署状态。
+- 修改后：顶部新增 0.86，写明 ys 七服务运行、ready/UI、四 App 与 `general` 权限、课程关闭、离线 OCR、迁移 head、共享服务保护及未做的真实模型与正向 RAG 验收；详细脱敏证据留在本机日期化报告。
+
+## 2026-09-30 本次状态交接更新记录
+
+- 修改原因：记录已实际完成的 ys 新候选部署、固定15输入免费解析及费用准入阻塞，纠正顶部旧候选和占位 Key 的过期状态。
+- 修改前：顶部为2026-09-28首次部署 ys-0d50839c7a838474，Key占位，未记录后续部署、15/15免费解析和预算复核。
+- 修改后：顶部新增 ys-4c133cd3fb09e427、七服务实际镜像、冻结候选验证、免费子项与明确未完成范围；预算和分阶段问题待答，未启动paid。保留全部历史记录，不写凭据或真实样本正文。

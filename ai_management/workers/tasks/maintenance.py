@@ -40,11 +40,17 @@ from ...models import (
 from ...services.admin_settings import get_history_retention_days
 from ...services.bailian_cleanup import (
     clear_successful_bailian_file_tasks,
+    close_successful_bailian_batch_owner,
+    close_successful_bailian_file_owner,
     ensure_bailian_cleanup_tasks,
+    has_other_active_bailian_batch_file_reference,
+    provider_batch_file_owner_details,
 )
+from ...services.dify_references import has_other_live_dify_reference
 from ...services.observability.events import record_event
 from ..celery_app import celery_app
 from .cleaning import (
+    _finalize_dify_owners,
     _finish_batch,
     _refresh_file_state,
     _remove_or_disable_document,
@@ -273,6 +279,28 @@ def _select_fair_external_deletion_tasks(session) -> list[ExternalDeletionTask]:
     return selected
 
 
+def _clear_activity_replacement_marker(session, remote_id: str) -> None:
+    """Remove one completed remote ID from durable recent-activity markers."""
+
+    rows = session.scalars(select(CleaningDocument)).all()
+    for row in rows:
+        audit = dict(row.audit_json or {})
+        pending = audit.get("_pending_activity_replacement_document_ids")
+        if not isinstance(pending, list) or remote_id not in pending:
+            continue
+        remaining = [item for item in pending if str(item) != remote_id]
+        if remaining:
+            audit["_pending_activity_replacement_document_ids"] = remaining
+            owners = audit.get("_pending_activity_replacement_owners")
+            if isinstance(owners, dict):
+                owners.pop(remote_id, None)
+                audit["_pending_activity_replacement_owners"] = owners
+        else:
+            audit.pop("_pending_activity_replacement_document_ids", None)
+            audit.pop("_pending_activity_replacement_owners", None)
+        row.audit_json = audit
+
+
 def _record_external_deletion_failure(
     task: ExternalDeletionTask,
     error: str,
@@ -302,6 +330,8 @@ def _queue_bailian_file_task(
     *,
     file_id: str,
     model_task_id: str | None,
+    batch_id: str | None,
+    category: str | None,
     last_error: str,
 ) -> None:
     existing = session.scalar(
@@ -317,24 +347,37 @@ def _queue_bailian_file_task(
             ExternalDeletionTask(
                 kind="bailian_file",
                 external_id=file_id,
-                payload={"model_task_id": model_task_id},
+                payload={
+                    "model_task_id": model_task_id,
+                    **({"batch_id": batch_id} if batch_id else {}),
+                    **({"category": category} if category else {}),
+                },
                 attempts=0,
                 last_error=last_error[:1000],
             )
         )
+    else:
+        existing.payload = {
+            **dict(existing.payload or {}),
+            "model_task_id": model_task_id,
+            **({"batch_id": batch_id} if batch_id else {}),
+            **({"category": category} if category else {}),
+        }
 
 
 def _reconcile_cleaning_pipeline() -> dict[str, int]:
     """Release orphaned cleaning/publication work before it becomes a review queue.
 
     This is deliberately bounded and idempotent.  It only requeues rows that
-    have been unchanged for a short window, while terminalizing an exhausted
-    Dify shard and refreshing its file/batch aggregate in the same transaction.
+    have been unchanged for a short window, including a source-file retry
+    delayed in a worker that was replaced.  It terminalizes an exhausted Dify
+    shard and refreshes its file/batch aggregate in the same transaction.
     """
     now = datetime.now(timezone.utc)
     pending_cutoff = now - timedelta(minutes=10)
     processing_cutoff = now - timedelta(minutes=45)
     queued_documents: dict[str, str] = {}
+    queued_source_files: list[tuple[str, str]] = []
     model_batches: set[str] = set()
     shard_ids: set[str] = set()
     touched_files: set[str] = set()
@@ -342,6 +385,27 @@ def _reconcile_cleaning_pipeline() -> dict[str, int]:
     fallback_count = 0
     failed_shards = 0
     with SessionLocal() as session:
+        # A worker can fail after the source file is marked ``retrying`` but
+        # before Celery durably accepts its delayed retry.  Claim only the
+        # stale, still-retryable rows and advance their stage before publishing
+        # the task, so maintenance ticks cannot enqueue the same file twice.
+        stale_source_files = list(
+            session.scalars(
+                select(CleaningFile)
+                .where(
+                    CleaningFile.status == "pending",
+                    CleaningFile.stage == "retrying",
+                    CleaningFile.updated_at <= pending_cutoff,
+                )
+                .order_by(CleaningFile.updated_at, CleaningFile.id)
+                .with_for_update()
+                .limit(500)
+            )
+        )
+        for file_row in stale_source_files:
+            file_row.stage = "retry_requeued"
+            queued_source_files.append((str(file_row.id), file_row.original_filename))
+
         pending_documents = list(
             session.scalars(
                 select(CleaningDocument)
@@ -494,6 +558,31 @@ def _reconcile_cleaning_pipeline() -> dict[str, int]:
             _finish_batch(session, batch_id)
         session.commit()
 
+    for file_id, original_filename in queued_source_files:
+        try:
+            if Path(original_filename).suffix.lower() == ".pdf":
+                process_ocr_cleaning_file.apply_async(args=[file_id], queue="ai_ocr")
+            else:
+                process_cleaning_file.apply_async(args=[file_id], queue="ai_cleaning")
+        except Exception:
+            logger.exception(
+                "stale source cleaning retry requeue failed",
+                extra={"file_id": file_id},
+            )
+            # Restore the selection state after an enqueue failure.  The next
+            # bounded maintenance pass can retry it without changing attempts.
+            with SessionLocal() as session:
+                file_row = session.get(CleaningFile, file_id)
+                if (
+                    file_row is not None
+                    and file_row.status == "pending"
+                    and file_row.stage == "retry_requeued"
+                ):
+                    file_row.stage = "retrying"
+                    file_row.error_code = "CLEANING_REQUEUE_FAILED"
+                    file_row.error_message = "清洗任务重新入队失败，等待下次维护重试"
+                    session.commit()
+
     for document_id in queued_documents.values():
         from .cleaning import process_cleaning_document
 
@@ -511,6 +600,7 @@ def _reconcile_cleaning_pipeline() -> dict[str, int]:
         publish_dify_shard.apply_async(args=[shard_id], queue="ai_publication")
     return {
         "queued_documents": len(queued_documents),
+        "source_files": len(queued_source_files),
         "model_batches": len(model_batches),
         "shards": len(shard_ids),
         "fallback_documents": fallback_count,
@@ -663,6 +753,35 @@ def _retry_external_deletions() -> None:
                         task.external_id, str((task.payload or {}).get("user") or "")
                     )
                 elif task.kind == "dify_document":
+                    # A durable deletion task can outlive its original
+                    # replacement while another source later reuses the exact
+                    # remotely verified ID.  Re-check at execution time; the
+                    # local reference is the authority for whether it is safe
+                    # to delete this precise remote object.
+                    payload = task.payload or {}
+                    owners = [
+                        (str(item.get("document_id")), str(item.get("shard_id") or "") or None)
+                        for item in payload.get("owners", [])
+                        if isinstance(item, dict) and item.get("document_id")
+                    ]
+                    if not owners and payload.get("owner_document_id"):
+                        owners = [
+                            (
+                                str(payload["owner_document_id"]),
+                                str(payload.get("owner_shard_id") or "") or None,
+                            )
+                        ]
+                    if has_other_live_dify_reference(
+                        session,
+                        task.external_id,
+                        excluding_document_ids={item[0] for item in owners} or None,
+                        excluding_shard_ids={item[1] for item in owners if item[1]} or None,
+                    ):
+                        if owners:
+                            _finalize_dify_owners(session, task.external_id, owners)
+                            _clear_activity_replacement_marker(session, task.external_id)
+                        session.delete(task)
+                        continue
                     dataset_id = str(task.payload.get("dataset_id") or "")
                     knowledge = DifyKnowledgeClient(
                         settings.knowledge_base_url,
@@ -675,6 +794,9 @@ def _retry_external_deletions() -> None:
                             raise RuntimeError("Dify文档删除和停用仍然失败")
                     finally:
                         knowledge.close()
+                    _finalize_dify_owners(session, task.external_id, owners)
+                    if owners:
+                        _clear_activity_replacement_marker(session, task.external_id)
                 elif task.kind == "bailian_file":
                     model_client = BailianClient(
                         api_key=settings.bailian_api_key,
@@ -683,6 +805,15 @@ def _retry_external_deletions() -> None:
                     )
                     try:
                         model_client.delete_file(task.external_id)
+                        if not close_successful_bailian_file_owner(
+                            session,
+                            model_task_id=str((task.payload or {}).get("model_task_id") or ""),
+                            file_id=task.external_id,
+                            batch_id=(task.payload or {}).get("batch_id"),
+                            category=(task.payload or {}).get("category"),
+                            current_cleanup_id=task.id,
+                        ):
+                            raise RuntimeError("Bailian文件删除成功但本地所有权无法收敛")
                     finally:
                         model_client.close()
                 elif task.kind == "bailian_batch":
@@ -693,7 +824,7 @@ def _retry_external_deletions() -> None:
                     )
                     try:
                         cancelled = model_client.cancel_batch(task.external_id)
-                        provider_status = str(cancelled.get("status") or "cancelled")
+                        provider_status = str(cancelled.get("status") or "").strip()
                         returned_file_ids = {
                             str(cancelled.get(field) or "")
                             for field in ("output_file_id", "error_file_id")
@@ -707,23 +838,58 @@ def _retry_external_deletions() -> None:
                         if provider_status not in {"completed", "failed", "expired", "cancelled"}:
                             _record_external_deletion_failure(
                                 task,
-                                f"供应商 Batch 取消仍处于 {provider_status}，等待下一次终态查询",
+                                f"供应商 Batch 取消状态缺失或未终态（{provider_status or 'empty'}），等待下一次终态查询",
                                 delay=timedelta(minutes=10),
                             )
                             continue
                         deleted_file_ids: set[str] = set()
+                        transferred_file_ids: set[str] = set()
                         for file_id in sorted(returned_file_ids):
+                            if has_other_active_bailian_batch_file_reference(
+                                session,
+                                current_task_id=str(task.id),
+                                file_id=file_id,
+                            ):
+                                continue
                             try:
                                 model_client.delete_file(file_id)
                                 deleted_file_ids.add(file_id)
                             except Exception as file_exc:
+                                owner_details = provider_batch_file_owner_details(
+                                    session.get(
+                                        ModelCleaningTask,
+                                        str((task.payload or {}).get("model_task_id") or ""),
+                                    )
+                                    or task,
+                                    file_id,
+                                )
                                 _queue_bailian_file_task(
                                     session,
                                     file_id=file_id,
                                     model_task_id=task.payload.get("model_task_id"),
+                                    batch_id=(
+                                        owner_details[0]
+                                        if owner_details is not None
+                                        else task.external_id
+                                    ),
+                                    category=(
+                                        owner_details[1].removesuffix("_file_ids")
+                                        if owner_details is not None
+                                        else "input"
+                                    ),
                                     last_error=str(file_exc),
                                 )
+                                transferred_file_ids.add(file_id)
                         clear_successful_bailian_file_tasks(session, deleted_file_ids)
+                        if not close_successful_bailian_batch_owner(
+                            session,
+                            model_task_id=str((task.payload or {}).get("model_task_id") or ""),
+                            batch_id=task.external_id,
+                            deleted_file_ids=deleted_file_ids,
+                            transferred_file_ids=transferred_file_ids,
+                            current_cleanup_id=task.id,
+                        ):
+                            raise RuntimeError("终态Batch残余文件尚未删除或可靠转移")
                     finally:
                         model_client.close()
                 session.delete(task)

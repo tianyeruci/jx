@@ -1,0 +1,27 @@
+FROM python:3.11-slim
+ARG WHEEL_SHA256
+ARG CANDIDATE_ID
+LABEL org.jxnow.ys.candidate="${CANDIDATE_ID}" org.jxnow.ys.wheel-sha256="${WHEEL_SHA256}"
+WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 TZ=Asia/Shanghai
+COPY runtime-requirements.txt /tmp/runtime-requirements.txt
+COPY dist/jx_now_ai_management-0.2.1-py3-none-any.whl /tmp/jx_now_ai_management-0.2.1-py3-none-any.whl
+RUN echo "${WHEEL_SHA256}  /tmp/jx_now_ai_management-0.2.1-py3-none-any.whl" | sha256sum -c - \
+    && pip install --no-cache-dir --require-hashes --index-url https://mirrors.aliyun.com/pypi/simple -r /tmp/runtime-requirements.txt \
+    && pip install --no-cache-dir --no-deps /tmp/jx_now_ai_management-0.2.1-py3-none-any.whl \
+    && rm /tmp/runtime-requirements.txt /tmp/jx_now_ai_management-0.2.1-py3-none-any.whl
+COPY alembic.ini ./
+COPY migrations ./migrations
+COPY ai_management/test_ui.py ./ai_management/test_ui.py
+COPY scripts ./scripts
+RUN sed -i -E 's#https?://deb.debian.org/debian-security#https://mirrors.aliyun.com/debian-security#g; s#https?://deb.debian.org/debian#https://mirrors.aliyun.com/debian#g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends libxcb1 libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -c "import cv2, rapidocr" \
+    && useradd --create-home --uid 10001 appuser \
+    && mkdir -p /app/var/uploads /app/var/conversion-markdown /app/var/audit \
+    && chmod 700 /app/var/audit \
+    && chmod 755 /app/scripts/ocr_worker_entrypoint.sh \
+    && chown -R appuser:appuser /app
+USER appuser

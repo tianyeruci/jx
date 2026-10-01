@@ -1,6 +1,7 @@
 import json
 
 import httpx
+import pytest
 
 from dify_client import (
     SSEDecoder,
@@ -26,6 +27,99 @@ def test_knowledge_delete_treats_missing_remote_document_as_success():
     )
     try:
         client.delete_document("doc-1")
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("state", ["indexing", "waiting", "pending", "processing", "succeeded"])
+def test_document_content_witness_rejects_nonterminal_segment_state(state: str):
+    """Readable provisional segments are not safe evidence for remote reuse."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/segments"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [{"id": "segment-1", "content": "provisional", "status": state}],
+                    "has_more": False,
+                },
+                request=request,
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = DifyKnowledgeClient(
+        "http://dify.local",
+        "test-key",
+        "dataset",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="不可检索"):
+            client.document_content_witness("doc-1")
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("state", ["indexing", "waiting", "pending", "processing"])
+def test_document_content_witness_rejects_nonterminal_child_state(state: str):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/segments"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [{"id": "segment-1", "content": "completed", "status": "completed"}],
+                    "has_more": False,
+                },
+                request=request,
+            )
+        if request.url.path.endswith("/child_chunks"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [{"id": "child-1", "content": "provisional", "status": state}],
+                    "has_more": False,
+                },
+                request=request,
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = DifyKnowledgeClient(
+        "http://dify.local",
+        "test-key",
+        "dataset",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="不可检索"):
+            client.document_content_witness("doc-1")
+    finally:
+        client.close()
+
+
+def test_document_content_witness_accepts_legacy_segments_without_state_fields():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/segments"):
+            return httpx.Response(
+                200,
+                json={"data": [{"id": "segment-1", "content": "legacy parent"}], "has_more": False},
+                request=request,
+            )
+        if request.url.path.endswith("/child_chunks"):
+            return httpx.Response(
+                200,
+                json={"data": [{"id": "child-1", "content": "legacy child"}], "has_more": False},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = DifyKnowledgeClient(
+        "http://dify.local",
+        "test-key",
+        "dataset",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        assert len(client.document_content_witness("doc-1")) == 64
     finally:
         client.close()
 
@@ -63,11 +157,7 @@ def test_unpublished_workflow_error_is_actionable():
 
 
 def test_input_schema_and_whitespace_normalization():
-    parameters = {
-        "user_input_form": [
-            {"text-input": {"variable": "test_value", "required": True}}
-        ]
-    }
+    parameters = {"user_input_form": [{"text-input": {"variable": "test_value", "required": True}}]}
     fields = input_fields(parameters)
     inputs, renamed = normalize_and_validate_inputs({"test_value ": "AAA"}, fields)
     assert inputs == {"test_value": "AAA"}

@@ -1,0 +1,134 @@
+name: ai-management-ys
+
+x-runtime: &runtime
+  image: ${AI_YS_IMAGE:?set AI_YS_IMAGE}
+  env_file: ${AI_YS_ENV_FILE:-.env.ys}
+  environment:
+    APP_ENV: test
+    BIND_HOST: 0.0.0.0
+    CLEANING_GENERAL_ONLY: "false"
+    DIFY_COURSE_DATASET_ENABLED: "false"
+    BAILIAN_BATCH_ENABLED: "false"
+    CLEANING_DAILY_BUDGET_YUAN: "4"
+    JX_ACCEPTANCE_CLEANING_BUDGET_MAX_YUAN: "5"
+    CLEANING_ACCEPTANCE_BUDGET_ENABLED: "true"
+    TZ: Asia/Shanghai
+  networks: [dify]
+  restart: unless-stopped
+
+x-upload-volume: &upload-volume
+  - ai_ys_uploads:/app/var/uploads
+  - ai_ys_conversion:/app/var/conversion-markdown
+  - ai_ys_acceptance_audit:/app/var/audit
+
+services:
+  ai-ys-api:
+    <<: *runtime
+    command: uvicorn ai_management.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "127.0.0.1:18080:8000"
+    volumes: *upload-volume
+
+  ai-ys-worker:
+    <<: *runtime
+    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_default,ai_cleaning --concurrency=1
+    volumes: *upload-volume
+
+  ai-ys-model-realtime-worker:
+    <<: *runtime
+    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_model_realtime --concurrency=1
+    volumes: *upload-volume
+
+  ai-ys-model-batch-worker:
+    <<: *runtime
+    profiles: [batch]
+    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_model_batch --concurrency=1
+    volumes: *upload-volume
+
+  ai-ys-publication-worker:
+    <<: *runtime
+    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_publication --concurrency=1
+    volumes: *upload-volume
+
+  ai-ys-ocr-worker:
+    <<: *runtime
+    image: ${AI_YS_OCR_IMAGE:?set AI_YS_OCR_IMAGE}
+    entrypoint: ["/app/scripts/ocr_worker_entrypoint.sh"]
+    command: celery -A ai_management.tasks.celery_app worker -l INFO -Q ai_ocr --concurrency=1 --prefetch-multiplier=1 --hostname=ai-ocr-ys@%h
+    environment:
+      APP_ENV: test
+      BIND_HOST: 0.0.0.0
+      CLEANING_GENERAL_ONLY: "false"
+      DIFY_COURSE_DATASET_ENABLED: "false"
+      BAILIAN_BATCH_ENABLED: "false"
+      CLEANING_DAILY_BUDGET_YUAN: "4"
+      JX_ACCEPTANCE_CLEANING_BUDGET_MAX_YUAN: "5"
+      CLEANING_ACCEPTANCE_BUDGET_ENABLED: "true"
+      TZ: Asia/Shanghai
+      HOME: /app
+      RAPIDOCR_DISABLE_NETWORK: "1"
+      PDF_OCR_MODEL_ROOT: /app/var/ocr-models/rapidocr
+      PDF_OCR_MODEL_MANIFEST: /app/var/ocr-models/rapidocr/manifest.json
+    volumes:
+      - ai_ys_uploads:/app/var/uploads
+      - ai_ys_conversion:/app/var/conversion-markdown
+      - ${AI_YS_OCR_MODELS_DIR:?set AI_YS_OCR_MODELS_DIR}:/app/var/ocr-models/rapidocr:ro
+    cpus: "2.0"
+    mem_limit: 3g
+    memswap_limit: 3g
+    pids_limit: 256
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m,mode=1777
+    restart: "no"
+
+  ai-ys-scheduler:
+    <<: *runtime
+    command: celery -A ai_management.tasks.celery_app beat -l INFO
+    volumes: *upload-volume
+
+  ai-ys-ui:
+    image: ${AI_YS_UI_IMAGE:?set AI_YS_UI_IMAGE}
+    env_file: ${AI_YS_ENV_FILE:-.env.ys}
+    environment:
+      AI_MANAGEMENT_BASE_URL: http://ai-ys-api:8000
+    command: streamlit run ai_management/test_ui.py --server.address 0.0.0.0 --server.port 8501 --server.baseUrlPath ai-management-test --server.headless true
+    ports:
+      - "127.0.0.1:18501:8501"
+    networks: [dify]
+    restart: unless-stopped
+
+  # One-off only. This profile is excluded from the default service set.
+  ai-ys-acceptance-runner:
+    <<: *runtime
+    profiles: [acceptance]
+    command:
+      - python
+      - scripts/full_cleaning_acceptance.py
+      - --base-url
+      - http://ai-ys-api:8000
+      - --input-root
+      - /app/acceptance-input
+      - --manifest-path
+      - /app/var/audit/ys-acceptance-report.json
+    environment:
+      ACCEPTANCE_RUNNER_CONTAINER: "true"
+      ACCEPTANCE_INPUT_ROOT: /app/acceptance-input
+      ACCEPTANCE_SAMPLE_MANIFEST_JSON: /app/acceptance-staging/sample-byte-manifest.json
+      ACCEPTANCE_SAMPLE_PATHS_JSON: /app/acceptance-staging/sample-paths.json
+      ACCEPTANCE_RETRIEVAL_QUERIES_JSON: /app/acceptance-staging/retrieval-queries.json
+      ACCEPTANCE_CHAT_EXPECTATIONS_JSON: /app/acceptance-staging/chat-expectations.json
+      JX_ACCEPTANCE_CAMPAIGN_LEDGER_PATH: /app/var/audit/acceptance-campaign-ledger.json
+    volumes:
+      - ai_ys_acceptance_audit:/app/var/audit
+      - ${AI_YS_ACCEPTANCE_INPUT_DIR:?set AI_YS_ACCEPTANCE_INPUT_DIR}:/app/acceptance-input:ro
+      - ${AI_YS_ACCEPTANCE_STAGING_DIR:?set AI_YS_ACCEPTANCE_STAGING_DIR}:/app/acceptance-staging:ro
+
+volumes:
+  ai_ys_uploads:
+  ai_ys_conversion:
+  ai_ys_acceptance_audit:
+
+networks:
+  dify:
+    external: true
+    name: docker_default

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pypdf import PdfWriter
@@ -21,6 +22,22 @@ class _DPIBackend:
     def __init__(self, outputs):
         self.outputs = list(outputs)
         self.dpis: list[int] = []
+        self.page_numbers: list[set[int] | None] = []
+
+    def extract(self, _path: Path, *, dpi: int = 200, page_numbers=None):
+        self.dpis.append(dpi)
+        self.page_numbers.append(page_numbers)
+        return self.outputs.pop(0)
+
+
+class _LegacyDPIBackend:
+    """A pre-selective backend that always returns every rendered page."""
+
+    name = "legacy_ocr"
+
+    def __init__(self, outputs):
+        self.outputs = list(outputs)
+        self.dpis: list[int] = []
 
     def extract(self, _path: Path, *, dpi: int = 200):
         self.dpis.append(dpi)
@@ -33,6 +50,7 @@ def _page(
     *,
     confidence: float | None = None,
     conflicts=None,
+    warnings=None,
     backend: str = "fake_ocr",
     image_count: int = 0,
 ):
@@ -45,8 +63,44 @@ def _page(
         text_characters=len(text),
         confidence=confidence,
         key_fact_conflicts=list(conflicts or []),
+        warnings=list(warnings or []),
         image_count=image_count,
     )
+
+
+def test_paddle_backend_honors_selective_ocr_page_numbers(tmp_path, monkeypatch):
+    from knowledge_cleaner import pdf_convert
+
+    source = tmp_path / "selective-paddle.pdf"
+    _blank_pdf(source, 3)
+    predict_calls: list[dict] = []
+
+    class FakePipeline:
+        def __init__(self, **_options):
+            pass
+
+        def predict(self, **options):
+            predict_calls.append(options)
+            return [
+                SimpleNamespace(markdown={"markdown_texts": f"OCR page {page_number}"})
+                for page_number in range(1, 4)
+            ]
+
+    monkeypatch.setattr(
+        pdf_convert.importlib,
+        "import_module",
+        lambda name: SimpleNamespace(PPStructureV3=FakePipeline),
+    )
+
+    pages = pdf_convert.PaddleOCRPPStructureV3Backend().extract(
+        source,
+        dpi=300,
+        page_numbers={2},
+    )
+
+    assert [page.page_number for page in pages] == [2]
+    assert [page.markdown for page in pages] == ["OCR page 2"]
+    assert predict_calls[0]["pdf_dpi"] == 300
 
 
 def test_scan_pdf_page_limit_is_only_applied_before_ocr(tmp_path):
@@ -56,9 +110,7 @@ def test_scan_pdf_page_limit_is_only_applied_before_ocr(tmp_path):
     _blank_pdf(source, 11)
     backend = _DPIBackend([[_page(1, "never called")]])
 
-    result = pdf_convert.convert_pdf(
-        source, enable_ocr=True, ocr_backend=backend, ocr_max_pages=10
-    )
+    result = pdf_convert.convert_pdf(source, enable_ocr=True, ocr_backend=backend, ocr_max_pages=10)
 
     assert result.status == "review"
     assert "ocr_page_limit" in result.quality_flags
@@ -108,6 +160,103 @@ def test_key_fact_conflict_blocks_ready_even_when_text_is_readable(tmp_path):
     assert result.ocr_key_fact_conflicts == ["金额不一致"]
 
 
+def test_ocr_retry_fact_disagreement_blocks_auto_publish_without_exposing_values(tmp_path):
+    from knowledge_cleaner import pdf_convert
+
+    source = tmp_path / "scan.pdf"
+    _blank_pdf(source, 1)
+    backend = _DPIBackend(
+        [
+            [
+                _page(
+                    1,
+                    "金额100元，日期2026年9月13日，转化率20%，不需要追加预算。",
+                    confidence=0.40,
+                )
+            ],
+            [
+                _page(
+                    1,
+                    "金额1000元，日期2026年9月14日，转化率80%，需要追加预算。",
+                    confidence=0.99,
+                )
+            ],
+        ]
+    )
+
+    result = pdf_convert.convert_pdf(source, enable_ocr=True, ocr_backend=backend)
+
+    assert result.status == "review"
+    assert "ocr_key_fact_conflict" in result.quality_flags
+    assert {"amount", "date", "ratio", "negation"}.issubset(result.ocr_key_fact_conflicts)
+    assert not any("1000" in reason or "2026" in reason for reason in result.review_reasons)
+
+
+def test_ocr_retry_compares_labeled_facts_and_action_polarity():
+    from knowledge_cleaner.pdf_convert import _ocr_attempt_key_fact_conflicts
+
+    assert "amount" in _ocr_attempt_key_fact_conflicts(
+        "预算1100元，收入2100元", "预算2100元，收入1100元"
+    )
+    assert "amount" in _ocr_attempt_key_fact_conflicts("预算1100元", "预算2100元")
+    assert "negation" in _ocr_attempt_key_fact_conflicts(
+        "不要投放广告，也不要招聘销售", "投放广告，不要招聘销售"
+    )
+    assert not _ocr_attempt_key_fact_conflicts(
+        "预算 1,100 元；收入：2,100元\n不要 投放广告。",
+        "预算1100元，收入2100元；不要投放广告",
+    )
+
+
+def test_pypdf_image_probe_failure_is_persisted_and_consultation_cannot_ready(
+    tmp_path, monkeypatch
+):
+    from knowledge_cleaner import pdf_convert
+
+    source = tmp_path / "unknown-image-probe.pdf"
+    _blank_pdf(source, 1)
+
+    class Page:
+        def extract_text(self, **_kwargs):
+            return "客户会议结论 " * 20
+
+        @property
+        def images(self):
+            raise RuntimeError("synthetic image enumeration failure")
+
+    class Reader:
+        pages = [Page()]
+
+    monkeypatch.setattr(pdf_convert, "PdfReader", lambda _path: Reader())
+    monkeypatch.setattr(
+        pdf_convert,
+        "_extract_pdfplumber_pages",
+        lambda _source: (_ for _ in ()).throw(pdf_convert.OptionalBackendUnavailable("test")),
+    )
+
+    result = pdf_convert.convert_consultation_pdf(source, enable_ocr=False)
+
+    assert result.status == "review"
+    assert result.pages[0].image_probe_status == "unknown"
+    assert result.pages[0].image_probe_error == "RuntimeError"
+    assert result.metadata["image_probe_unknown_pages"] == [1]
+
+
+def test_warning_only_key_fact_conflict_is_normalized_to_hard_block(tmp_path):
+    from knowledge_cleaner import pdf_convert
+
+    source = tmp_path / "warning-conflict.pdf"
+    _blank_pdf(source, 1)
+    backend = _DPIBackend(
+        [[_page(1, "金额 100 元", confidence=0.99, warnings=["key_fact_conflict:金额不一致"])]]
+    )
+
+    result = pdf_convert.convert_pdf(source, enable_ocr=True, ocr_backend=backend)
+
+    assert result.ocr_key_fact_conflicts == ["金额不一致"]
+    assert any(reason.startswith("OCR_KEY_FACT_CONFLICT:") for reason in result.review_reasons)
+
+
 def test_text_layer_pdf_is_not_limited_by_ocr_page_limit(tmp_path, monkeypatch):
     from knowledge_cleaner import pdf_convert
 
@@ -137,7 +286,7 @@ def test_mixed_first_two_pages_require_type_review_before_ocr(tmp_path):
 
     source = tmp_path / "mixed.pdf"
     _blank_pdf(source, 2)
-    backend = _DPIBackend([[_page(1, "should not run", confidence=0.99)]])
+    backend = _DPIBackend([[_page(2, "OCR图像页", confidence=0.99)]])
 
     original = pdf_convert._extract_pypdf_pages
     pdf_convert._extract_pypdf_pages = lambda _reader: [
@@ -149,9 +298,72 @@ def test_mixed_first_two_pages_require_type_review_before_ocr(tmp_path):
     finally:
         pdf_convert._extract_pypdf_pages = original
 
-    assert result.backend == "pdf_type_review"
-    assert "PDF_TYPE_REVIEW_REQUIRED" in result.review_reasons[0]
-    assert backend.dpis == []
+    assert result.backend == "fake_ocr"
+    assert result.ocr_used is True
+    assert "PDF_TYPE_MIXED" in result.review_reasons[0]
+    assert backend.dpis == [200]
+    assert backend.page_numbers == [{2}]
+    assert result.pages[0].markdown == "文字层正文 " * 10
+    assert result.pages[0].page_number == 1
+    assert result.pages[1].markdown == "OCR图像页"
+    assert [page.page_number for page in result.pages] == [1, 2]
+    assert "<!-- page:1 -->" in result.markdown
+    assert "<!-- page:2 -->" in result.markdown
+
+
+def test_mixed_pdf_page_limit_counts_only_selected_ocr_pages(tmp_path, monkeypatch):
+    from knowledge_cleaner import pdf_convert
+
+    source = tmp_path / "mostly-text.pdf"
+    _blank_pdf(source, 11)
+    native_pages = [
+        _page(index, f"可靠文字层正文第{index}页 " * 10, backend="pypdf") for index in range(1, 11)
+    ] + [_page(11, "", backend="pypdf", image_count=1)]
+    backend = _DPIBackend([[_page(11, "OCR图像页", confidence=0.99)]])
+    monkeypatch.setattr(pdf_convert, "_extract_pypdf_pages", lambda _reader: native_pages)
+
+    result = pdf_convert.convert_pdf(
+        source,
+        enable_ocr=True,
+        ocr_backend=backend,
+        ocr_max_pages=1,
+    )
+
+    assert "ocr_page_limit" not in result.quality_flags
+    assert backend.page_numbers == [{11}]
+    assert [page.page_number for page in result.pages] == list(range(1, 12))
+    assert result.pages[0].markdown == "可靠文字层正文第1页 " * 10
+    assert result.pages[-1].markdown == "OCR图像页"
+
+
+def test_legacy_backend_full_pdf_result_is_adapted_to_selective_ocr_coverage(tmp_path, monkeypatch):
+    from knowledge_cleaner import pdf_convert
+
+    source = tmp_path / "legacy-selective.pdf"
+    _blank_pdf(source, 2)
+    monkeypatch.setattr(
+        pdf_convert,
+        "_extract_pypdf_pages",
+        lambda _reader: [
+            _page(1, "可靠文字层正文 " * 10, backend="pypdf"),
+            _page(2, "", backend="pypdf", image_count=1),
+        ],
+    )
+    backend = _LegacyDPIBackend(
+        [[_page(1, "旧后端全文结果", confidence=0.99), _page(2, "OCR图像页", confidence=0.99)]]
+    )
+
+    result = pdf_convert.convert_pdf(source, enable_ocr=True, ocr_backend=backend)
+
+    # The mixed-file gate remains intentionally blocking; this regression is
+    # about avoiding a false OCR coverage failure from the legacy full-PDF API.
+    assert result.status == "review"
+    assert result.ocr_used is True
+    assert not any("OCR_PAGE_COVERAGE_MISMATCH" in reason for reason in result.review_reasons)
+    assert backend.dpis == [200]
+    assert [page.page_number for page in result.pages] == [1, 2]
+    assert result.pages[0].markdown == "可靠文字层正文 " * 10
+    assert result.pages[1].markdown == "OCR图像页"
 
 
 def test_image_free_low_text_boundary_page_is_converted_with_warning(tmp_path, monkeypatch):
@@ -178,8 +390,7 @@ def test_image_free_low_text_boundary_page_is_converted_with_warning(tmp_path, m
     assert "封面说明" in result.markdown
     assert "pdf_boundary_low_text" in result.quality_flags
     assert any(
-        reason.startswith("PDF_BOUNDARY_LOW_TEXT_WARNING")
-        and ":1,3" in reason
+        reason.startswith("PDF_BOUNDARY_LOW_TEXT_WARNING") and ":1,3" in reason
         for reason in result.review_reasons
     )
     from ai_management.cleaning import _pdf_blocking_reasons
@@ -201,9 +412,11 @@ def test_low_text_interior_page_still_requires_type_review(tmp_path, monkeypatch
 
     result = pdf_convert.convert_pdf(source, enable_ocr=False)
 
-    assert result.backend == "pdf_type_review"
-    assert result.markdown == ""
-    assert "PDF_TYPE_REVIEW_REQUIRED" in result.review_reasons[0]
+    assert result.backend == "ocr_disabled"
+    assert "正文起始" in result.markdown
+    assert "正文结束" in result.markdown
+    assert "PDF_TYPE_MIXED" in result.review_reasons[0]
+    assert "OCR已禁用" in " ".join(result.review_reasons)
 
 
 def test_low_text_only_pdf_does_not_fall_back_to_ocr(tmp_path, monkeypatch):
@@ -217,11 +430,16 @@ def test_low_text_only_pdf_does_not_fall_back_to_ocr(tmp_path, monkeypatch):
     ]
     monkeypatch.setattr(pdf_convert, "_extract_pypdf_pages", lambda _reader: probe_pages)
 
-    result = pdf_convert.convert_pdf(source, enable_ocr=True)
+    backend = _DPIBackend(
+        [[_page(1, "OCR短文本1", confidence=0.98), _page(2, "OCR短文本2", confidence=0.98)]]
+    )
+    result = pdf_convert.convert_pdf(source, enable_ocr=True, ocr_backend=backend)
 
-    assert result.backend == "pdf_type_review"
-    assert result.ocr_used is False
-    assert result.markdown == ""
+    assert result.backend == "fake_ocr"
+    assert result.ocr_used is True
+    assert backend.page_numbers == [{1, 2}]
+    assert [page.page_number for page in result.pages] == [1, 2]
+    assert "OCR短文本1" in result.markdown
 
 
 def test_low_text_boundary_page_with_image_still_requires_type_review(tmp_path, monkeypatch):
@@ -238,9 +456,11 @@ def test_low_text_boundary_page_with_image_still_requires_type_review(tmp_path, 
 
     result = pdf_convert.convert_pdf(source, enable_ocr=False)
 
-    assert result.backend == "pdf_type_review"
-    assert result.markdown == ""
-    assert "PDF_TYPE_REVIEW_REQUIRED" in result.review_reasons[0]
+    assert result.backend == "ocr_disabled"
+    assert "正文内容" in result.markdown
+    assert "正文结束" in result.markdown
+    assert "PDF_TYPE_MIXED" in result.review_reasons[0]
+    assert "OCR已禁用" in " ".join(result.review_reasons)
 
 
 def test_text_layer_first_accepts_low_text_image_pages_when_native_layer_is_complete(
@@ -261,27 +481,21 @@ def test_text_layer_first_accepts_low_text_image_pages_when_native_layer_is_comp
         _page(3, "正文内容 " * 25, backend="pdfplumber"),
     ]
     monkeypatch.setattr(pdf_convert, "_extract_pypdf_pages", lambda _reader: probe_pages)
-    monkeypatch.setattr(
-        pdf_convert, "_extract_pdfplumber_pages", lambda _path: rendered_pages
-    )
+    monkeypatch.setattr(pdf_convert, "_extract_pdfplumber_pages", lambda _path: rendered_pages)
 
     result = pdf_convert.convert_pdf(source, enable_ocr=False)
 
-    assert result.backend == "pdfplumber"
+    assert result.backend == "ocr_disabled"
     assert result.markdown
-    assert "pdf_text_layer_image_page_warning" in result.quality_flags
-    assert not any(
-        reason.startswith("PDF_TYPE_REVIEW_REQUIRED")
-        for reason in result.review_reasons
-    )
-    from ai_management.cleaning import _pdf_blocking_reasons
-
-    assert _pdf_blocking_reasons(result.review_reasons, result.markdown) == []
+    assert [page.page_number for page in result.pages] == [1, 2, 3]
+    assert "正文内容" in result.pages[0].markdown
+    assert "图注" in result.pages[1].markdown
+    assert "正文内容" in result.pages[2].markdown
+    assert "PDF_TYPE_MIXED" in " ".join(result.review_reasons)
+    assert any("OCR已禁用" in reason for reason in result.review_reasons)
 
 
-def test_consultation_pdf_image_uses_ocr_without_manual_privacy_gate(
-    tmp_path, monkeypatch
-):
+def test_consultation_pdf_image_uses_ocr_without_manual_privacy_gate(tmp_path, monkeypatch):
     from knowledge_cleaner import pdf_convert
 
     source = tmp_path / "consultation-image.pdf"
@@ -295,16 +509,16 @@ def test_consultation_pdf_image_uses_ocr_without_manual_privacy_gate(
         _page(2, "会议结论 " * 20, backend="pdfplumber", image_count=1),
     ]
     monkeypatch.setattr(pdf_convert, "_extract_pypdf_pages", lambda _reader: probe_pages)
-    monkeypatch.setattr(
-        pdf_convert, "_extract_pdfplumber_pages", lambda _path: rendered_pages
-    )
+    monkeypatch.setattr(pdf_convert, "_extract_pdfplumber_pages", lambda _path: rendered_pages)
 
     backend = _DPIBackend(
         [
             [
-                _page(1, "客户目标：提升销售", confidence=0.98),
+                _page(2, "会议结论：低清版本", confidence=0.40),
+            ],
+            [
                 _page(2, "会议结论：继续验证", confidence=0.98),
-            ]
+            ],
         ]
     )
     result = pdf_convert.convert_consultation_pdf(
@@ -316,9 +530,54 @@ def test_consultation_pdf_image_uses_ocr_without_manual_privacy_gate(
     assert result.needs_review is False
     assert result.status == "ready"
     assert result.ocr_used is True
+    assert result.ocr_retry_count == 1
+    assert backend.page_numbers == [{2}, {2}]
+    assert [page.page_number for page in result.pages] == [1, 2]
+    assert result.pages[0].markdown == "客户目标：提升销售"
+    assert result.pages[1].markdown == "会议结论 " * 20 + "\n\n会议结论：继续验证"
+    assert result.pages[1].markdown.count("会议结论 " * 20) == 1
     assert result.metadata["consultation_image_ocr"] is True
     assert "pdf_consultation_image_ocr" in result.quality_flags
-    assert not any("PDF_CONSULTATION_IMAGE_PRIVACY_REVIEW" in reason for reason in result.review_reasons)
+    assert not any(
+        "PDF_CONSULTATION_IMAGE_PRIVACY_REVIEW" in reason for reason in result.review_reasons
+    )
+
+
+def test_mixed_ocr_retry_only_reprocesses_low_pages_and_keeps_better_first_pass(
+    tmp_path, monkeypatch
+):
+    from knowledge_cleaner import pdf_convert
+
+    source = tmp_path / "mixed-retry.pdf"
+    _blank_pdf(source, 3)
+    monkeypatch.setattr(
+        pdf_convert,
+        "_extract_pypdf_pages",
+        lambda _reader: [
+            _page(1, "可靠 native 正文 " * 10, backend="pypdf"),
+            _page(2, "", backend="pypdf", image_count=1),
+            _page(3, "", backend="pypdf", image_count=1),
+        ],
+    )
+    backend = _DPIBackend(
+        [
+            [
+                _page(2, "首轮可靠 OCR", confidence=0.99),
+                _page(3, "首轮模糊 OCR", confidence=0.40),
+            ],
+            [_page(3, "二轮可靠 OCR", confidence=0.99)],
+        ]
+    )
+
+    result = pdf_convert.convert_pdf(source, enable_ocr=True, ocr_backend=backend)
+
+    assert backend.page_numbers == [{2, 3}, {3}]
+    assert [page.markdown for page in result.pages] == [
+        "可靠 native 正文 " * 10,
+        "首轮可靠 OCR",
+        "二轮可靠 OCR",
+    ]
+    assert result.ocr_retry_count == 1
 
 
 def test_consultation_pdf_image_still_blocks_when_ocr_is_disabled(tmp_path, monkeypatch):
@@ -336,7 +595,102 @@ def test_consultation_pdf_image_still_blocks_when_ocr_is_disabled(tmp_path, monk
 
     assert result.needs_review is True
     assert "PDF缺少可用文字层，OCR已禁用" in result.review_reasons
-    assert not any("PDF_CONSULTATION_IMAGE_PRIVACY_REVIEW" in reason for reason in result.review_reasons)
+    assert not any(
+        "PDF_CONSULTATION_IMAGE_PRIVACY_REVIEW" in reason for reason in result.review_reasons
+    )
+
+
+def test_unknown_ocr_backend_returns_a_structured_blocking_result(tmp_path):
+    from knowledge_cleaner import pdf_convert
+
+    source = tmp_path / "scan.pdf"
+    _blank_pdf(source, 1)
+
+    result = pdf_convert.convert_consultation_pdf(
+        source,
+        ocr_backend_name="unavailable-for-test",
+    )
+
+    assert result.status == "review"
+    assert any(
+        reason.startswith("OCR_BACKEND_UNAVAILABLE:不支持的OCR后端")
+        for reason in result.review_reasons
+    )
+
+
+@pytest.mark.parametrize("failure_mode", ["disabled", "limit", "backend"])
+def test_consultation_mixed_pdf_keeps_native_pages_when_ocr_cannot_run(
+    tmp_path, monkeypatch, failure_mode
+):
+    from knowledge_cleaner import pdf_convert
+
+    source = tmp_path / "consultation-mixed-failure.pdf"
+    _blank_pdf(source, 2)
+    native_pages = [
+        _page(1, "可靠文字页：客户目标和必要背景。", backend="pypdf"),
+        _page(2, "", backend="pypdf", image_count=1),
+    ]
+    monkeypatch.setattr(pdf_convert, "_extract_pypdf_pages", lambda _reader: native_pages)
+
+    kwargs = {}
+    if failure_mode == "disabled":
+        kwargs["enable_ocr"] = False
+    elif failure_mode == "limit":
+        kwargs["ocr_max_pages"] = 1
+    else:
+
+        class FailingBackend:
+            name = "rapidocr_test"
+
+            def extract(self, *_args, **_kwargs):
+                raise RuntimeError("backend unavailable")
+
+        kwargs["ocr_backend"] = FailingBackend()
+
+    result = pdf_convert.convert_consultation_pdf(source, **kwargs)
+    assert result.needs_review is True
+    assert [page.page_number for page in result.pages] == [1, 2]
+    assert "可靠文字页" in result.markdown
+    assert any(
+        marker in " ".join(result.review_reasons)
+        for marker in ("OCR已禁用", "OCR_PAGE_LIMIT_REVIEW", "OCR执行失败")
+    )
+
+
+@pytest.mark.parametrize(
+    ("reason", "code"),
+    [
+        ("OCR_LOW_CONFIDENCE_REVIEW:仍存在低置信或空白页面:1", "OCR_LOW_CONFIDENCE_REVIEW"),
+        ("OCR_KEY_FACT_CONFLICT:金额不一致", "OCR_KEY_FACT_CONFLICT"),
+    ],
+)
+def test_consultation_strategy_fails_ocr_quality_issue_without_model_source_blocks(
+    tmp_path, monkeypatch, reason, code
+):
+    from types import SimpleNamespace
+
+    from ai_management.cleaning import PersonalBusinessConsultationStrategy
+    from knowledge_cleaner import pdf_convert
+
+    source = tmp_path / "consultation.pdf"
+    _blank_pdf(source, 1)
+    result = SimpleNamespace(
+        markdown="匿名咨询正文，包含足以诊断的问题与方案。",
+        redactions=[],
+        residual_pii=[],
+        source_checksum="a" * 64,
+        document_id="case_aaaaaaaaaaaaaaaa",
+        review_reasons=[reason],
+        needs_review=True,
+        to_dict=lambda **_kwargs: {"review_reasons": [reason]},
+    )
+    monkeypatch.setattr(pdf_convert, "convert_consultation_pdf", lambda *_args, **_kwargs: result)
+
+    document = PersonalBusinessConsultationStrategy().clean(source, source.name)[0]
+
+    assert document.disposition == "failed"
+    assert document.error_code == code
+    assert document.audit["model_blocks"] == {}
 
 
 def test_settings_validate_ocr_page_timeout_linkage(monkeypatch):
@@ -350,13 +704,14 @@ def test_settings_validate_ocr_page_timeout_linkage(monkeypatch):
     assert settings.pdf_ocr_cpu_threads == 2
 
 
-def test_rapidocr_result_parser_is_lazy_and_preserves_reading_order():
+def test_rapidocr_result_parser_filters_empty_text_without_misaligning_score_or_box():
     from knowledge_cleaner.rapidocr_backend import RapidOCRBackend
 
     class Result:
-        txts = ["第二行", "第一行"]
-        scores = [0.91, 0.97]
+        txts = ["", "第二行", "第一行"]
+        scores = [0.10, 0.91, 0.97]
         boxes = [
+            [[10, 80], [80, 80], [80, 100], [10, 100]],
             [[10, 40], [80, 40], [80, 60], [10, 60]],
             [[10, 10], [80, 10], [80, 30], [10, 30]],
         ]
@@ -375,9 +730,7 @@ def test_offline_ocr_model_manifest_is_hashed_and_rejects_tampering(tmp_path):
     model = tmp_path / "det.bin"
     model.write_bytes(b"offline-model")
     digest = hashlib.sha256(model.read_bytes()).hexdigest()
-    assert validate_offline_ocr_models(tmp_path, {"det.bin": digest}) == {
-        "det.bin": digest
-    }
+    assert validate_offline_ocr_models(tmp_path, {"det.bin": digest}) == {"det.bin": digest}
     model.write_bytes(b"tampered")
     with pytest.raises(OptionalBackendUnavailable, match="哈希不匹配"):
         validate_offline_ocr_models(tmp_path, {"det.bin": digest})

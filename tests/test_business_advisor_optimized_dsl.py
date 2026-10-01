@@ -26,7 +26,11 @@ def test_current_dsl_edges_reference_existing_nodes() -> None:
 
 def test_current_dsl_keeps_reranking_and_bounded_evidence() -> None:
     nodes = _nodes(_load())
-    for node_id, operator in (("general_knowledge", "is not"), ("case_knowledge", "is")):
+    search_paths = (
+        ("general_search", "general_knowledge", "is not"),
+        ("case_search", "case_knowledge", "is"),
+    )
+    for search_node_id, node_id, operator in search_paths:
         retrieval = nodes[node_id]
         assert retrieval["multiple_retrieval_config"]["reranking_enable"] is True
         assert retrieval["multiple_retrieval_config"]["top_k"] == 5
@@ -36,18 +40,32 @@ def test_current_dsl_keeps_reranking_and_bounded_evidence() -> None:
             "name": "record_type",
             "value": "consulting_case",
         }
+        # The aggregate must receive the completed, tagged iteration output,
+        # not one raw retrieval invocation.  This preserves the per-query
+        # Top-5 rerank bound alongside query provenance for evidence compaction.
+        assert nodes[search_node_id]["type"] == "iteration"
+        assert nodes[search_node_id]["output_selector"] == [f"{search_node_id}_tag", "result"]
     assert nodes["advisor_retrieval_aggregate"]["variables"] == [
-        ["general_knowledge", "result"],
-        ["case_knowledge", "result"],
+        ["general_search", "output"],
+        ["case_search", "output"],
     ]
     assert nodes["general_evidence_compact"]["variables"] == [
-        {"value_selector": ["advisor_retrieval_aggregate", "output"], "variable": "results"}
+        {"value_selector": ["advisor_retrieval_aggregate", "output"], "variable": "results"},
+        {"value_selector": ["intent_parse", "primary_intent"], "variable": "primary_intent"},
+        {"value_selector": ["intent_parse", "retrieval_tasks"], "variable": "expected_tasks"},
     ]
     namespace: dict[str, object] = {}
     exec(nodes["general_evidence_compact"]["code"], namespace)
-    result = namespace["main"]([
-        {"title": "资料", "content": "证据" * 20_000, "metadata": {"internal_id": "hidden"}}
-    ])
+    result = namespace["main"](
+        [
+            {
+                "title": "资料",
+                "content": "证据" * 20_000,
+                "metadata": {"internal_id": "hidden"},
+            }
+        ],
+        "general",
+    )
     assert result["has_evidence"] == "true"
     assert len(result["evidence_text"]) <= 12_000
     assert "internal_id" not in result["evidence_text"]
@@ -55,5 +73,5 @@ def test_current_dsl_keeps_reranking_and_bounded_evidence() -> None:
 
 def test_current_dsl_main_answer_has_no_hidden_model_retry() -> None:
     model = _nodes(_load())["combined_response_general"]
-    assert model["model"]["completion_params"]["temperature"] == 0.2
+    assert model["model"]["completion_params"]["temperature"] == 0.1
     assert not (model.get("retry_config") or {}).get("retry_enabled")

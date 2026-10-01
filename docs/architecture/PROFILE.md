@@ -82,12 +82,13 @@ Only describe boundaries that actually exist.
 
 ## 12. Canonical Quality Commands
 
-- Format: `ruff format --check ai_management knowledge_cleaner tests Other/event_rag_cleaner`
-- Lint/static: `ruff check ai_management knowledge_cleaner tests Other/event_rag_cleaner`
-- Typecheck/compile: `python -m compileall -q ai_management knowledge_cleaner Other/event_rag_cleaner`
-- Build: not configured; Docker build is release validation only.
-- Unit: `python -m pytest -q tests` and `python -m pytest -q Other/event_rag_cleaner`
-- Integration: feature-focused pytest selectors configured by the Feature record.
+- Authority: `.codex/governance/project.json` and the Feature validation configuration are canonical; this section describes the current bounded scope, not a full-repository PASS claim.
+- A/B unit: the approved model and API/shared directly related test sets; C integration: the approved OCR, PDF policy, DSL, activity, consultation and `Other/event_rag_cleaner` set; D/E feature validation: the approved deploy/migration/UI and governance/documentation sets, with only the two unrelated formal-data reset cases excluded.
+- Format: the configured `uv run ruff format --check` selected implementation, migration and directly related test paths.
+- Lint/static: the configured selected `uv run ruff check` paths plus fatal `E9,F63,F7,F82` checks for `.codex/governance/gov.py`, `.codex/governance/govlib.py` and `tests/test_governance_contract.py`.
+- Typecheck/compile: `uv run python -m compileall -q ai_management knowledge_cleaner .codex/governance scripts migrations`.
+- Build: `uv lock --check`; Docker build remains release validation only.
+- Unit/integration/feature commands use 600-second timeouts, short unique temporary roots, independent JUnit reports and `PYTHONUTF8=1`; the prior full commands and their failures remain evidence and are not silently replaced.
 - E2E/system: jx/Dify test-page runbook evidence, not a local mutation command.
 
 ## 13. Forbidden Patterns

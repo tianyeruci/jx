@@ -37,7 +37,7 @@ def ready(session: Session = Depends(get_session)) -> JSONResponse:
     knowledge_configured = bool(
         settings.dify_knowledge_api_key
         and settings.dify_general_dataset_id
-        and settings.dify_course_dataset_id
+        and (not settings.dify_course_dataset_enabled or settings.dify_course_dataset_id)
     )
     configured = apps_configured and knowledge_configured
     dify_reachable = False
@@ -60,12 +60,7 @@ def ready(session: Session = Depends(get_session)) -> JSONResponse:
                 {"reachable": dify_reachable},
                 ttl=30,
             )
-    ok = (
-        database_ok
-        and (redis_ok or settings.app_env != "production")
-        and configured
-        and dify_reachable
-    )
+    ok = database_ok and redis_ok and configured and dify_reachable
     return JSONResponse(
         status_code=200 if ok else 503,
         content={

@@ -1,0 +1,19 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG CLEANING_TEST_WORKTREE_FINGERPRINT
+ARG CLEANING_TEST_WHEEL_SHA256
+LABEL org.jxnow.cleaning-test.worktree-fingerprint="${CLEANING_TEST_WORKTREE_FINGERPRINT}" \
+      org.jxnow.cleaning-test.wheel-sha256="${CLEANING_TEST_WHEEL_SHA256}"
+
+USER root
+COPY dist/jx_now_ai_management-0.2.1-py3-none-any.whl /tmp/
+RUN actual_wheel_sha256="$(sha256sum /tmp/jx_now_ai_management-0.2.1-py3-none-any.whl | awk '{print $1}')" \
+    && test "$actual_wheel_sha256" = "$CLEANING_TEST_WHEEL_SHA256" \
+    && pip install --no-cache-dir --no-index --no-deps --force-reinstall \
+      /tmp/jx_now_ai_management-0.2.1-py3-none-any.whl \
+    && python -c "import shutil; from pathlib import Path; import ai_management.test_ui as module; shutil.copy2(module.__file__, Path('/app/ai_management/test_ui.py'))" \
+    && rm /tmp/jx_now_ai_management-0.2.1-py3-none-any.whl
+# The formal UI base image has no appuser. This isolated loopback-only UI
+# has no host bind mounts and does not affect the formal UI container.
+USER root

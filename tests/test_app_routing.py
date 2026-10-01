@@ -260,14 +260,45 @@ def test_health_ready_requires_reachable_configured_dify(
     import ai_management.api.routers.health as health
 
     settings = health.get_settings()
+    monkeypatch.setattr(settings, "dify_business_app_api_key", "test-business-key")
+    monkeypatch.setattr(settings, "dify_moments_app_api_key", "test-moments-key")
+    monkeypatch.setattr(settings, "dify_writing_app_api_key", "test-writing-key")
+    monkeypatch.setattr(settings, "dify_summary_profile_app_api_key", "test-summary-key")
+    monkeypatch.setattr(settings, "dify_knowledge_api_key", "test-knowledge-key")
     monkeypatch.setattr(settings, "dify_general_dataset_id", "general-test")
     monkeypatch.setattr(settings, "dify_course_dataset_id", "course-test")
     monkeypatch.setattr(health.DifyAppClient, "parameters", lambda self: {})
+    monkeypatch.setattr(health.cache, "ping", lambda: True)
     health.cache.set_json("ai:health:dify", {"reachable": reachable}, ttl=30)
     with TestClient(app) as client:
         response = client.get("/health/ready")
     assert response.status_code == expected_status
     assert response.json()["dify_reachable"] is reachable
+
+
+def test_health_ready_allows_explicitly_disabled_course_dataset(service_db, monkeypatch) -> None:
+    import ai_management.api.routers.health as health
+
+    settings = health.get_settings()
+    for field in (
+        "dify_business_app_api_key",
+        "dify_moments_app_api_key",
+        "dify_writing_app_api_key",
+        "dify_summary_profile_app_api_key",
+        "dify_knowledge_api_key",
+    ):
+        monkeypatch.setattr(settings, field, "test-key")
+    monkeypatch.setattr(settings, "dify_general_dataset_id", "general-test")
+    monkeypatch.setattr(settings, "dify_course_dataset_id", "")
+    monkeypatch.setattr(settings, "dify_course_dataset_enabled", False)
+    monkeypatch.setattr(health.cache, "ping", lambda: True)
+    health.cache.set_json("ai:health:dify", {"reachable": True}, ttl=30)
+
+    with TestClient(app) as client:
+        response = client.get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json()["dify_knowledge_configured"] is True
 
 
 def test_health_ready_dify_timeout_is_not_ready(service_db, monkeypatch) -> None:
@@ -286,6 +317,28 @@ def test_health_ready_dify_timeout_is_not_ready(service_db, monkeypatch) -> None
         response = client.get("/health/ready")
     assert response.status_code == 503
     assert response.json()["status"] == "not_ready"
+
+
+def test_health_ready_requires_redis_in_non_production_profiles(service_db, monkeypatch) -> None:
+    """The isolated stack cannot call a cache-less API ready just because it is test."""
+    import ai_management.api.routers.health as health
+
+    settings = health.get_settings()
+    monkeypatch.setattr(settings, "dify_business_app_api_key", "test-business-key")
+    monkeypatch.setattr(settings, "dify_moments_app_api_key", "test-moments-key")
+    monkeypatch.setattr(settings, "dify_writing_app_api_key", "test-writing-key")
+    monkeypatch.setattr(settings, "dify_summary_profile_app_api_key", "test-summary-key")
+    monkeypatch.setattr(settings, "dify_knowledge_api_key", "test-knowledge-key")
+    monkeypatch.setattr(settings, "dify_general_dataset_id", "general-test")
+    monkeypatch.setattr(settings, "dify_course_dataset_id", "course-test")
+    monkeypatch.setattr(health.cache, "ping", lambda: False)
+    health.cache.set_json("ai:health:dify", {"reachable": True}, ttl=30)
+
+    with TestClient(app) as client:
+        response = client.get("/health/ready")
+
+    assert response.status_code == 503
+    assert response.json()["redis"] is False
 
 
 def test_openapi_declares_sse_and_course_redirect_contracts() -> None:

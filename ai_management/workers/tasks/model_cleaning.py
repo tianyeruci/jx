@@ -11,14 +11,16 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
+import httpx
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import object_session, selectinload
 
 from knowledge_cleaner.chunking import prepare_chunks
 from knowledge_cleaner.consultation_rag import (
     ConsultationRagResponse,
+    render_methodology_candidate,
     topic_for_problem_category,
     validate_consultation_rag_response,
 )
@@ -26,6 +28,7 @@ from knowledge_cleaner.consultation_rag import (
     render_case_markdown as render_consultation_rag_case,
 )
 
+from ...acceptance_budget import AcceptanceCampaignLedger
 from ...cache import cache
 from ...config import get_settings
 from ...course_import import _course_text, _route_text
@@ -57,9 +60,16 @@ from ...publication_shards import ShardItem, plan_post_shards
 from ...sanitization import sanitize_for_knowledge
 from ...schemas import CourseRecord, RouteRecord
 from ...services.bailian_cleanup import (
+    clear_successful_bailian_batch_tasks,
     clear_successful_bailian_file_tasks,
     ensure_bailian_cleanup_tasks,
+    get_provider_batch_file_owners,
+    has_other_active_bailian_batch_file_reference,
+    remove_provider_batch_file_owner,
+    set_provider_batch_file_owners,
+    update_provider_batch_file_owner,
 )
+from ...services.dify_references import has_other_live_dify_reference
 from ...services.observability import exception_details, record_event, safe_exception_message
 from ..celery_app import celery_app
 
@@ -70,6 +80,33 @@ POST_STRATEGIES = {
     "zsxq_post",
     "xiaobot_post",
 }
+
+
+def _methodology_document_key(document_key: str, case_payload: dict[str, Any]) -> str:
+    """Bind a candidate key to the validated case, not its transient position."""
+
+    fingerprint = hashlib.sha256(
+        json.dumps(case_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"{document_key}:methodology:{fingerprint}"
+
+
+_SAFE_CASE_GROUP_ID_RE = re.compile(r"case_[0-9a-f]{16}")
+
+
+def _safe_case_group_id(document: CleaningDocument) -> str:
+    """Return a display-safe group identifier without trusting legacy metadata."""
+
+    existing = str((document.metadata_json or {}).get("case_id") or "").lower()
+    if _SAFE_CASE_GROUP_ID_RE.fullmatch(existing):
+        return existing
+    content_sha = str(document.content_sha256 or "").lower()
+    if re.fullmatch(r"[0-9a-f]{16,64}", content_sha):
+        return f"case_{content_sha[:16]}"
+    stable_local_key = f"{document.file_id or ''}:{document.document_key or ''}"
+    return f"case_{hashlib.sha256(stable_local_key.encode('utf-8')).hexdigest()[:16]}"
+
+
 CONTENT_MODEL_STRATEGIES = frozenset(
     {
         "personal_business_consultation",
@@ -86,6 +123,414 @@ _DIFY_MIN_SOURCE_SEGMENT_CHARS = 8
 _MODEL_REVIEW_ARTIFACT_MAX_BYTES = 16 * 1024 * 1024
 
 
+class _ZeroCoreModelOutputError(ValueError):
+    """A model response contained no publishable core knowledge unit."""
+
+
+class _ModelCallLimitExceeded(RuntimeError):
+    """A source item has already consumed its two provider-call slots."""
+
+
+class _ModelBudgetExceeded(RuntimeError):
+    """A provider call would exceed its current daily or test-lifetime cap."""
+
+
+class _ModelDailyBudgetExceeded(_ModelBudgetExceeded):
+    """A provider call would exceed the configured Asia/Shanghai daily cap."""
+
+
+class _ModelAcceptanceBudgetExceeded(_ModelBudgetExceeded):
+    """A provider call would exceed the isolated test's lifetime cap."""
+
+
+class _ModelPriceUnavailable(_ModelBudgetExceeded):
+    """A paid provider call has no complete immutable price snapshot."""
+
+
+class _AcceptanceManifestRejected(RuntimeError):
+    """The opt-in acceptance Batch is outside its frozen execution scope."""
+
+
+class _ModelBudgetLockUnavailable(RuntimeError):
+    """A paid request must not proceed without the distributed budget lock."""
+
+
+class _ModelLeaseLost(RuntimeError):
+    """A redelivered worker no longer owns this model task's side effects."""
+
+
+class _ModelTaskGenerationChanged(RuntimeError):
+    """A Batch repair became stale before it could reserve a provider call."""
+
+
+class _DefiniteBatchCreateFailure(RuntimeError):
+    """The provider explicitly rejected a Batch create before accepting it."""
+
+
+_MAX_PROVIDER_CALLS_PER_DOCUMENT = 2
+_MODEL_LEASE_DURATION = timedelta(minutes=30)
+_PROVIDER_BATCH_INPUT_STATES = frozenset({"pending", "create_uncertain", "accepted"})
+_ACCEPTANCE_BATCH_STRATEGIES = frozenset({"personal_business_consultation", "zsxq_post"})
+
+
+def _validate_acceptance_manifest(task: ModelCleaningTask, batch: CleaningBatch) -> None:
+    """Fail closed before any provider side effect for the controlled Batch seam."""
+
+    if not settings.cleaning_acceptance_budget_enabled:
+        return
+    manifest = (task.result_counts or {}).get("acceptance_manifest")
+    if not isinstance(manifest, dict):
+        raise _AcceptanceManifestRejected("缺少冻结验收manifest")
+    parity = (task.result_counts or {}).get("_acceptance_parity")
+    campaign = manifest.get("campaign") or {}
+    is_parity = isinstance(parity, dict) or (
+        isinstance(campaign.get("operation_ids"), dict)
+        and bool(campaign["operation_ids"].get("batch"))
+    )
+    if task.mode == "batch" and is_parity:
+        phase = parity.get("phase") if isinstance(parity, dict) else None
+        if phase not in {
+            "batch_submitting",
+            "batch_running",
+            "batch_validated",
+            "realtime_running",
+        }:
+            raise _AcceptanceManifestRejected("验收parity阶段无效")
+    if manifest.get("task_id") != str(task.id):
+        raise _AcceptanceManifestRejected("验收manifest任务不匹配")
+    if manifest.get("strategy_code") != batch.strategy_code:
+        raise _AcceptanceManifestRejected("验收manifest策略不匹配")
+    if is_parity and batch.strategy_code not in _ACCEPTANCE_BATCH_STRATEGIES:
+        raise _AcceptanceManifestRejected("策略不在受限Batch白名单")
+    if batch.knowledge_base_code != "general" or settings.dify_course_dataset_enabled:
+        raise _AcceptanceManifestRejected("验收资源必须为general且课程库关闭")
+    if manifest.get("general_dataset_id") != settings.dify_general_dataset_id:
+        raise _AcceptanceManifestRejected("验收Dataset不匹配")
+    if manifest.get("redis_db") != 6 or manifest.get("batch_enabled") is not True:
+        raise _AcceptanceManifestRejected("验收资源或Batch开关不匹配")
+    if manifest.get("candidate_fingerprint") != task.candidate_fingerprint:
+        raise _AcceptanceManifestRejected("验收候选快照已变化")
+    if not isinstance(campaign, dict) or campaign.get("sealed") is not True:
+        raise _AcceptanceManifestRejected("付费验收campaign未封存")
+    operation_ids = campaign.get("operation_ids")
+    if isinstance(operation_ids, dict):
+        declared_operation_ids = [
+            str(value)
+            for value in operation_ids.values()
+            for value in (value if isinstance(value, list) else [value])
+            if str(value)
+        ]
+    else:
+        declared_operation_ids = [str(campaign.get("operation_id") or "")]
+    if not declared_operation_ids or any(
+        not re.fullmatch(r"[0-9a-f]{64}", value) for value in declared_operation_ids
+    ):
+        raise _AcceptanceManifestRejected("验收模型operation ID无效")
+    source_ids = manifest.get("source_document_ids")
+    candidate_ids = (task.result_counts or {}).get("provider_candidate_document_ids")
+    if not isinstance(source_ids, list) or source_ids != candidate_ids:
+        raise _AcceptanceManifestRejected("验收来源集合不匹配")
+
+
+def _require_acceptance_release_receipt(task: ModelCleaningTask, batch: CleaningBatch) -> None:
+    """Publication must be released by the same task after both transports pass."""
+
+    has_manifest = isinstance((task.result_counts or {}).get("acceptance_manifest"), dict)
+    if not settings.cleaning_acceptance_budget_enabled and not has_manifest:
+        return
+    if not has_manifest:
+        return
+    manifest = (task.result_counts or {}).get("acceptance_manifest") or {}
+    campaign = manifest.get("campaign") or {}
+    parity = (task.result_counts or {}).get("_acceptance_parity")
+    is_parity = isinstance(parity, dict) or (
+        isinstance(campaign.get("operation_ids"), dict)
+        and bool(campaign["operation_ids"].get("batch"))
+    )
+    if not is_parity and settings.cleaning_acceptance_budget_enabled:
+        return
+    if not is_parity:
+        if batch.strategy_code not in _ACCEPTANCE_BATCH_STRATEGIES:
+            raise _AcceptanceManifestRejected("发布receipt策略不在验收白名单")
+    if batch.strategy_code not in _ACCEPTANCE_BATCH_STRATEGIES:
+        raise _AcceptanceManifestRejected("发布receipt策略不在验收白名单")
+    receipt = (task.result_counts or {}).get("acceptance_release_receipt")
+    if not isinstance(receipt, dict) or receipt.get("status") != "approved":
+        raise _AcceptanceManifestRejected("receipt missing: 双路验收未完成，禁止完成模型任务或发布")
+    if receipt.get("task_id") != str(task.id):
+        raise _AcceptanceManifestRejected("发布receipt任务不匹配")
+    expected_manifest_sha = hashlib.sha256(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    if receipt.get("manifest_sha256") != expected_manifest_sha:
+        raise _AcceptanceManifestRejected("发布receipt manifest已变化")
+    if receipt.get("candidate_fingerprint") != task.candidate_fingerprint:
+        raise _AcceptanceManifestRejected("发布receipt候选快照已变化")
+    if receipt.get("prompt_version") != task.prompt_version:
+        raise _AcceptanceManifestRejected("发布receipt prompt版本已变化")
+    reservations = (task.result_counts or {}).get("_provider_budget_reservations") or []
+    expected_batch_calls = sorted(
+        str(entry.get("call_id"))
+        for entry in reservations
+        if entry.get("transport_mode") == "batch"
+    )
+    expected_realtime_calls = sorted(
+        str(entry.get("call_id"))
+        for entry in reservations
+        if entry.get("transport_mode") == "realtime"
+    )
+    if (
+        receipt.get("batch_call_ids") != expected_batch_calls
+        or receipt.get("realtime_call_ids") != expected_realtime_calls
+    ):
+        raise _AcceptanceManifestRejected("发布receipt调用账本已变化")
+    if receipt.get("canonical_transport") != "realtime":
+        raise _AcceptanceManifestRejected("Realtime必须是唯一canonical")
+    if receipt.get("batch_qualified") is not True or receipt.get("realtime_qualified") is not True:
+        raise _AcceptanceManifestRejected("双路验收未分别合格")
+    if receipt.get("semantic_equivalent") is not True:
+        manual = (task.result_counts or {}).get("acceptance_manual_review")
+        if not isinstance(manual, dict) or manual.get("decision") != "approved":
+            raise _AcceptanceManifestRejected("双路语义未确认一致")
+        if not str(manual.get("reviewer") or "").strip():
+            raise _AcceptanceManifestRejected("人工裁决缺少reviewer")
+        if not str(manual.get("evidence_fingerprint") or "").strip():
+            raise _AcceptanceManifestRejected("人工裁决缺少证据指纹")
+        expected_evidence = hashlib.sha256(
+            json.dumps(
+                {
+                    "manifest": manifest,
+                    "batch": receipt.get("batch_projection_digests"),
+                    "realtime": receipt.get("realtime_projection_digests"),
+                    "candidate": task.candidate_fingerprint,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        if manual["evidence_fingerprint"] != expected_evidence:
+            raise _AcceptanceManifestRejected("人工裁决证据指纹不匹配")
+
+
+def _provider_batch_input_states(task: ModelCleaningTask) -> dict[str, dict[str, Any]]:
+    """Return validated, exact JSONL ownership and create state by input ID."""
+
+    raw = (task.result_counts or {}).get("provider_batch_input_states")
+    if not isinstance(raw, dict):
+        return {}
+    states: dict[str, dict[str, Any]] = {}
+    for raw_input_id, raw_state in raw.items():
+        input_id = str(raw_input_id or "").strip()
+        if not input_id or not isinstance(raw_state, dict):
+            continue
+        state = str(raw_state.get("state") or "").strip()
+        if state not in _PROVIDER_BATCH_INPUT_STATES:
+            continue
+        states[input_id] = {
+            "state": state,
+            "batch_id": str(raw_state.get("batch_id") or ""),
+            "document_ids": sorted(
+                {
+                    str(document_id)
+                    for document_id in raw_state.get("document_ids", [])
+                    if document_id
+                }
+            ),
+            "reservation_call_ids": sorted(
+                {str(call_id) for call_id in raw_state.get("reservation_call_ids", []) if call_id}
+            ),
+        }
+    return states
+
+
+def _set_provider_batch_input_state(
+    task: ModelCleaningTask,
+    input_id: str,
+    *,
+    state: str,
+    document_ids: Iterable[str] = (),
+    reservation_call_ids: Iterable[str] = (),
+    batch_id: str = "",
+) -> None:
+    """Persist one JSONL input's exact owner and remote-create certainty."""
+
+    if state not in _PROVIDER_BATCH_INPUT_STATES:
+        raise ValueError("非法的Batch输入状态")
+    normalized_input_id = str(input_id or "").strip()
+    if not normalized_input_id:
+        raise ValueError("Batch输入ID不能为空")
+    states = _provider_batch_input_states(task)
+    prior = states.get(normalized_input_id, {})
+    states[normalized_input_id] = {
+        "state": state,
+        "batch_id": str(batch_id or prior.get("batch_id") or ""),
+        "document_ids": sorted(
+            {
+                str(document_id)
+                for document_id in (document_ids or prior.get("document_ids", []))
+                if document_id
+            }
+        ),
+        "reservation_call_ids": sorted(
+            {
+                str(call_id)
+                for call_id in (reservation_call_ids or prior.get("reservation_call_ids", []))
+                if call_id
+            }
+        ),
+    }
+    counts = dict(task.result_counts or {})
+    counts["provider_batch_input_states"] = states
+    task.result_counts = counts
+
+
+def _remove_provider_batch_input_state(task: ModelCleaningTask, input_id: str) -> None:
+    """Forget an input only after a proved no-create rollback or file cleanup."""
+
+    states = _provider_batch_input_states(task)
+    states.pop(str(input_id), None)
+    counts = dict(task.result_counts or {})
+    if states:
+        counts["provider_batch_input_states"] = states
+    else:
+        counts.pop("provider_batch_input_states", None)
+    task.result_counts = counts
+
+
+def _release_uncreated_batch_input_reservation(
+    session,
+    task: ModelCleaningTask,
+    input_id: str,
+) -> bool:
+    """Atomically return one proved-uncreated input's attempts and reservation."""
+
+    state = _provider_batch_input_states(task).get(str(input_id))
+    if state is None or state["state"] not in {"pending", "create_uncertain"}:
+        return False
+    call_ids = set(state["reservation_call_ids"])
+    document_ids = set(state["document_ids"])
+    entries = list((task.result_counts or {}).get("_provider_budget_reservations") or [])
+    released = [
+        entry
+        for entry in entries
+        if isinstance(entry, dict) and str(entry.get("call_id") or "") in call_ids
+    ]
+    if call_ids and len(released) != len(call_ids):
+        raise _ModelCallLimitExceeded("Batch输入预留账本不完整，拒绝自动回退")
+    remaining = [
+        entry
+        for entry in entries
+        if not (isinstance(entry, dict) and str(entry.get("call_id") or "") in call_ids)
+    ]
+    counts = dict(task.result_counts or {})
+    counts["_provider_budget_reservations"] = remaining
+    task.result_counts = counts
+    released_by_document: dict[str, int] = {}
+    for entry in released:
+        document_id = str(entry.get("document_id") or "")
+        released_by_document[document_id] = released_by_document.get(document_id, 0) + 1
+    for document_id in sorted(document_ids):
+        document = session.get(CleaningDocument, document_id)
+        if document is None:
+            raise _ModelCallLimitExceeded("Batch输入所有者不存在，拒绝自动回退")
+        decrement = released_by_document.get(document_id, 0)
+        audit = dict(document.audit_json or {})
+        attempts = audit.get("model_attempts")
+        if decrement and (not isinstance(attempts, int) or attempts < decrement):
+            raise _ModelCallLimitExceeded("Batch输入调用次数不一致，拒绝自动回退")
+        if decrement:
+            audit["model_attempts"] = attempts - decrement
+            document.audit_json = audit
+    _remove_provider_batch_input_state(task, input_id)
+    task.provider_input_file_ids = sorted(
+        file_id for file_id in (task.provider_input_file_ids or []) if str(file_id) != str(input_id)
+    )
+    return True
+
+
+def _is_definite_batch_create_failure(exc: Exception) -> bool:
+    """Only an explicit non-transient Provider rejection proves no create occurred."""
+
+    if not isinstance(exc, httpx.HTTPStatusError) or exc.response is None:
+        return False
+    return 400 <= exc.response.status_code < 500 and exc.response.status_code not in {408, 429}
+
+
+def _ensure_create_uncertain_input_outbox(session, task: ModelCleaningTask) -> None:
+    """Give every unknown create input one durable, fail-closed cleanup owner."""
+
+    for input_id, input_state in _provider_batch_input_states(task).items():
+        if input_state["state"] != "create_uncertain":
+            continue
+        existing = session.scalar(
+            select(ExternalDeletionTask)
+            .where(
+                ExternalDeletionTask.kind == "bailian_file",
+                ExternalDeletionTask.external_id == input_id,
+            )
+            .limit(1)
+        )
+        if existing is None:
+            session.add(
+                ExternalDeletionTask(
+                    kind="bailian_file",
+                    external_id=input_id,
+                    payload={
+                        "model_task_id": task.id,
+                        "batch_id": str(input_state.get("batch_id") or ""),
+                        "category": "input",
+                        "state": "manual_intervention_required",
+                        "reason": "batch_create_result_unknown",
+                    },
+                    attempts=0,
+                    last_error="Batch create 结果不确定；禁止自动删除或重新提交",
+                )
+            )
+
+
+def _assert_active_model_lease(session, task_id: str, lease_token: str) -> ModelCleaningTask:
+    """Fence realtime writes behind the currently held task lease."""
+
+    task = session.scalar(
+        select(ModelCleaningTask).where(ModelCleaningTask.id == task_id).with_for_update()
+    )
+    if task is None:
+        raise _ModelLeaseLost("模型任务已不存在")
+    session.refresh(task)
+    now = datetime.now(timezone.utc)
+    expires_at = task.lease_expires_at
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if (
+        task.status != "running"
+        or task.lease_token != lease_token
+        or expires_at is None
+        or expires_at <= now
+    ):
+        raise _ModelLeaseLost("模型任务 lease 已失效，停止旧 Worker 副作用")
+    return task
+
+
+def _renew_active_model_lease(
+    session,
+    task_id: str,
+    lease_token: str,
+) -> ModelCleaningTask:
+    """Renew only the current Worker lease before an external side effect."""
+
+    task = _assert_active_model_lease(session, task_id, lease_token)
+    task.lease_expires_at = datetime.now(timezone.utc) + _MODEL_LEASE_DURATION
+    session.flush()
+    return task
+
+
+def _raise_if_model_lease_lost(exc: Exception) -> None:
+    """Keep fencing failures out of semantic-repair/fallback error handling."""
+
+    if isinstance(exc, _ModelLeaseLost):
+        raise exc
+
+
 def _normalized_publication_digest(markdown: str) -> str:
     from ...cleaning import normalized_publication_content_sha256
 
@@ -98,6 +543,84 @@ def _existing_shard_publication_digest(shard: DifyPublicationShard) -> str:
     if shard.markdown:
         return _normalized_publication_digest(shard.markdown)
     return ""
+
+
+def _shard_remote_is_live(
+    session,
+    *,
+    client: Any,
+    shard: DifyPublicationShard,
+) -> bool:
+    """Verify one precise historical shard before reusing it.
+
+    A local ``succeeded`` shard is only provenance.  Reuse requires the exact
+    remote ID, completed/enabled state, controlled metadata and the persisted
+    parent/child content witness.  Known remote invalidation permits a precise
+    replacement; read uncertainty remains retryable and must not blind-write.
+    """
+
+    from ...cleaning import STRATEGY_REGISTRY
+    from .cleaning import (
+        RemoteDuplicateVerificationError,
+        _project_dify_metadata,
+        _remote_metadata_value,
+    )
+
+    document_id = str(shard.dify_document_id or "").strip()
+    if not document_id:
+        return False
+    try:
+        remote = client.get_document(document_id)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            shard.remote_deleted_at = utcnow()
+            session.flush()
+            return False
+        raise RemoteDuplicateVerificationError("Dify分片重复成果读取失败") from exc
+    except Exception as exc:
+        raise RemoteDuplicateVerificationError("Dify分片重复成果读取未确认") from exc
+    if not isinstance(remote, dict):
+        raise RemoteDuplicateVerificationError("Dify分片重复成果响应格式无效")
+    remote_id = str(remote.get("id") or remote.get("document_id") or "").strip()
+    if remote_id and remote_id != document_id:
+        return False
+    expected_digest = str((shard.metadata_json or {}).get("publication_content_sha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_digest) or expected_digest != str(
+        shard.content_sha256 or ""
+    ):
+        return False
+    if _remote_metadata_value(remote, "publication_content_sha256") != expected_digest:
+        return False
+    indexing_status = str(remote.get("indexing_status") or "").strip().lower()
+    if (
+        indexing_status != "completed"
+        or remote.get("enabled") is False
+        or remote.get("is_enabled") is False
+    ):
+        return False
+    expected_witness = str(
+        (shard.metadata_json or {}).get("remote_content_witness_sha256") or ""
+    ).strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_witness):
+        return False
+    try:
+        actual_witness = str(client.document_content_witness(document_id)).strip()
+    except Exception as exc:
+        raise RemoteDuplicateVerificationError("Dify分片重复成果正文见证未确认") from exc
+    if actual_witness != expected_witness:
+        return False
+    strategy = STRATEGY_REGISTRY.get(shard.file.batch.strategy_code)
+    expected_metadata = _project_dify_metadata(dict(shard.metadata_json or {}), strategy=strategy)
+    try:
+        client.verify_document_metadata(document_id, expected_metadata)
+    except Exception as exc:
+        # This client message is emitted after a successful read proves a
+        # controlled metadata mismatch. It is remote invalidation, rather than
+        # a transport uncertainty, and permits a precise replacement.
+        if "Dify metadata 回读不一致" in str(exc):
+            return False
+        raise RemoteDuplicateVerificationError("Dify分片重复成果元数据未确认") from exc
+    return True
 
 
 def _source_fallback_enabled(document: CleaningDocument, strategy_code: str) -> bool:
@@ -114,6 +637,11 @@ def _model_requires_source_fallback(
     strategy_code: str,
 ) -> bool:
     if document.status == "excluded":
+        return False
+    # Content-model failures are terminal/retryable states only.  The new
+    # tolerance contract never turns an untrusted source Markdown snapshot
+    # into a review publication candidate.
+    if strategy_code in CONTENT_MODEL_STRATEGIES:
         return False
     if document.status in {"failed", "review_required"}:
         return True
@@ -145,6 +673,10 @@ def _apply_source_markdown_fallback(
         document,
         strategy_code,
     ):
+        audit = dict(document.audit_json or {})
+        audit.pop("_model_review_payload", None)
+        audit.pop("_model_review_request", None)
+        document.audit_json = audit
         document.__dict__.pop("_model_review_payload_for_artifact", None)
         document.__dict__.pop("_model_review_request_for_artifact", None)
         return False
@@ -392,7 +924,7 @@ def _iter_realtime_document_pages(
             .join(CleaningFile, CleaningDocument.file_id == CleaningFile.id)
             .where(
                 CleaningFile.batch_id == batch_id,
-                CleaningDocument.status.in_(("awaiting_model", "model_processing")),
+                CleaningDocument.status == "awaiting_model",
                 CleaningDocument.id > last_id,
             )
             .order_by(CleaningDocument.id)
@@ -430,14 +962,726 @@ def _estimated_tokens(request: PromptRequest) -> int:
     return max(1, (total_chars + 1) // 2)
 
 
-def _realtime_chat(
-    client: BailianClient,
+def _estimated_provider_input_tokens(request: PromptRequest, *, repair_hint: str = "") -> int:
+    """Return a provider-agnostic upper bound for the complete prompt.
+
+    UTF-8 bytes bound byte-pair/tokenizer input from above, unlike character
+    counts for Chinese.  A small per-message envelope also reserves provider
+    chat framing that is not present in the visible content string.
+    """
+
+    messages = build_prompt_messages(request, repair_hint=repair_hint)
+    total_bytes = sum(
+        len(str(message.get("content") or "").encode("utf-8")) + 16 for message in messages
+    )
+    return max(1, total_bytes)
+
+
+def _provider_budget_entries(task: ModelCleaningTask) -> list[tuple[str, Decimal]]:
+    """Read the effective cost for individually durable provider calls."""
+
+    raw_entries = (task.result_counts or {}).get("_provider_budget_reservations")
+    entries: list[tuple[str, Decimal]] = []
+    if not isinstance(raw_entries, list):
+        return entries
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            continue
+        date = str(entry.get("date") or "")
+        try:
+            cost = Decimal(str(entry.get("cost_yuan") or "0"))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) and cost.is_finite() and cost >= 0:
+            entries.append((date, cost))
+    return entries
+
+
+def _provider_budget_ledger_is_corrupt(
+    task: ModelCleaningTask,
+    *,
+    valid_document_ids: set[str] | None = None,
+) -> bool:
+    """Reject incomplete call accounting instead of silently undercounting it.
+
+    Pre-call ledger entries did not have an id or an immutable pricing
+    snapshot.  They cannot be reconciled to an exact provider response, so
+    they deliberately fail closed rather than being silently upgraded in
+    place.  New reservations carry every field needed to settle one realtime
+    response without touching historical task data.
+    """
+
+    raw_entries = (task.result_counts or {}).get("_provider_budget_reservations")
+    if not isinstance(raw_entries, list):
+        return False
+    seen_call_ids: set[str] = set()
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            return True
+        call_id = str(entry.get("call_id") or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", call_id) or call_id in seen_call_ids:
+            return True
+        seen_call_ids.add(call_id)
+        date = str(entry.get("date") or "")
+        try:
+            cost = Decimal(str(entry.get("cost_yuan") or ""))
+            reserved_cost = Decimal(str(entry.get("reserved_cost_yuan") or ""))
+        except (InvalidOperation, TypeError, ValueError):
+            return True
+        if (
+            not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date)
+            or not cost.is_finite()
+            or cost < 0
+            or not reserved_cost.is_finite()
+            or reserved_cost < 0
+            or not str(entry.get("document_id") or "")
+            or str(entry.get("transport_mode") or "") not in {"realtime", "batch"}
+        ):
+            return True
+        if valid_document_ids is not None and str(entry["document_id"]) not in valid_document_ids:
+            return True
+        actual_cost = entry.get("actual_cost_yuan")
+        if actual_cost is not None:
+            try:
+                actual_cost_decimal = Decimal(str(actual_cost))
+            except (InvalidOperation, TypeError, ValueError):
+                return True
+            if not actual_cost_decimal.is_finite() or actual_cost_decimal < 0:
+                return True
+            if cost != actual_cost_decimal:
+                return True
+        for price_key in (
+            "input_price_per_million",
+            "output_price_per_million",
+            "price_discount",
+        ):
+            try:
+                price = Decimal(str(entry.get(price_key) or ""))
+            except (InvalidOperation, TypeError, ValueError):
+                return True
+            if not price.is_finite() or price < 0:
+                return True
+    return False
+
+
+def merge_result_counts_preserving_provider_ledger(
+    task: ModelCleaningTask, result_counts: dict[str, Any]
+) -> dict[str, Any]:
+    """Apply result-count changes without discarding durable task state.
+
+    ``result_counts`` predates provider accounting and is still used for
+    display counters in several task transitions.  Keep the ledger in one
+    place so a successful completion, a repair round, or an exact retry
+    cannot silently recreate budget headroom.
+    """
+
+    # ``result_counts`` is also the only durable home for the immutable
+    # candidate snapshot, Batch generation fencing and exact per-Batch owner
+    # maps.  A reservation is a patch to that state, not a replacement for
+    # it: replacing it used to erase those fields immediately before a remote
+    # request, which made a redelivery capable of reopening an old approval.
+    merged = dict(task.result_counts or {})
+    merged.update(result_counts)
+    # A caller that has just appended or settled an entry supplies the new
+    # ledger explicitly.  Do not replace it with the prior task snapshot:
+    # doing so loses a retry reservation after its provider request was
+    # already admitted.
+    if "_provider_budget_reservations" in merged:
+        return merged
+    reservations = (task.result_counts or {}).get("_provider_budget_reservations")
+    if isinstance(reservations, list):
+        merged["_provider_budget_reservations"] = list(reservations)
+    return merged
+
+
+def _claim_sealed_acceptance_operation(
+    task: ModelCleaningTask, transport_mode: str, document: CleaningDocument | None = None
+) -> None:
+    """Durably claim the sealed campaign before reserving any provider call."""
+    manifest = (task.result_counts or {}).get("acceptance_manifest")
+    if not isinstance(manifest, dict):
+        if settings.cleaning_acceptance_budget_enabled:
+            raise _AcceptanceManifestRejected("缺少冻结验收manifest")
+        return
+    campaign = manifest.get("campaign") or {}
+    operation_ids = campaign.get("operation_ids")
+    raw_operation_ids = (
+        operation_ids.get(transport_mode)
+        if isinstance(operation_ids, dict)
+        else campaign.get("operation_id")
+    )
+    selected_operation_ids = (
+        [str(value) for value in raw_operation_ids if str(value)]
+        if isinstance(raw_operation_ids, list)
+        else [str(raw_operation_ids or "")]
+    )
+    if document is not None and len(selected_operation_ids) > 1:
+        candidate_ids = (task.result_counts or {}).get("provider_candidate_document_ids") or []
+        document_id = str((document.metadata_json or {}).get("source_document_id") or document.id)
+        try:
+            selected_operation_ids = [
+                selected_operation_ids[list(map(str, candidate_ids)).index(document_id)]
+            ]
+        except ValueError as exc:
+            raise _AcceptanceManifestRejected("当前文档不属于验收operation映射") from exc
+    if not selected_operation_ids or any(
+        not re.fullmatch(r"[0-9a-f]{64}", value) for value in selected_operation_ids
+    ):
+        raise _AcceptanceManifestRejected("验收模型operation ID无效")
+    ledger_path = str(settings.acceptance_campaign_ledger_path)
+    requested_ledger_path = str(campaign.get("ledger_path") or "")
+    manifest_sha = str(campaign.get("manifest_sha256") or "")
+    claims = dict((task.result_counts or {}).get("acceptance_campaign_claims") or {})
+    prior = claims.get(transport_mode)
+    prior_ids = (
+        [str(value) for value in prior]
+        if isinstance(prior, list)
+        else ([str(prior)] if prior else [])
+    )
+    if (
+        prior_ids
+        and any(value not in selected_operation_ids for value in prior_ids)
+        and document is None
+    ):
+        raise _AcceptanceManifestRejected("验收campaign operation claim不一致")
+    if requested_ledger_path != ledger_path or not re.fullmatch(r"[0-9a-f]{64}", manifest_sha):
+        raise _AcceptanceManifestRejected("验收campaign缺少共享账本指纹")
+    try:
+        ledger_payload = json.loads(Path(ledger_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise _AcceptanceManifestRejected("共享验收campaign账本不可读") from exc
+    if ledger_payload.get("campaign_manifest_sha256") != manifest_sha:
+        raise _AcceptanceManifestRejected("共享验收campaign manifest指纹不匹配")
+    ledger = AcceptanceCampaignLedger(
+        ledger_path,
+        max_yuan=settings.acceptance_cleaning_budget_max_yuan,
+        daily_max_yuan=settings.cleaning_daily_budget_yuan,
+    )
+    expected_kind = f"model_{transport_mode}"
+    for operation_id in selected_operation_ids:
+        try:
+            planned_operation = ledger.get_operation(operation_id)
+        except Exception as exc:
+            raise _AcceptanceManifestRejected("共享验收campaign operation不可读取") from exc
+        if planned_operation.get("operation_kind") != expected_kind:
+            raise _AcceptanceManifestRejected("共享验收campaign operation类型与transport不匹配")
+        try:
+            ledger_entry = ledger.claim(operation_id)
+        except Exception as exc:
+            raise _AcceptanceManifestRejected("共享验收campaign operation不可claim") from exc
+        if ledger_entry.get("state") == "settled":
+            raise _AcceptanceManifestRejected(
+                "共享验收campaign operation已结算，禁止重复provider调用"
+            )
+        if ledger_entry.get("operation_kind") != expected_kind:
+            raise _AcceptanceManifestRejected("共享验收campaign operation类型与transport不匹配")
+    claimed_ids = list(dict.fromkeys(prior_ids + selected_operation_ids))
+    claims[transport_mode] = claimed_ids if len(claimed_ids) > 1 else claimed_ids[0]
+    counts = dict(task.result_counts or {})
+    counts["acceptance_campaign_claims"] = claims
+    task.result_counts = merge_result_counts_preserving_provider_ledger(task, counts)
+
+
+def model_attempt_count_for_document(
+    document: CleaningDocument,
+    task: ModelCleaningTask,
+    *,
+    valid_document_ids: set[str] | None = None,
+) -> int:
+    """Return a durable attempt count or fail closed for ambiguous history."""
+
+    audit = dict(document.audit_json or {})
+    raw_attempts = audit.get("model_attempts")
+    reservations = (task.result_counts or {}).get("_provider_budget_reservations")
+    document_reservations: list[dict[str, Any]] = []
+    if _provider_budget_ledger_is_corrupt(task, valid_document_ids=valid_document_ids):
+        raise _ModelCallLimitExceeded("模型调用账本损坏，拒绝自动重试")
+    if isinstance(reservations, list):
+        for entry in reservations:
+            if not isinstance(entry, dict):
+                continue
+            entry_document_id = str(entry.get("document_id") or "")
+            if entry_document_id == str(document.id):
+                document_reservations.append(entry)
+
+    if raw_attempts is None:
+        # A new task explicitly seeds zero.  A missing historical value may
+        # only be reconstructed from document-specific durable reservations.
+        if not document_reservations:
+            raise _ModelCallLimitExceeded("模型调用次数记录不完整，拒绝自动重试")
+        attempted = len(document_reservations)
+    elif isinstance(raw_attempts, bool) or not isinstance(raw_attempts, int):
+        raise _ModelCallLimitExceeded("模型调用次数记录无效，拒绝自动重试")
+    else:
+        attempted = raw_attempts
+
+    if attempted < 0 or attempted > _MAX_PROVIDER_CALLS_PER_DOCUMENT:
+        raise _ModelCallLimitExceeded("模型调用次数记录超出允许范围，拒绝自动重试")
+    if len(document_reservations) != attempted:
+        raise _ModelCallLimitExceeded("模型调用账本与次数记录冲突，拒绝自动重试")
+    return attempted
+
+
+def _task_provider_ledger_is_consistent(
+    session,
+    task: ModelCleaningTask,
+    *,
+    valid_document_ids: set[str],
+) -> bool:
+    """Require every task-batch document to reconcile to this task's ledger."""
+
+    if _provider_budget_ledger_is_corrupt(task, valid_document_ids=valid_document_ids):
+        return False
+    candidate_ids = _provider_candidate_document_ids(
+        session,
+        task,
+        valid_document_ids=valid_document_ids,
+    )
+    if candidate_ids is None:
+        return False
+    documents = list(
+        session.scalars(select(CleaningDocument).where(CleaningDocument.id.in_(candidate_ids)))
+    )
+    if {str(document.id) for document in documents} != candidate_ids:
+        return False
+    try:
+        for candidate in documents:
+            model_attempt_count_for_document(
+                candidate,
+                task,
+                valid_document_ids=valid_document_ids,
+            )
+    except _ModelCallLimitExceeded:
+        return False
+    return True
+
+
+def _is_derived_model_document(document: CleaningDocument) -> bool:
+    """Whether a row is a local projection, never a Provider candidate."""
+
+    metadata = document.metadata_json or {}
+    audit = document.audit_json or {}
+    key = str(document.document_key or "")
+    return bool(
+        metadata.get("record_type") == "methodology"
+        or audit.get("methodology_candidate")
+        or ":case:" in key
+        or ":unit:" in key
+        or ":methodology:" in key
+    )
+
+
+def _provider_candidate_document_ids(
+    session,
+    task: ModelCleaningTask,
+    *,
+    valid_document_ids: set[str],
+) -> set[str] | None:
+    """Load the task's immutable source-candidate set.
+
+    New plans persist IDs before any Provider call.  Legacy rows have no
+    snapshot, so derive the narrowest safe compatibility set by excluding
+    explicit local case/unit/methodology projections; those rows must never be
+    interpreted as a missing provider attempt.
+    """
+
+    snapshot = (task.result_counts or {}).get("provider_candidate_document_ids")
+    if isinstance(snapshot, list):
+        ids = [str(value) for value in snapshot if isinstance(value, str) and value]
+        if len(ids) != len(snapshot) or len(ids) != len(set(ids)):
+            return None
+        if len(ids) != int(task.candidate_count or 0) or not set(ids) <= valid_document_ids:
+            return None
+        return set(ids)
+    candidates = [
+        document
+        for document in session.scalars(
+            select(CleaningDocument)
+            .join(CleaningFile)
+            .where(CleaningFile.batch_id == task.batch_id)
+        )
+        if not _is_derived_model_document(document)
+    ]
+    ids = {str(document.id) for document in candidates}
+    if len(ids) != int(task.candidate_count or 0) or not ids <= valid_document_ids:
+        return None
+    return ids
+
+
+def _task_has_legacy_provider_reservation(task: ModelCleaningTask) -> bool:
+    """Conservatively retain pre-ledger task cost without mutating history."""
+
+    if _provider_budget_entries(task):
+        return False
+    usage = task.actual_usage or {}
+    if any(int(usage.get(key) or 0) > 0 for key in ("input_tokens", "output_tokens")):
+        return True
+    # An acknowledged input upload is deliberately persisted before the first
+    # remote ``create_batch`` call.  It is not evidence of a billable provider
+    # request, so ``batch_uploading`` alone must not turn a current submit into
+    # a legacy, ledger-missing task.  A remote Batch ID is the durable proof
+    # for that transitional state.
+    if task.status in {"batch_running", "validating", "completed", "failed"}:
+        return True
+    return task.status in {"batch_uploading", "cancelled"} and bool(get_provider_batch_ids(task))
+
+
+def _provider_call_cost(
+    task: ModelCleaningTask,
+    request: PromptRequest,
+    *,
+    repair_hint: str = "",
+    transport_mode: str | None = None,
+) -> Decimal:
+    """Reserve the capped upper cost for this one provider request."""
+
+    mode = transport_mode or task.mode
+    if settings.cleaning_acceptance_budget_enabled:
+        _require_price_snapshot(mode)
+    _, _, _, input_price, output_price, discount = _price_snapshot(mode)
+    input_tokens = _estimated_provider_input_tokens(request, repair_hint=repair_hint)
+    return (
+        (
+            Decimal(input_tokens) * Decimal(str(input_price))
+            + Decimal(settings.cleaning_model_max_tokens) * Decimal(str(output_price))
+        )
+        / Decimal("1000000")
+        * Decimal(str(discount))
+    )
+
+
+def _provider_actual_call_cost(entry: dict[str, Any], item_usage: dict[str, Any]) -> Decimal | None:
+    """Price one returned realtime response with its reservation snapshot.
+
+    A missing or malformed provider usage record is not interpreted as zero:
+    the reservation remains outstanding and continues to protect the budget.
+    """
+
+    try:
+        input_tokens = int(item_usage.get("input_tokens"))
+        output_tokens = int(item_usage.get("output_tokens"))
+        input_price = Decimal(str(entry["input_price_per_million"]))
+        output_price = Decimal(str(entry["output_price_per_million"]))
+        discount = Decimal(str(entry["price_discount"]))
+    except (AttributeError, KeyError, TypeError, ValueError, InvalidOperation):
+        return None
+    if (
+        input_tokens < 0
+        or output_tokens < 0
+        or (input_tokens == 0 and output_tokens == 0)
+        or not input_price.is_finite()
+        or not output_price.is_finite()
+        or not discount.is_finite()
+        or input_price < 0
+        or output_price < 0
+        or discount < 0
+    ):
+        return None
+    return (
+        (Decimal(input_tokens) * input_price + Decimal(output_tokens) * output_price)
+        / Decimal("1000000")
+        * discount
+    )
+
+
+def _reserve_provider_call(
+    session,
+    task: ModelCleaningTask,
+    document: CleaningDocument,
+    request: PromptRequest,
+    *,
+    repair_hint: str = "",
+    transport_mode: str | None = None,
+    lease_token: str | None = None,
+    expected_task_status: str | None = None,
+    expected_batch_generation: int | None = None,
+) -> str:
+    """Atomically reserve one document slot and its actual-call-day budget.
+
+    The task-level planning estimate is only an admission check.  Each real
+    provider call records its own durable reservation immediately before
+    transport, so a cross-midnight retry, cancellation or worker redelivery
+    cannot borrow an earlier day's budget or silently create a third call.
+    """
+
+    from zoneinfo import ZoneInfo
+
+    day = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    with cache.lock(f"ai:model-cleaning-daily-budget:{day}", ttl=180) as lock_state:
+        if not lock_state or not lock_state.available or not lock_state.acquired:
+            raise _ModelBudgetLockUnavailable("模型预算锁不可用，未发起模型调用")
+        locked_task = session.scalar(
+            select(ModelCleaningTask).where(ModelCleaningTask.id == task.id).with_for_update()
+        )
+        locked_document = session.scalar(
+            select(CleaningDocument).where(CleaningDocument.id == document.id).with_for_update()
+        )
+        if locked_task is None or locked_document is None:
+            raise ValueError("模型调用目标不存在")
+        if expected_task_status is not None:
+            generation = int(
+                (locked_task.result_counts or {}).get("provider_batch_generation") or 0
+            )
+            if (
+                locked_task.status != expected_task_status
+                or generation != expected_batch_generation
+            ):
+                raise _ModelTaskGenerationChanged("Batch修复任务已取消或已更新，未发起模型调用")
+        if lease_token is not None:
+            session.refresh(locked_task)
+            now = datetime.now(timezone.utc)
+            expires_at = locked_task.lease_expires_at
+            if expires_at is not None and expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if (
+                locked_task.status != "running"
+                or locked_task.lease_token != lease_token
+                or expires_at is None
+                or expires_at <= now
+            ):
+                raise _ModelLeaseLost("模型任务 lease 已失效，未发起模型调用")
+        valid_document_ids = set(
+            session.scalars(
+                select(CleaningDocument.id)
+                .join(CleaningFile)
+                .where(CleaningFile.batch_id == locked_task.batch_id)
+            )
+        )
+        if str(locked_document.id) not in valid_document_ids:
+            raise _ModelCallLimitExceeded("模型调用条目不属于当前任务批次，拒绝自动调用")
+        candidate_ids = _provider_candidate_document_ids(
+            session,
+            locked_task,
+            valid_document_ids=valid_document_ids,
+        )
+        if candidate_ids is None or str(locked_document.id) not in candidate_ids:
+            raise _ModelCallLimitExceeded("模型调用条目不属于不可变候选集，拒绝自动调用")
+        if not _task_provider_ledger_is_consistent(
+            session,
+            locked_task,
+            valid_document_ids=valid_document_ids,
+        ):
+            raise _ModelCallLimitExceeded("模型调用账本与任务条目不一致，拒绝自动调用")
+        audit = dict(locked_document.audit_json or {})
+        attempted = model_attempt_count_for_document(
+            locked_document,
+            locked_task,
+            valid_document_ids=valid_document_ids,
+        )
+        if attempted >= _MAX_PROVIDER_CALLS_PER_DOCUMENT:
+            raise _ModelCallLimitExceeded("单个条目的模型调用已达到两次上限")
+
+        effective_transport_mode = transport_mode or locked_task.mode
+        _claim_sealed_acceptance_operation(locked_task, effective_transport_mode, locked_document)
+        (
+            _price_version,
+            _price_effective_date,
+            _price_valid_until,
+            input_price,
+            output_price,
+            discount,
+        ) = _price_snapshot(effective_transport_mode)
+        if settings.cleaning_acceptance_budget_enabled:
+            _require_price_snapshot(effective_transport_mode)
+        input_tokens = _estimated_provider_input_tokens(request, repair_hint=repair_hint)
+        call_cost = (
+            (
+                Decimal(input_tokens) * Decimal(str(input_price))
+                + Decimal(settings.cleaning_model_max_tokens) * Decimal(str(output_price))
+            )
+            / Decimal("1000000")
+            * Decimal(str(discount))
+        )
+        daily_budget = Decimal(str(settings.cleaning_daily_budget_yuan))
+        if _daily_model_reserved_cost(session) + call_cost > daily_budget:
+            raise _ModelDailyBudgetExceeded("模型调用会超过当日预算")
+        if settings.cleaning_acceptance_budget_enabled:
+            lifetime_budget = Decimal(str(settings.acceptance_cleaning_budget_max_yuan))
+            if _cumulative_model_reserved_cost(session) + call_cost > lifetime_budget:
+                raise _ModelAcceptanceBudgetExceeded("模型调用会超过隔离测试累计预算")
+
+        entries = list((locked_task.result_counts or {}).get("_provider_budget_reservations") or [])
+        call_id = uuid.uuid4().hex
+        entries.append(
+            {
+                "call_id": call_id,
+                "date": day,
+                "cost_yuan": f"{call_cost:.8f}",
+                "reserved_cost_yuan": f"{call_cost:.8f}",
+                "transport_mode": effective_transport_mode,
+                "document_id": str(locked_document.id),
+                "input_price_per_million": str(input_price),
+                "output_price_per_million": str(output_price),
+                "price_discount": str(discount),
+            }
+        )
+        locked_task.result_counts = merge_result_counts_preserving_provider_ledger(
+            locked_task, {"_provider_budget_reservations": entries}
+        )
+        audit["model_attempts"] = attempted + 1
+        locked_document.audit_json = audit
+        session.commit()
+        return call_id
+
+
+def _reserve_provider_calls_group(
+    session,
+    task: ModelCleaningTask,
+    candidates: list[tuple[CleaningDocument, PromptRequest]],
+    *,
+    transport_mode: str,
+    expected_task_status: str,
+    expected_batch_generation: int,
+) -> list[str]:
+    """Reserve a complete Batch admission set under one budget lock/transaction.
+
+    Unlike the realtime one-call primitive, Batch create has an all-or-nothing
+    admission boundary: every candidate is validated before the first ledger
+    or audit mutation, and costs are checked as one sum.  The reservation is
+    committed while the daily budget lock is still held, so the next lock
+    holder cannot calculate its admission against a stale daily total.  This
+    still completes before the caller issues its first remote ``create_batch``
+    side effect.
+    """
+
+    if not candidates:
+        return []
+    from zoneinfo import ZoneInfo
+
+    day = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    with cache.lock(f"ai:model-cleaning-daily-budget:{day}", ttl=180) as lock_state:
+        if not lock_state or not lock_state.available or not lock_state.acquired:
+            raise _ModelBudgetLockUnavailable("模型预算锁不可用，未发起模型调用")
+        locked_task = session.scalar(
+            select(ModelCleaningTask).where(ModelCleaningTask.id == task.id).with_for_update()
+        )
+        if locked_task is None:
+            raise ValueError("模型调用目标不存在")
+        generation = int((locked_task.result_counts or {}).get("provider_batch_generation") or 0)
+        if locked_task.status != expected_task_status or generation != expected_batch_generation:
+            raise _ModelTaskGenerationChanged("Batch任务已取消或已更新，未发起模型调用")
+        candidate_by_id = {str(document.id): request for document, request in candidates}
+        if len(candidate_by_id) != len(candidates):
+            raise _ModelCallLimitExceeded("Batch候选存在重复条目，拒绝自动调用")
+        locked_documents = {
+            str(document.id): document
+            for document in session.scalars(
+                select(CleaningDocument)
+                .where(CleaningDocument.id.in_(sorted(candidate_by_id)))
+                .order_by(CleaningDocument.id)
+                .with_for_update()
+            )
+        }
+        if set(locked_documents) != set(candidate_by_id):
+            raise ValueError("模型调用目标不存在")
+        valid_document_ids = set(
+            session.scalars(
+                select(CleaningDocument.id)
+                .join(CleaningFile)
+                .where(CleaningFile.batch_id == locked_task.batch_id)
+            )
+        )
+        candidate_ids = _provider_candidate_document_ids(
+            session,
+            locked_task,
+            valid_document_ids=valid_document_ids,
+        )
+        if candidate_ids is None or not set(candidate_by_id).issubset(candidate_ids):
+            raise _ModelCallLimitExceeded("模型调用条目不属于不可变候选集，拒绝自动调用")
+        if expected_task_status in {"batch_running", "validating"} and not isinstance(
+            (locked_task.result_counts or {}).get("_provider_budget_reservations"), list
+        ):
+            raise _ModelCallLimitExceeded("历史Batch缺少账本，拒绝自动修复")
+        if not _task_provider_ledger_is_consistent(
+            session,
+            locked_task,
+            valid_document_ids=valid_document_ids,
+        ):
+            raise _ModelCallLimitExceeded("模型调用账本与任务条目不一致，拒绝自动调用")
+        (
+            _price_version,
+            _price_effective_date,
+            _price_valid_until,
+            input_price,
+            output_price,
+            discount,
+        ) = _price_snapshot(transport_mode)
+        if settings.cleaning_acceptance_budget_enabled:
+            _require_price_snapshot(transport_mode)
+        prepared: list[tuple[CleaningDocument, int, Decimal]] = []
+        for document_id in sorted(candidate_by_id):
+            locked_document = locked_documents[document_id]
+            _claim_sealed_acceptance_operation(locked_task, transport_mode, locked_document)
+            attempted = model_attempt_count_for_document(
+                locked_document,
+                locked_task,
+                valid_document_ids=valid_document_ids,
+            )
+            if attempted >= _MAX_PROVIDER_CALLS_PER_DOCUMENT:
+                raise _ModelCallLimitExceeded("单个条目的模型调用已达到两次上限")
+            input_tokens = _estimated_provider_input_tokens(candidate_by_id[document_id])
+            call_cost = (
+                (
+                    Decimal(input_tokens) * Decimal(str(input_price))
+                    + Decimal(settings.cleaning_model_max_tokens) * Decimal(str(output_price))
+                )
+                / Decimal("1000000")
+                * Decimal(str(discount))
+            )
+            prepared.append((locked_document, attempted, call_cost))
+        group_cost = sum((cost for _document, _attempted, cost in prepared), Decimal("0"))
+        if _daily_model_reserved_cost(session) + group_cost > Decimal(
+            str(settings.cleaning_daily_budget_yuan)
+        ):
+            raise _ModelDailyBudgetExceeded("模型调用会超过当日预算")
+        if settings.cleaning_acceptance_budget_enabled and _cumulative_model_reserved_cost(
+            session
+        ) + group_cost > Decimal(str(settings.acceptance_cleaning_budget_max_yuan)):
+            raise _ModelAcceptanceBudgetExceeded("模型调用会超过隔离测试累计预算")
+        entries = list((locked_task.result_counts or {}).get("_provider_budget_reservations") or [])
+        call_ids: list[str] = []
+        for locked_document, attempted, call_cost in prepared:
+            call_id = uuid.uuid4().hex
+            call_ids.append(call_id)
+            entries.append(
+                {
+                    "call_id": call_id,
+                    "date": day,
+                    "cost_yuan": f"{call_cost:.8f}",
+                    "reserved_cost_yuan": f"{call_cost:.8f}",
+                    "transport_mode": transport_mode,
+                    "document_id": str(locked_document.id),
+                    "input_price_per_million": str(input_price),
+                    "output_price_per_million": str(output_price),
+                    "price_discount": str(discount),
+                }
+            )
+            audit = dict(locked_document.audit_json or {})
+            audit["model_attempts"] = attempted + 1
+            locked_document.audit_json = audit
+        locked_task.result_counts = merge_result_counts_preserving_provider_ledger(
+            locked_task, {"_provider_budget_reservations": entries}
+        )
+        session.commit()
+        return call_ids
+
+
+def _wait_for_realtime_capacity(
     request: PromptRequest,
     *,
     model: str,
     repair_hint: str = "",
-) -> tuple[dict[str, Any], dict[str, int]]:
-    token_cost = _estimated_tokens(request) + 500
+    before_request: Callable[[], None] | None = None,
+) -> None:
+    """Wait for rate capacity before reserving money or sending a request."""
+
+    token_cost = (
+        _estimated_provider_input_tokens(
+            request,
+            repair_hint=repair_hint,
+        )
+        + settings.cleaning_model_max_tokens
+    )
     while True:
         wait_seconds = model_rate_limiter.acquire(
             model=model,
@@ -446,7 +1690,68 @@ def _realtime_chat(
         if wait_seconds <= 0:
             break
         time.sleep(min(60, wait_seconds))
-    return client.chat_json(build_prompt_messages(request, repair_hint=repair_hint), model=model)
+        if before_request is not None:
+            before_request()
+
+    # The acquisition result becomes stale while this Worker waits.  The
+    # caller renews/fences immediately before it reserves this provider call.
+    if before_request is not None:
+        before_request()
+
+
+def _realtime_chat(
+    client: BailianClient,
+    request: PromptRequest,
+    *,
+    model: str,
+    repair_hint: str = "",
+) -> tuple[dict[str, Any], dict[str, int]]:
+    """Send a request only after the caller has completed its lease/budget gate."""
+
+    return client.chat_json(
+        build_prompt_messages(request, repair_hint=repair_hint),
+        model=model,
+        max_tokens=settings.cleaning_model_max_tokens,
+    )
+
+
+def _persist_realtime_usage(
+    session,
+    task: ModelCleaningTask,
+    usage: dict[str, int],
+    item_usage: dict[str, Any],
+    *,
+    call_id: str | object,
+    lease_token: str | None = None,
+) -> None:
+    """Settle one durable realtime reservation before semantic handling."""
+
+    if lease_token is not None:
+        _assert_active_model_lease(session, task.id, lease_token)
+    for key in ("input_tokens", "output_tokens"):
+        try:
+            amount = int(item_usage.get(key) or 0)
+        except (AttributeError, TypeError, ValueError):
+            amount = 0
+        if amount > 0:
+            usage[key] = int(usage.get(key) or 0) + amount
+    if isinstance(call_id, str) and re.fullmatch(r"[0-9a-f]{32}", call_id):
+        entries = list((task.result_counts or {}).get("_provider_budget_reservations") or [])
+        matched_entries = [entry for entry in entries if entry.get("call_id") == call_id]
+        if len(matched_entries) != 1:
+            raise ValueError("模型调用账本缺少唯一预留，拒绝结算")
+        entry = matched_entries[0]
+        if str(entry.get("transport_mode") or "") != "realtime":
+            raise ValueError("模型调用账本 transport 与 realtime 响应不一致")
+        actual_cost = _provider_actual_call_cost(entry, item_usage)
+        if actual_cost is not None:
+            entry["actual_cost_yuan"] = f"{actual_cost:.8f}"
+            entry["cost_yuan"] = f"{actual_cost:.8f}"
+            task.result_counts = merge_result_counts_preserving_provider_ledger(
+                task, {"_provider_budget_reservations": entries}
+            )
+    task.actual_usage = dict(usage)
+    session.commit()
 
 
 def _validation_error_entries(exc: Exception) -> list[dict[str, str]]:
@@ -497,6 +1802,7 @@ def _safe_model_value_error_code(message: str) -> str:
         ("reference_advice缺少advice证据", "unverified_advice"),
         ("reference_advice不是可回溯原文", "unverified_advice"),
         ("背景/问题表现包含建议或未来动作", "non_factual_case_field"),
+        ("咨询案例核心事实超出本案例来源证据", "unsupported_case_fact"),
         ("问题高度重复，疑似过度拆分", "duplicate_cases"),
     )
     for marker, code in mappings:
@@ -506,6 +1812,14 @@ def _safe_model_value_error_code(message: str) -> str:
 
 
 def _model_contract_error_message(exc: Exception) -> str:
+    if isinstance(exc, _ModelCallLimitExceeded):
+        return "单个条目的模型调用已达到两次上限，未发起第三次调用"
+    if isinstance(exc, _ModelDailyBudgetExceeded):
+        return "模型调用会超过当日预算，未发起模型调用"
+    if isinstance(exc, _ModelAcceptanceBudgetExceeded):
+        return "模型调用会超过隔离测试累计预算，未发起模型调用"
+    if isinstance(exc, _ModelBudgetLockUnavailable):
+        return "模型预算锁不可用，未发起模型调用"
     if isinstance(exc, ModelNoResponseError):
         return "模型未返回可用结果（已按文档重试一次）"
     entries = _validation_error_entries(exc)
@@ -613,6 +1927,12 @@ def _model_contract_retry_hint(exc: Exception) -> str:
             "只能逐字放入 reference_advice，并确保 evidence 中有 kind=advice 的对应原文；"
             "不要新增案例、人物或事实。"
         )
+    if "咨询案例核心事实超出本案例来源证据" in message:
+        return (
+            "primary_problem、relevant_background 和 problem_signals 不得新增本案例证据未出现的"
+            "金额、日期、实际结果或明确行业/赛道；保留可回溯证据支持的事实，"
+            "不要改写 evidence.quote 或 source_block_ids。"
+        )
     if "人物归属" in message:
         return "不得增加或变更来源块中的人物归属。"
     if "课程目录模型未返回课程描述" in message:
@@ -652,6 +1972,26 @@ def _price_snapshot(mode: str) -> tuple[str, str, str, float, float, float]:
         settings.cleaning_realtime_output_price_per_million,
         1.0,
     )
+
+
+def _require_price_snapshot(mode: str) -> None:
+    """Reject paid work when provider pricing is unknown or incomplete."""
+
+    version, effective_date, valid_until, input_price, output_price, discount = _price_snapshot(
+        mode
+    )
+    if not version or not effective_date or not valid_until:
+        raise _ModelPriceUnavailable("模型价格快照不完整，拒绝发起模型调用")
+    if input_price <= 0 or output_price <= 0 or discount <= 0:
+        raise _ModelPriceUnavailable("模型价格未配置，拒绝把零价格当作免费")
+    try:
+        effective = datetime.fromisoformat(effective_date).date()
+        valid_until_date = datetime.fromisoformat(valid_until).date()
+    except ValueError as exc:
+        raise _ModelPriceUnavailable("模型价格日期无效，拒绝发起模型调用") from exc
+    today = datetime.now(timezone.utc).date()
+    if effective > today or valid_until_date < today:
+        raise _ModelPriceUnavailable("模型价格快照不在有效期内，拒绝发起模型调用")
 
 
 def _catalog_auto_block_reason(
@@ -719,19 +2059,95 @@ def _fail_catalog_auto_run(session, batch: CleaningBatch, reason: str) -> None:
     batch.status = "completed"
 
 
+def _task_cost_reservation(task: ModelCleaningTask) -> Decimal:
+    """Return the larger of a task's estimate and verifiable token usage cost.
+
+    A task stores its chosen price-version identifiers but not the numeric
+    prices.  When the active price snapshot no longer matches a task that has
+    token usage, its exact historical cost cannot be reconstructed safely.  In
+    that exceptional case reserve the full daily budget, which blocks further
+    calls instead of silently undercounting the cap.
+    """
+
+    try:
+        estimated = Decimal(str(task.estimated_cost_high or "0"))
+    except (InvalidOperation, ValueError):
+        logger.warning("invalid model cost reservation task_id=%s", task.id)
+        estimated = Decimal("0")
+
+    usage = task.actual_usage or {}
+    try:
+        input_tokens = Decimal(str(usage.get("input_tokens") or "0"))
+        output_tokens = Decimal(str(usage.get("output_tokens") or "0"))
+    except (AttributeError, InvalidOperation, ValueError):
+        logger.warning("invalid model usage task_id=%s", task.id)
+        return estimated
+    if input_tokens <= 0 and output_tokens <= 0:
+        return estimated
+    if input_tokens < 0 or output_tokens < 0:
+        logger.warning("negative model usage task_id=%s", task.id)
+        return estimated
+
+    (
+        price_version,
+        price_effective_date,
+        price_valid_until,
+        input_price_per_million,
+        output_price_per_million,
+        price_discount,
+    ) = _price_snapshot(task.mode)
+    if (
+        task.price_version != price_version
+        or task.price_effective_date != price_effective_date
+        or task.price_valid_until != price_valid_until
+    ):
+        logger.warning(
+            "model usage price snapshot no longer matches task_id=%s; blocking further calls",
+            task.id,
+        )
+        return max(estimated, Decimal(str(settings.cleaning_daily_budget_yuan)))
+
+    actual = (
+        (
+            input_tokens * Decimal(str(input_price_per_million))
+            + output_tokens * Decimal(str(output_price_per_million))
+        )
+        / Decimal("1000000")
+        * Decimal(str(price_discount))
+    )
+    return max(estimated, actual)
+
+
 def _daily_model_reserved_cost(session) -> Decimal:
-    """Return today's conservative model-cost reservation in server timezone."""
+    """Return today's conservative cost of provider calls actually reserved."""
 
     from zoneinfo import ZoneInfo
 
     today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
     total = Decimal("0")
-    # A failed provider call may still have consumed tokens. Keep its
-    # reservation for the day; only tasks explicitly cancelled/superseded
-    # before a provider call are excluded.
-    excluded_statuses = {"cancelled", "superseded"}
     tasks = session.scalars(select(ModelCleaningTask)).all()
     for task in tasks:
+        valid_document_ids = set(
+            session.scalars(
+                select(CleaningDocument.id)
+                .join(CleaningFile)
+                .where(CleaningFile.batch_id == task.batch_id)
+            )
+        )
+        if not _task_provider_ledger_is_consistent(
+            session, task, valid_document_ids=valid_document_ids
+        ):
+            # We cannot allocate an unknown call to a date safely.  Reserving
+            # the whole daily headroom blocks a new paid request rather than
+            # letting a partially decoded ledger understate spend.
+            total += Decimal(str(settings.cleaning_daily_budget_yuan))
+            continue
+        entries = _provider_budget_entries(task)
+        if entries:
+            total += sum(cost for date, cost in entries if date == today.isoformat())
+            continue
+        if not _task_has_legacy_provider_reservation(task):
+            continue
         created_at = task.created_at
         if created_at is None:
             continue
@@ -739,19 +2155,39 @@ def _daily_model_reserved_cost(session) -> Decimal:
             created_at = created_at.replace(tzinfo=timezone.utc)
         if created_at.astimezone(ZoneInfo("Asia/Shanghai")).date() != today:
             continue
-        if task.status in excluded_statuses:
-            continue
-        try:
-            total += Decimal(str(task.estimated_cost_high or "0"))
-        except (InvalidOperation, ValueError):
-            logger.warning(
-                "invalid model cost reservation task_id=%s",
-                task.id,
-            )
+        total += _task_cost_reservation(task)
     return total
 
 
-def maybe_plan_model_task(batch_id: str) -> str | None:
+def _cumulative_model_reserved_cost(session) -> Decimal:
+    """Return a conservative lifetime total for the disposable test service."""
+
+    total = Decimal("0")
+    for task in session.scalars(select(ModelCleaningTask)).all():
+        valid_document_ids = set(
+            session.scalars(
+                select(CleaningDocument.id)
+                .join(CleaningFile)
+                .where(CleaningFile.batch_id == task.batch_id)
+            )
+        )
+        if not _task_provider_ledger_is_consistent(
+            session, task, valid_document_ids=valid_document_ids
+        ):
+            # An unparseable durable reservation makes lifetime spend unknown.
+            # The disposable acceptance service must stop instead of assuming
+            # it has remaining budget.
+            total += Decimal(str(settings.acceptance_cleaning_budget_max_yuan))
+            continue
+        entries = _provider_budget_entries(task)
+        if entries:
+            total += sum(cost for _, cost in entries)
+        elif _task_has_legacy_provider_reservation(task):
+            total += _task_cost_reservation(task)
+    return total
+
+
+def _maybe_plan_model_task_unlocked(batch_id: str) -> str | None:
     """Create exactly one model plan after every source file is parsed."""
 
     submit_realtime = False
@@ -778,14 +2214,25 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
         )
         if existing is not None:
             return existing.id
+        has_prior_model_task = session.scalar(
+            select(ModelCleaningTask.id).where(ModelCleaningTask.batch_id == batch_id).limit(1)
+        )
         auto_catalog = (
             batch.strategy_code == "course_route_catalog" and settings.course_catalog_auto_publish
         )
         candidate_count = 0
+        candidate_document_ids: list[str] = []
         estimated_input = 0
+        estimated_provider_input = 0
         fingerprint_digest = hashlib.sha256()
         oversized_reason = ""
         for document in _iter_documents_for_batch(session, batch_id):
+            # A fresh source document has a provable zero before it can ever
+            # enter a provider queue.  Do not "repair" missing values on a
+            # batch with historical model tasks: that ambiguity must fail
+            # closed at reservation/retry time instead.
+            if has_prior_model_task is None and "model_attempts" not in (document.audit_json or {}):
+                document.audit_json = {**(document.audit_json or {}), "model_attempts": 0}
             request = _request(document, batch.strategy_code)
             tokens = _estimated_tokens(request)
             if tokens > settings.cleaning_candidate_max_tokens:
@@ -793,7 +2240,10 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
                     oversized_reason = "单候选超过模型输入上限"
                 else:
                     is_content_strategy = batch.strategy_code in CONTENT_MODEL_STRATEGIES
-                    fallback_enabled = _source_fallback_enabled(document, batch.strategy_code)
+                    fallback_enabled = (
+                        batch.strategy_code not in CONTENT_MODEL_STRATEGIES
+                        and _source_fallback_enabled(document, batch.strategy_code)
+                    )
                     can_publish_source = bool(document.cleaned_markdown.strip())
                     if fallback_enabled and can_publish_source:
                         document.status = (
@@ -829,7 +2279,9 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
                         document.retryable = is_content_strategy
                 continue
             candidate_count += 1
+            candidate_document_ids.append(str(document.id))
             estimated_input += tokens
+            estimated_provider_input += _estimated_provider_input_tokens(request)
             fingerprint_digest.update(f"{document.id}:{document.content_sha256}\n".encode("utf-8"))
         if not candidate_count:
             if oversized_reason:
@@ -843,13 +2295,28 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
             session.commit()
             return None
         fingerprint_digest.update(f"prompt:{settings.cleaning_prompt_version}".encode("utf-8"))
-        mode = choose_call_mode(
-            batch.strategy_code,
-            candidate_count,
-            estimated_input,
-            batch_candidate_threshold=settings.cleaning_batch_candidate_threshold,
-            batch_token_threshold=settings.cleaning_batch_token_threshold,
-            batch_enabled=settings.bailian_batch_enabled,
+        parity = (batch.common_metadata or {}).get("_acceptance_parity") or {}
+        parity_selected = parity.get("selected_source_sha256")
+        parity_match = (
+            settings.cleaning_acceptance_budget_enabled
+            and batch.strategy_code in {"personal_business_consultation", "zsxq_post"}
+            and isinstance(parity_selected, list)
+            and len(parity_selected) == 1
+            and len(batch.files) == 1
+            and str(batch.files[0].source_sha256).lower() == str(parity_selected[0]).lower()
+            and candidate_count == 1
+        )
+        mode = (
+            "batch"
+            if parity_match
+            else choose_call_mode(
+                batch.strategy_code,
+                candidate_count,
+                estimated_input,
+                batch_candidate_threshold=settings.cleaning_batch_candidate_threshold,
+                batch_token_threshold=settings.cleaning_batch_token_threshold,
+                batch_enabled=settings.bailian_batch_enabled,
+            )
         )
         fingerprint = fingerprint_digest.hexdigest()
         (
@@ -860,23 +2327,41 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
             output_price_per_million,
             price_discount,
         ) = _price_snapshot(mode)
-        input_cost = estimated_input / 1_000_000 * input_price_per_million * price_discount
-        estimated_output = max(500, candidate_count * 500)
+        if settings.cleaning_acceptance_budget_enabled:
+            _require_price_snapshot(mode)
+        # Every candidate may need one complete retry. Reserve both requests
+        # up front using a provider-enforced output cap, rather than inferring
+        # spend only after worker retries have already called the provider.
+        reserved_input = estimated_provider_input * _MAX_PROVIDER_CALLS_PER_DOCUMENT
+        estimated_output = (
+            candidate_count * settings.cleaning_model_max_tokens * _MAX_PROVIDER_CALLS_PER_DOCUMENT
+        )
+        input_cost = reserved_input / 1_000_000 * input_price_per_million * price_discount
         output_cost = estimated_output / 1_000_000 * output_price_per_million * price_discount
         estimated_cost_high = input_cost + output_cost
         daily_budget = Decimal(str(settings.cleaning_daily_budget_yuan))
         daily_reserved = _daily_model_reserved_cost(session)
         estimated_cost = Decimal(str(estimated_cost_high))
+        lifetime_budget = Decimal(str(settings.acceptance_cleaning_budget_max_yuan))
+        cumulative_reserved = _cumulative_model_reserved_cost(session)
+        budget_reason_code = ""
+        budget_reason_message = ""
         if daily_reserved + estimated_cost > daily_budget:
+            budget_reason_code = "MODEL_DAILY_BUDGET_EXCEEDED"
+            budget_reason_message = "本批次模型预估费用超过当日预算，未发起模型调用"
+        elif (
+            settings.cleaning_acceptance_budget_enabled
+            and cumulative_reserved + estimated_cost > lifetime_budget
+        ):
+            budget_reason_code = "MODEL_ACCEPTANCE_BUDGET_EXCEEDED"
+            budget_reason_message = "本批次模型预估费用超过隔离测试累计预算，未发起模型调用"
+        if budget_reason_code:
             fallback_applied, fallback_pending_ids, fallback_shard_ids = (
                 _fallback_failed_model_documents(
                     session,
                     batch_id,
-                    reason_code="MODEL_DAILY_BUDGET_EXCEEDED",
-                    reason_message=(
-                        "本批次模型预估费用超过当日预算，已停止模型调用并尝试使用"
-                        "清洗源 Markdown 继续入库"
-                    ),
+                    reason_code=budget_reason_code,
+                    reason_message=budget_reason_message,
                 )
             )
             if not fallback_applied and batch.strategy_code == "course_route_catalog":
@@ -889,14 +2374,16 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
                 level="WARNING",
                 category="task",
                 component="model_cleaning_worker",
-                event_code="MODEL_DAILY_BUDGET_EXCEEDED",
+                event_code=budget_reason_code,
                 status="failed",
-                message="模型清洗批次超过当日预算，未发起模型调用",
+                message=budget_reason_message,
                 resource_type="cleaning_batch",
                 resource_id=batch_id,
                 details={
                     "daily_budget_yuan": str(daily_budget),
                     "daily_reserved_yuan": str(daily_reserved),
+                    "cumulative_reserved_yuan": str(cumulative_reserved),
+                    "acceptance_budget_yuan": str(lifetime_budget),
                     "estimated_cost_high_yuan": str(estimated_cost),
                     "fallback_pending_count": len(fallback_pending_ids),
                     "fallback_shard_count": len(fallback_shard_ids),
@@ -914,15 +2401,58 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
             status="awaiting_approval" if mode == "batch" else "queued",
             candidate_fingerprint=fingerprint,
             candidate_count=candidate_count,
-            estimated_input_tokens=estimated_input,
+            estimated_input_tokens=reserved_input,
             estimated_output_tokens=estimated_output,
             estimated_cost_low=f"{input_cost:.6f}",
             estimated_cost_high=f"{estimated_cost_high:.6f}",
             price_version=price_version,
             price_effective_date=price_effective_date,
             price_valid_until=price_valid_until,
+            result_counts={
+                "provider_candidate_document_ids": candidate_document_ids,
+                **({"acceptance_parity_context": parity} if parity_match else {}),
+            },
         )
         session.add(task)
+        acceptance_campaign = (batch.common_metadata or {}).get("_acceptance_campaign")
+        if settings.cleaning_acceptance_budget_enabled and isinstance(acceptance_campaign, dict):
+            session.flush()
+            realtime_operation_id = acceptance_campaign.get("realtime_operation_id") or ""
+            batch_operation_id = acceptance_campaign.get("batch_operation_id") or ""
+            operation_id = (
+                batch_operation_id[0]
+                if isinstance(batch_operation_id, list) and batch_operation_id
+                else batch_operation_id
+            ) or (
+                realtime_operation_id[0]
+                if isinstance(realtime_operation_id, list) and realtime_operation_id
+                else realtime_operation_id
+            )
+            task.result_counts = {
+                **(task.result_counts or {}),
+                "acceptance_campaign_context": acceptance_campaign,
+                "acceptance_manifest": {
+                    "task_id": str(task.id),
+                    "strategy_code": batch.strategy_code,
+                    "source_document_ids": candidate_document_ids,
+                    "candidate_fingerprint": fingerprint,
+                    "prompt_version": task.prompt_version,
+                    "general_dataset_id": settings.dify_general_dataset_id,
+                    "redis_db": 6,
+                    "batch_enabled": True,
+                    "campaign": {
+                        **acceptance_campaign,
+                        "sealed": True,
+                        "operation_id": operation_id,
+                        "operation_ids": {
+                            "realtime": realtime_operation_id,
+                            **({"batch": batch_operation_id} if batch_operation_id else {}),
+                        },
+                        "ledger_path": str(settings.acceptance_campaign_ledger_path),
+                        "manifest_sha256": str(acceptance_campaign.get("manifest_sha256") or ""),
+                    },
+                },
+            }
         auto_submit_batch = False
         if auto_catalog:
             reason = oversized_reason or _catalog_auto_block_reason(
@@ -1004,10 +2534,33 @@ def maybe_plan_model_task(batch_id: str) -> str | None:
     return task_id
 
 
+def maybe_plan_model_task(batch_id: str) -> str | None:
+    """Serialize daily-budget planning across independently finishing files."""
+
+    from zoneinfo import ZoneInfo
+
+    day_key = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    with cache.lock(f"ai:model-cleaning-daily-budget:{day_key}", ttl=180) as lock_state:
+        # A production Redis lock failure must not turn into concurrent paid
+        # requests. The awaiting-model documents remain recoverable for the
+        # existing reconciler after cache availability is restored.
+        if not lock_state or not lock_state.available:
+            logger.warning("daily model budget lock unavailable; defer batch_id=%s", batch_id)
+            return None
+        return _maybe_plan_model_task_unlocked(batch_id)
+
+
 def _mark_privacy_review(document: CleaningDocument, message: str) -> None:
     from ...cleaning import content_review_bypass_enabled, preserve_review_reason
 
     strategy_code = str((document.metadata_json or {}).get("cleaning_strategy") or "")
+    if strategy_code in CONTENT_MODEL_STRATEGIES:
+        document.status = "failed"
+        document.stage = "failed"
+        document.error_code = "PRIVACY_REVIEW_REQUIRED"
+        document.error_message = message
+        document.retryable = False
+        return
     if (
         content_review_bypass_enabled(
             strategy_code,
@@ -1177,6 +2730,30 @@ def _store_model_review_request_context(
     document.audit_json = audit
 
 
+def _store_fenced_model_review_request_context(
+    session,
+    document: CleaningDocument,
+    request: PromptRequest,
+    *,
+    task_id: str,
+    lease_token: str,
+    model_name: str = "",
+    prompt_version: str = "",
+    repair_hint: str = "",
+) -> None:
+    """Commit request audit evidence only while this worker owns the lease."""
+
+    _assert_active_model_lease(session, task_id, lease_token)
+    _store_model_review_request_context(
+        document,
+        request,
+        model_name=model_name,
+        prompt_version=prompt_version,
+        repair_hint=repair_hint,
+    )
+    session.commit()
+
+
 def _apply_model_payload(
     document: CleaningDocument,
     strategy_code: str,
@@ -1208,12 +2785,17 @@ def _apply_model_payload(
     document.audit_json = audit
     available = set(request.blocks)
     if strategy_code in POST_STRATEGIES:
-        result = validate_semantic_response(
-            strategy_code,
-            payload,
-            available_block_ids=available,
-            source_blocks=request.blocks,
-        )
+        try:
+            result = validate_semantic_response(
+                strategy_code,
+                payload,
+                available_block_ids=available,
+                source_blocks=request.blocks,
+            )
+        except ValueError as exc:
+            if "未返回可检索的知识单元" in str(exc):
+                raise _ZeroCoreModelOutputError(str(exc)) from exc
+            raise
         audit["model_result"] = result.model_dump(mode="json")
         if result.disposition == "exclude":
             document.status = "excluded"
@@ -1241,13 +2823,7 @@ def _apply_model_payload(
             kept = [request.blocks[block_id] for block_id in result.keep_block_ids]
             body = "\n\n".join(kept)
             if not body.strip():
-                document.status = "review_required"
-                document.stage = "review"
-                document.error_code = "CONTENT_EMPTY_AFTER_MODEL"
-                document.error_message = "模型复核结果没有可继续的来源正文"
-                document.audit_json = audit
-                document.retryable = False
-                return
+                raise _ZeroCoreModelOutputError("模型复核结果没有可继续的来源正文")
             from ...cleaning import content_review_reason
 
             short_reason = content_review_reason(
@@ -1256,11 +2832,7 @@ def _apply_model_payload(
                 document.metadata_json or {},
             )
             if short_reason:
-                document.status = "review_required"
-                document.stage = "review"
-                document.error_code, document.error_message = short_reason
-                document.audit_json = audit
-                return
+                raise _ZeroCoreModelOutputError(short_reason[1])
             unit_specs: list[tuple[str, str, str, dict[str, Any]]] = []
             if result.knowledge_units:
                 for unit in result.knowledge_units:
@@ -1280,6 +2852,7 @@ def _apply_model_payload(
                 unit_specs.append((document.title, body, result.topic, {}))
 
             rendered_units: list[tuple[str, str, str, dict[str, Any]]] = []
+            rejected_units: list[dict[str, str]] = []
             for unit_title, unit_body, unit_topic, unit_payload in unit_specs:
                 short_reason = content_review_reason(
                     unit_body,
@@ -1287,7 +2860,13 @@ def _apply_model_payload(
                     document.metadata_json or {},
                 )
                 if short_reason:
-                    raise ValueError(short_reason[0])
+                    rejected_units.append(
+                        {
+                            "unit_id": str(unit_payload.get("unit_id") or unit_title),
+                            "reason_code": short_reason[0],
+                        }
+                    )
+                    continue
                 rendered_units.append(
                     (
                         unit_title,
@@ -1300,6 +2879,12 @@ def _apply_model_payload(
                         unit_payload,
                     )
                 )
+
+            if rejected_units:
+                audit["rejected_knowledge_units"] = rejected_units
+            if not rendered_units:
+                document.audit_json = audit
+                raise _ZeroCoreModelOutputError("模型输出没有可发布的核心知识单元")
 
             from .cleaning import _content_sha
 
@@ -1348,8 +2933,7 @@ def _apply_model_payload(
                     rendered_units[1:], start=2
                 ):
                     child_audit = {
-                        **audit,
-                        "model_result": {"knowledge_unit": unit_payload},
+                        **_derived_document_audit(audit),
                         "source_article_document_id": document.id,
                     }
                     child = CleaningDocument(
@@ -1395,9 +2979,7 @@ def _apply_model_payload(
             if len(response.cases) < 1:
                 raise ValueError("咨询案例模型未返回可发布案例")
             rendered_cases: list[tuple[str, str, str, dict[str, Any]]] = []
-            source_case_id = str((document.metadata_json or {}).get("case_id") or "")
-            if not source_case_id.startswith("case_"):
-                source_case_id = f"case_{document.content_sha256[:16]}"
+            source_case_id = _safe_case_group_id(document)
             for case_index, case in enumerate(response.cases, start=1):
                 case_id = f"{source_case_id}_c{case_index:02d}"
                 rendered = sanitize_for_knowledge(render_consultation_rag_case(case_id, case))
@@ -1413,11 +2995,19 @@ def _apply_model_payload(
                         rendered,
                         topic,
                         {
+                            **case.model_dump(mode="json"),
                             "case_id": case_id,
                             "case_group_id": source_case_id,
-                            "problem_category": case.problem_category,
-                            "case_stage": case.case_stage,
                             "has_reference_advice": bool(case.reference_advice),
+                            "has_advice_summary": bool(case.advice_summary.strip()),
+                            "advice_evidence_count": sum(
+                                item.kind == "advice" for item in case.evidence
+                            ),
+                            "methodology_candidate": (
+                                "candidate_ready"
+                                if render_methodology_candidate(case_id, case)
+                                else "omitted_no_traceable_advice"
+                            ),
                         },
                     )
                 )
@@ -1432,6 +3022,7 @@ def _apply_model_payload(
                 metadata = dict(target.metadata_json or {})
                 metadata["record_type"] = "consulting_case"
                 metadata["case_id"] = case_id
+                metadata["case_group_id"] = source_case_id
                 if topic:
                     metadata["topic"] = topic
                 else:
@@ -1439,18 +3030,29 @@ def _apply_model_payload(
                 target.title = f"匿名商业案例 {case_id[-5:]}"
                 target.cleaned_markdown = rendered
                 target.metadata_json = metadata
-                target.audit_json = {
-                    **audit,
-                    "model_result": {
-                        "schema_version": response.schema_version,
-                        "case": case_audit,
-                    },
-                    "consultation_rag": {
-                        "case_group_id": source_case_id,
-                        "case_count": len(rendered_cases),
-                        "source_chars": len(source_text),
-                    },
+                consultation_audit = {
+                    "case_group_id": source_case_id,
+                    "case_count": len(rendered_cases),
+                    "source_chars": len(source_text),
+                    # A derived case needs its own validated evidence and
+                    # advice lineage, but must not appear to own the Provider
+                    # request/response ledger of the source document.
+                    "case": case_audit,
                 }
+                if target is document:
+                    target.audit_json = {
+                        **audit,
+                        "model_result": {
+                            "schema_version": response.schema_version,
+                            "case": case_audit,
+                        },
+                        "consultation_rag": consultation_audit,
+                    }
+                else:
+                    target.audit_json = {
+                        **_derived_document_audit(audit),
+                        "consultation_rag": consultation_audit,
+                    }
                 target.status = "pending"
                 target.stage = "pending"
                 target.error_code = None
@@ -1498,7 +3100,7 @@ def _apply_model_payload(
                         content_sha256="",
                         metadata_json=dict(document.metadata_json or {}),
                         chunking_json=dict(document.chunking_json or {}),
-                        audit_json=dict(audit),
+                        audit_json=_derived_document_audit(audit),
                         warnings_json=list(document.warnings_json or []),
                         cleaned_markdown=rendered,
                         retryable=True,
@@ -1508,6 +3110,88 @@ def _apply_model_payload(
                     apply_case(child, case_id, rendered, topic, case_audit)
             elif len(rendered_cases) > 1:
                 raise ValueError("模型返回多个咨询案例，但当前任务没有可写入会话")
+            if session is not None:
+                # The candidate is projected from the same validated case and
+                # evidence.  It is deliberately case-scoped and never a
+                # cross-source/general-method claim.
+                for case_index, case in enumerate(response.cases, start=1):
+                    case_id = rendered_cases[case_index - 1][0]
+                    methodology = render_methodology_candidate(case_id, case)
+                    if not methodology:
+                        continue
+                    method_id = f"{case_id}_m01"
+                    _, _, case_topic, _ = rendered_cases[case_index - 1]
+                    # ``document`` has already been transformed into the
+                    # first case above.  Build each methodology projection
+                    # from its own rendered case instead of leaking that
+                    # first case's topic into later candidates.
+                    method_metadata = dict(document.metadata_json or {})
+                    if case_topic:
+                        method_metadata["topic"] = case_topic
+                    else:
+                        method_metadata.pop("topic", None)
+                    method_metadata.update(
+                        {
+                            "record_type": "methodology",
+                            "case_id": method_id,
+                            "case_group_id": source_case_id,
+                            "candidate_for_case_id": case_id,
+                            "methodology_scope": "case_scoped",
+                        }
+                    )
+
+                    method_key = _methodology_document_key(
+                        document.document_key,
+                        case.model_dump(mode="json"),
+                    )
+                    existing_method = session.scalar(
+                        select(CleaningDocument.id).where(
+                            CleaningDocument.file_id == document.file_id,
+                            CleaningDocument.document_key == method_key,
+                        )
+                    )
+                    if existing_method is not None:
+                        continue
+                    from ...cleaning import dify_document_name
+                    from .cleaning import _content_sha
+
+                    method = CleaningDocument(
+                        file_id=document.file_id,
+                        sequence=document.sequence * 1000 + 100 + case_index,
+                        title=f"匿名方法候选 {method_id[-5:]}",
+                        dify_document_name=dify_document_name(
+                            getattr(
+                                document.file, "original_filename", document.dify_document_name
+                            ),
+                            document.content_sha256,
+                            100 + case_index,
+                            split=True,
+                        ),
+                        document_key=method_key,
+                        status="pending",
+                        stage="pending",
+                        content_sha256="",
+                        metadata_json=method_metadata,
+                        chunking_json=dict(document.chunking_json or {}),
+                        audit_json={
+                            **_derived_document_audit(audit),
+                            "methodology_candidate": {
+                                "case_id": case_id,
+                                "evidence_count": sum(
+                                    item.kind == "advice" for item in case.evidence
+                                ),
+                            },
+                        },
+                        warnings_json=list(document.warnings_json or []),
+                        cleaned_markdown=sanitize_for_knowledge(methodology),
+                        retryable=True,
+                    )
+                    method.content_sha256 = _content_sha(
+                        method.cleaned_markdown,
+                        method.metadata_json,
+                        method.chunking_json or {},
+                    )
+                    session.add(method)
             # A semantic review is a human gate, not a source fallback.  The
             # source fallback flag is consumed by the outer worker only for
             # technical/contract failures.
@@ -1727,6 +3411,45 @@ def _apply_model_payload(
     document.audit_json = audit
 
 
+def _invalidate_methodology_candidates_for_failed_case(document: CleaningDocument) -> None:
+    """Keep a case-scoped method from outliving its failed source case.
+
+    The relationship intentionally reuses existing metadata instead of adding
+    a table or a new state.  This runs before publication, so no remote cleanup
+    is needed for the normal model-finalisation failure path.
+    """
+
+    session = object_session(document)
+    case_id = str((document.metadata_json or {}).get("case_id") or "")
+    if session is None or not document.file_id or not case_id:
+        return
+    candidates = list(
+        session.scalars(
+            select(CleaningDocument).where(CleaningDocument.file_id == document.file_id)
+        )
+    )
+    for candidate in candidates:
+        metadata = candidate.metadata_json or {}
+        if (
+            metadata.get("record_type") != "methodology"
+            or metadata.get("candidate_for_case_id") != case_id
+            or candidate.status not in {"pending", "processing", "staged", "awaiting_model"}
+        ):
+            continue
+        candidate.status = "failed"
+        candidate.stage = "failed"
+        candidate.error_code = "METHODOLOGY_SOURCE_CASE_FAILED"
+        candidate.error_message = "关联咨询案例未通过发布前校验，方法候选未发布"
+        candidate.retryable = False
+        candidate.audit_json = {
+            **(candidate.audit_json or {}),
+            "methodology_candidate": {
+                **((candidate.audit_json or {}).get("methodology_candidate") or {}),
+                "source_case_status": "failed",
+            },
+        }
+
+
 def _finalize_model_document(
     document: CleaningDocument,
     *,
@@ -1736,11 +3459,12 @@ def _finalize_model_document(
 
     if not document.cleaned_markdown.strip():
         if strategy_code in CONTENT_MODEL_STRATEGIES:
-            document.status = "review_required"
-            document.stage = "review"
+            document.status = "failed"
+            document.stage = "failed"
             document.error_code = "CONTENT_EMPTY_AFTER_MODEL"
-            document.error_message = "模型清洗后没有可复核正文"
+            document.error_message = "模型清洗后没有可用核心正文"
             document.retryable = False
+            _invalidate_methodology_candidates_for_failed_case(document)
         return
     from ...cleaning import content_review_reason, finalize_knowledge_markdown
     from .cleaning import _content_sha
@@ -1777,10 +3501,14 @@ def _finalize_model_document(
             document.metadata_json or {},
         )
         if review_reason:
-            document.status = "review_required"
-            document.stage = "review"
+            document.status = (
+                "failed" if strategy_code in CONTENT_MODEL_STRATEGIES else "review_required"
+            )
+            document.stage = "failed" if strategy_code in CONTENT_MODEL_STRATEGIES else "review"
             document.error_code, document.error_message = review_reason
             document.retryable = False
+    if document.status == "failed":
+        _invalidate_methodology_candidates_for_failed_case(document)
 
 
 def _post_child_for_dify(text: str, *, title: str) -> str | None:
@@ -1802,6 +3530,28 @@ def _post_child_for_dify(text: str, *, title: str) -> str | None:
     return contextualized
 
 
+def _derived_document_audit(source_audit: dict[str, Any]) -> dict[str, Any]:
+    """Keep provider-call state on its original candidate only.
+
+    Case splits and methodology candidates are local projections of a
+    validated response.  They must not acquire the source candidate's call
+    count, request/response artifacts, or source blocks: those fields are the
+    document-scoped half of the Provider ledger and would make a derived child
+    look like it had spent a provider call.
+    """
+
+    provider_scoped_keys = {
+        "model_attempts",
+        "model_blocks",
+        "model_result",
+        "_model_review_payload",
+        "_model_review_request",
+        "source_markdown_fallback",
+        "source_markdown_fallback_blocked",
+    }
+    return {key: value for key, value in source_audit.items() if key not in provider_scoped_keys}
+
+
 def _mark_contract_failure(
     document: CleaningDocument,
     exc: Exception,
@@ -1811,7 +3561,19 @@ def _mark_contract_failure(
     review_on_final: bool = False,
 ) -> None:
     error_code = (
-        "MODEL_NO_RESPONSE" if isinstance(exc, ModelNoResponseError) else "MODEL_CONTRACT_INVALID"
+        "MODEL_CALL_LIMIT_EXCEEDED"
+        if isinstance(exc, _ModelCallLimitExceeded)
+        else "MODEL_DAILY_BUDGET_EXCEEDED"
+        if isinstance(exc, _ModelDailyBudgetExceeded)
+        else "MODEL_ACCEPTANCE_BUDGET_EXCEEDED"
+        if isinstance(exc, _ModelAcceptanceBudgetExceeded)
+        else "MODEL_PRICE_UNAVAILABLE"
+        if isinstance(exc, _ModelPriceUnavailable)
+        else "MODEL_BUDGET_LOCK_UNAVAILABLE"
+        if isinstance(exc, _ModelBudgetLockUnavailable)
+        else "MODEL_NO_RESPONSE"
+        if isinstance(exc, ModelNoResponseError)
+        else "MODEL_CONTRACT_INVALID"
     )
     if final and auto_fail:
         document.status = "failed"
@@ -1819,21 +3581,35 @@ def _mark_contract_failure(
         document.error_code = "CATALOG_AUTO_PUBLISH_BLOCKED"
         document.retryable = False
     elif final and review_on_final:
-        document.status = "review_required"
-        document.stage = "review"
-        document.error_code = error_code
-        document.retryable = False
+        if (
+            document.metadata_json
+            and document.metadata_json.get("record_type") in CONTENT_MODEL_STRATEGIES
+        ):
+            document.status = "failed"
+            document.stage = "failed"
+            document.error_code = error_code
+            document.retryable = False
+        else:
+            document.status = "review_required"
+            document.stage = "review"
+            document.error_code = error_code
+            document.retryable = False
     elif final:
         document.status = "failed"
         document.stage = "failed"
         document.error_code = error_code
-        document.retryable = True
+        # A normal item retry starts at publication and must never turn a
+        # failed model/OCR source candidate into a Dify request.  Only the
+        # separate, bounded model-contract retry may reuse this document.
+        document.retryable = False
     else:
         document.status = "awaiting_model"
         document.stage = "model_retry"
         document.error_code = error_code
         document.retryable = False
     document.error_message = _model_contract_error_message(exc)
+    if document.status == "failed":
+        _invalidate_methodology_candidates_for_failed_case(document)
 
 
 def _plan_post_publication_unlocked(session, batch_id: str) -> list[str]:
@@ -1903,31 +3679,6 @@ def _plan_post_publication_unlocked(session, batch_id: str) -> list[str]:
             (int(item.shard_index) for item in existing),
             default=0,
         )
-        seen_content_sha256 = {
-            _existing_shard_publication_digest(item)
-            for item in existing
-            if item.content_sha256
-            and item.status in {"succeeded", "shard_pending", "shard_indexing"}
-        }
-        global_shards = list(
-            session.scalars(
-                select(DifyPublicationShard)
-                .join(CleaningFile, DifyPublicationShard.file_id == CleaningFile.id)
-                .join(CleaningBatch, CleaningFile.batch_id == CleaningBatch.id)
-                .where(
-                    CleaningBatch.knowledge_base_code == batch.knowledge_base_code,
-                    CleaningBatch.strategy_code == batch.strategy_code,
-                    CleaningBatch.spec_revision == batch.spec_revision,
-                    DifyPublicationShard.status.in_(
-                        ("succeeded", "shard_pending", "shard_indexing")
-                    ),
-                    DifyPublicationShard.file_id != file_row.id,
-                )
-            )
-        )
-        seen_content_sha256.update(
-            _normalized_publication_digest(item.markdown) for item in global_shards if item.markdown
-        )
         for plan in plans:
             from ...cleaning import finalize_knowledge_markdown
 
@@ -1937,50 +3688,92 @@ def _plan_post_publication_unlocked(session, batch_id: str) -> list[str]:
                 (item for item in existing if _existing_shard_publication_digest(item) == digest),
                 None,
             )
-            if existing_same_content is not None and existing_same_content.status == "failed":
-                # A failed shard is not evidence that the content reached
-                # Dify.  Reuse it for the late document instead of inserting
-                # a second row that violates the file/content unique key.
-                existing_same_content.status = "shard_pending"
-                existing_same_content.attempts = 0
-                existing_same_content.last_error = ""
-                existing_same_content.item_count = len(plan.items)
-                existing_same_content.content_bytes = len(shard_markdown.encode("utf-8"))
-                existing_same_content.markdown = shard_markdown
-                if existing_same_content.id not in shard_ids:
-                    shard_ids.append(existing_same_content.id)
+            if existing_same_content is not None:
+                # A local shard row, even one marked succeeded, is not proof
+                # of a currently retrievable Dify result.  For the same file
+                # we reuse the unique shard row as recoverable coordination:
+                # failed/succeeded rows are (re)published and an in-flight
+                # row keeps its existing bounded delivery.  Cross-file local
+                # rows are never terminal duplicate evidence at this planner
+                # seam; they receive an independent publication shard below.
+                if existing_same_content.status == "shard_indexing":
+                    # A publisher has already committed the claim and may be
+                    # performing slow remote reads. Do not attach a later
+                    # document to its cached relationship collection; the next
+                    # planner pass will give this unbound row a runnable shard.
+                    continue
+                if existing_same_content.status in {"failed", "succeeded"}:
+                    was_failed = existing_same_content.status == "failed"
+                    existing_same_content.status = "shard_pending"
+                    existing_same_content.last_error = ""
+                    if was_failed:
+                        existing_same_content.attempts = 0
+                    existing_same_content.item_count = len(plan.items)
+                    existing_same_content.content_bytes = len(shard_markdown.encode("utf-8"))
+                    existing_same_content.markdown = shard_markdown
+                    existing_metadata = dict(existing_same_content.metadata_json or {})
+                    existing_metadata["publication_content_sha256"] = digest
+                    existing_same_content.metadata_json = existing_metadata
+                    if existing_same_content.id not in shard_ids:
+                        shard_ids.append(existing_same_content.id)
                 for parent_index, item in enumerate(plan.items, start=1):
                     document = by_id[item.item_id]
                     document.shard_id = existing_same_content.id
                     document.shard_parent_index = parent_index
                 continue
-            if digest in seen_content_sha256:
-                # The source cleaner already treats exact cleaned-content
-                # duplicates as an auditable no-op.  Apply the same rule at
-                # post-shard level so a late model child cannot trip the
-                # DifyPublicationShard(file_id, content_sha256) unique key
-                # and strand the whole file in a rolled-back transaction.
-                for item in plan.items:
-                    document = by_id[item.item_id]
-                    document.status = "excluded"
-                    document.stage = "duplicate_noop"
-                    document.error_code = "EXACT_CONTENT_DUPLICATE"
-                    document.error_message = "相同清洗内容已存在，未重复发布"
-                    document.retryable = False
-                    document.audit_json = {
-                        **(document.audit_json or {}),
-                        "duplicate_of_content_sha256": digest,
-                        "duplicate_scope": {
-                            "knowledge_base_code": batch.knowledge_base_code,
-                            "strategy_code": batch.strategy_code,
-                            "spec_revision": batch.spec_revision,
-                        },
-                    }
-                continue
-            seen_content_sha256.add(digest)
             first_document = by_id[plan.items[0].item_id]
             from ...cleaning import STRATEGY_REGISTRY
             from .cleaning import _project_dify_metadata
+
+            remote_candidates = list(
+                session.scalars(
+                    select(DifyPublicationShard)
+                    .join(CleaningFile, DifyPublicationShard.file_id == CleaningFile.id)
+                    .join(CleaningBatch, CleaningFile.batch_id == CleaningBatch.id)
+                    .where(
+                        CleaningBatch.knowledge_base_code == batch.knowledge_base_code,
+                        CleaningBatch.strategy_code == batch.strategy_code,
+                        CleaningBatch.spec_revision == batch.spec_revision,
+                        CleaningFile.id != file_row.id,
+                        DifyPublicationShard.status == "succeeded",
+                        DifyPublicationShard.remote_deleted_at.is_(None),
+                    )
+                    .order_by(DifyPublicationShard.updated_at.desc())
+                )
+            )
+            remote_candidate = next(
+                (
+                    candidate
+                    for candidate in remote_candidates
+                    if _existing_shard_publication_digest(candidate) == digest
+                    and str(candidate.dify_document_id or "").strip()
+                    and re.fullmatch(
+                        r"[0-9a-f]{64}",
+                        str(
+                            (candidate.metadata_json or {}).get("remote_content_witness_sha256")
+                            or ""
+                        ).strip(),
+                    )
+                ),
+                None,
+            )
+            remote_candidate_id = str(
+                (remote_candidate.dify_document_id if remote_candidate is not None else "") or ""
+            ).strip()
+            remote_candidate_witness = str(
+                (
+                    (remote_candidate.metadata_json or {}).get("remote_content_witness_sha256")
+                    if remote_candidate is not None
+                    else ""
+                )
+                or ""
+            ).strip()
+            if not (
+                remote_candidate_id and re.fullmatch(r"[0-9a-f]{64}", remote_candidate_witness)
+            ):
+                remote_candidate = None
+                remote_candidate_id = ""
+                remote_candidate_witness = ""
 
             shard_metadata = dict(first_document.metadata_json or {})
             shard_metadata.update(
@@ -1990,6 +3783,7 @@ def _plan_post_publication_unlocked(session, batch_id: str) -> list[str]:
                     "cleaning_strategy": batch.strategy_code,
                     "cleaning_spec_revision": batch.spec_revision,
                     "source_title": str(shard_metadata.get("source_title") or first_document.title),
+                    "publication_content_sha256": digest,
                 }
             )
             shard_metadata = _project_dify_metadata(
@@ -2007,6 +3801,17 @@ def _plan_post_publication_unlocked(session, batch_id: str) -> list[str]:
                 "parent_chunk_overlap": 0,
                 "child_chunk_overlap": 0,
             }
+            if remote_candidate is not None:
+                # This is merely a candidate.  The publisher must still
+                # re-read this exact remote id, controlled metadata and the
+                # actual parent/child witness before it may reuse the result.
+                shard_metadata["remote_content_witness_sha256"] = remote_candidate_witness
+                # A cross-file result is a verification candidate, not a
+                # replacement owned by this new source.  Keep that distinction
+                # durable because a metadata mismatch can legitimately require
+                # a new document later, but must never delete the source that
+                # first published this candidate.
+                shard_metadata["_dify_remote_reference_ownership"] = "shared_candidate"
             shard = DifyPublicationShard(
                 file_id=file_row.id,
                 shard_index=next_shard_index + plan.index,
@@ -2016,6 +3821,12 @@ def _plan_post_publication_unlocked(session, batch_id: str) -> list[str]:
                 content_sha256=digest,
                 markdown=shard_markdown,
                 metadata_json=shard_metadata,
+                dify_document_id=remote_candidate_id or None,
+                dify_batch_id=(
+                    str(remote_candidate.dify_batch_id or "")
+                    if remote_candidate is not None
+                    else None
+                ),
             )
             session.add(shard)
             session.flush()
@@ -2075,6 +3886,23 @@ def _fallback_failed_model_documents(
         for document in candidates
     ):
         return False, [], []
+    if batch.strategy_code in CONTENT_MODEL_STRATEGIES:
+        touched_files: set[str] = set()
+        for document in candidates:
+            document.status = "failed"
+            document.stage = "failed"
+            document.error_code = reason_code
+            document.error_message = reason_message
+            document.retryable = False
+            document.audit_json = dict(document.audit_json or {})
+            document.audit_json.pop("source_markdown_fallback", None)
+            document.__dict__.pop("_model_review_payload_for_artifact", None)
+            document.__dict__.pop("_model_review_request_for_artifact", None)
+            touched_files.add(str(document.file_id))
+        for file_id in touched_files:
+            _refresh_file_state(session, file_id, commit=False)
+        _finish_batch(session, batch_id)
+        return True, [], []
     touched_files: set[str] = set()
     for document in candidates:
         source_markdown = document.cleaned_markdown
@@ -2164,19 +3992,22 @@ def _handle_terminal_batch_result_error(
         for key, value in (task.result_counts or {}).items()
         if key != "provider_terminal_batches"
     }
-    task.result_counts = {
-        **previous,
-        "candidate_count": task.candidate_count,
-        "succeeded": int(previous.get("succeeded") or 0),
-        "excluded": int(previous.get("excluded") or 0),
-        "review": int(previous.get("review") or 0),
-        "fallback": sum(
-            1
-            for document in documents
-            if (document.audit_json or {}).get("source_markdown_fallback", {}).get("applied")
-        ),
-        "failed": sum(1 for document in documents if document.status == "failed"),
-    }
+    task.result_counts = merge_result_counts_preserving_provider_ledger(
+        task,
+        {
+            **previous,
+            "candidate_count": task.candidate_count,
+            "succeeded": int(previous.get("succeeded") or 0),
+            "excluded": int(previous.get("excluded") or 0),
+            "review": int(previous.get("review") or 0),
+            "fallback": sum(
+                1
+                for document in documents
+                if (document.audit_json or {}).get("source_markdown_fallback", {}).get("applied")
+            ),
+            "failed": sum(1 for document in documents if document.status == "failed"),
+        },
+    )
     task.provider_batch_id = None
     task.provider_batch_ids = []
     task.provider_input_file_ids = []
@@ -2213,7 +4044,7 @@ def _validate_shard_structure(structure: dict[str, Any], *, item_count: int) -> 
         raise ValueError(f"Dify父块数量不足：{parent_count} < {item_count}")
 
 
-def _finish_model_task(task_id: str) -> None:
+def _finish_model_task(task_id: str, *, lease_token: str | None = None) -> None:
     with SessionLocal() as session:
         task = session.scalar(
             select(ModelCleaningTask).where(ModelCleaningTask.id == task_id).with_for_update()
@@ -2222,9 +4053,15 @@ def _finish_model_task(task_id: str) -> None:
             return
         if task.status == "cancelled":
             return
+        if lease_token is not None:
+            _assert_active_model_lease(session, task_id, lease_token)
         batch = session.get(CleaningBatch, task.batch_id)
+        if batch is not None:
+            _require_acceptance_release_receipt(task, batch)
         task.status = "completed"
         task.last_error = ""
+        task.lease_token = None
+        task.lease_expires_at = None
         # Model completion changes document statuses directly.  Refresh every
         # source file before aggregating the batch so a normal strategy with a
         # review-required document cannot remain falsely in awaiting_model /
@@ -2339,6 +4176,7 @@ def _finish_model_task(task_id: str) -> None:
 )
 def process_realtime_model_task(self, task_id: str) -> bool:
     client: BailianClient | None = None
+    token = ""
     fallback_pending_ids: list[str] = []
     fallback_shard_ids: list[str] = []
     try:
@@ -2350,6 +4188,18 @@ def process_realtime_model_task(self, task_id: str) -> bool:
             batch = session.get(CleaningBatch, task.batch_id)
             if batch is None:
                 return False
+            _validate_acceptance_manifest(task, batch)
+            manifest = (task.result_counts or {}).get("acceptance_manifest") or {}
+            campaign = manifest.get("campaign") or {}
+            parity = (task.result_counts or {}).get("_acceptance_parity")
+            is_parity = isinstance(parity, dict) or (
+                isinstance(campaign.get("operation_ids"), dict)
+                and bool(campaign["operation_ids"].get("batch"))
+            )
+            if isinstance(manifest, dict) and is_parity:
+                parity = (task.result_counts or {}).get("_acceptance_parity") or {}
+                if parity.get("phase") != "batch_validated":
+                    raise _AcceptanceManifestRejected("Batch对照尚未独立验证完成")
             now = datetime.now(timezone.utc)
             token = uuid.uuid4().hex
             claimed = session.execute(
@@ -2364,7 +4214,7 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                     status="running",
                     attempts=ModelCleaningTask.attempts + 1,
                     lease_token=token,
-                    lease_expires_at=now + timedelta(minutes=30),
+                    lease_expires_at=now + _MODEL_LEASE_DURATION,
                 )
             ).rowcount
             if claimed != 1:
@@ -2372,31 +4222,116 @@ def process_realtime_model_task(self, task_id: str) -> bool:
             task = session.get(ModelCleaningTask, task_id)
             if task is None:
                 return False
+            session.refresh(task)
+            session.execute(
+                update(CleaningDocument)
+                .where(
+                    CleaningDocument.file_id.in_(
+                        select(CleaningFile.id).where(CleaningFile.batch_id == batch.id)
+                    ),
+                    CleaningDocument.status == "model_processing",
+                )
+                .values(status="awaiting_model", stage="model_retry")
+            )
             session.commit()
             counts = {"succeeded": 0, "excluded": 0, "review": 0, "failed": 0}
-            usage = {"input_tokens": 0, "output_tokens": 0}
+            usage = {
+                key: max(0, int((task.actual_usage or {}).get(key) or 0))
+                for key in ("input_tokens", "output_tokens")
+            }
             for page in _iter_realtime_document_pages(session, batch.id):
                 for document in page:
+                    _renew_active_model_lease(session, task_id, token)
                     document.status = "model_processing"
                     document.stage = "model_running"
                     source_markdown = document.cleaned_markdown
                     source_metadata = dict(document.metadata_json or {})
                     source_chunking = dict(document.chunking_json or {})
-                    audit = dict(document.audit_json or {})
-                    audit["model_attempts"] = 1
-                    document.audit_json = audit
                     session.commit()
                     payload: dict[str, Any] | None = None
                     try:
                         request = _request(document, batch.strategy_code)
-                        _store_model_review_request_context(
+                        _store_fenced_model_review_request_context(
+                            session,
                             document,
                             request,
+                            task_id=task_id,
+                            lease_token=token,
                             model_name=task.model,
                             prompt_version=task.prompt_version,
                         )
-                        session.commit()
+                        _wait_for_realtime_capacity(
+                            request,
+                            model=task.model,
+                            before_request=lambda: _renew_active_model_lease(
+                                session, task_id, token
+                            ),
+                        )
+                        call_id = _reserve_provider_call(
+                            session, task, document, request, lease_token=token
+                        )
                         payload, item_usage = _realtime_chat(client, request, model=task.model)
+                        _persist_realtime_usage(
+                            session, task, usage, item_usage, call_id=call_id, lease_token=token
+                        )
+                        _assert_active_model_lease(session, task_id, token)
+                        parity = (task.result_counts or {}).get("_acceptance_parity") or {}
+                        if isinstance((task.result_counts or {}).get("acceptance_manifest"), dict):
+                            batch_projection = (parity.get("batch_projections") or {}).get(
+                                str(document.id)
+                            )
+                            realtime_projection = _acceptance_batch_projection(
+                                batch.strategy_code,
+                                request,
+                                payload,
+                                prompt_version=task.prompt_version,
+                            )
+                            if not isinstance(batch_projection, dict) or (
+                                realtime_projection.get("projection_digest")
+                                != batch_projection.get("projection_digest")
+                            ):
+                                request_context = _model_review_request_context(
+                                    request,
+                                    model_name=task.model,
+                                    prompt_version=task.prompt_version,
+                                )
+                                artifact_path = _save_model_review_artifact(
+                                    document,
+                                    strategy_code=batch.strategy_code,
+                                    source_markdown=source_markdown,
+                                    source_metadata=source_metadata,
+                                    model_payload=payload,
+                                    request_context=request_context,
+                                )
+                                artifact_sha256 = hashlib.sha256(
+                                    Path(artifact_path).read_bytes()
+                                ).hexdigest()
+                                parity["phase"] = "parity_review_pending"
+                                parity["review_reason"] = "两路投影digest不同，自动语义等价不足"
+                                parity["realtime_projection"] = realtime_projection
+                                parity["realtime_artifact_path"] = artifact_path
+                                parity["realtime_artifact_sha256"] = artifact_sha256
+                                pending_counts = dict(task.result_counts or {})
+                                pending_counts["_acceptance_parity"] = parity
+                                task.result_counts = merge_result_counts_preserving_provider_ledger(
+                                    task, pending_counts
+                                )
+                                task.status = "awaiting_approval"
+                                task.last_error = (
+                                    "两路结果需人工核对语义等价；未发布且不追加模型调用"
+                                )
+                                batch.status = "awaiting_model_approval"
+                                session.commit()
+                                return False
+                            realtime_projections = dict(parity.get("realtime_projections") or {})
+                            realtime_projections[str(document.id)] = realtime_projection
+                            parity["realtime_projections"] = realtime_projections
+                            parity["phase"] = "realtime_running"
+                            counts_state = dict(task.result_counts or {})
+                            counts_state["_acceptance_parity"] = parity
+                            task.result_counts = merge_result_counts_preserving_provider_ledger(
+                                task, counts_state
+                            )
                         _apply_model_payload(
                             document,
                             batch.strategy_code,
@@ -2406,6 +4341,7 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                             model_name=task.model,
                             prompt_version=task.prompt_version,
                         )
+                        _assert_active_model_lease(session, task_id, token)
                         _finalize_model_document(document, strategy_code=batch.strategy_code)
                         _apply_source_markdown_fallback(
                             document,
@@ -2414,22 +4350,33 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                             source_metadata=source_metadata,
                             source_chunking=source_chunking,
                         )
-                        usage["input_tokens"] += item_usage["input_tokens"]
-                        usage["output_tokens"] += item_usage["output_tokens"]
                     except ModelNoResponseError:
-                        audit = dict(document.audit_json or {})
-                        audit["model_attempts"] = 2
-                        document.audit_json = audit
                         try:
                             request = _request(document, batch.strategy_code)
-                            _store_model_review_request_context(
+                            _store_fenced_model_review_request_context(
+                                session,
                                 document,
                                 request,
+                                task_id=task_id,
+                                lease_token=token,
                                 model_name=task.model,
                                 prompt_version=task.prompt_version,
                             )
-                            session.commit()
+                            _wait_for_realtime_capacity(
+                                request,
+                                model=task.model,
+                                before_request=lambda: _renew_active_model_lease(
+                                    session, task_id, token
+                                ),
+                            )
+                            call_id = _reserve_provider_call(
+                                session, task, document, request, lease_token=token
+                            )
                             payload, item_usage = _realtime_chat(client, request, model=task.model)
+                            _persist_realtime_usage(
+                                session, task, usage, item_usage, call_id=call_id, lease_token=token
+                            )
+                            _assert_active_model_lease(session, task_id, token)
                             _apply_model_payload(
                                 document,
                                 batch.strategy_code,
@@ -2439,6 +4386,7 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                                 model_name=task.model,
                                 prompt_version=task.prompt_version,
                             )
+                            _assert_active_model_lease(session, task_id, token)
                             _finalize_model_document(document, strategy_code=batch.strategy_code)
                             _apply_source_markdown_fallback(
                                 document,
@@ -2447,9 +4395,9 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                                 source_metadata=source_metadata,
                                 source_chunking=source_chunking,
                             )
-                            usage["input_tokens"] += item_usage["input_tokens"]
-                            usage["output_tokens"] += item_usage["output_tokens"]
                         except Exception as retry_exc:
+                            _raise_if_model_lease_lost(retry_exc)
+                            _renew_active_model_lease(session, task_id, token)
                             _mark_contract_failure(
                                 document,
                                 retry_exc,
@@ -2471,10 +4419,84 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                                 source_chunking=source_chunking,
                             )
                     except Exception as original_exc:
+                        _raise_if_model_lease_lost(original_exc)
                         contract_exc = original_exc
                         repaired = False
                         if (
+                            batch.strategy_code in CONTENT_MODEL_STRATEGIES
+                            and not isinstance(
+                                (task.result_counts or {}).get("acceptance_manifest"), dict
+                            )
+                            and (
+                                not isinstance(original_exc, _ModelCallLimitExceeded)
+                                and (
+                                    batch.strategy_code != "personal_business_consultation"
+                                    or not (
+                                        isinstance(payload, dict)
+                                        and str(payload.get("schema_version") or "")
+                                        == "consultation-rag-v1"
+                                    )
+                                )
+                            )
+                        ):
+                            # Content-model semantic/transport failures get one
+                            # complete replay of the same anonymized request.
+                            # Keeping this in the same worker attempt prevents a
+                            # Celery/message redelivery from creating a third
+                            # provider call.
+                            try:
+                                request = _request(document, batch.strategy_code)
+                                _store_fenced_model_review_request_context(
+                                    session,
+                                    document,
+                                    request,
+                                    task_id=task_id,
+                                    lease_token=token,
+                                    model_name=task.model,
+                                    prompt_version=task.prompt_version,
+                                )
+                                _wait_for_realtime_capacity(
+                                    request,
+                                    model=task.model,
+                                    before_request=lambda: _renew_active_model_lease(
+                                        session, task_id, token
+                                    ),
+                                )
+                                call_id = _reserve_provider_call(
+                                    session, task, document, request, lease_token=token
+                                )
+                                payload, item_usage = _realtime_chat(
+                                    client, request, model=task.model
+                                )
+                                _persist_realtime_usage(
+                                    session,
+                                    task,
+                                    usage,
+                                    item_usage,
+                                    call_id=call_id,
+                                    lease_token=token,
+                                )
+                                _assert_active_model_lease(session, task_id, token)
+                                _apply_model_payload(
+                                    document,
+                                    batch.strategy_code,
+                                    request,
+                                    payload,
+                                    session=session,
+                                    model_name=task.model,
+                                    prompt_version=task.prompt_version,
+                                )
+                                _assert_active_model_lease(session, task_id, token)
+                                _finalize_model_document(
+                                    document, strategy_code=batch.strategy_code
+                                )
+                                repaired = True
+                            except Exception as retry_exc:
+                                _raise_if_model_lease_lost(retry_exc)
+                                contract_exc = retry_exc
+                        elif (
                             batch.strategy_code == "personal_business_consultation"
+                            and not isinstance(original_exc, _ModelCallLimitExceeded)
                             and isinstance(payload, dict)
                             and str(payload.get("schema_version") or "") == "consultation-rag-v1"
                         ):
@@ -2484,31 +4506,57 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                             # and never echo the failed model payload.
                             try:
                                 audit = dict(document.audit_json or {})
-                                audit["model_attempts"] = 2
                                 audit["model_repair_attempted"] = True
                                 document.audit_json = audit
                                 request = _request(document, batch.strategy_code)
                                 repair_hint = (
                                     "只修复 consultation-rag-v1 的 JSON/证据契约；"
-                                    "每个案例至少保留 background 与 problem 的可回溯原文证据，"
-                                    "retrieval_queries 必须为 3~6 条简体中文问法；"
+                                    "每个案例必须有核心问题、必要情境和至少一条可回溯证据，"
+                                    "retrieval_queries 可为空且不得新增事实；"
                                     "不要改变事实、不要新增案例或人物。\n"
                                     + _model_contract_retry_hint(contract_exc)
                                 )
-                                _store_model_review_request_context(
+                                _store_fenced_model_review_request_context(
+                                    session,
                                     document,
                                     request,
+                                    task_id=task_id,
+                                    lease_token=token,
                                     model_name=task.model,
                                     prompt_version=task.prompt_version,
                                     repair_hint=repair_hint,
                                 )
-                                session.commit()
+                                _wait_for_realtime_capacity(
+                                    request,
+                                    model=task.model,
+                                    repair_hint=repair_hint,
+                                    before_request=lambda: _renew_active_model_lease(
+                                        session, task_id, token
+                                    ),
+                                )
+                                call_id = _reserve_provider_call(
+                                    session,
+                                    task,
+                                    document,
+                                    request,
+                                    repair_hint=repair_hint,
+                                    lease_token=token,
+                                )
                                 payload, item_usage = _realtime_chat(
                                     client,
                                     request,
                                     model=task.model,
                                     repair_hint=repair_hint,
                                 )
+                                _persist_realtime_usage(
+                                    session,
+                                    task,
+                                    usage,
+                                    item_usage,
+                                    call_id=call_id,
+                                    lease_token=token,
+                                )
+                                _assert_active_model_lease(session, task_id, token)
                                 _apply_model_payload(
                                     document,
                                     batch.strategy_code,
@@ -2519,6 +4567,7 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                                     prompt_version=task.prompt_version,
                                     repair_hint=repair_hint,
                                 )
+                                _assert_active_model_lease(session, task_id, token)
                                 _finalize_model_document(
                                     document, strategy_code=batch.strategy_code
                                 )
@@ -2529,12 +4578,12 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                                     source_metadata=source_metadata,
                                     source_chunking=source_chunking,
                                 )
-                                usage["input_tokens"] += item_usage["input_tokens"]
-                                usage["output_tokens"] += item_usage["output_tokens"]
                                 repaired = True
                             except Exception as repair_exc:
+                                _raise_if_model_lease_lost(repair_exc)
                                 contract_exc = repair_exc
                         if not repaired:
+                            _renew_active_model_lease(session, task_id, token)
                             _mark_contract_failure(
                                 document,
                                 contract_exc,
@@ -2555,20 +4604,94 @@ def process_realtime_model_task(self, task_id: str) -> bool:
                                 source_metadata=source_metadata,
                                 source_chunking=source_chunking,
                             )
+                    _renew_active_model_lease(session, task_id, token)
                     _count_model_result(counts, document)
                     session.commit()
-            task.result_counts = counts
+            _assert_active_model_lease(session, task_id, token)
+            task.result_counts = merge_result_counts_preserving_provider_ledger(task, counts)
             task.actual_usage = usage
+            if isinstance((task.result_counts or {}).get("acceptance_manifest"), dict):
+                parity = dict((task.result_counts or {}).get("_acceptance_parity") or {})
+                batch_projections = parity.get("batch_projections") or {}
+                realtime_projections = parity.get("realtime_projections") or {}
+                if set(batch_projections) != set(realtime_projections):
+                    raise _AcceptanceManifestRejected("Realtime对照结果不完整，禁止发布")
+                parity["phase"] = "realtime_validated"
+                parity["realtime_qualified"] = True
+                parity["batch_qualified"] = True
+                parity["semantic_equivalent"] = all(
+                    batch_projections[item].get("projection_digest")
+                    == realtime_projections[item].get("projection_digest")
+                    for item in batch_projections
+                )
+                if not parity["semantic_equivalent"]:
+                    raise _AcceptanceManifestRejected("双路语义投影不一致，禁止发布")
+                parity["release_receipt"] = {
+                    "status": "approved",
+                    "task_id": str(task.id),
+                    "canonical_transport": "realtime",
+                    "batch_qualified": True,
+                    "realtime_qualified": True,
+                    "semantic_equivalent": True,
+                    "manifest_sha256": hashlib.sha256(
+                        json.dumps(
+                            (task.result_counts or {}).get("acceptance_manifest"),
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                    "candidate_fingerprint": task.candidate_fingerprint,
+                    "source_document_ids": sorted(batch_projections),
+                    "prompt_version": task.prompt_version,
+                    "batch_projection_digests": {
+                        key: value.get("projection_digest")
+                        for key, value in batch_projections.items()
+                    },
+                    "realtime_projection_digests": {
+                        key: value.get("projection_digest")
+                        for key, value in realtime_projections.items()
+                    },
+                    "batch_call_ids": sorted(
+                        str(entry.get("call_id"))
+                        for entry in (task.result_counts or {}).get(
+                            "_provider_budget_reservations", []
+                        )
+                        if entry.get("transport_mode") == "batch"
+                    ),
+                    "realtime_call_ids": sorted(
+                        str(entry.get("call_id"))
+                        for entry in (task.result_counts or {}).get(
+                            "_provider_budget_reservations", []
+                        )
+                        if entry.get("transport_mode") == "realtime"
+                    ),
+                }
+                counts_state = dict(task.result_counts or {})
+                counts_state["_acceptance_parity"] = parity
+                counts_state["acceptance_release_receipt"] = parity["release_receipt"]
+                task.result_counts = merge_result_counts_preserving_provider_ledger(
+                    task, counts_state
+                )
             session.commit()
-        _finish_model_task(task_id)
+        _finish_model_task(task_id, lease_token=token)
         return True
     except Exception as exc:
+        if isinstance(exc, _ModelLeaseLost):
+            logger.info("realtime model worker lost lease; discarded stale side effects")
+            return False
         logger.exception("realtime model cleaning task failed")
         with SessionLocal() as session:
             task = session.get(ModelCleaningTask, task_id)
             if task is not None:
+                try:
+                    _assert_active_model_lease(session, task_id, token)
+                except _ModelLeaseLost:
+                    logger.info("realtime model worker lost lease during failure recovery")
+                    return False
                 task.status = "failed"
                 task.last_error = safe_exception_message(exc, limit=2000)
+                task.lease_token = None
+                task.lease_expires_at = None
                 batch = session.get(CleaningBatch, task.batch_id)
                 if (
                     batch is not None
@@ -2617,6 +4740,7 @@ def _write_batch_files(
     batch: CleaningBatch,
     documents: Iterable[CleaningDocument],
     *,
+    session=None,
     repair_hints: dict[str, str] | None = None,
 ) -> list[Path]:
     paths: list[Path] = []
@@ -2639,6 +4763,7 @@ def _write_batch_files(
                 prompt_version=task.prompt_version,
                 model=task.model,
                 repair_hint=repair_hint,
+                max_tokens=settings.cleaning_model_max_tokens,
             )
             if len(line) > 1_000_000:
                 raise ValueError("单条Batch请求超过1MB")
@@ -2662,11 +4787,58 @@ def _write_batch_files(
     return paths
 
 
+def _documents_in_batch_path(
+    path: Path,
+    documents: Iterable[CleaningDocument],
+    *,
+    task: ModelCleaningTask,
+    batch: CleaningBatch,
+) -> list[CleaningDocument]:
+    """Return the exact durable candidates written into one JSONL file.
+
+    Provider charging and our two-call limit are per JSONL request.  Do not
+    infer ownership from the surrounding batch after a partial upload: read
+    the file that was actually handed to the provider and verify every
+    ``custom_id`` against the immutable candidate set.
+    """
+
+    by_custom_id: dict[str, CleaningDocument] = {}
+    for document in documents:
+        request = _request(document, batch.strategy_code)
+        custom_id = build_custom_id(request, task.prompt_version)
+        if custom_id in by_custom_id:
+            raise ValueError("Batch输入存在重复 custom_id，拒绝提交")
+        by_custom_id[custom_id] = document
+
+    selected: list[CleaningDocument] = []
+    seen: set[str] = set()
+    with path.open("rb") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Batch输入JSONL无效：第{line_number}行") from exc
+            custom_id = str(row.get("custom_id") or "")
+            document = by_custom_id.get(custom_id)
+            if not custom_id or document is None or custom_id in seen:
+                raise ValueError(f"Batch输入custom_id无效或重复：第{line_number}行")
+            seen.add(custom_id)
+            selected.append(document)
+    if not selected:
+        raise ValueError("Batch输入JSONL为空，拒绝提交")
+    return selected
+
+
 def _recover_created_provider_batches(
     task_id: str,
     provider_batch_ids: list[str],
     provider_input_file_ids: list[str],
     reason: str,
+    *,
+    provider_batch_file_ids: dict[str, object] | None = None,
+    provider_batch_document_ids: dict[str, list[str]] | None = None,
 ) -> bool | str:
     """Persist remote IDs after a commit failure in the create window."""
     if not provider_batch_ids:
@@ -2690,11 +4862,21 @@ def _recover_created_provider_batches(
             return "cancelled"
         task.provider_batch_ids = list(provider_batch_ids)
         task.provider_batch_id = provider_batch_ids[0]
-        task.provider_input_file_ids = list(provider_input_file_ids)
-        task.provider_output_file_ids = []
-        task.provider_error_file_ids = []
         result_counts = dict(task.result_counts or {})
         result_counts.pop("provider_terminal_batches", None)
+        task.result_counts = result_counts
+        if provider_batch_file_ids:
+            set_provider_batch_file_owners(task, provider_batch_file_ids)
+        else:
+            task.provider_input_file_ids = list(provider_input_file_ids)
+            task.provider_output_file_ids = []
+            task.provider_error_file_ids = []
+        if provider_batch_document_ids:
+            result_counts["provider_batch_document_ids"] = {
+                str(batch_id): [str(document_id) for document_id in document_ids]
+                for batch_id, document_ids in provider_batch_document_ids.items()
+            }
+        result_counts = dict(task.result_counts or {})
         task.result_counts = result_counts
         task.status = "batch_running"
         task.last_error = reason[:2000]
@@ -2704,6 +4886,59 @@ def _recover_created_provider_batches(
             document.status = "model_processing"
             document.stage = "model_batch_running"
         session.commit()
+
+    # A database commit can fail after the provider has acknowledged create.
+    # Recovery must then account for the exact JSONL candidates before polling;
+    # otherwise the recovered request is billable but has neither a durable
+    # attempt nor a budget reservation.  If an uncertain commit already wrote
+    # a reservation, its matching document attempt makes this idempotent.
+    if provider_batch_document_ids:
+        recovered_document_ids = {
+            str(document_id)
+            for batch_id in provider_batch_ids
+            for document_id in provider_batch_document_ids.get(batch_id, [])
+            if document_id
+        }
+        with SessionLocal() as session:
+            task = session.scalar(
+                select(ModelCleaningTask).where(ModelCleaningTask.id == task_id).with_for_update()
+            )
+            if task is None or task.status != "batch_running":
+                return False
+            batch = session.get(CleaningBatch, task.batch_id)
+            if batch is None:
+                return False
+            for document_id in sorted(recovered_document_ids):
+                document = session.get(CleaningDocument, document_id)
+                if document is None:
+                    return False
+                entries = list(
+                    (task.result_counts or {}).get("_provider_budget_reservations") or []
+                )
+                if any(
+                    isinstance(entry, dict)
+                    and str(entry.get("document_id") or "") == str(document.id)
+                    for entry in entries
+                ):
+                    continue
+                audit = dict(document.audit_json or {})
+                raw_attempts = audit.get("model_attempts")
+                # This current-worker recovery has an exact remote Batch and
+                # exact JSONL ownership, so legacy rows which omitted the
+                # initial zero can be safely initialized.  Any non-zero
+                # unledgered count remains ambiguous and therefore fails
+                # closed rather than manufacturing another paid attempt.
+                if raw_attempts is not None and raw_attempts != 0:
+                    return False
+                audit["model_attempts"] = 0
+                document.audit_json = audit
+                _reserve_provider_call(
+                    session,
+                    task,
+                    document,
+                    _request(document, batch.strategy_code),
+                    transport_mode="batch",
+                )
     return True
 
 
@@ -2717,6 +4952,9 @@ def submit_batch_model_task(self, task_id: str) -> bool:
     client: BailianClient | None = None
     created_batch_ids: list[str] = []
     created_input_ids: list[str] = []
+    created_batch_file_ids: dict[str, list[str]] = {}
+    created_batch_document_ids: dict[str, list[str]] = {}
+    definite_failed_input_ids: list[str] = []
     fallback_pending_ids: list[str] = []
     fallback_shard_ids: list[str] = []
     try:
@@ -2729,6 +4967,9 @@ def submit_batch_model_task(self, task_id: str) -> bool:
             if task.approval_fingerprint != task.candidate_fingerprint:
                 raise ValueError("候选集已变化，费用确认失效")
             batch = session.get(CleaningBatch, task.batch_id)
+            if batch is None:
+                return False
+            _validate_acceptance_manifest(task, batch)
             candidate_count = int(
                 session.scalar(
                     select(func.count())
@@ -2741,7 +4982,7 @@ def submit_batch_model_task(self, task_id: str) -> bool:
                 )
                 or 0
             )
-            if batch is None or candidate_count != task.candidate_count:
+            if candidate_count != task.candidate_count:
                 raise ValueError("模型候选数量与审批快照不一致")
             current_fingerprint = _candidate_fingerprint(
                 _iter_documents_for_batch(session, task.batch_id),
@@ -2749,11 +4990,86 @@ def submit_batch_model_task(self, task_id: str) -> bool:
             )
             if current_fingerprint != task.candidate_fingerprint:
                 raise ValueError("模型候选内容已变化，费用确认失效")
+            if task.status == "approved":
+                result_counts = dict(task.result_counts or {})
+                result_counts["provider_batch_generation"] = (
+                    int(result_counts.get("provider_batch_generation") or 0) + 1
+                )
+                task.result_counts = result_counts
             task.status = "batch_uploading"
             batch.status = "model_batch_uploading"
             session.commit()
+            task = session.scalar(
+                select(ModelCleaningTask).where(ModelCleaningTask.id == task_id).with_for_update()
+            )
+            if task is None or task.status != "batch_uploading":
+                return False
+            persisted_batch_ids = get_provider_batch_ids(task)
+            if persisted_batch_ids:
+                # Acknowledged remote Batch IDs are durable proof that a
+                # provider request may already be executing or billable.  A
+                # Celery redelivery therefore resumes polling; cancelling and
+                # recreating here would violate the document-level two-call
+                # cap and can create duplicate charges.
+                task.status = "batch_running"
+                task.provider_batch_ids = list(persisted_batch_ids)
+                task.provider_batch_id = persisted_batch_ids[0]
+                batch.status = "model_batch_running"
+                for document in _iter_documents_for_batch(session, task.batch_id):
+                    document.status = "model_processing"
+                    document.stage = "model_batch_running"
+                session.commit()
+                poll_batch_model_task.apply_async(
+                    args=[task_id], queue="ai_model_batch", countdown=60
+                )
+                return True
+            if task.provider_input_file_ids:
+                # If upload succeeded but the create response was lost, a
+                # second create is not provably free of a duplicate provider
+                # call.  Preserve the slot reservation and fail closed rather
+                # than treating an uncertain remote side effect as retryable.
+                from .cleaning import _finish_batch, _refresh_file_state
+
+                for document in _iter_documents_for_batch(session, task.batch_id):
+                    _mark_contract_failure(document, ValueError("Batch提交状态不确定"), final=True)
+                    document.error_code = "MODEL_BATCH_SUBMIT_UNCERTAIN"
+                    document.error_message = "Batch 输入已上传但未保存远端任务 ID，未重新提交"
+                    document.retryable = False
+                for file_row in batch.files:
+                    _refresh_file_state(session, file_row.id, commit=False)
+                task.status = "failed"
+                task.last_error = "Batch输入已上传但未保存远端任务 ID，未重新提交"
+                _finish_batch(session, batch.id)
+                session.commit()
+                return False
             client = _client()
-            if get_provider_batch_ids(task) or task.provider_input_file_ids:
+            with tempfile.TemporaryDirectory(prefix="jx-bailian-") as directory:
+                documents = list(_iter_documents_for_batch(session, task.batch_id))
+                paths = _write_batch_files(
+                    Path(directory),
+                    task,
+                    batch,
+                    documents,
+                    session=session,
+                )
+                session.commit()
+                if not paths:
+                    from .cleaning import _finish_batch, _refresh_file_state
+
+                    task = session.scalar(
+                        select(ModelCleaningTask)
+                        .where(ModelCleaningTask.id == task_id)
+                        .with_for_update()
+                    )
+                    if task is None:
+                        return False
+                    for file_row in batch.files:
+                        _refresh_file_state(session, file_row.id, commit=False)
+                    task.status = "failed"
+                    task.last_error = "没有可提交的模型候选；每个候选已保留各自失败原因"
+                    _finish_batch(session, batch.id)
+                    session.commit()
+                    return False
                 task = session.scalar(
                     select(ModelCleaningTask)
                     .where(ModelCleaningTask.id == task_id)
@@ -2761,29 +5077,17 @@ def submit_batch_model_task(self, task_id: str) -> bool:
                 )
                 if task is None or task.status != "batch_uploading":
                     return False
-                for provider_batch_id in get_provider_batch_ids(task):
-                    client.cancel_batch(provider_batch_id)
-                _delete_provider_files(
-                    client,
-                    task,
-                    list(task.provider_input_file_ids or []),
-                )
-                task.provider_batch_ids = []
-                task.provider_batch_id = None
-                task.provider_input_file_ids = []
-                task.cleanup_status = "not_started"
-                session.commit()
-            with tempfile.TemporaryDirectory(prefix="jx-bailian-") as directory:
-                paths = _write_batch_files(
-                    Path(directory),
-                    task,
-                    batch,
-                    _iter_documents_for_batch(session, task.batch_id),
-                )
-                session.commit()
+                generation = int((task.result_counts or {}).get("provider_batch_generation") or 0)
                 input_ids: list[str] = []
                 batch_ids: list[str] = []
+                uploaded_paths: list[tuple[str, list[CleaningDocument]]] = []
                 for path in paths:
+                    path_documents = _documents_in_batch_path(
+                        path,
+                        documents,
+                        task=task,
+                        batch=batch,
+                    )
                     task = session.scalar(
                         select(ModelCleaningTask)
                         .where(ModelCleaningTask.id == task_id)
@@ -2805,7 +5109,69 @@ def submit_batch_model_task(self, task_id: str) -> bool:
                         _cleanup_cancelled_batch_input(client, task_id, input_id)
                         return False
                     task.provider_input_file_ids = list(input_ids)
+                    _set_provider_batch_input_state(
+                        task,
+                        input_id,
+                        state="pending",
+                        document_ids=[str(document.id) for document in path_documents],
+                    )
                     session.commit()
+                    uploaded_paths.append((input_id, path_documents))
+                # An upload alone is not a provider model call. Once every
+                # JSONL input is durable, however, reserve the *entire*
+                # immutable candidate set before issuing the first create.
+                # This prevents a partial multi-file submission from passing
+                # a per-file budget check and only later discovering that the
+                # complete admission exceeds the same task's budget.
+                task = session.scalar(
+                    select(ModelCleaningTask)
+                    .where(ModelCleaningTask.id == task_id)
+                    .with_for_update()
+                )
+                if task is None or task.status != "batch_uploading":
+                    session.rollback()
+                    return False
+                reservation_call_ids = _reserve_provider_calls_group(
+                    session,
+                    task,
+                    [
+                        (document, _request(document, batch.strategy_code))
+                        for _input_id, path_documents in uploaded_paths
+                        for document in path_documents
+                    ],
+                    transport_mode="batch",
+                    expected_task_status="batch_uploading",
+                    expected_batch_generation=generation,
+                )
+                reservation_entries = {
+                    str(entry.get("document_id") or ""): str(entry.get("call_id") or "")
+                    for entry in (task.result_counts or {}).get("_provider_budget_reservations", [])
+                    if isinstance(entry, dict)
+                    and str(entry.get("call_id") or "") in set(reservation_call_ids)
+                }
+                for input_id, path_documents in uploaded_paths:
+                    _set_provider_batch_input_state(
+                        task,
+                        input_id,
+                        state="pending",
+                        document_ids=[str(document.id) for document in path_documents],
+                        reservation_call_ids=[
+                            reservation_entries[str(document.id)]
+                            for document in path_documents
+                            if str(document.id) in reservation_entries
+                        ],
+                    )
+                # The complete group reservation is the last durable local
+                # action before the first billable remote create.  A lost
+                # create response must retain the exact budget ledger rather
+                # than roll it back with the surrounding worker exception.
+                session.commit()
+                for input_id, path_documents in uploaded_paths:
+                    # A cancellation can commit in another Session after the
+                    # group reservation.  SQLAlchemy may otherwise hand back
+                    # this Session's stale identity-map object and permit the
+                    # first provider create despite the new terminal status.
+                    session.expire_all()
                     task = session.scalar(
                         select(ModelCleaningTask)
                         .where(ModelCleaningTask.id == task_id)
@@ -2813,14 +5179,80 @@ def submit_batch_model_task(self, task_id: str) -> bool:
                     )
                     if task is None or task.status != "batch_uploading":
                         session.rollback()
-                        _cleanup_cancelled_batch_input(client, task_id, input_id)
+                        _cleanup_cancelled_provider_batches(client, task_id, [], input_ids)
                         return False
-                    batch_id = client.create_batch(input_id)
+                    _set_provider_batch_input_state(
+                        task,
+                        input_id,
+                        state="create_uncertain",
+                        document_ids=[str(document.id) for document in path_documents],
+                    )
+                    # This commit is intentionally before the remote side
+                    # effect: timeout/transport/empty-response paths cannot
+                    # later masquerade as a proved-no-create failure.
+                    session.commit()
+                    try:
+                        batch_id = client.create_batch(input_id)
+                    except Exception as create_exc:
+                        if _is_definite_batch_create_failure(create_exc):
+                            task = session.scalar(
+                                select(ModelCleaningTask)
+                                .where(ModelCleaningTask.id == task_id)
+                                .with_for_update()
+                            )
+                            if task is not None:
+                                _release_uncreated_batch_input_reservation(session, task, input_id)
+                                session.commit()
+                            definite_failed_input_ids.append(input_id)
+                            raise _DefiniteBatchCreateFailure(
+                                "供应商明确拒绝Batch创建"
+                            ) from create_exc
+                        raise
                     batch_ids.append(batch_id)
                     created_batch_ids.append(batch_id)
+                    created_batch_file_ids[batch_id] = [input_id]
+                    created_batch_document_ids[batch_id] = [
+                        str(document.id) for document in path_documents
+                    ]
                     task.provider_batch_ids = list(batch_ids)
                     task.provider_batch_id = batch_ids[0]
+                    result_counts = dict(task.result_counts or {})
+                    provider_batch_document_ids = dict(
+                        result_counts.get("provider_batch_document_ids") or {}
+                    )
+                    provider_batch_document_ids[batch_id] = [
+                        str(document.id) for document in path_documents
+                    ]
+                    result_counts["provider_batch_document_ids"] = provider_batch_document_ids
+                    task.result_counts = result_counts
+                    update_provider_batch_file_owner(
+                        task,
+                        batch_id,
+                        input_file_ids=[input_id],
+                        output_file_ids=[],
+                        error_file_ids=[],
+                    )
+                    _set_provider_batch_input_state(
+                        task,
+                        input_id,
+                        state="accepted",
+                        document_ids=[str(document.id) for document in path_documents],
+                        batch_id=batch_id,
+                    )
                     session.commit()
+                    # Only an acknowledged provider Batch can consume a
+                    # document attempt or budget.  Upload/create failures have
+                    # no durable reservation and therefore cannot turn a
+                    # later safe retry into an over-limit paid request.
+                    task = session.scalar(
+                        select(ModelCleaningTask)
+                        .where(ModelCleaningTask.id == task_id)
+                        .with_for_update()
+                    )
+                    if task is None or task.status != "batch_uploading":
+                        session.rollback()
+                        _cleanup_cancelled_provider_batches(client, task_id, [batch_id], [input_id])
+                        return False
             task = session.scalar(
                 select(ModelCleaningTask).where(ModelCleaningTask.id == task_id).with_for_update()
             )
@@ -2839,13 +5271,102 @@ def submit_batch_model_task(self, task_id: str) -> bool:
         return True
     except Exception as exc:
         logger.exception("batch model submit failed")
+        if isinstance(exc, _DefiniteBatchCreateFailure):
+            # The rejected input and every later pending JSONL are proved not
+            # to have reached create.  Return only their exact admissions;
+            # any earlier accepted Batch remains durable and is recovered
+            # below rather than being rebilled or silently forgotten.
+            removable_input_ids: list[str] = list(definite_failed_input_ids)
+            with SessionLocal() as session:
+                task = session.scalar(
+                    select(ModelCleaningTask)
+                    .where(ModelCleaningTask.id == task_id)
+                    .with_for_update()
+                )
+                if task is not None:
+                    for input_id, input_state in _provider_batch_input_states(task).items():
+                        if input_state["state"] != "pending":
+                            continue
+                        if _release_uncreated_batch_input_reservation(session, task, input_id):
+                            removable_input_ids.append(input_id)
+                    session.commit()
+            for input_id in removable_input_ids:
+                if client is not None:
+                    _cleanup_cancelled_batch_input(client, task_id, input_id)
+        if (
+            created_input_ids
+            and not created_batch_ids
+            and not isinstance(exc, _DefiniteBatchCreateFailure)
+        ):
+            # ``create_batch`` may have reached the provider even when it
+            # returns no ID (timeout, empty body or a transport exception).
+            # We cannot prove that deleting the input is safe, nor can a new
+            # approval prove a second create would be free.  Preserve the
+            # exact uploaded IDs in a blocked outbox and fail closed.
+            with SessionLocal() as session:
+                task = session.scalar(
+                    select(ModelCleaningTask)
+                    .where(ModelCleaningTask.id == task_id)
+                    .with_for_update()
+                )
+                if task is not None:
+                    batch = session.get(CleaningBatch, task.batch_id)
+                    preserved_input_ids = sorted(
+                        {
+                            *[
+                                str(file_id)
+                                for file_id in (task.provider_input_file_ids or [])
+                                if file_id
+                            ],
+                            *[str(file_id) for file_id in created_input_ids if file_id],
+                        }
+                    )
+                    task.provider_input_file_ids = preserved_input_ids
+                    task.provider_batch_ids = []
+                    task.provider_batch_id = None
+                    task.provider_output_file_ids = []
+                    task.provider_error_file_ids = []
+                    task.status = "failed"
+                    task.cleanup_status = "pending_retry"
+                    task.last_error = (
+                        "Batch 创建结果不确定，保留精确输入文件 ID 并停止自动重试："
+                        + safe_exception_message(exc, limit=1700)
+                    )[:2000]
+                    _ensure_create_uncertain_input_outbox(session, task)
+                    if batch is not None:
+                        from .cleaning import _finish_batch, _refresh_file_state
+
+                        for document in _iter_documents_for_batch(session, task.batch_id):
+                            _mark_contract_failure(
+                                document, ValueError("Batch创建结果不确定"), final=True
+                            )
+                            document.error_code = "MODEL_BATCH_SUBMIT_UNCERTAIN"
+                            document.error_message = "Batch 创建结果不确定，已停止自动重试"
+                            document.retryable = False
+                        for file_row in batch.files:
+                            _refresh_file_state(session, file_row.id, commit=False)
+                        _finish_batch(session, batch.id)
+                    session.commit()
+            return False
         if created_batch_ids:
+            with SessionLocal() as session:
+                task = session.scalar(
+                    select(ModelCleaningTask)
+                    .where(ModelCleaningTask.id == task_id)
+                    .with_for_update()
+                )
+                if task is not None:
+                    _ensure_create_uncertain_input_outbox(session, task)
+                    task.cleanup_status = "pending_retry"
+                    session.commit()
             try:
                 recovered = _recover_created_provider_batches(
                     task_id,
                     created_batch_ids,
                     created_input_ids,
                     "Batch 已在供应商创建，但本地提交失败；已恢复远端 ID 并继续轮询",
+                    provider_batch_file_ids=created_batch_file_ids,
+                    provider_batch_document_ids=created_batch_document_ids,
                 )
             except Exception:
                 logger.exception("failed to recover provider batch IDs after commit failure")
@@ -2897,11 +5418,23 @@ def submit_batch_model_task(self, task_id: str) -> bool:
                     for provider_batch_id in get_provider_batch_ids(task):
                         try:
                             cancelled = client.cancel_batch(provider_batch_id)
+                            provider_status = str(cancelled.get("status") or "").strip()
                             cleanup_file_ids.update(
                                 str(cancelled.get(field) or "")
                                 for field in ("output_file_id", "error_file_id")
                                 if cancelled.get(field)
                             )
+                            if provider_status not in PROVIDER_TERMINAL:
+                                partial_cancel_failed = True
+                                logger.warning(
+                                    "partial Bailian batch cancellation is not terminal",
+                                    extra={
+                                        "model_task_id": task.id,
+                                        "provider_batch_id": provider_batch_id,
+                                        "provider_status": provider_status or "empty",
+                                    },
+                                )
+                                continue
                         except Exception as cancel_exc:
                             partial_cancel_failed = True
                             logger.exception("failed to cancel partial Bailian batch")
@@ -2926,6 +5459,29 @@ def submit_batch_model_task(self, task_id: str) -> bool:
                                         ),
                                     )
                                 )
+                    if partial_cancel_failed:
+                        # A cancel acknowledgement without a terminal state is
+                        # not authority to delete input/output files or forget
+                        # the Batch.  Keep the exact owner refs and durable
+                        # outbox work; reopening approval here could create a
+                        # second paid provider request for the same candidate.
+                        task.cleanup_status = "pending_retry"
+                        task.status = "cancelled" if cancelled_task else "failed"
+                        if batch is not None:
+                            batch.status = "partially_completed"
+                        ensure_bailian_cleanup_tasks(
+                            session,
+                            task,
+                            provider_batch_ids=get_provider_batch_ids(task),
+                            provider_file_ids=cleanup_file_ids,
+                            include_file_tasks=False,
+                            last_error=(
+                                "Batch 提交异常后的取消尚未得到终态，保留精确资源引用："
+                                + safe_exception_message(exc, limit=1200)
+                            ),
+                        )
+                        session.commit()
+                        return False
                     _delete_provider_files(
                         client,
                         task,
@@ -3021,6 +5577,171 @@ def _parse_provider_output(content: bytes) -> dict[str, dict[str, Any]]:
     return results
 
 
+def _acceptance_batch_projection(
+    strategy_code: str, request: PromptRequest, payload: dict[str, Any], *, prompt_version: str
+) -> dict[str, Any]:
+    """Validate a parity result without mutating a document or scheduling publication."""
+
+    available = set(request.blocks)
+    if strategy_code == "personal_business_consultation":
+        result = validate_consultation_response(
+            payload, available_block_ids=available, source_blocks=request.blocks
+        )
+    else:
+        result = validate_semantic_response(
+            strategy_code,
+            payload,
+            available_block_ids=available,
+            source_blocks=request.blocks,
+        )
+    projection = result.model_dump(mode="json")
+    field_digests = {
+        str(key): hashlib.sha256(
+            json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        for key, value in projection.items()
+    }
+    return {
+        "source_sha256": request.content_sha256,
+        "candidate_id": request.item_id,
+        "prompt_version": prompt_version,
+        "projection_digest": hashlib.sha256(
+            json.dumps(projection, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest(),
+        "semantic_field_digests": field_digests,
+    }
+
+
+def _load_acceptance_realtime_artifact(parity: dict[str, Any]) -> dict[str, Any]:
+    """Load a held Realtime payload only after validating its durable file hash."""
+
+    path = Path(str(parity.get("realtime_artifact_path") or ""))
+    expected = str(parity.get("realtime_artifact_sha256") or "")
+    if not path.is_file() or not expected:
+        raise _AcceptanceManifestRejected("Realtime审核材料缺失")
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != expected:
+        raise _AcceptanceManifestRejected("Realtime审核材料指纹不匹配")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise _AcceptanceManifestRejected("Realtime审核材料不可读取") from exc
+    if not isinstance(payload, dict):
+        raise _AcceptanceManifestRejected("Realtime审核材料格式无效")
+    return payload
+
+
+def apply_acceptance_manual_review(
+    session,
+    task: ModelCleaningTask,
+    *,
+    reviewer: str,
+    decision: str,
+    evidence_fingerprint: str,
+) -> bool:
+    """Apply a protected semantic review to an already-held Realtime result."""
+
+    if decision not in {"approved", "rejected"} or not reviewer.strip():
+        raise _AcceptanceManifestRejected("人工裁决参数无效")
+    parity = dict((task.result_counts or {}).get("_acceptance_parity") or {})
+    if parity.get("phase") != "parity_review_pending":
+        raise _AcceptanceManifestRejected("当前任务不在人工裁决状态")
+    artifact = _load_acceptance_realtime_artifact(parity)
+    entries = artifact.get("entries") or []
+    if not entries:
+        raise _AcceptanceManifestRejected("人工裁决材料为空")
+    batch_projection_digests = {
+        key: value.get("projection_digest")
+        for key, value in (parity.get("batch_projections") or {}).items()
+        if isinstance(value, dict)
+    }
+    realtime_projection = parity.get("realtime_projection") or {}
+    realtime_projection_digests = (
+        {str(realtime_projection.get("candidate_id")): realtime_projection.get("projection_digest")}
+        if realtime_projection.get("candidate_id")
+        else {}
+    )
+    expected = hashlib.sha256(
+        json.dumps(
+            {
+                "manifest": (task.result_counts or {}).get("acceptance_manifest"),
+                "batch": batch_projection_digests,
+                "realtime": realtime_projection_digests,
+                "candidate": task.candidate_fingerprint,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    if evidence_fingerprint != expected:
+        raise _AcceptanceManifestRejected("人工裁决证据指纹不匹配")
+    counts = dict(task.result_counts or {})
+    counts["acceptance_manual_review"] = {
+        "reviewer": reviewer.strip(),
+        "decision": decision,
+        "evidence_fingerprint": evidence_fingerprint,
+    }
+    if decision == "rejected":
+        parity["phase"] = "parity_review_rejected"
+        counts["_acceptance_parity"] = parity
+        task.result_counts = merge_result_counts_preserving_provider_ledger(task, counts)
+        task.status = "failed"
+        session.commit()
+        return False
+    for entry in entries:
+        document = session.get(CleaningDocument, str(entry.get("document_id") or ""))
+        payload = entry.get("model_result")
+        if document is None or not isinstance(payload, dict):
+            raise _AcceptanceManifestRejected("人工裁决材料与当前文档不匹配")
+        request = _request(document, task.batch.strategy_code)
+        _apply_model_payload(
+            document,
+            task.batch.strategy_code,
+            request,
+            payload,
+            session=session,
+            model_name=task.model,
+            prompt_version=task.prompt_version,
+        )
+        _finalize_model_document(document, strategy_code=task.batch.strategy_code)
+    parity["phase"] = "realtime_validated"
+    counts["_acceptance_parity"] = parity
+    reservations = counts.get("_provider_budget_reservations") or []
+    manifest = counts.get("acceptance_manifest") or {}
+    counts["acceptance_release_receipt"] = {
+        "status": "approved",
+        "task_id": str(task.id),
+        "canonical_transport": "realtime",
+        "batch_qualified": True,
+        "realtime_qualified": True,
+        "semantic_equivalent": False,
+        "manifest_sha256": hashlib.sha256(
+            json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest(),
+        "candidate_fingerprint": task.candidate_fingerprint,
+        "source_document_ids": sorted(batch_projection_digests),
+        "prompt_version": task.prompt_version,
+        "batch_projection_digests": batch_projection_digests,
+        "realtime_projection_digests": realtime_projection_digests,
+        "batch_call_ids": sorted(
+            str(entry.get("call_id"))
+            for entry in reservations
+            if entry.get("transport_mode") == "batch"
+        ),
+        "realtime_call_ids": sorted(
+            str(entry.get("call_id"))
+            for entry in reservations
+            if entry.get("transport_mode") == "realtime"
+        ),
+        "manual_reviewer": reviewer.strip(),
+        "evidence_fingerprint": evidence_fingerprint,
+    }
+    task.result_counts = merge_result_counts_preserving_provider_ledger(task, counts)
+    task.status = "completed"
+    session.commit()
+    return True
+
+
 def _delete_provider_files(
     client: BailianClient,
     task: ModelCleaningTask,
@@ -3028,24 +5749,28 @@ def _delete_provider_files(
 ) -> list[str]:
     failed: list[str] = []
     for file_id in sorted(set(file_ids)):
+        with SessionLocal() as cleanup_session:
+            if has_other_active_bailian_batch_file_reference(
+                cleanup_session,
+                current_task_id=str(task.id),
+                file_id=file_id,
+            ):
+                continue
         try:
             client.delete_file(file_id)
         except Exception as exc:
             failed.append(file_id)
             with SessionLocal() as cleanup_session:
-                cleanup_session.add(
-                    ExternalDeletionTask(
-                        kind="bailian_file",
-                        external_id=file_id,
-                        payload={"model_task_id": task.id},
-                        attempts=0,
-                        last_error=safe_exception_message(exc, limit=1000),
-                    )
+                ensure_bailian_cleanup_tasks(
+                    cleanup_session,
+                    task,
+                    provider_file_ids=[file_id],
+                    last_error=safe_exception_message(exc, limit=1000),
                 )
                 cleanup_session.commit()
     if failed:
         task.cleanup_status = "pending_retry"
-    elif task.cleanup_status != "pending_retry":
+    else:
         task.cleanup_status = "completed"
     return failed
 
@@ -3087,6 +5812,16 @@ def _cleanup_cancelled_provider_batches(
         )
         if task is None:
             return
+        if not provider_batch_ids:
+            # Cancellation before the first create is a proved no-create
+            # boundary.  Return every exact pending admission before deleting
+            # the uploaded JSONL inputs; create_uncertain remains fail-closed.
+            for input_id in sorted(
+                {str(file_id) for file_id in provider_input_file_ids if file_id}
+            ):
+                input_state = _provider_batch_input_states(task).get(input_id)
+                if input_state is not None and input_state["state"] == "pending":
+                    _release_uncreated_batch_input_reservation(session, task, input_id)
         cleanup_file_ids = {str(file_id) for file_id in provider_input_file_ids if file_id}
         pending_batch_ids: set[str] = set()
         terminal_output_ids: set[str] = set()
@@ -3095,7 +5830,7 @@ def _cleanup_cancelled_provider_batches(
         for provider_batch_id in provider_batch_ids:
             try:
                 cancelled = client.cancel_batch(provider_batch_id)
-                provider_status = str(cancelled.get("status") or "cancelled")
+                provider_status = str(cancelled.get("status") or "").strip()
                 returned_output_id = str(cancelled.get("output_file_id") or "")
                 returned_error_id = str(cancelled.get("error_file_id") or "")
                 if returned_output_id:
@@ -3106,7 +5841,9 @@ def _cleanup_cancelled_provider_batches(
                     terminal_error_ids.add(returned_error_id)
                 if provider_status not in PROVIDER_TERMINAL:
                     pending_batch_ids.add(provider_batch_id)
-                    cancel_errors.append(f"{provider_batch_id}:供应商取消仍处于 {provider_status}")
+                    cancel_errors.append(
+                        f"{provider_batch_id}:供应商取消状态缺失或未终态（{provider_status or 'empty'}）"
+                    )
             except Exception as exc:
                 pending_batch_ids.add(provider_batch_id)
                 cancel_errors.append(
@@ -3135,6 +5872,7 @@ def _cleanup_cancelled_provider_batches(
             session,
             [file_id for file_id in cleanup_file_ids if file_id not in set(failed_file_ids)],
         )
+        clear_successful_bailian_batch_tasks(session, provider_batch_ids)
         if failed_file_ids:
             task.cleanup_status = "pending_retry"
         task.provider_batch_ids = []
@@ -3154,7 +5892,6 @@ def _cleanup_cancelled_batch_input(
 
     try:
         client.delete_file(file_id)
-        return
     except Exception as exc:
         with SessionLocal() as session:
             existing = session.scalar(
@@ -3175,6 +5912,18 @@ def _cleanup_cancelled_batch_input(
                         last_error=safe_exception_message(exc, limit=1000),
                     )
                 )
+            session.commit()
+        return
+    with SessionLocal() as session:
+        task = session.scalar(
+            select(ModelCleaningTask).where(ModelCleaningTask.id == task_id).with_for_update()
+        )
+        if task is not None:
+            _remove_provider_batch_input_state(task, file_id)
+            task.provider_input_file_ids = sorted(
+                item for item in (task.provider_input_file_ids or []) if str(item) != str(file_id)
+            )
+            clear_successful_bailian_file_tasks(session, [file_id])
             session.commit()
 
 
@@ -3214,6 +5963,9 @@ def poll_batch_model_task(self, task_id: str) -> bool:
     fallback_shard_ids: list[str] = []
     created_repair_batch_ids: list[str] = []
     created_repair_input_ids: list[str] = []
+    created_repair_batch_file_ids: dict[str, list[str]] = {}
+    created_repair_batch_document_ids: dict[str, list[str]] = {}
+    definite_failed_repair_input_ids: list[str] = []
     try:
         client = _client()
         with SessionLocal() as session:
@@ -3234,10 +5986,13 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                 task.last_error = (
                     "Batch轮询失败：batch_running 但没有 provider_batch_ids，无法恢复供应商任务"
                 )
-                task.result_counts = {
-                    **(task.result_counts or {}),
-                    "failure_code": "MODEL_BATCH_PROVIDER_IDS_MISSING",
-                }
+                task.result_counts = merge_result_counts_preserving_provider_ledger(
+                    task,
+                    {
+                        **(task.result_counts or {}),
+                        "failure_code": "MODEL_BATCH_PROVIDER_IDS_MISSING",
+                    },
+                )
                 if batch := session.get(CleaningBatch, task.batch_id):
                     batch.status = "processing"
                 session.commit()
@@ -3270,8 +6025,38 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                     terminal_output_ids.add(str(terminal_status["output_file_id"]))
                 if terminal_status.get("error_file_id"):
                     terminal_error_ids.add(str(terminal_status["error_file_id"]))
-            task.provider_output_file_ids = sorted(terminal_output_ids)
-            task.provider_error_file_ids = sorted(terminal_error_ids)
+            for terminal_batch_id, terminal_status in previous_terminal.items():
+                existing_owner = get_provider_batch_file_owners(task).get(str(terminal_batch_id))
+                # Historical rows had only task-level aggregate input IDs.
+                # They can be assigned to a terminal owner only when there is
+                # exactly one known terminal Batch and no active sibling;
+                # otherwise ownership is ambiguous and cleanup stays queued.
+                if existing_owner is None:
+                    legacy_input_ids = (
+                        list(task.provider_input_file_ids or [])
+                        if len(previous_terminal) == 1 and not active_batch_ids
+                        else []
+                    )
+                    existing_owner = {
+                        "input_file_ids": legacy_input_ids,
+                        "output_file_ids": list(task.provider_output_file_ids or []),
+                        "error_file_ids": list(task.provider_error_file_ids or []),
+                    }
+                update_provider_batch_file_owner(
+                    task,
+                    str(terminal_batch_id),
+                    input_file_ids=existing_owner.get("input_file_ids", []),
+                    output_file_ids=(
+                        [str(terminal_status["output_file_id"])]
+                        if terminal_status.get("output_file_id")
+                        else existing_owner.get("output_file_ids", [])
+                    ),
+                    error_file_ids=(
+                        [str(terminal_status["error_file_id"])]
+                        if terminal_status.get("error_file_id")
+                        else existing_owner.get("error_file_ids", [])
+                    ),
+                )
             statuses = [*previous_terminal.values(), *fetched_statuses]
             task.result_counts = {**(task.result_counts or {})}
             if previous_terminal:
@@ -3310,8 +6095,6 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                 return True
             output_ids = sorted(terminal_output_ids)
             error_ids = sorted(terminal_error_ids)
-            task.provider_output_file_ids = output_ids
-            task.provider_error_file_ids = error_ids
             if state_values != {"completed"}:
                 cleanup_file_ids = [
                     *(task.provider_input_file_ids or []),
@@ -3441,6 +6224,41 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                     raise ValueError(
                         f"Batch结果包含不属于当前候选集的custom_id：{sorted(unknown_ids)[:3]}"
                     )
+                if isinstance((task.result_counts or {}).get("acceptance_manifest"), dict):
+                    projections: dict[str, Any] = {}
+                    for document in _iter_documents_for_batch(session, task.batch_id):
+                        request = _request(document, batch.strategy_code)
+                        custom_id = build_custom_id(request, task.prompt_version)
+                        item = results.get(custom_id)
+                        if item is None:
+                            raise ValueError(f"Batch对照结果缺少冻结逻辑单元：{document.id}")
+                        projections[str(document.id)] = _acceptance_batch_projection(
+                            batch.strategy_code,
+                            request,
+                            item["payload"],
+                            prompt_version=task.prompt_version,
+                        )
+                    counts = dict(task.result_counts or {})
+                    parity = dict(counts.get("_acceptance_parity") or {})
+                    parity.update(
+                        {
+                            "phase": "batch_validated",
+                            "batch_projections": projections,
+                            "batch_result_count": len(projections),
+                        }
+                    )
+                    counts["_acceptance_parity"] = parity
+                    task.result_counts = merge_result_counts_preserving_provider_ledger(
+                        task, counts
+                    )
+                    task.status = "queued"
+                    if batch is not None:
+                        batch.status = "processing"
+                    session.commit()
+                    process_realtime_model_task.apply_async(
+                        args=[task_id], queue="ai_model_realtime"
+                    )
+                    return True
             except Exception as exc:
                 if abort_if_model_task_cancelled():
                     return False
@@ -3564,12 +6382,32 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                         try:
                             if abort_if_model_task_cancelled(expected_status="validating"):
                                 return False
-                            session.commit()
+                            repair_generation = int(
+                                (task.result_counts or {}).get("provider_batch_generation") or 0
+                            )
+                            _wait_for_realtime_capacity(
+                                request,
+                                model=task.model,
+                                repair_hint=repair_hint,
+                            )
+                            call_id = _reserve_provider_call(
+                                session,
+                                task,
+                                document,
+                                request,
+                                repair_hint=repair_hint,
+                                transport_mode="realtime",
+                                expected_task_status="validating",
+                                expected_batch_generation=repair_generation,
+                            )
                             payload, item_usage = _realtime_chat(
                                 client,
                                 request,
                                 model=task.model,
                                 repair_hint=repair_hint,
+                            )
+                            _persist_realtime_usage(
+                                session, task, usage, item_usage, call_id=call_id
                             )
                             if abort_if_model_task_cancelled(expected_status="validating"):
                                 return False
@@ -3591,8 +6429,6 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                                 source_metadata=source_metadata,
                                 source_chunking=source_chunking,
                             )
-                            usage["input_tokens"] += item_usage["input_tokens"]
-                            usage["output_tokens"] += item_usage["output_tokens"]
                             if fallback_applied:
                                 counts["fallback"] += 1
                             else:
@@ -3605,6 +6441,13 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                                         else "succeeded"
                                     )
                                 ] += 1
+                        except _ModelTaskGenerationChanged:
+                            # Capacity waits intentionally happen outside a
+                            # DB lock.  Re-check status and generation while
+                            # taking the reservation lock so cancellation or
+                            # a replacement Batch cannot buy a stale call.
+                            session.rollback()
+                            return False
                         except Exception as exc:
                             _mark_contract_failure(
                                 document,
@@ -3633,14 +6476,43 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                     task.actual_usage = usage
                 else:
                     with tempfile.TemporaryDirectory(prefix="jx-bailian-retry-") as directory:
+                        task = session.scalar(
+                            select(ModelCleaningTask)
+                            .where(ModelCleaningTask.id == task_id)
+                            .with_for_update()
+                        )
+                        if task is None or task.status not in {"batch_running", "validating"}:
+                            return False
+                        repair_submission_status = task.status
+                        result_counts = dict(task.result_counts or {})
+                        result_counts["provider_batch_generation"] = (
+                            int(result_counts.get("provider_batch_generation") or 0) + 1
+                        )
+                        repair_generation = result_counts["provider_batch_generation"]
+                        task.result_counts = result_counts
+                        session.commit()
+                        retry_documents = list(_iter_documents_for_batch(session, task.batch_id))
                         retry_paths = _write_batch_files(
                             Path(directory),
                             task,
                             batch,
-                            _iter_documents_for_batch(session, task.batch_id),
+                            retry_documents,
+                            session=session,
                             repair_hints=retry_hints,
                         )
                         session.commit()
+                        task = session.scalar(
+                            select(ModelCleaningTask)
+                            .where(ModelCleaningTask.id == task_id)
+                            .with_for_update()
+                        )
+                        if (
+                            task is None
+                            or task.status != repair_submission_status
+                            or int((task.result_counts or {}).get("provider_batch_generation") or 0)
+                            != repair_generation
+                        ):
+                            return False
                         retry_input_ids: list[str] = []
                         retry_batch_ids: list[str] = []
 
@@ -3655,7 +6527,14 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                                 )
                             return False
 
+                        uploaded_repair_paths: list[tuple[str, list[CleaningDocument]]] = []
                         for path in retry_paths:
+                            path_documents = _documents_in_batch_path(
+                                path,
+                                retry_documents,
+                                task=task,
+                                batch=batch,
+                            )
                             task = session.scalar(
                                 select(ModelCleaningTask)
                                 .where(ModelCleaningTask.id == task_id)
@@ -3680,7 +6559,74 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                             }:
                                 return abort_cancelled_repair_submission()
                             task.provider_input_file_ids = list(retry_input_ids)
+                            _set_provider_batch_input_state(
+                                task,
+                                input_id,
+                                state="pending",
+                                document_ids=[str(document.id) for document in path_documents],
+                            )
                             session.commit()
+                            uploaded_repair_paths.append((input_id, path_documents))
+                        task = session.scalar(
+                            select(ModelCleaningTask)
+                            .where(ModelCleaningTask.id == task_id)
+                            .with_for_update()
+                        )
+                        if task is None or task.status != repair_submission_status:
+                            return abort_cancelled_repair_submission()
+                        repair_candidate_ids = sorted(
+                            {
+                                str(document.id)
+                                for _input_id, path_documents in uploaded_repair_paths
+                                for document in path_documents
+                            }
+                        )
+                        repair_counts = dict(task.result_counts or {})
+                        repair_counts["provider_candidate_document_ids"] = repair_candidate_ids
+                        task.candidate_count = len(repair_candidate_ids)
+                        task.result_counts = repair_counts
+                        session.flush()
+                        repair_reservation_call_ids = _reserve_provider_calls_group(
+                            session,
+                            task,
+                            [
+                                (
+                                    document,
+                                    _request(document, batch.strategy_code),
+                                )
+                                for _input_id, path_documents in uploaded_repair_paths
+                                for document in path_documents
+                            ],
+                            transport_mode="batch",
+                            expected_task_status=repair_submission_status,
+                            expected_batch_generation=repair_generation,
+                        )
+                        repair_reservation_entries = {
+                            str(entry.get("document_id") or ""): str(entry.get("call_id") or "")
+                            for entry in (task.result_counts or {}).get(
+                                "_provider_budget_reservations", []
+                            )
+                            if isinstance(entry, dict)
+                            and str(entry.get("call_id") or "") in set(repair_reservation_call_ids)
+                        }
+                        for input_id, path_documents in uploaded_repair_paths:
+                            _set_provider_batch_input_state(
+                                task,
+                                input_id,
+                                state="pending",
+                                document_ids=[str(document.id) for document in path_documents],
+                                reservation_call_ids=[
+                                    repair_reservation_entries[str(document.id)]
+                                    for document in path_documents
+                                    if str(document.id) in repair_reservation_entries
+                                ],
+                            )
+                        # Persist the complete repair admission before the
+                        # first create, so an unknown remote create result
+                        # retains every candidate's exact reservation.
+                        session.commit()
+                        for input_id, path_documents in uploaded_repair_paths:
+                            session.expire_all()
                             task = session.scalar(
                                 select(ModelCleaningTask)
                                 .where(ModelCleaningTask.id == task_id)
@@ -3691,9 +6637,38 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                                 "validating",
                             }:
                                 return abort_cancelled_repair_submission()
-                            retry_batch_id = client.create_batch(input_id)
+                            _set_provider_batch_input_state(
+                                task,
+                                input_id,
+                                state="create_uncertain",
+                                document_ids=[str(document.id) for document in path_documents],
+                            )
+                            session.commit()
+                            try:
+                                retry_batch_id = client.create_batch(input_id)
+                            except Exception as create_exc:
+                                if _is_definite_batch_create_failure(create_exc):
+                                    task = session.scalar(
+                                        select(ModelCleaningTask)
+                                        .where(ModelCleaningTask.id == task_id)
+                                        .with_for_update()
+                                    )
+                                    if task is not None:
+                                        _release_uncreated_batch_input_reservation(
+                                            session, task, input_id
+                                        )
+                                        session.commit()
+                                    definite_failed_repair_input_ids.append(input_id)
+                                    raise _DefiniteBatchCreateFailure(
+                                        "供应商明确拒绝Batch修复创建"
+                                    ) from create_exc
+                                raise
                             retry_batch_ids.append(retry_batch_id)
                             created_repair_batch_ids.append(retry_batch_id)
+                            created_repair_batch_file_ids[retry_batch_id] = [input_id]
+                            created_repair_batch_document_ids[retry_batch_id] = [
+                                str(document.id) for document in path_documents
+                            ]
                             task = session.scalar(
                                 select(ModelCleaningTask)
                                 .where(ModelCleaningTask.id == task_id)
@@ -3706,23 +6681,52 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                                 return abort_cancelled_repair_submission()
                             task.provider_batch_ids = list(retry_batch_ids)
                             task.provider_batch_id = retry_batch_ids[0]
-                            result_counts = {
-                                key: value
-                                for key, value in (task.result_counts or {}).items()
-                                if key != "provider_terminal_batches"
-                            }
-                            result_counts["provider_batch_generation"] = (
-                                int(result_counts.get("provider_batch_generation") or 0) + 1
+                            result_counts = dict(task.result_counts or {})
+                            # The prior terminal output belongs to the repair
+                            # input, not to the newly accepted Batch.  Keep it
+                            # until this point for crash recovery, then remove
+                            # it atomically with the exact replacement owner
+                            # map so the next poll cannot read it twice.
+                            result_counts.pop("provider_terminal_batches", None)
+                            provider_batch_document_ids = dict(
+                                result_counts.get("provider_batch_document_ids") or {}
+                            )
+                            provider_batch_document_ids[retry_batch_id] = [
+                                str(document.id) for document in path_documents
+                            ]
+                            result_counts["provider_batch_document_ids"] = (
+                                provider_batch_document_ids
                             )
                             task.result_counts = result_counts
+                            for terminal_batch_id in list(get_provider_batch_file_owners(task)):
+                                remove_provider_batch_file_owner(task, terminal_batch_id)
+                            update_provider_batch_file_owner(
+                                task,
+                                retry_batch_id,
+                                input_file_ids=[input_id],
+                                output_file_ids=[],
+                                error_file_ids=[],
+                            )
+                            _set_provider_batch_input_state(
+                                task,
+                                input_id,
+                                state="accepted",
+                                document_ids=[str(document.id) for document in path_documents],
+                                batch_id=retry_batch_id,
+                            )
                             ensure_bailian_cleanup_tasks(
                                 session,
                                 task,
                                 provider_file_ids=old_file_ids,
                             )
-                            task.provider_output_file_ids = []
-                            task.provider_error_file_ids = []
                             session.commit()
+                            task = session.scalar(
+                                select(ModelCleaningTask)
+                                .where(ModelCleaningTask.id == task_id)
+                                .with_for_update()
+                            )
+                            if task is None or task.status != repair_submission_status:
+                                return abort_cancelled_repair_submission()
                         task = session.scalar(
                             select(ModelCleaningTask)
                             .where(ModelCleaningTask.id == task_id)
@@ -3810,18 +6814,21 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                         for key, value in (task.result_counts or {}).items()
                         if key != "provider_terminal_batches"
                     }
-                    task.result_counts = {
-                        **result_counts,
-                        "retry_round": 1,
-                        "retry_candidate_count": retry_count,
-                        "candidate_count": task.candidate_count,
-                        "prior_succeeded": counts["succeeded"],
-                        "prior_excluded": counts["excluded"],
-                        "prior_review": counts["review"],
-                        "prior_fallback": counts["fallback"],
-                        "prior_failed": counts["failed"],
-                        "retry_pending": retry_count,
-                    }
+                    task.result_counts = merge_result_counts_preserving_provider_ledger(
+                        task,
+                        {
+                            **result_counts,
+                            "retry_round": 1,
+                            "retry_candidate_count": retry_count,
+                            "candidate_count": task.candidate_count,
+                            "prior_succeeded": counts["succeeded"],
+                            "prior_excluded": counts["excluded"],
+                            "prior_review": counts["review"],
+                            "prior_fallback": counts["fallback"],
+                            "prior_failed": counts["failed"],
+                            "retry_pending": retry_count,
+                        },
+                    )
                     task.cleanup_status = "not_started"
                     task.status = "batch_running"
                     session.commit()
@@ -3868,16 +6875,19 @@ def poll_batch_model_task(self, task_id: str) -> bool:
                 *error_ids,
             ]
             previous = task.result_counts or {}
-            task.result_counts = {
-                "candidate_count": task.candidate_count,
-                "succeeded": counts["succeeded"] + int(previous.get("prior_succeeded") or 0),
-                "excluded": counts["excluded"] + int(previous.get("prior_excluded") or 0),
-                "review": counts["review"] + int(previous.get("prior_review") or 0),
-                "fallback": counts["fallback"] + int(previous.get("prior_fallback") or 0),
-                "failed": counts["failed"] + int(previous.get("prior_failed") or 0),
-                "retry_round": int(previous.get("retry_round") or 0),
-                "retry_pending": 0,
-            }
+            task.result_counts = merge_result_counts_preserving_provider_ledger(
+                task,
+                {
+                    "candidate_count": task.candidate_count,
+                    "succeeded": counts["succeeded"] + int(previous.get("prior_succeeded") or 0),
+                    "excluded": counts["excluded"] + int(previous.get("prior_excluded") or 0),
+                    "review": counts["review"] + int(previous.get("prior_review") or 0),
+                    "fallback": counts["fallback"] + int(previous.get("prior_fallback") or 0),
+                    "failed": counts["failed"] + int(previous.get("prior_failed") or 0),
+                    "retry_round": int(previous.get("retry_round") or 0),
+                    "retry_pending": 0,
+                },
+            )
             if previous.get("provider_terminal_batches"):
                 task.result_counts["provider_terminal_batches"] = previous[
                     "provider_terminal_batches"
@@ -3893,13 +6903,86 @@ def poll_batch_model_task(self, task_id: str) -> bool:
         return True
     except Exception as exc:
         logger.exception("batch model polling failed")
+        if isinstance(exc, _ModelCallLimitExceeded) and not created_repair_batch_ids:
+            # Missing/corrupt/foreign historical accounting is not evidence
+            # for a new paid repair.  Preserve the terminal observation and
+            # make the stop visible; pending uploaded JSONLs have exact
+            # cleanup work but never reach provider create.
+            with SessionLocal() as session:
+                task = session.scalar(
+                    select(ModelCleaningTask)
+                    .where(ModelCleaningTask.id == task_id)
+                    .with_for_update()
+                )
+                if task is not None:
+                    task.status = "failed"
+                    task.cleanup_status = "pending_retry"
+                    task.last_error = (
+                        "历史Batch账本不完整或不一致，已阻止自动修复，需人工处理："
+                        + safe_exception_message(exc, limit=1700)
+                    )[:2000]
+                    ensure_bailian_cleanup_tasks(
+                        session,
+                        task,
+                        provider_file_ids=created_repair_input_ids,
+                        last_error="历史账本阻断后的精确输入清理",
+                    )
+                    for input_id in sorted(set(created_repair_input_ids)):
+                        cleanup = session.scalar(
+                            select(ExternalDeletionTask)
+                            .where(
+                                ExternalDeletionTask.kind == "bailian_file",
+                                ExternalDeletionTask.external_id == input_id,
+                            )
+                            .with_for_update()
+                        )
+                        if cleanup is not None:
+                            cleanup.payload = {
+                                **dict(cleanup.payload or {}),
+                                "model_task_id": task.id,
+                                "category": "input",
+                                "state": "manual_intervention_required",
+                                "reason": "historical_ledger_inconsistent",
+                            }
+                            cleanup.last_error = "历史账本不完整或不一致；禁止自动删除，需人工处理"
+                    session.commit()
+            return False
+        if isinstance(exc, _DefiniteBatchCreateFailure):
+            removable_input_ids: list[str] = list(definite_failed_repair_input_ids)
+            with SessionLocal() as session:
+                task = session.scalar(
+                    select(ModelCleaningTask)
+                    .where(ModelCleaningTask.id == task_id)
+                    .with_for_update()
+                )
+                if task is not None:
+                    for input_id, input_state in _provider_batch_input_states(task).items():
+                        if input_state["state"] != "pending":
+                            continue
+                        if _release_uncreated_batch_input_reservation(session, task, input_id):
+                            removable_input_ids.append(input_id)
+                    session.commit()
+            for input_id in sorted(set(removable_input_ids)):
+                _cleanup_cancelled_batch_input(client, task_id, input_id)
         if created_repair_batch_ids:
+            with SessionLocal() as session:
+                task = session.scalar(
+                    select(ModelCleaningTask)
+                    .where(ModelCleaningTask.id == task_id)
+                    .with_for_update()
+                )
+                if task is not None:
+                    _ensure_create_uncertain_input_outbox(session, task)
+                    task.cleanup_status = "pending_retry"
+                    session.commit()
             try:
                 recovered = _recover_created_provider_batches(
                     task_id,
                     created_repair_batch_ids,
                     created_repair_input_ids,
                     "Batch 修复任务已在供应商创建，但本地提交失败；已恢复远端 ID 并继续轮询",
+                    provider_batch_file_ids=created_repair_batch_file_ids,
+                    provider_batch_document_ids=created_repair_batch_document_ids,
                 )
             except Exception:
                 logger.exception("failed to recover repair provider batch IDs")
@@ -3970,6 +7053,8 @@ def publish_dify_shard(self, shard_id: str) -> bool:
     created_id = ""
     cleanup_dataset_id = ""
     replaced_document_id = ""
+    prior_remote_document_id = ""
+    prior_remote_batch_id: str | None = None
     compensation_failed = False
     try:
         with SessionLocal() as session:
@@ -3988,6 +7073,43 @@ def publish_dify_shard(self, shard_id: str) -> bool:
             # to pending after its timeout.
             if shard is None or shard.status != "shard_pending":
                 return False
+            if shard.file.source_deleted_at is not None or shard.file.stage == "source_deleting":
+                return False
+            acceptance_tasks = list(
+                session.scalars(
+                    select(ModelCleaningTask).where(
+                        ModelCleaningTask.batch_id == shard.file.batch_id
+                    )
+                )
+            )
+            acceptance_matches = 0
+            from .cleaning import _acceptance_task_owns_document
+
+            for acceptance_task in acceptance_tasks:
+                counts = acceptance_task.result_counts or {}
+                manifest = counts.get("acceptance_manifest")
+                if not isinstance(manifest, dict):
+                    continue
+                if any(
+                    _acceptance_task_owns_document(acceptance_task, document)
+                    for document in shard.documents
+                ):
+                    acceptance_matches += 1
+            if acceptance_matches > 1:
+                raise _AcceptanceManifestRejected("验收shard owner不唯一或缺失")
+            if acceptance_matches == 1:
+                for acceptance_task in acceptance_tasks:
+                    if any(
+                        _acceptance_task_owns_document(acceptance_task, document)
+                        for document in shard.documents
+                    ):
+                        _require_acceptance_release_receipt(acceptance_task, shard.file.batch)
+                        break
+            if (
+                shard.file.batch.knowledge_base_code == "course"
+                and not settings.dify_course_dataset_enabled
+            ):
+                return False
             dataset_id = (
                 settings.dify_general_dataset_id
                 if shard.file.batch.knowledge_base_code == "general"
@@ -4002,9 +7124,48 @@ def publish_dify_shard(self, shard_id: str) -> bool:
             )
             shard_metadata = dict(shard.metadata_json or {})
             pending_remote_id = str(shard_metadata.get("_pending_dify_document_id") or "")
-            replaced_document_id = str(
-                shard_metadata.get("_replacement_document_id") or shard.dify_document_id or ""
-            )
+            prior_remote_document_id = str(shard.dify_document_id or "")
+            prior_remote_batch_id = shard.dify_batch_id
+            ownership = str(shard_metadata.get("_dify_remote_reference_ownership") or "owned")
+            # Only a remote ID created by this source can be a replacement
+            # deletion target.  Cross-file candidates may be verified and
+            # shared, but a failed verification or metadata mismatch must not
+            # turn another source's result into this source's cleanup target.
+            replaced_document_id = str(shard_metadata.get("_replacement_document_id") or "")
+            if not replaced_document_id and ownership == "owned":
+                replaced_document_id = prior_remote_document_id
+            from ...cleaning import finalize_knowledge_markdown
+
+            shard.markdown = finalize_knowledge_markdown(shard.markdown)
+            shard.content_bytes = len(shard.markdown.encode("utf-8"))
+            shard.content_sha256 = _normalized_publication_digest(shard.markdown)
+            shard_metadata["publication_content_sha256"] = shard.content_sha256
+            shard.metadata_json = dict(shard_metadata)
+            if prior_remote_document_id and _shard_remote_is_live(
+                session,
+                client=client,
+                shard=shard,
+            ):
+                shard.status = "succeeded"
+                shard.last_error = ""
+                shard.remote_deleted_at = None
+                if ownership == "shared_candidate":
+                    shard_metadata["_dify_remote_reference_ownership"] = "shared"
+                    shard.metadata_json = dict(shard_metadata)
+                for document in shard.documents:
+                    document.dify_document_id = prior_remote_document_id
+                    document.dify_batch_id = shard.dify_batch_id
+                    document.remote_parent_count = shard.remote_parent_count
+                    document.remote_child_count = shard.remote_child_count
+                    document.status = "succeeded"
+                    document.stage = "completed"
+                session.commit()
+                from .cleaning import _finish_batch, _refresh_file_state
+
+                _refresh_file_state(session, shard.file_id, commit=False)
+                _finish_batch(session, shard.file.batch_id)
+                session.commit()
+                return True
             shard.status = "shard_indexing"
             shard.attempts += 1
             for document in shard.documents:
@@ -4016,23 +7177,26 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                     client.delete_document(pending_remote_id)
                     shard_metadata.pop("_pending_dify_document_id", None)
                 except Exception as exc:
-                    session.add(
-                        ExternalDeletionTask(
+                    pending_cleanup = session.scalar(
+                        select(ExternalDeletionTask)
+                        .where(
+                            ExternalDeletionTask.kind == "dify_document",
+                            ExternalDeletionTask.external_id == pending_remote_id,
+                        )
+                        .limit(1)
+                    )
+                    if pending_cleanup is None:
+                        pending_cleanup = ExternalDeletionTask(
                             kind="dify_document",
                             external_id=pending_remote_id,
                             payload={"dataset_id": dataset_id},
                             attempts=0,
-                            last_error=safe_exception_message(exc, limit=1000),
                         )
-                    )
+                        session.add(pending_cleanup)
+                    pending_cleanup.last_error = safe_exception_message(exc, limit=1000)
                     shard_metadata.pop("_pending_dify_document_id", None)
-                shard.metadata_json = shard_metadata
+                shard.metadata_json = dict(shard_metadata)
                 session.commit()
-            from ...cleaning import finalize_knowledge_markdown
-
-            shard.markdown = finalize_knowledge_markdown(shard.markdown)
-            shard.content_bytes = len(shard.markdown.encode("utf-8"))
-            shard.content_sha256 = _normalized_publication_digest(shard.markdown)
             from ...cleaning import dify_document_name
 
             # The source filename is the stable external identity.  Model
@@ -4071,7 +7235,7 @@ def publish_dify_shard(self, shard_id: str) -> bool:
             shard_metadata["_pending_dify_document_id"] = document_id
             if replaced_document_id:
                 shard_metadata["_replacement_document_id"] = replaced_document_id
-            shard.metadata_json = shard_metadata
+            shard.metadata_json = dict(shard_metadata)
             session.commit()
             client.wait_for_indexing(
                 dify_batch_id,
@@ -4107,11 +7271,24 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 document_id,
                 remote_metadata,
             )
+            shard_metadata["remote_content_witness_sha256"] = str(
+                client.document_content_witness(document_id)
+            ).strip()
+            if not re.fullmatch(r"[0-9a-f]{64}", shard_metadata["remote_content_witness_sha256"]):
+                raise RuntimeError("Dify分片发布后的正文见证无效")
+            # The network calls above are intentionally outside the source
+            # delete transaction.  Re-read its durable tombstone before any
+            # local success projection; the exception path compensates the
+            # newly created exact ID instead of reviving a deleted source.
+            session.refresh(shard.file)
+            if shard.file.source_deleted_at is not None or shard.file.stage == "source_deleting":
+                raise RuntimeError("SOURCE_DELETE_TOMBSTONED")
             shard.dify_document_id = document_id
             shard.dify_batch_id = dify_batch_id
+            shard_metadata["_dify_remote_reference_ownership"] = "owned"
             shard_metadata.pop("_pending_dify_document_id", None)
             shard_metadata.pop("_replacement_document_id", None)
-            shard.metadata_json = shard_metadata
+            shard.metadata_json = dict(shard_metadata)
             shard.remote_parent_count = int(structure["parent_count"])
             shard.remote_child_count = int(structure["child_count"])
             shard.status = "succeeded"
@@ -4128,7 +7305,12 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 document.remote_child_count = int(structure["child_count"])
                 document.status = "succeeded"
                 document.stage = "completed"
-            if replaced_document_id and replaced_document_id != document_id:
+            should_delete_replaced = bool(
+                replaced_document_id
+                and replaced_document_id != document_id
+                and not has_other_live_dify_reference(session, replaced_document_id)
+            )
+            if should_delete_replaced:
                 existing_cleanup = session.scalar(
                     select(ExternalDeletionTask)
                     .where(
@@ -4140,33 +7322,35 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 if existing_cleanup is None:
                     # Durable cleanup is committed with the successful
                     # replacement before the best-effort immediate delete.
-                    session.add(
-                        ExternalDeletionTask(
-                            kind="dify_document",
-                            external_id=replaced_document_id,
-                            payload={"dataset_id": dataset_id},
-                            attempts=0,
-                            last_error="替换旧 Dify 文档，等待确认删除",
-                        )
+                    existing_cleanup = ExternalDeletionTask(
+                        kind="dify_document",
+                        external_id=replaced_document_id,
+                        payload={"dataset_id": dataset_id},
+                        attempts=0,
+                        last_error="替换旧 Dify 文档，等待确认删除",
                     )
+                    session.add(existing_cleanup)
             session.commit()
-            if replaced_document_id and replaced_document_id != document_id:
+            if should_delete_replaced:
                 try:
                     client.delete_document(replaced_document_id)
-                except Exception as exc:
+                    if existing_cleanup is not None:
+                        session.delete(existing_cleanup)
+                except Exception:
                     try:
                         client.disable_document(replaced_document_id)
-                    except Exception:
-                        session.add(
-                            ExternalDeletionTask(
-                                kind="dify_document",
-                                external_id=replaced_document_id,
-                                payload={"dataset_id": dataset_id},
-                                attempts=0,
-                                last_error=safe_exception_message(exc, limit=1000),
-                            )
+                        if existing_cleanup is not None:
+                            session.delete(existing_cleanup)
+                    except Exception as disable_exc:
+                        # The outbox row is created before the first delete
+                        # attempt, even when there was no prior row.  Mutate
+                        # that same exact old-ID row on double failure; adding
+                        # a second row violates its unique key and can roll
+                        # back the successful replacement/new remote binding.
+                        existing_cleanup.last_error = safe_exception_message(
+                            disable_exc, limit=1000
                         )
-                        session.commit()
+                    session.commit()
             from .cleaning import _finish_batch, _refresh_file_state
 
             _refresh_file_state(session, shard.file_id, commit=False)
@@ -4175,6 +7359,8 @@ def publish_dify_shard(self, shard_id: str) -> bool:
         return True
     except Exception as exc:
         logger.exception("Dify publication shard failed")
+        from .cleaning import RemoteDuplicateVerificationError
+
         if client and created_id:
             try:
                 client.delete_document(created_id)
@@ -4188,9 +7374,8 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                 # indexing/metadata, it was compensated above.  Restore the
                 # prior remote ID (if any) so the retry can replace it rather
                 # than trying to delete the already-compensated new ID.
-                shard.dify_document_id = replaced_document_id or None
-                if not replaced_document_id:
-                    shard.dify_batch_id = None
+                shard.dify_document_id = prior_remote_document_id or None
+                shard.dify_batch_id = prior_remote_batch_id if prior_remote_document_id else None
                 if not compensation_failed:
                     metadata = dict(shard.metadata_json or {})
                     metadata.pop("_pending_dify_document_id", None)
@@ -4208,11 +7393,19 @@ def publish_dify_shard(self, shard_id: str) -> bool:
                             last_error="发布异常后的 Dify 文档补偿删除失败，等待重试",
                         )
                     )
-                shard.status = "shard_pending" if shard.attempts < 2 else "failed"
+                # A failed read of an already published remote result is not a
+                # failed document-creation attempt.  Keep its exact remote ID
+                # and a runnable verification state even when historical
+                # delivery attempts have reached their creation retry limit.
+                verification_uncertain = (
+                    isinstance(exc, RemoteDuplicateVerificationError) and not created_id
+                )
+                retryable = verification_uncertain or shard.attempts < 2
+                shard.status = "shard_pending" if retryable else "failed"
                 shard.last_error = safe_exception_message(exc, limit=2000)
                 for document in shard.documents:
-                    document.status = "shard_pending" if shard.attempts < 2 else "failed"
-                    document.stage = "shard_pending" if shard.attempts < 2 else "failed"
+                    document.status = "shard_pending" if retryable else "failed"
+                    document.stage = "shard_pending" if retryable else "failed"
                 from .cleaning import _finish_batch, _refresh_file_state
 
                 batch_id = session.scalar(

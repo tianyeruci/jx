@@ -839,11 +839,9 @@ def test_cleaning_batch_upload_reports_each_file(
     monkeypatch,
     tmp_path,
 ):
-    from ai_management import cleaning as cleaning_module
     from ai_management.tasks import process_cleaning_file
 
     monkeypatch.setattr(get_settings(), "upload_root", tmp_path)
-    monkeypatch.setattr(cleaning_module, "_preflight_local_duplicates", lambda **_: None)
     queued: list[str] = []
     monkeypatch.setattr(
         process_cleaning_file,
@@ -998,6 +996,82 @@ def test_preflight_duplicate_blocks_an_older_cleaning_spec_revision(service_db):
 
         assert row.status == "excluded"
         assert len(row.documents) == 1
+
+
+@pytest.mark.parametrize("match_kind", ["sha", "normalized_name"])
+def test_preflight_duplicate_keeps_unreleased_failed_source_protected(service_db, match_kind):
+    """A failed source remains an admission lease until exact deletion releases it."""
+    from ai_management import cleaning as cleaning_module
+
+    with service_db() as session:
+        old_batch = CleaningBatch(
+            strategy_code="personal_business_consultation",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+        )
+        new_batch = CleaningBatch(
+            strategy_code="personal_business_consultation",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+        )
+        session.add_all([old_batch, new_batch])
+        session.flush()
+        old = CleaningFile(
+            batch_id=old_batch.id,
+            original_filename="保留失败源.docx",
+            storage_filename="old.docx",
+            extension=".docx",
+            source_sha256="f" * 64,
+            size_bytes=1,
+            status="failed",
+            stage="failed",
+        )
+        submitted = CleaningFile(
+            batch_id=new_batch.id,
+            original_filename=("新名称.docx" if match_kind == "sha" else "保留失败源.docx"),
+            storage_filename="new.docx",
+            extension=".docx",
+            source_sha256=("f" * 64 if match_kind == "sha" else "e" * 64),
+            size_bytes=1,
+            status="pending",
+            stage="upload",
+        )
+        session.add_all([old, submitted])
+        session.flush()
+
+        cleaning_module._preflight_local_duplicates(
+            session=session,
+            knowledge_base_code="general",
+            rows=[submitted],
+        )
+
+        assert submitted.status == "excluded"
+        assert submitted.documents[0].status == "excluded"
+        assert submitted.documents[0].error_code == "EXACT_CONTENT_DUPLICATE"
+        old.dedupe_released_at = datetime.now(timezone.utc)
+        # The rejected upload is itself a source record.  Model the exact
+        # source-delete release before proving that the original failure no
+        # longer blocks a genuinely fresh submission.
+        submitted.dedupe_released_at = datetime.now(timezone.utc)
+        released = CleaningFile(
+            batch_id=new_batch.id,
+            original_filename=submitted.original_filename,
+            storage_filename="released.docx",
+            extension=".docx",
+            source_sha256=submitted.source_sha256,
+            size_bytes=1,
+            status="pending",
+            stage="upload",
+        )
+        session.add(released)
+        session.flush()
+        cleaning_module._preflight_local_duplicates(
+            session=session,
+            knowledge_base_code="general",
+            rows=[released],
+        )
+        assert released.status == "pending"
+        assert released.documents == []
 
 
 def test_admin_knowledge_batch_status_and_retry_handle_datetime_cache(
@@ -1413,7 +1487,11 @@ def test_admin_knowledge_item_endpoints(service_db, monkeypatch):
             document_key="doc-key-1",
             status="failed",
             stage="failed",
-            error_code="CLEANING_FAILED",
+            # The item-retry endpoint is intentionally restricted to errors
+            # produced after source conversion and model admission.  Seed a
+            # publication failure so this endpoint test exercises its valid
+            # public contract instead of a source-retry-only recovery path.
+            error_code="DIFY_PUBLICATION_FAILED",
             error_message="boom",
             retryable=True,
             cleaned_markdown="# 如何做定位\n\n正文",

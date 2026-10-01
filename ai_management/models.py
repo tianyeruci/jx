@@ -324,6 +324,13 @@ class CleaningFile(Base, TimestampMixin):
     source_deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # A source delete is a durable tombstone operation, not just a sequence
+    # of remote calls.  Publishers fence their claim/finalization against
+    # this monotonically increasing generation.
+    source_delete_generation: Mapped[int] = mapped_column(Integer, default=0)
+    source_delete_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Normalized administrative filename used for upload-time duplicate
     # protection.  It is deliberately local-only and never sent to Dify.
     source_name_key: Mapped[str | None] = mapped_column(String(500), nullable=True, index=True)

@@ -69,9 +69,7 @@ def test_prompt_and_custom_id_do_not_depend_on_filename():
     serialized = json.dumps(first, ensure_ascii=False)
     assert '"filename"' not in serialized
     assert "原始文档.md" not in serialized
-    assert build_custom_id(request, "semantic-v1") == build_custom_id(
-        request, "semantic-v1"
-    )
+    assert build_custom_id(request, "semantic-v1") == build_custom_id(request, "semantic-v1")
 
 
 def test_realtime_and_batch_request_body_share_the_same_model_policy():
@@ -163,7 +161,7 @@ def test_consultation_prompt_and_validator_normalize_known_fact_state_variants()
     assert parsed.sections[0].fact_state == "plan"
 
 
-def test_consultation_prompt_describes_complete_v2_contract():
+def test_consultation_prompt_describes_current_v1_contract():
     from ai_management.model_cleaning import PromptRequest, build_prompt_messages
 
     prompt = build_prompt_messages(
@@ -177,19 +175,22 @@ def test_consultation_prompt_describes_complete_v2_contract():
     )[0]["content"]
 
     for field in (
-        "case_id",
-        "disposition",
-        "shared_context",
-        "objectives",
-        "decision_units",
-        "source_coverage",
-        "overall_evidence_level",
-        "background_sufficiency",
-        "retrieval_summary",
+        "consultation-rag-v1",
+        "primary_problem",
+        "relevant_background",
+        "problem_signals",
+        "retrieval_queries",
+        "reference_advice",
+        "advice_summary",
+        "methodology_judgment",
+        "methodology_steps",
+        "methodology_limits",
+        "evidence",
     ):
         assert field in prompt
-    assert "customer_fact|consultant_judgment|decision|planned_action|observed_result|derived_condition" in prompt
-    assert "每个 key 恰好覆盖一次" in prompt
+    assert "client_statement|advisor_judgment|decision|plan|actual_result" in prompt
+    assert "不得产生新的人工复核状态或原文兜底发布" in prompt
+    assert "consulting_case_v2" not in prompt
 
 
 def test_consultation_validator_accepts_equivalent_negation_and_drops_empty_template():
@@ -262,17 +263,10 @@ def test_contract_retry_prompt_is_structural_and_has_no_filename():
         ("recent_activity", 100, 1, True, "realtime"),
     ],
 )
-def test_model_channel_planner(
-    strategy, candidates, tokens, batch_enabled, expected
-):
+def test_model_channel_planner(strategy, candidates, tokens, batch_enabled, expected):
     from ai_management.model_cleaning import choose_call_mode
 
-    assert (
-        choose_call_mode(
-            strategy, candidates, tokens, batch_enabled=batch_enabled
-        )
-        == expected
-    )
+    assert choose_call_mode(strategy, candidates, tokens, batch_enabled=batch_enabled) == expected
 
 
 def test_model_channel_planner_defaults_to_realtime():
@@ -286,15 +280,33 @@ def test_content_review_gate_only_marks_empty_or_short_content():
 
     policy = {"enabled": True, "min_chars": 200, "force_review": False}
     assert content_char_count("# 标题\n\n" + ("正文 " * 110)) >= 200
-    assert content_review_reason("# 标题\n\n短正文", "zsxq_post", {
-        "_cleaning_review_policy": policy,
-    }) == ("CONTENT_TOO_SHORT", "最终正文少于 200 字")
-    assert content_review_reason("正文 " * 110, "zsxq_post", {
-        "_cleaning_review_policy": policy,
-    }) is None
-    assert content_review_reason("正常正文", "standard_document", {
-        "_cleaning_review_policy": policy,
-    }) is None
+    assert content_review_reason(
+        "# 标题\n\n短正文",
+        "zsxq_post",
+        {
+            "_cleaning_review_policy": policy,
+        },
+    ) == ("CONTENT_TOO_SHORT", "最终正文少于 200 字")
+    assert (
+        content_review_reason(
+            "正文 " * 110,
+            "zsxq_post",
+            {
+                "_cleaning_review_policy": policy,
+            },
+        )
+        is None
+    )
+    assert (
+        content_review_reason(
+            "正常正文",
+            "standard_document",
+            {
+                "_cleaning_review_policy": policy,
+            },
+        )
+        is None
+    )
 
 
 def test_content_review_gate_can_be_disabled_by_batch_policy_snapshot():
@@ -306,20 +318,31 @@ def test_content_review_gate_can_be_disabled_by_batch_policy_snapshot():
         "min_chars": 200,
         "force_review": True,
     }
-    assert content_review_reason("短正文", "zsxq_post", {
-        "_cleaning_review_policy": policy,
-    }) is None
+    assert (
+        content_review_reason(
+            "短正文",
+            "zsxq_post",
+            {
+                "_cleaning_review_policy": policy,
+            },
+        )
+        is None
+    )
     # Missing the new field is fail-closed for historical batches.
-    assert content_review_reason("短正文", "zsxq_post", {
-        "_cleaning_review_policy": {
-            "enabled": True,
-            "min_chars": 200,
-            "force_review": False,
+    assert content_review_reason(
+        "短正文",
+        "zsxq_post",
+        {
+            "_cleaning_review_policy": {
+                "enabled": True,
+                "min_chars": 200,
+                "force_review": False,
+            },
         },
-    }) == ("CONTENT_TOO_SHORT", "最终正文少于 200 字")
+    ) == ("CONTENT_TOO_SHORT", "最终正文少于 200 字")
 
 
-def test_semantic_response_rejects_unknown_or_uncovered_blocks():
+def test_semantic_response_rejects_unknown_but_allows_uncovered_blocks():
     from ai_management.model_cleaning import validate_semantic_response
 
     valid = {
@@ -332,9 +355,7 @@ def test_semantic_response_rejects_unknown_or_uncovered_blocks():
         "time_sensitive": False,
         "confidence": 0.92,
     }
-    parsed = validate_semantic_response(
-        "zsxq_post", valid, available_block_ids={"b001", "b002"}
-    )
+    parsed = validate_semantic_response("zsxq_post", valid, available_block_ids={"b001", "b002"})
     assert parsed.keep_block_ids == ["b001"]
 
     with pytest.raises(ValueError, match="未知来源块"):
@@ -343,12 +364,13 @@ def test_semantic_response_rejects_unknown_or_uncovered_blocks():
             {**valid, "keep_block_ids": ["missing"]},
             available_block_ids={"b001", "b002"},
         )
-    with pytest.raises(ValueError, match="必须完整覆盖"):
-        validate_semantic_response(
-            "zsxq_post",
-            {**valid, "drop_block_ids": []},
-            available_block_ids={"b001", "b002"},
-        )
+    partial = validate_semantic_response(
+        "zsxq_post",
+        {**valid, "drop_block_ids": []},
+        available_block_ids={"b001", "b002"},
+    )
+    assert partial.keep_block_ids == ["b001"]
+    assert partial.drop_block_ids == []
 
 
 def test_semantic_response_normalizes_known_qwen_format_variants_only():
@@ -397,12 +419,8 @@ def test_semantic_response_normalizes_observed_qwen_relevance_encodings(
             "disposition": disposition,
             "business_relevance": business_relevance,
             "reason_code": 1,
-            "keep_block_ids": (
-                ["b001"] if expected_disposition == "keep" else []
-            ),
-            "drop_block_ids": (
-                [] if expected_disposition == "keep" else ["b001"]
-            ),
+            "keep_block_ids": (["b001"] if expected_disposition == "keep" else []),
+            "drop_block_ids": ([] if expected_disposition == "keep" else ["b001"]),
             "topic": "产品与客户",
             "time_sensitive": False,
             "confidence": 0.8,
@@ -448,6 +466,8 @@ def test_consultation_response_rejects_unsupported_numbers_and_fact_state():
             available_block_ids={"b001"},
             source_blocks={"b001": "客户调整了产品定位。"},
         )
+
+
 def test_post_shards_honor_item_and_utf8_byte_limits():
     from ai_management.publication_shards import ShardItem, plan_post_shards
 
@@ -470,8 +490,14 @@ def test_post_shard_keeps_explicit_parent_boundaries_and_titles():
 
     plans = plan_post_shards(
         [
-            ShardItem(item_id="one", title="短标题", markdown="【上下文】短标题｜article｜" + "中" * 140),
-            ShardItem(item_id="two", title="另一个标题", markdown="【上下文】另一个标题｜article｜" + "文" * 140),
+            ShardItem(
+                item_id="one", title="短标题", markdown="【上下文】短标题｜article｜" + "中" * 140
+            ),
+            ShardItem(
+                item_id="two",
+                title="另一个标题",
+                markdown="【上下文】另一个标题｜article｜" + "文" * 140,
+            ),
         ],
         max_items=10,
         max_bytes=10_000,
@@ -639,9 +665,7 @@ def test_explicit_dense_toc_without_recovered_body_headings_is_removed():
     assert "这是没有被 PDF 转换器标成章节标题的正文。" in result.markdown
 
 
-def test_nonblocking_pdf_table_warning_keeps_readable_linear_text(
-    tmp_path, monkeypatch
-):
+def test_nonblocking_pdf_table_warning_keeps_readable_linear_text(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from ai_management.cleaning import STRATEGY_REGISTRY
@@ -655,9 +679,7 @@ def test_nonblocking_pdf_table_warning_keeps_readable_linear_text(
         lambda *_args, **_kwargs: SimpleNamespace(
             markdown="# 产品验证\n\n先访谈客户，再验证付费意愿。",
             needs_review=True,
-            review_reasons=[
-                "table_review:表格结构无法可靠对齐，已保留线性单元格文本"
-            ],
+            review_reasons=["table_review:表格结构无法可靠对齐，已保留线性单元格文本"],
         ),
     )
 
@@ -670,9 +692,7 @@ def test_nonblocking_pdf_table_warning_keeps_readable_linear_text(
     assert "<<<DIFY_CHILD>>>" not in result[0].markdown
 
 
-def test_consultation_pdf_table_warning_still_enters_model_cleaning(
-    tmp_path, monkeypatch
-):
+def test_consultation_pdf_table_warning_still_enters_model_cleaning(tmp_path, monkeypatch):
     """A readable consultation PDF must not become review-only for table layout."""
 
     from types import SimpleNamespace
@@ -689,17 +709,13 @@ def test_consultation_pdf_table_warning_still_enters_model_cleaning(
             markdown="# 客户验证\n\n客户未确认报价，下一步继续验证。",
             source_checksum="a" * 64,
             document_id="case_aaaaaaaaaaaaaaaa",
-            review_reasons=[
-                "table_review:表格结构无法可靠对齐，已保留线性单元格文本"
-            ],
+            review_reasons=["table_review:表格结构无法可靠对齐，已保留线性单元格文本"],
             redactions=[],
             residual_pii=[],
         ),
     )
 
-    result = STRATEGY_REGISTRY["personal_business_consultation"].clean(
-        source, "任意名字.pdf"
-    )
+    result = STRATEGY_REGISTRY["personal_business_consultation"].clean(source, "任意名字.pdf")
 
     assert len(result) == 1
     assert result[0].disposition == "awaiting_model"

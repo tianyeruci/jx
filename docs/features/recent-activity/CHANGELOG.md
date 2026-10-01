@@ -3353,3 +3353,740 @@ This is a semantic change log, not a copy of Git diff.
 - **Changed paths:**
   - `ai_management/cleaning.py`
   - `ai_management/workers/tasks/cleaning.py`
+
+## 2026-09-13T14:13:16+08:00 — recent_activity 保持 realtime-only，未改变活动模型请求、解析、重试、DSL或API语义；共享Dify引用删除保护仅以live publication shard为准，避免历史活动replacement行阻断既有精确outbox清理。无Dify、Provider或远端写入。
+
+- **Purpose:** recent_activity 保持 realtime-only，未改变活动模型请求、解析、重试、DSL或API语义；共享Dify引用删除保护仅以live publication shard为准，避免历史活动replacement行阻断既有精确outbox清理。无Dify、Provider或远端写入。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest feature r4: 282 passed; model workflow r2: 119 passed; provider origin: 42 passed; canonical parity confirms recent_activity remains realtime-only
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `knowledge_cleaner/dify.py`
+
+## 2026-09-13T14:16:53+08:00 — 共享路径仅Ruff格式化；recent_activity行为、DSL和API不变，仍为realtime-only。
+
+- **Purpose:** 共享路径仅Ruff格式化；recent_activity行为、DSL和API不变，仍为realtime-only。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest feature r5: 282 passed
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `knowledge_cleaner/dify.py`
+
+## 2026-09-13T15:16:22+08:00 — 活动同一源内重复 event_id 仍在发布前阻断；当全部条目冲突时文件终态为 failed/DUPLICATE_ACTIVITY_EVENT_ID，保留失败条目供状态接口审计，不创建远端文档且不将冲突伪装为内容去重成功。
+
+- **Purpose:** 活动同一源内重复 event_id 仍在发布前阻断；当全部条目冲突时文件终态为 failed/DUPLICATE_ACTIVITY_EVENT_ID，保留失败条目供状态接口审计，不创建远端文档且不将冲突伪装为内容去重成功。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-quality-d-full-r1.xml: 20 passed; pytest-quality-unit-r4.xml; gov quality fingerprint afd869245354162a534f163e018c99308ff131c5ff4942ebe116a7e7110de28d
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `knowledge_cleaner/dify.py`
+
+## 2026-09-13T15:58:20+08:00 — failed 且未精确释放的本地来源继续占有 SHA 和规范名去重租约，避免重传绕过既有清洗保护。
+
+- **Purpose:** failed 且未精确释放的本地来源继续占有 SHA 和规范名去重租约，避免重传绕过既有清洗保护。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-review-remediation.xml
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `knowledge_cleaner/dify.py`
+
+## 2026-09-13T16:09:36+08:00 — 仅刷新共享清洗测试变更后的当前文档指纹；活动功能语义未改变。
+
+- **Purpose:** 仅刷新共享清洗测试变更后的当前文档指纹；活动功能语义未改变。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-crossdrive-test.xml
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `knowledge_cleaner/dify.py`
+
+## 2026-09-13T16:21:28+08:00 — 仅刷新共享测试变更后的文档指纹；活动功能语义未改变。
+
+- **Purpose:** 仅刷新共享测试变更后的文档指纹；活动功能语义未改变。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-cleanup-contract.xml
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `knowledge_cleaner/dify.py`
+
+## 2026-09-13T17:11:12+08:00 — 商业顾问当前DSL活动列表恢复默认50、最大200，并由生成脚本同步统一修复DSL产物；recent_activity仍为realtime-only。静态和执行契约本地验证。
+
+- **Purpose:** 商业顾问当前DSL活动列表恢复默认50、最大200，并由生成脚本同步统一修复DSL产物；recent_activity仍为realtime-only。静态和执行契约本地验证。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-13T17:21:13+08:00 — 活动列表默认50、最大200和recent_activity realtime-only语义不变；仅本地测试夹具收口。
+
+- **Purpose:** 活动列表默认50、最大200和recent_activity realtime-only语义不变；仅本地测试夹具收口。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-13T17:34:14+08:00 — 活动50/200与recent_activity realtime-only语义不变；仅咨询错误信息兼容修复。
+
+- **Purpose:** 活动50/200与recent_activity realtime-only语义不变；仅咨询错误信息兼容修复。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-13T20:49:16+08:00 — 仅格式化 U12 已覆盖的共享质量路径；recent_activity realtime-only 语义未改变。
+
+- **Purpose:** 仅格式化 U12 已覆盖的共享质量路径；recent_activity realtime-only 语义未改变。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-14T02:53:56+08:00 — 共享 Provider/Dify 清理只以 live publication shard/reference 判断活动对象保护；历史 replacement 不阻断精确 standalone cleanup owner 收敛。活动 realtime-only、metadata、Chatflow、DSL、SSE 与公开 API 均未改变。
+
+- **Purpose:** 共享 Provider/Dify 清理只以 live publication shard/reference 判断活动对象保护；历史 replacement 不阻断精确 standalone cleanup owner 收敛。活动 realtime-only、metadata、Chatflow、DSL、SSE 与公开 API 均未改变。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-24T16:00:21+08:00 — recent_activity 新文档先发布、旧文档后删除的合同保持不变；失败清理任务现在携带旧 owner 上下文，维护重试只排除待删目标自身并继续保护其他活引用，成功后记录远端删除时间。商业顾问 DSL 仅按当前源重建，未改变 recent_activity 的 realtime-only 或元数据合同。
+
+- **Purpose:** recent_activity 新文档先发布、旧文档后删除的合同保持不变；失败清理任务现在携带旧 owner 上下文，维护重试只排除待删目标自身并继续保护其他活引用，成功后记录远端删除时间。商业顾问 DSL 仅按当前源重建，未改变 recent_activity 的 realtime-only 或元数据合同。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** 旧文档删除失败后，维护重试把旧 owner 自身误判为其他活引用，删除 outbox 并遗留远端旧文档。
+- **After:** 旧目标自身不再阻断精确重试；真正的共享引用仍禁止删除，失败继续保留任务与退避。
+- **Impact / Notes:** None
+- **Validation:** recent_activity 替换、创建失败、旧删除失败重试、重试失败退避、提交后崩溃恢复共 5 passed；完整 Quality 待重跑。
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-24T16:51:12+08:00 — recent_activity 替换只排除精确旧 owner；共享远端仍被保护。即时删除、404、disable 与 maintenance 成功后统一 tombstone/解绑，失败与多 ID 场景保留未完成 outbox 和 pending marker。
+
+- **Purpose:** recent_activity 替换只排除精确旧 owner；共享远端仍被保护。即时删除、404、disable 与 maintenance 成功后统一 tombstone/解绑，失败与多 ID 场景保留未完成 outbox 和 pending marker。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** replacement/source-delete 聚焦回归 7 passed；完整 Quality 待重跑。
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-24T17:32:04+08:00 — 整源与单文档替换统一按精确 owners 排除本次引用；有外部共享引用时仅收敛被替换 owners，无共享时远端仅删除一次；部分失败保留精确 pending 与 outbox，maintenance 成功后清除。
+
+- **Purpose:** 整源与单文档替换统一按精确 owners 排除本次引用；有外部共享引用时仅收敛被替换 owners，无共享时远端仅删除一次；部分失败保留精确 pending 与 outbox，maintenance 成功后清除。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-24T18:12:03+08:00 — 同一 remote 的分次 cleanup task 写入会合并全部 replacement owners，避免 maintenance 将遗漏 owner 误判为外部共享；共享 sibling 与 marker 清理语义保持精确。
+
+- **Purpose:** 同一 remote 的分次 cleanup task 写入会合并全部 replacement owners，避免 maintenance 将遗漏 owner 误判为外部共享；共享 sibling 与 marker 清理语义保持精确。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-24T23:15:56+08:00 — recent_activity 仍 realtime-only，运行语义未改变；本轮仅修复共享隔离部署候选证明，使无 Git 的服务器目录能按当前完整差异验证后启动。
+
+- **Purpose:** recent_activity 仍 realtime-only，运行语义未改变；本轮仅修复共享隔离部署候选证明，使无 Git 的服务器目录能按当前完整差异验证后启动。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-25T00:07:07+08:00 — 隔离启动校验外部固定 bundle 摘要、冻结 env 并使用不可变镜像 ID，严格验证正式健康；补充无 Git 远端布局及篡改测试。
+
+- **Purpose:** 隔离启动校验外部固定 bundle 摘要、冻结 env 并使用不可变镜像 ID，严格验证正式健康；补充无 Git 远端布局及篡改测试。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-25T00:43:18+08:00 — 三镜像 ID 由精确批准命令的外部值固定，bundle 摘要覆盖镜像身份；正式健康拒绝任意主机使用隔离端口；部署契约在仓库外验证无 Git 远端布局，并覆盖协调篡改。
+
+- **Purpose:** 三镜像 ID 由精确批准命令的外部值固定，bundle 摘要覆盖镜像身份；正式健康拒绝任意主机使用隔离端口；部署契约在仓库外验证无 Git 远端布局，并覆盖协调篡改。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-25T00:46:28+08:00 — 部署契约测试代码仅按 Ruff 要求调整格式；镜像外部身份、正式健康和无 Git 布局语义保持不变。
+
+- **Purpose:** 部署契约测试代码仅按 Ruff 要求调整格式；镜像外部身份、正式健康和无 Git 布局语义保持不变。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-25T01:23:23+08:00 — 正式健康使用结构化 URL 解析拒绝数值等价的隔离端口；完整部署契约执行真实 parser，验证外部镜像 ID 信任锚和无 Git 环境；Windows 与 Linux 选择可用 Python 解释器。
+
+- **Purpose:** 正式健康使用结构化 URL 解析拒绝数值等价的隔离端口；完整部署契约执行真实 parser，验证外部镜像 ID 信任锚和无 Git 环境；Windows 与 Linux 选择可用 Python 解释器。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-25T02:16:39+08:00 — 清洗隔离部署合同补充独立外部批准的三镜像协调篡改反例；唯一接续计划、实施模块 ownership 和文档导航对齐，既有共享差异继续纳入本轮 Quality 与独立复审。
+
+- **Purpose:** 清洗隔离部署合同补充独立外部批准的三镜像协调篡改反例；唯一接续计划、实施模块 ownership 和文档导航对齐，既有共享差异继续纳入本轮 Quality 与独立复审。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-25T03:03:20+08:00 — 共享工作树的治理复审记录和回归测试更新；本 Feature 业务语义未改变。
+
+- **Purpose:** 共享工作树的治理复审记录和回归测试更新；本 Feature 业务语义未改变。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 完整 Quality PASSED
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-25T05:29:13+08:00 — Record current recent-activity approvals and include this active contract in the shared release gate; activity behavior unchanged
+
+- **Purpose:** Record current recent-activity approvals and include this active contract in the shared release gate; activity behavior unchanged
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Focused governance contract: 24 passed; full Quality pending rerun
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-25T05:54:19+08:00 — 质量与复审指纹纳入原始 pytest 证据；源码/实施范围继续排除运行时目录；无审批的 approved/done 元数据 fail-closed；治理测试写入临时目录并移出两份合成记录。
+
+- **Purpose:** 质量与复审指纹纳入原始 pytest 证据；源码/实施范围继续排除运行时目录；无审批的 approved/done 元数据 fail-closed；治理测试写入临时目录并移出两份合成记录。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** pytest 证据目录和根 XML 未绑定质量/复审指纹，合成元数据污染正式 Feature 状态。
+- **After:** quality/review scope 绑定 .pytest-terra/.pytest-canonical 原始证据，source/implementation 保持排除；无审批终态显示 stale_approval；合成记录已保全移离。
+- **Impact / Notes:** 未改变产品 API、数据结构或远端行为；所有既有工作树差异继续保留。
+- **Validation:** tests/test_governance_contract.py: 27 passed
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-25T06:57:08+08:00 — 新增严格一次 continuation-reapproval；普通首次实施审批保留 source baseline fail-closed；当前主 Feature 已以原始 baseline 恢复 content-bound 实施审批并写结构化 gate event。
+
+- **Purpose:** 新增严格一次 continuation-reapproval；普通首次实施审批保留 source baseline fail-closed；当前主 Feature 已以原始 baseline 恢复 content-bound 实施审批并写结构化 gate event。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** 需求再审批后主 Feature 实施审批被清空，普通 approve-implementation 受既有 source baseline 保护阻止。
+- **After:** 主 Feature 通过严格 work/feature/branch/时间顺序/一次性条件恢复实施审批；原始 baseline 未修改，gate event 绑定原始与当前 source 及合同指纹。
+- **Impact / Notes:** 不改变产品 API、远端、部署或费用边界；所有现有差异继续纳入 Quality 和独立复审。
+- **Validation:** tests/test_governance_contract.py: 29 passed
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-25T07:21:50+08:00 — Feature 审批、模块和文档语义纳入 quality/review canonical projection；review 自写字段不参与；损坏 event fail-closed，审批与 event 追加失败可恢复。
+
+- **Purpose:** Feature 审批、模块和文档语义纳入 quality/review canonical projection；review 自写字段不参与；损坏 event fail-closed，审批与 event 追加失败可恢复。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** feature.json 与生成状态被排除在质量/复审指纹外；损坏 event 可被静默跳过；审批先写元数据再写 event。
+- **After:** 关键 Feature 元数据绑定质量/复审指纹，review 自写字段不自失效；event 日志严格解析，审批写入在 event 失败时回滚。
+- **Impact / Notes:** 保留所有既有代码、文档、证据和原始 source baseline；无远端/付费/部署动作。
+- **Validation:** tests/test_governance_contract.py: 33 passed
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-25T07:47:36+08:00 — 当前实施审批必须有匹配 work/feature/branch/baseline/合同指纹的 committed gate event；event 损坏 fail-closed，写入失败回滚；release approval 测试使用隔离 tmp state。
+
+- **Purpose:** 当前实施审批必须有匹配 work/feature/branch/baseline/合同指纹的 committed gate event；event 损坏 fail-closed，写入失败回滚；release approval 测试使用隔离 tmp state。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** gate_status 仅验证元数据与 Quality/review 指纹，审批 event 缺失或损坏可能未阻断；测试曾污染 release-approval live state。
+- **After:** gate_status 及 review/release/complete 继承匹配 event 校验；event 有稳定 id/digest 并原子追加；release approval 测试不写 live state。
+- **Impact / Notes:** 完整保留既有代码、文档、未提交差异和测试证据；不捕获 baseline，不执行远端/付费/部署。
+- **Validation:** tests/test_governance_contract.py: 36 passed
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-25T08:46:45+08:00 — 测试运行证据 tmp/pytest-* 仅绑定 Quality/Review；source/implementation 排除运行产物；接续审批事件绑定新 SPEC 合同指纹并保留原始 source baseline。
+
+- **Purpose:** 测试运行证据 tmp/pytest-* 仅绑定 Quality/Review；source/implementation 排除运行产物；接续审批事件绑定新 SPEC 合同指纹并保留原始 source baseline。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** 保留全部现有差异与测试证据；未执行远端写入、部署、付费调用或 push。
+- **Validation:** tests/test_governance_contract.py focused regression
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-26T17:45:26+08:00 — PROFILE 与唯一计划同步当前 project.json/Feature validation Quality scope；无业务 FR/AC 变化，本轮仅本地验证
+
+- **Purpose:** PROFILE 与唯一计划同步当前 project.json/Feature validation Quality scope；无业务 FR/AC 变化，本轮仅本地验证
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** PROFILE 与计划未完整反映当前 bounded Quality scope
+- **After:** 同步 A-E 直接相关集合、静态增量、600 秒、非全仓 PASS 和本轮 no-paid/no-remote 边界
+- **Impact / Notes:** 未运行 Quality；不授权付费、远端写入、部署、发布或 push；不手改 state/fingerprint
+- **Validation:** 未运行；沿用 5 组、24 个唯一测试路径配置
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-28T14:42:08+08:00 — The current ys deployment and review-waiver changes do not alter recent-activity behavior or its public contract
+
+- **Purpose:** The current ys deployment and review-waiver changes do not alter recent-activity behavior or its public contract
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-28T14:59:24+08:00 — Current ys deployment and governance test repair do not change recent-activity behavior
+
+- **Purpose:** Current ys deployment and governance test repair do not change recent-activity behavior
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-28T16:14:32+08:00 — Shared runtime paths now reject course writes when the ys course dataset is disabled, while keeping existing enabled-course behavior unchanged.
+
+- **Purpose:** Shared runtime paths now reject course writes when the ys course dataset is disabled, while keeping existing enabled-course behavior unchanged.
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Focused readiness and course-boundary tests passed
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-28T18:22:42+08:00 — The ys release is deployed with seven same-image services, general dataset and four App read-only checks, course disabled, and model calls deferred under placeholder key.
+
+- **Purpose:** The ys release is deployed with seven same-image services, general dataset and four App read-only checks, course disabled, and model calls deferred under placeholder key.
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** ys ready/UI/Dify/OCR smoke; real model tests deferred
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-30T04:32:12+08:00 — Bound ys acceptance operations to sealed sample and transport evidence; preserve publication, retrieval, and paid-call resume safeguards on shared implementation paths.
+
+- **Purpose:** Bound ys acceptance operations to sealed sample and transport evidence; preserve publication, retrieval, and paid-call resume safeguards on shared implementation paths.
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Current local gov quality passed; ys paid and remote acceptance not run
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-30T04:57:04+08:00 — 验收 runner 预算封存、付费调用 receipt 与跨重启证据重放、来源检索及 App 判定已按本轮计划修复；当前本地 Quality 与定向复审通过，ys 真实验收未执行。
+
+- **Purpose:** 验收 runner 预算封存、付费调用 receipt 与跨重启证据重放、来源检索及 App 判定已按本轮计划修复；当前本地 Quality 与定向复审通过，ys 真实验收未执行。
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** gov quality: b1ed8518c4739d10fa2167ccbf8e36cbeb30cb35c7cad788d68a68c634442ae2
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-30T21:31:20+08:00 — Shared Bailian client paid chat POST sends one HTTP attempt; existing outer retry reservations remain bounded. No recent activity API or business behavior changes; local transport regressions pass.
+
+- **Purpose:** Shared Bailian client paid chat POST sends one HTTP attempt; existing outer retry reservations remain bounded. No recent activity API or business behavior changes; local transport regressions pass.
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+
+## 2026-09-30T21:59:46+08:00 — Bind final shared client paid POST fix to current candidate after verified local retry checks. No recent activity business API changes.
+
+- **Purpose:** Bind final shared client paid POST fix to current candidate after verified local retry checks. No recent activity business API changes.
+- **Affected modules:**
+  - `activity-cleaning — 活动清洗策略`
+  - `cleaning-publication — 清洗发布与 metadata`
+  - `activity-chatflow — 活动 Chatflow`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/workers/tasks/cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `tests/test_business_advisor_optimized_dsl.py`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
