@@ -7,6 +7,9 @@ from typing import Literal
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_CLEANING_TEST_DATABASE_NAME = "ai_management_cleaning_test"
+_CLEANING_TEST_DATABASE_USER = "ai_management_cleaning_test"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -37,11 +40,19 @@ class Settings(BaseSettings):
     dify_knowledge_api_key: str = ""
     dify_general_dataset_id: str = ""
     dify_course_dataset_id: str = ""
+    # Isolation switch used by the disposable cleaning-test deployment.  The
+    # check is enforced at the API dataset boundary, not only by Streamlit.
+    cleaning_general_only: bool = False
+    cleaning_test_dataset_id: str = "19206ce0-80a4-4a93-aa86-63e3385d2b2a"
+    cleaning_test_isolation_id: str = ""
+    cleaning_test_database_name: str = _CLEANING_TEST_DATABASE_NAME
+    cleaning_test_database_user: str = _CLEANING_TEST_DATABASE_USER
+    cleaning_test_redis_db: int = Field(default=6, ge=0, le=15)
 
     bailian_api_key: str = ""
     bailian_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     cleaning_model: str = "qwen-plus"
-    cleaning_prompt_version: str = "commercial-cleaning-v1"
+    cleaning_prompt_version: str = "commercial-cleaning-v2"
     # Bump only when stored-cleaning semantics change (sanitization, strategy
     # contract, chunking or publication policy).  It is deliberately distinct
     # from a build version so routine releases do not re-index every source.
@@ -55,6 +66,9 @@ class Settings(BaseSettings):
     # an existing task keeps the mode stored on its record.
     bailian_batch_enabled: bool = False
     cleaning_candidate_max_tokens: int = Field(default=12_000, ge=1000)
+    # Bound provider output for both realtime and Batch JSON requests. The
+    # planning guard reserves this maximum for each allowed provider call.
+    cleaning_model_max_tokens: int = Field(default=8192, ge=512, le=32768)
     # Dify validates this independently from the model prompt candidate cap.
     # Its custom hierarchical segment API accepts only 50..4000.
     dify_parent_max_tokens: int = Field(default=2000, ge=50, le=4000)
@@ -184,6 +198,55 @@ class Settings(BaseSettings):
             raise ValueError("PDF_OCR_RETRY_DPI 不能低于 PDF_OCR_RENDER_DPI")
         if self.pdf_ocr_min_confidence > self.pdf_ocr_auto_confidence:
             raise ValueError("PDF_OCR_MIN_CONFIDENCE 不能高于 PDF_OCR_AUTO_CONFIDENCE")
+        return self
+
+    @model_validator(mode="after")
+    def validate_cleaning_test_isolation(self) -> "Settings":
+        if not self.cleaning_general_only:
+            return self
+        if (
+            not self.cleaning_test_dataset_id
+            or self.dify_general_dataset_id != self.cleaning_test_dataset_id
+        ):
+            raise ValueError(
+                "CLEANING_GENERAL_ONLY requires DIFY_GENERAL_DATASET_ID "
+                "to equal CLEANING_TEST_DATASET_ID"
+            )
+        if self.app_env != "test":
+            raise ValueError("CLEANING_GENERAL_ONLY 只能在 APP_ENV=test 下运行")
+        if self.cleaning_test_isolation_id != "ai-management-cleaning-test":
+            raise ValueError("CLEANING_GENERAL_ONLY requires the fixed test isolation ID")
+
+        from urllib.parse import parse_qs, urlparse
+
+        database = urlparse(self.database_url)
+        redis = urlparse(self.redis_url)
+        database_name = database.path.lstrip("/").split("?", 1)[0]
+        redis_path = redis.path.strip("/").split("?", 1)[0]
+        if (
+            self.cleaning_test_database_name != _CLEANING_TEST_DATABASE_NAME
+            or self.cleaning_test_database_user != _CLEANING_TEST_DATABASE_USER
+            or database.scheme not in {"postgresql", "postgresql+psycopg"}
+            or database_name != _CLEANING_TEST_DATABASE_NAME
+            or database.username != _CLEANING_TEST_DATABASE_USER
+        ):
+            raise ValueError("CLEANING_GENERAL_ONLY requires the dedicated test database and user")
+        if (
+            redis.scheme not in {"redis", "rediss"}
+            or redis_path != str(self.cleaning_test_redis_db)
+            or self.cleaning_test_redis_db != 6
+            # redis-py gives a ``db`` query argument precedence over the URL
+            # path.  Reject it entirely in the fail-closed test profile so
+            # every Cache/Celery consumer has one unambiguous DB target.
+            or "db" in parse_qs(redis.query, keep_blank_values=True)
+        ):
+            raise ValueError("CLEANING_GENERAL_ONLY requires Redis DB 6")
+        if self.bailian_batch_enabled:
+            raise ValueError("CLEANING_GENERAL_ONLY 禁止启用 Bailian Batch")
+        if self.acceptance_cleaning_budget_max_yuan > 5:
+            raise ValueError("隔离清洗累计模型预算不能超过 5 元")
+        if self.cleaning_daily_budget_yuan > self.acceptance_cleaning_budget_max_yuan:
+            raise ValueError("隔离清洗日预算不能超过累计模型预算")
         return self
 
     @model_validator(mode="after")

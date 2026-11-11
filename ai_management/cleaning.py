@@ -138,7 +138,7 @@ def source_markdown_fallback_enabled(
 ) -> bool:
     """Whether a new batch may publish its non-empty cleaned Markdown source."""
 
-    if strategy_code == "course_route_catalog":
+    if strategy_code == "course_route_catalog" or strategy_code in CONTENT_MODEL_STRATEGIES:
         return False
     policy = (metadata or {}).get("_cleaning_review_policy")
     if not isinstance(policy, dict):
@@ -429,6 +429,10 @@ _PDF_HARD_BLOCK_PREFIXES = (
     "PDF读取失败",
     "PDF_TYPE_REVIEW_REQUIRED",
     "OCR_PAGE_LIMIT_REVIEW",
+    "OCR_PAGE_COVERAGE_MISMATCH",
+    "OCR_LOW_CONFIDENCE_REVIEW",
+    "OCR_BACKEND_UNAVAILABLE",
+    "OCR缺少置信度证据",
     "PDF缺少可用文字层",
     "OCR执行失败",
     "OCR_KEY_FACT_CONFLICT",
@@ -438,21 +442,43 @@ _PDF_HARD_BLOCK_PREFIXES = (
     "不支持的OCR后端",
 )
 
+# A failed consultation conversion must be recoverable by its actual failed
+# stage.  In particular, do not turn ordinary OCR or PDF read failures into a
+# privacy finding: that would make an operator choose the wrong recovery path
+# and obscures the evidence for the publication block.
+_PDF_BLOCKING_ERROR_CODES: tuple[tuple[str, str], ...] = (
+    ("OCR_PAGE_LIMIT_REVIEW", "OCR_PAGE_LIMIT_REVIEW"),
+    ("OCR_PAGE_COVERAGE_MISMATCH", "OCR_PAGE_COVERAGE_MISMATCH"),
+    ("OCR_LOW_CONFIDENCE_REVIEW", "OCR_LOW_CONFIDENCE_REVIEW"),
+    ("OCR_BACKEND_UNAVAILABLE", "OCR_BACKEND_UNAVAILABLE"),
+    ("OCR_KEY_FACT_CONFLICT", "OCR_KEY_FACT_CONFLICT"),
+    ("PDF读取失败", "PDF_READ_FAILED"),
+    ("OCR缺少置信度证据", "OCR_CONFIDENCE_EVIDENCE_MISSING"),
+    ("PDF缺少可用文字层", "PDF_NO_TEXT_LAYER"),
+    ("OCR执行失败", "OCR_EXECUTION_FAILED"),
+    ("未生成可入库正文", "EMPTY_CLEANING_OUTPUT"),
+    ("脱敏后仍检测到", "PRIVACY_REVIEW_REQUIRED"),
+    ("OCR离线模型", "OCR_BACKEND_UNAVAILABLE"),
+    ("不支持的OCR后端", "OCR_BACKEND_UNAVAILABLE"),
+)
+
 
 def _pdf_blocking_reasons(reasons: Iterable[Any], markdown: str) -> list[str]:
     values = [str(reason) for reason in reasons]
-    blocking = [
-        reason
-        for reason in values
-        if reason.startswith(_PDF_HARD_BLOCK_PREFIXES)
-        and not any(
-            marker in reason.lower()
-            for marker in ("table", "表格", "版面", "格式", "低置信", "confidence")
-        )
-    ]
+    blocking = [reason for reason in values if reason.startswith(_PDF_HARD_BLOCK_PREFIXES)]
     if not markdown.strip() and "未生成可入库正文" not in blocking:
         blocking.append("未生成可入库正文")
     return list(dict.fromkeys(blocking))
+
+
+def _pdf_blocking_error_code(reasons: Iterable[Any]) -> str:
+    """Return the stable reason for a PDF hard block, never a privacy default."""
+
+    values = [str(reason) for reason in reasons]
+    for prefix, code in _PDF_BLOCKING_ERROR_CODES:
+        if any(value.startswith(prefix) for value in values):
+            return code
+    return "PDF_CONVERSION_FAILED"
 
 
 def _is_pdf_table_warning(value: Any) -> bool:
@@ -684,7 +710,17 @@ class PersonalBusinessConsultationStrategy:
     supported_extensions = {".md", ".markdown", ".docx", ".pdf"}
     sensitive = True
     knowledge_base_code = "general"
-    dify_metadata_fields = frozenset({"record_type", "topic", "source_title", "case_id"})
+    dify_metadata_fields = frozenset(
+        {
+            "record_type",
+            "topic",
+            "source_title",
+            "case_id",
+            "case_group_id",
+            "candidate_for_case_id",
+            "methodology_scope",
+        }
+    )
 
     def clean(self, file_path: Path, original_filename: str) -> list[CleanedDocument]:
         from knowledge_cleaner.pdf_convert import (
@@ -791,10 +827,13 @@ class PersonalBusinessConsultationStrategy:
         else:
             raise ValueError(f"个人商业咨询不支持 {suffix} 文件")
 
-        disposition = "review_required" if needs_review else "awaiting_model"
+        # A consultation PDF that has failed OCR/quality/privacy validation
+        # must never enter the model queue. New content paths use failed with
+        # the specific conversion code, not review_required or a source-text
+        # fallback.
+        disposition = "failed" if needs_review else "awaiting_model"
         safe_markdown = markdown.strip()
-        if not safe_markdown:
-            safe_markdown = "# 匿名商业咨询案例\n\n内容需人工复核后发布。"
+        blocking_code = _pdf_blocking_error_code(review_reasons)
         redaction_summary = {
             str(getattr(item, "category", "unknown")): int(getattr(item, "count", 0))
             for item in redactions
@@ -820,9 +859,9 @@ class PersonalBusinessConsultationStrategy:
                     child_chunk_overlap=0,
                 ),
                 disposition=disposition,
-                error_code=("PRIVACY_REVIEW_REQUIRED" if needs_review else None),
+                error_code=(blocking_code if needs_review else None),
                 error_message=(
-                    "；".join(review_reasons[:3]) or "隐私或版面检查需要人工确认"
+                    "；".join(review_reasons[:3]) or "咨询PDF转换或隐私检查失败"
                     if needs_review
                     else None
                 ),
@@ -1702,7 +1741,55 @@ ALLOWED_COMMON_METADATA = {
 ITEM_TERMINAL_STATUSES = {"succeeded", "excluded", "review_required", "failed"}
 ITEM_SUCCESS_STATUSES = {"succeeded"}
 ITEM_PROCESSED_WITHOUT_ERROR = {"succeeded", "excluded"}
+# ``failed`` spans several very different recovery paths.  The ordinary item
+# retry is a Dify-publication retry and must never be used to skip OCR,
+# anonymisation or the model contract.  ``retryable`` carries that narrower
+# fact on the persisted item; keep this status set only for API compatibility.
 ITEM_RETRYABLE_STATUSES = {"failed"}
+_PUBLICATION_RETRYABLE_ERROR_CODES = {
+    # These are the only terminal errors produced after the source content has
+    # already passed conversion, OCR, anonymisation and (when required) model
+    # admission.  A direct item retry may therefore resume publication.
+    "DIFY_PUBLICATION_FAILED",
+    "DIFY_DUPLICATE_VERIFICATION_FAILED",
+    "SOURCE_ATOMIC_ROLLBACK",
+}
+_MODEL_RETRY_ONLY_ERROR_CODES = {
+    "MODEL_CONTRACT_INVALID",
+    "MODEL_NO_RESPONSE",
+    "MODEL_INPUT_TOO_LARGE",
+    "MODEL_REVIEW_SKIPPED",
+    "MODEL_FALLBACK_SOURCE_EMPTY",
+    "MODEL_BATCH_SUBMIT_FAILED",
+    "MODEL_PROVIDER_RETRY_APPROVAL_REQUIRED",
+    "MODEL_CALL_LIMIT_EXCEEDED",
+    "MODEL_DAILY_BUDGET_EXCEEDED",
+    "MODEL_ACCEPTANCE_BUDGET_EXCEEDED",
+    "MODEL_BUDGET_LOCK_UNAVAILABLE",
+    "MODEL_BATCH_RESULT_INVALID",
+    "MODEL_BATCH_RESULT_MISSING",
+    "MODEL_BATCH_SUBMIT_UNCERTAIN",
+    "CONTENT_EMPTY_AFTER_MODEL",
+    "METHODOLOGY_SOURCE_CASE_FAILED",
+}
+
+
+def _is_publication_retryable(item: CleaningDocument) -> bool:
+    """Return whether a failed item can safely resume from publication.
+
+    ``retryable`` alone is not sufficient: historical rows used it for every
+    failed item, including failed OCR/source conversion.  Keep retry fail
+    closed for those rows and only allow error codes produced after all source
+    gates have completed.
+    """
+
+    return (
+        item.status in ITEM_RETRYABLE_STATUSES
+        and item.retryable
+        and item.error_code in _PUBLICATION_RETRYABLE_ERROR_CODES
+    )
+
+
 FILE_TERMINAL_STATUSES = {"succeeded", "excluded", "review_required", "failed", "mixed"}
 
 _ALLOWED_CONTENT_TYPES = {
@@ -2179,17 +2266,13 @@ def _preflight_local_duplicates(
                 | CleaningFile.source_name_key.in_(source_names)
                 | CleaningFile.source_name_key.is_(None)
             ),
+            # Historical terminal rows only describe local provenance. Their
+            # Dify replicas are revalidated at publication time, so they must
+            # not preflight-block a source whose remote result was deleted or
+            # is no longer usable. Keep the active-state lock for concurrent
+            # submissions of the same source.
             CleaningFile.status.in_(
-                [
-                    "pending",
-                    "processing",
-                    "awaiting_model",
-                    "model_processing",
-                    "succeeded",
-                    "review_required",
-                    "mixed",
-                    "excluded",
-                ]
+                ["pending", "processing", "awaiting_model", "model_processing"]
             ),
             CleaningFile.dedupe_released_at.is_(None),
             CleaningBatch.knowledge_base_code == knowledge_base_code,
@@ -2649,8 +2732,26 @@ def retry_cleaning_file(
     )
     if row is None:
         raise ServiceError("VALIDATION_ERROR", "清洗文件不存在", 404, False)
+    # This legacy generic route has no kb_code path parameter.  It must still
+    # enforce the isolated general-only boundary before it can re-enqueue a
+    # non-general source or publication retry.
+    if get_settings().cleaning_general_only and row.batch.knowledge_base_code != "general":
+        raise ServiceError("FORBIDDEN", "隔离测试模式仅允许 general 知识库", 403, False)
     review_required_documents = [item for item in row.documents if item.status == "review_required"]
-    retryable_documents = [item for item in row.documents if item.status in ITEM_RETRYABLE_STATUSES]
+    retryable_documents = [item for item in row.documents if _is_publication_retryable(item)]
+    model_retry_only_documents = [
+        item
+        for item in row.documents
+        if item.status in ITEM_RETRYABLE_STATUSES
+        and item.error_code in _MODEL_RETRY_ONLY_ERROR_CODES
+    ]
+    source_retry_documents = [
+        item
+        for item in row.documents
+        if item.status in ITEM_RETRYABLE_STATUSES
+        and item.error_code not in _MODEL_RETRY_ONLY_ERROR_CODES
+        and not _is_publication_retryable(item)
+    ]
     if (
         review_required_documents
         and not retryable_documents
@@ -2659,9 +2760,66 @@ def retry_cleaning_file(
         raise ServiceError(
             "VALIDATION_ERROR", "待复核条目不能直接重试，请先执行人工复核", 409, False
         )
-    if row.status != "failed" and not retryable_documents:
+    if row.status != "failed" and not retryable_documents and not source_retry_documents:
         raise ServiceError("VALIDATION_ERROR", "当前文件没有失败条目可重试", 409, False)
+    if model_retry_only_documents and not retryable_documents:
+        raise ServiceError(
+            "VALIDATION_ERROR",
+            "模型失败不能走普通重试，请使用模型契约精确重试",
+            409,
+            False,
+        )
     target = get_settings().upload_root.resolve() / batch_id / row.storage_filename
+    if source_retry_documents:
+        if not target.exists():
+            raise ServiceError("CLEANING_FAILED", "失败文件已经过期，无法重试", 410, False)
+        previous_state = (
+            row.status,
+            row.outcome,
+            row.stage,
+            row.error_code,
+            row.error_message,
+        )
+        row.status = "pending"
+        row.outcome = "pending"
+        # Commit an explicitly recoverable state before the broker handoff.
+        # A failed handoff therefore remains visible to the reconciler rather
+        # than being stuck forever in a state which says it is being cleaned.
+        row.stage = "retrying"
+        row.error_code = None
+        row.error_message = None
+        session.commit()
+        cache.delete(cleaning_batch_cache_key(batch_id))
+        try:
+            _enqueue_cleaning_file(file_id, row.original_filename)
+        except Exception as exc:
+            (
+                row.status,
+                row.outcome,
+                row.stage,
+                row.error_code,
+                row.error_message,
+            ) = previous_state
+            session.commit()
+            cache.delete(cleaning_batch_cache_key(batch_id))
+            raise ServiceError(
+                "TASK_QUEUE_UNAVAILABLE",
+                "清洗任务重新提交失败，状态已恢复",
+                503,
+                True,
+            ) from exc
+        record_event(
+            level="INFO",
+            category="operation",
+            component="cleaning",
+            event_code="CLEANING_FILE_RETRIED",
+            status="accepted",
+            message="失败清洗文件已从源文件重新提交",
+            resource_type="cleaning_file",
+            resource_id=file_id,
+            details={"batch_id": batch_id, "recovery": "source"},
+        )
+        return {"file_id": file_id, "status": "pending"}
     if not target.exists() and not retryable_documents:
         raise ServiceError("CLEANING_FAILED", "失败文件已经过期，无法重试", 410, False)
     row.status = "pending"
@@ -2713,6 +2871,20 @@ def retry_cleaning_item(
     if row.status not in ITEM_RETRYABLE_STATUSES:
         raise ServiceError(
             "VALIDATION_ERROR", "只有失败条目可以重试；待复核条目请先执行人工复核", 409, False
+        )
+    if row.error_code in _MODEL_RETRY_ONLY_ERROR_CODES:
+        raise ServiceError(
+            "VALIDATION_ERROR",
+            "模型失败不能走普通重试，请使用模型契约精确重试",
+            409,
+            False,
+        )
+    if not _is_publication_retryable(row):
+        raise ServiceError(
+            "VALIDATION_ERROR",
+            "该失败需要从源文件重新清洗，不能直接发布现有正文",
+            409,
+            False,
         )
     row.status = "pending"
     row.stage = "pending"
@@ -2772,7 +2944,27 @@ def retry_model_contract_item(
         "MODEL_NO_RESPONSE",
     }:
         raise ValueError("只有模型契约或模型无响应失败条目可以精确重试")
+    from .workers.tasks.model_cleaning import model_attempt_count_for_document
 
+    try:
+        valid_document_ids = set(
+            session.scalars(
+                select(CleaningDocument.id)
+                .join(CleaningFile)
+                .where(CleaningFile.batch_id == batch_id)
+            )
+        )
+        if str(document.id) not in valid_document_ids:
+            raise ValueError("模型调用条目不属于当前任务批次")
+        model_attempts = model_attempt_count_for_document(
+            document,
+            task,
+            valid_document_ids=valid_document_ids,
+        )
+    except Exception as exc:
+        raise ValueError("该条目的模型调用次数不可核验，不能自动重试") from exc
+    if model_attempts >= 2:
+        raise ValueError("该条目已达到两次模型调用上限，不能再次精确重试")
     previous_document_state = (
         document.status,
         document.stage,
@@ -2791,9 +2983,15 @@ def retry_model_contract_item(
     document.error_message = None
     document.retryable = False
     task.status = "queued"
-    task.result_counts = {}
-    task.actual_usage = {}
+    from .workers.tasks.model_cleaning import merge_result_counts_preserving_provider_ledger
+
+    task.result_counts = merge_result_counts_preserving_provider_ledger(task, {})
     task.last_error = ""
+    # Delivery attempts are not provider-call attempts.  Releasing a terminal
+    # lease lets a fresh worker claim this exact retry while the durable
+    # document counter/ledger remains the only two-call authority.
+    task.lease_token = None
+    task.lease_expires_at = None
     batch.status = "model_validating"
     session.commit()
     cache.delete(cleaning_batch_cache_key(batch_id))

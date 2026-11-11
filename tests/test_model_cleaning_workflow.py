@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 import json
-import os
-import stat
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
-from pathlib import Path
 
 import httpx
 import pytest
@@ -137,6 +133,13 @@ def test_content_model_plan_uses_batch_when_enabled_and_threshold_is_met(service
             knowledge_base_code="general",
             upload_mode="cleaned",
             status="processing",
+            common_metadata={
+                "_cleaning_review_policy": {
+                    "enabled": True,
+                    "review_required_enabled": True,
+                    "source_markdown_fallback_enabled": True,
+                }
+            },
         )
         session.add(batch)
         session.flush()
@@ -152,7 +155,10 @@ def test_content_model_plan_uses_batch_when_enabled_and_threshold_is_met(service
             status="awaiting_model",
             stage="model_queued",
             content_sha256="b" * 64,
-            metadata_json={"record_type": "article"},
+            metadata_json={
+                "record_type": "article",
+                "_cleaning_review_policy": batch.common_metadata["_cleaning_review_policy"],
+            },
             chunking_json={},
             audit_json={"model_blocks": {"b0001": "先访谈客户再调整产品定位。"}},
             warnings_json=[],
@@ -172,7 +178,7 @@ def test_content_model_plan_uses_batch_when_enabled_and_threshold_is_met(service
         assert task.batch.status == "awaiting_model_approval"
 
 
-def test_model_daily_budget_stops_batch_and_queues_source_fallback(
+def test_model_daily_budget_stops_batch_without_source_fallback(
     service_db,
     monkeypatch,
 ):
@@ -237,16 +243,153 @@ def test_model_daily_budget_stops_batch_and_queues_source_fallback(
 
     with service_db() as session:
         document = session.get(CleaningDocument, document_id)
-        assert document.status == "review_required"
-        assert document.audit_json["source_markdown_fallback"]["model_output_ignored"] is True
-        assert document.audit_json["source_markdown_fallback"]["review_required"] is True
-        assert document.audit_json["source_markdown_fallback"]["artifact_path"]
+        assert document.status == "failed"
+        assert document.error_code == "MODEL_DAILY_BUDGET_EXCEEDED"
+        assert "source_markdown_fallback" not in (document.audit_json or {})
+        assert document.cleaned_markdown.startswith("# 预算测试")
         assert (
             session.scalar(select(ModelCleaningTask).where(ModelCleaningTask.batch_id == batch_id))
             is None
         )
 
     assert queued == []
+
+
+def test_model_daily_budget_includes_actual_usage_above_estimate(service_db, monkeypatch):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    monkeypatch.setattr(worker.settings, "bailian_batch_enabled", False)
+    monkeypatch.setattr(worker.settings, "cleaning_daily_budget_yuan", 0.15)
+    monkeypatch.setattr(worker.settings, "cleaning_realtime_price_version", "test-realtime")
+    monkeypatch.setattr(worker.settings, "cleaning_realtime_price_effective_date", "2026-01-01")
+    monkeypatch.setattr(worker.settings, "cleaning_realtime_price_valid_until", "2099-01-01")
+    monkeypatch.setattr(worker.settings, "cleaning_realtime_input_price_per_million", 1)
+    monkeypatch.setattr(worker.settings, "cleaning_realtime_output_price_per_million", 1)
+
+    with service_db() as session:
+        historical_batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="completed",
+        )
+        session.add(historical_batch)
+        session.flush()
+        session.add(
+            ModelCleaningTask(
+                batch_id=historical_batch.id,
+                mode="realtime",
+                model="qwen-plus",
+                prompt_version="test",
+                status="completed",
+                candidate_fingerprint="d" * 64,
+                candidate_count=1,
+                estimated_cost_high="0.01",
+                price_version="test-realtime",
+                price_effective_date="2026-01-01",
+                price_valid_until="2099-01-01",
+                actual_usage={"input_tokens": 200000, "output_tokens": 0},
+            )
+        )
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="processing",
+            common_metadata={
+                "_cleaning_review_policy": {
+                    "enabled": True,
+                    "review_required_enabled": True,
+                    "source_markdown_fallback_enabled": True,
+                }
+            },
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="预算用量测试",
+            dify_document_name="usage-budget.md",
+            document_key="usage-budget-1",
+            status="awaiting_model",
+            stage="model_queued",
+            content_sha256="e" * 64,
+            metadata_json={
+                "record_type": "article",
+                "_cleaning_review_policy": batch.common_metadata["_cleaning_review_policy"],
+            },
+            chunking_json={},
+            audit_json={"model_blocks": {"b0001": "验证客户问题后设计最小交付。"}},
+            warnings_json=[],
+            cleaned_markdown="验证客户问题后设计最小交付。",
+        )
+        session.add(document)
+        session.commit()
+        batch_id = batch.id
+        document_id = document.id
+
+    assert worker.maybe_plan_model_task(batch_id) is None
+
+    with service_db() as session:
+        document = session.get(CleaningDocument, document_id)
+        assert document.status == "failed"
+        assert document.error_code == "MODEL_DAILY_BUDGET_EXCEEDED"
+        assert (
+            session.scalar(select(ModelCleaningTask).where(ModelCleaningTask.batch_id == batch_id))
+            is None
+        )
+
+
+def test_reconciler_requeues_stale_retrying_pdf_source_file(service_db, monkeypatch):
+    from ai_management.workers.tasks import maintenance
+
+    queued: list[dict] = []
+    monkeypatch.setattr(
+        maintenance.process_ocr_cleaning_file,
+        "apply_async",
+        lambda **kwargs: queued.append(kwargs),
+    )
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="book",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="processing",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        file_row.original_filename = "retry.pdf"
+        file_row.extension = ".pdf"
+        file_row.status = "pending"
+        file_row.outcome = "pending"
+        file_row.stage = "retrying"
+        file_row.error_code = "CLEANING_FAILED"
+        # A manual source retry does not reset historical source-processing
+        # attempts. A crash between its commit and broker handoff must still
+        # be reclaimed exactly once.
+        file_row.attempts = 2
+        file_row.updated_at = datetime.now(timezone.utc) - timedelta(minutes=11)
+        session.add(file_row)
+        session.commit()
+        file_id = file_row.id
+
+    result = maintenance._reconcile_cleaning_pipeline()
+    assert result["source_files"] == 1
+    assert queued == [{"args": [file_id], "queue": "ai_ocr"}]
+
+    with service_db() as session:
+        file_row = session.get(CleaningFile, file_id)
+        assert file_row.status == "pending"
+        assert file_row.stage == "retry_requeued"
+
+    second_result = maintenance._reconcile_cleaning_pipeline()
+    assert second_result["source_files"] == 0
+    assert len(queued) == 1
 
 
 def test_catalog_batch_switch_forces_realtime_with_its_own_price_snapshot(
@@ -1093,6 +1236,14 @@ def test_batch_submit_recovers_remote_id_when_local_commit_fails(service_db, mon
 
     monkeypatch.setattr(worker, "SessionLocal", session_factory)
     monkeypatch.setattr(worker, "_client", lambda: FakeClient())
+    reservations: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        worker,
+        "_reserve_provider_call",
+        lambda _session, _task, document, _request, **_kwargs: (
+            reservations.append(document.id) or 1
+        ),
+    )
     monkeypatch.setattr(
         worker.poll_batch_model_task,
         "apply_async",
@@ -1100,6 +1251,7 @@ def test_batch_submit_recovers_remote_id_when_local_commit_fails(service_db, mon
     )
 
     assert worker.submit_batch_model_task.run(task_id) is False
+    assert reservations == [document.id]
     assert scheduled == [{"args": [task_id], "queue": "ai_model_batch", "countdown": 60}]
     with real_session_local() as session:
         task = session.get(ModelCleaningTask, task_id)
@@ -1107,6 +1259,758 @@ def test_batch_submit_recovers_remote_id_when_local_commit_fails(service_db, mon
         assert task.provider_batch_ids == ["batch-recovered"]
         assert task.provider_input_file_ids == ["input-recovered"]
         assert "恢复远端 ID" in task.last_error
+
+
+def test_batch_upload_then_cancel_does_not_reserve_or_create(service_db, monkeypatch):
+    """An uploaded input that loses its submit boundary must not consume a call slot."""
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="awaiting_model_approval",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="上传后取消",
+            dify_document_name="cleaned-cancelled.md",
+            document_key="cancelled-1",
+            status="awaiting_model",
+            stage="model_queued",
+            content_sha256="c" * 64,
+            metadata_json={"record_type": "article"},
+            chunking_json={},
+            audit_json={"model_blocks": {"b0001": "来源内容。"}},
+            warnings_json=[],
+            cleaned_markdown="来源内容。",
+        )
+        session.add(document)
+        session.flush()
+        fingerprint = worker._candidate_fingerprint([document], "test-v1")
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="batch",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="approved",
+            candidate_fingerprint=fingerprint,
+            approval_fingerprint=fingerprint,
+            candidate_count=1,
+            estimated_input_tokens=100,
+            estimated_output_tokens=100,
+            result_counts={"provider_batch_generation": 7},
+        )
+        session.add(task)
+        session.commit()
+        task_id, document_id = task.id, document.id
+
+    deleted: list[str] = []
+    created: list[str] = []
+    real_session_local = worker.SessionLocal
+
+    class FakeClient:
+        def upload_batch_path(self, _path):
+            with real_session_local() as session:
+                uploaded_task = session.get(ModelCleaningTask, task_id)
+                assert uploaded_task is not None
+                uploaded_task.status = "cancelling"
+                session.commit()
+            return "input-cancelled"
+
+        def create_batch(self, input_id):
+            created.append(input_id)
+            raise AssertionError("取消边界后不得创建远端 Batch")
+
+        def delete_file(self, file_id):
+            deleted.append(file_id)
+
+        def close(self):
+            return None
+
+    reservations: list[str] = []
+    monkeypatch.setattr(worker, "_client", lambda: FakeClient())
+    monkeypatch.setattr(
+        worker,
+        "_reserve_provider_call",
+        lambda _session, _task, document, _request, **_kwargs: (
+            reservations.append(document.id) or "reserved"
+        ),
+    )
+
+    assert worker.submit_batch_model_task.run(task_id) is False
+    assert created == []
+    assert deleted == ["input-cancelled"]
+    assert reservations == []
+    with real_session_local() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        document = session.get(CleaningDocument, document_id)
+        assert task is not None
+        assert document is not None
+        assert document.audit_json.get("model_attempts", 0) == 0
+        assert not (task.result_counts or {}).get("_provider_budget_reservations")
+        assert task.provider_input_file_ids == []
+        assert task.provider_batch_ids == []
+        assert task.result_counts["provider_batch_generation"] == 7
+
+
+@pytest.mark.parametrize("cancel_response", [{}, {"status": "cancelling"}])
+def test_submit_exception_with_unconfirmed_cancel_keeps_exact_cleanup_ownership(
+    service_db, monkeypatch, cancel_response
+):
+    """An unconfirmed cancel after remote create must never reopen approval."""
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="awaiting_model_approval",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="提交异常取消未确认",
+            dify_document_name="cleaned-submit-exception.md",
+            document_key="submit-exception-1",
+            status="awaiting_model",
+            stage="model_queued",
+            content_sha256="d" * 64,
+            metadata_json={"record_type": "article"},
+            chunking_json={},
+            audit_json={"model_blocks": {"b0001": "来源内容。"}},
+            warnings_json=[],
+            cleaned_markdown="来源内容。",
+        )
+        session.add(document)
+        session.flush()
+        fingerprint = worker._candidate_fingerprint([document], "test-v1")
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="batch",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="approved",
+            candidate_fingerprint=fingerprint,
+            approval_fingerprint=fingerprint,
+            candidate_count=1,
+            estimated_input_tokens=100,
+            estimated_output_tokens=100,
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+
+    cancelled: list[str] = []
+    deleted: list[str] = []
+    created = False
+    real_session_local = worker.SessionLocal
+    commit_failures = 2
+
+    class FakeClient:
+        def upload_batch_path(self, _path):
+            return "input-submit-exception"
+
+        def create_batch(self, _input_id):
+            nonlocal created
+            created = True
+            return "batch-submit-exception"
+
+        def cancel_batch(self, provider_batch_id):
+            cancelled.append(provider_batch_id)
+            return dict(cancel_response)
+
+        def delete_file(self, file_id):
+            deleted.append(file_id)
+
+        def close(self):
+            return None
+
+    def session_factory():
+        session = real_session_local()
+        original_commit = session.commit
+
+        def commit():
+            nonlocal commit_failures
+            if created and commit_failures:
+                commit_failures -= 1
+                raise RuntimeError("local persistence failed after remote Batch create")
+            return original_commit()
+
+        session.commit = commit
+        return session
+
+    monkeypatch.setattr(worker, "SessionLocal", session_factory)
+    monkeypatch.setattr(worker, "_client", lambda: FakeClient())
+    monkeypatch.setattr(worker, "_reserve_provider_call", lambda *_args, **_kwargs: "reserved")
+    monkeypatch.setattr(worker.poll_batch_model_task, "apply_async", lambda **_kwargs: None)
+
+    assert worker.submit_batch_model_task.run(task_id) is False
+    assert cancelled == ["batch-submit-exception"]
+    assert deleted == []
+    with real_session_local() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        cleanup = session.scalar(
+            select(ExternalDeletionTask).where(
+                ExternalDeletionTask.kind == "bailian_batch",
+                ExternalDeletionTask.external_id == "batch-submit-exception",
+            )
+        )
+        assert task is not None
+        assert task.cleanup_status == "pending_retry"
+        assert task.provider_batch_ids == ["batch-submit-exception"]
+        assert task.provider_input_file_ids == ["input-submit-exception"]
+        assert task.status == "batch_uploading"
+        assert task.approval_fingerprint == fingerprint
+        assert cleanup is not None
+        assert cleanup.payload["model_task_id"] == task_id
+        assert cleanup.payload["file_ids"] == ["input-submit-exception"]
+
+
+def test_batch_submit_redelivery_resumes_persisted_provider_batch_without_recreating(
+    service_db, monkeypatch
+):
+    """A redelivered upload message must poll the accepted Batch, not bill again."""
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="model_batch_uploading",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="Batch 重投恢复",
+            dify_document_name="cleaned-redelivery.md",
+            document_key="redelivery-1",
+            status="awaiting_model",
+            stage="model_queued",
+            content_sha256="f" * 64,
+            metadata_json={"record_type": "article"},
+            chunking_json={},
+            audit_json={"model_blocks": {"b0001": "来源内容。"}},
+            warnings_json=[],
+            cleaned_markdown="来源内容。",
+        )
+        session.add(document)
+        session.flush()
+        fingerprint = worker._candidate_fingerprint([document], "test-v1")
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="batch",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="batch_uploading",
+            candidate_fingerprint=fingerprint,
+            approval_fingerprint=fingerprint,
+            candidate_count=1,
+            estimated_input_tokens=100,
+            estimated_output_tokens=100,
+            provider_batch_ids=["already-accepted"],
+            provider_input_file_ids=["accepted-input"],
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+        document_id = document.id
+
+    monkeypatch.setattr(
+        worker,
+        "_client",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("redelivery must not recreate a provider batch")
+        ),
+    )
+    scheduled: list[dict] = []
+    monkeypatch.setattr(
+        worker.poll_batch_model_task,
+        "apply_async",
+        lambda **kwargs: scheduled.append(kwargs),
+    )
+
+    assert worker.submit_batch_model_task.run(task_id) is True
+    assert scheduled == [{"args": [task_id], "queue": "ai_model_batch", "countdown": 60}]
+    with service_db() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        document = session.get(CleaningDocument, document_id)
+        assert task.status == "batch_running"
+        assert task.provider_batch_ids == ["already-accepted"]
+        assert document.status == "model_processing"
+
+
+def test_provider_budget_ledger_uses_call_date_and_retains_cancelled_reservations(service_db):
+    from decimal import Decimal
+    from zoneinfo import ZoneInfo
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="completed",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        document_a = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="first reservation",
+            dify_document_name="first-reservation.md",
+            document_key="reservation:1",
+            status="awaiting_model",
+            stage="awaiting_model",
+            cleaned_markdown="first reservation",
+            metadata_json={},
+            chunking_json={},
+            audit_json={"model_attempts": 1},
+            content_sha256="a" * 64,
+        )
+        document_b = CleaningDocument(
+            file_id=file_row.id,
+            sequence=2,
+            title="second reservation",
+            dify_document_name="second-reservation.md",
+            document_key="reservation:2",
+            status="awaiting_model",
+            stage="awaiting_model",
+            cleaned_markdown="second reservation",
+            metadata_json={},
+            chunking_json={},
+            audit_json={"model_attempts": 1},
+            content_sha256="b" * 64,
+        )
+        session.add_all([document_a, document_b])
+        session.flush()
+        session.add_all(
+            [
+                ModelCleaningTask(
+                    batch_id=batch.id,
+                    mode="realtime",
+                    model="qwen-plus",
+                    prompt_version="test-v1",
+                    status="cancelled",
+                    candidate_fingerprint="a" * 64,
+                    candidate_count=1,
+                    estimated_input_tokens=1,
+                    estimated_output_tokens=1,
+                    result_counts={
+                        "_provider_budget_reservations": [
+                            {
+                                "call_id": "a" * 32,
+                                "date": today,
+                                "cost_yuan": "0.25000000",
+                                "reserved_cost_yuan": "0.25000000",
+                                "transport_mode": "realtime",
+                                "document_id": document_a.id,
+                                "input_price_per_million": "1",
+                                "output_price_per_million": "1",
+                                "price_discount": "1",
+                            },
+                            {
+                                "call_id": "b" * 32,
+                                "date": "2026-01-01",
+                                "cost_yuan": "0.75000000",
+                                "reserved_cost_yuan": "0.75000000",
+                                "transport_mode": "batch",
+                                "document_id": document_b.id,
+                                "input_price_per_million": "1",
+                                "output_price_per_million": "1",
+                                "price_discount": "1",
+                            },
+                        ]
+                    },
+                )
+            ]
+        )
+        session.commit()
+
+        assert worker._daily_model_reserved_cost(session) == Decimal("0.25000000")
+        assert worker._cumulative_model_reserved_cost(session) == Decimal("1.00000000")
+
+
+def test_budget_summaries_fail_closed_for_foreign_task_reservation(service_db):
+    """An out-of-batch reservation makes both cost summaries conservatively unknown."""
+
+    from decimal import Decimal
+    from zoneinfo import ZoneInfo
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    with service_db() as session:
+        current_batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="completed",
+        )
+        foreign_batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="completed",
+        )
+        session.add_all([current_batch, foreign_batch])
+        session.flush()
+        current_file = _file(current_batch.id)
+        foreign_file = _file(foreign_batch.id)
+        session.add_all([current_file, foreign_file])
+        session.flush()
+        foreign_document = CleaningDocument(
+            file_id=foreign_file.id,
+            sequence=1,
+            title="foreign",
+            dify_document_name="foreign.md",
+            document_key="foreign:1",
+            status="awaiting_model",
+            stage="awaiting_model",
+            cleaned_markdown="foreign",
+            metadata_json={},
+            chunking_json={},
+            audit_json={"model_attempts": 0},
+            content_sha256="f" * 64,
+        )
+        session.add(foreign_document)
+        session.flush()
+        task = ModelCleaningTask(
+            batch_id=current_batch.id,
+            mode="realtime",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="cancelled",
+            candidate_fingerprint="a" * 64,
+            candidate_count=1,
+            estimated_input_tokens=1,
+            estimated_output_tokens=1,
+            result_counts={
+                "_provider_budget_reservations": [
+                    {
+                        "call_id": "a" * 32,
+                        "date": today,
+                        "cost_yuan": "0.25000000",
+                        "reserved_cost_yuan": "0.25000000",
+                        "transport_mode": "realtime",
+                        "document_id": foreign_document.id,
+                        "input_price_per_million": "1",
+                        "output_price_per_million": "1",
+                        "price_discount": "1",
+                    }
+                ]
+            },
+        )
+        session.add(task)
+        session.commit()
+
+        assert worker._daily_model_reserved_cost(session) == Decimal(
+            str(worker.settings.cleaning_daily_budget_yuan)
+        )
+        assert worker._cumulative_model_reserved_cost(session) == Decimal(
+            str(worker.settings.acceptance_cleaning_budget_max_yuan)
+        )
+
+
+def test_budget_summaries_fail_closed_when_another_task_document_lost_its_ledger(service_db):
+    """One document's positive historical attempts block all new task spend."""
+
+    from decimal import Decimal
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="partially_completed",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        attempted = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="lost-ledger",
+            dify_document_name="lost-ledger.md",
+            document_key="lost-ledger:1",
+            status="awaiting_model",
+            stage="awaiting_model",
+            cleaned_markdown="lost ledger",
+            metadata_json={},
+            chunking_json={},
+            audit_json={"model_attempts": 1},
+            content_sha256="a" * 64,
+        )
+        fresh = CleaningDocument(
+            file_id=file_row.id,
+            sequence=2,
+            title="fresh",
+            dify_document_name="fresh.md",
+            document_key="fresh:2",
+            status="awaiting_model",
+            stage="awaiting_model",
+            cleaned_markdown="fresh",
+            metadata_json={},
+            chunking_json={},
+            audit_json={"model_attempts": 0},
+            content_sha256="b" * 64,
+        )
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="realtime",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="running",
+            candidate_fingerprint="a" * 64,
+            candidate_count=2,
+            estimated_input_tokens=1,
+            estimated_output_tokens=1,
+            result_counts={},
+        )
+        session.add_all([attempted, fresh, task])
+        session.commit()
+
+        assert worker._daily_model_reserved_cost(session) == Decimal(
+            str(worker.settings.cleaning_daily_budget_yuan)
+        )
+        assert worker._cumulative_model_reserved_cost(session) == Decimal(
+            str(worker.settings.acceptance_cleaning_budget_max_yuan)
+        )
+
+
+def test_provider_reservation_fails_closed_when_another_task_document_lost_its_ledger(
+    service_db,
+):
+    """A fresh sibling cannot buy a call when historical task spend is untracked."""
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    request = PromptRequest(
+        strategy_code="zsxq_post",
+        item_id="fresh-item",
+        content_sha256="c" * 64,
+        title="fresh",
+        blocks={"b0001": "验证同一任务账本完整性。"},
+    )
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="partially_completed",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        attempted = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="lost-ledger",
+            dify_document_name="lost-ledger.md",
+            document_key="lost-ledger:1",
+            status="awaiting_model",
+            stage="awaiting_model",
+            cleaned_markdown="lost ledger",
+            metadata_json={},
+            chunking_json={},
+            audit_json={"model_attempts": 1},
+            content_sha256="a" * 64,
+        )
+        fresh = CleaningDocument(
+            file_id=file_row.id,
+            sequence=2,
+            title="fresh",
+            dify_document_name="fresh.md",
+            document_key="fresh:2",
+            status="awaiting_model",
+            stage="awaiting_model",
+            cleaned_markdown="fresh",
+            metadata_json={},
+            chunking_json={},
+            audit_json={"model_attempts": 0},
+            content_sha256="b" * 64,
+        )
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="realtime",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="running",
+            candidate_fingerprint="a" * 64,
+            candidate_count=2,
+            estimated_input_tokens=1,
+            estimated_output_tokens=1,
+            result_counts={},
+        )
+        session.add_all([attempted, fresh, task])
+        session.commit()
+
+        with pytest.raises(worker._ModelCallLimitExceeded, match="账本与任务条目不一致"):
+            worker._reserve_provider_call(session, task, fresh, request)
+        session.refresh(fresh)
+        session.refresh(task)
+        assert fresh.audit_json["model_attempts"] == 0
+        assert task.result_counts == {}
+
+
+def test_realtime_usage_settles_exact_matching_reservation_without_double_counting():
+    from types import SimpleNamespace
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    call_id = "a" * 32
+    task = SimpleNamespace(
+        result_counts={
+            "_provider_budget_reservations": [
+                {
+                    "call_id": call_id,
+                    "date": "2026-09-13",
+                    "cost_yuan": "0.50000000",
+                    "reserved_cost_yuan": "0.50000000",
+                    "transport_mode": "realtime",
+                    "document_id": "document-a",
+                    "input_price_per_million": "1",
+                    "output_price_per_million": "1",
+                    "price_discount": "1",
+                }
+            ]
+        },
+        actual_usage={},
+    )
+    session = SimpleNamespace(commit=lambda: None)
+    usage = {"input_tokens": 0, "output_tokens": 0}
+
+    worker._persist_realtime_usage(
+        session,
+        task,
+        usage,
+        {"input_tokens": 2, "output_tokens": 3},
+        call_id=call_id,
+    )
+
+    entry = task.result_counts["_provider_budget_reservations"][0]
+    assert usage == {"input_tokens": 2, "output_tokens": 3}
+    assert task.actual_usage == usage
+    assert entry["reserved_cost_yuan"] == "0.50000000"
+    assert entry["actual_cost_yuan"] == "0.00000500"
+    assert entry["cost_yuan"] == "0.00000500"
+    assert worker._provider_budget_ledger_is_corrupt(task) is False
+
+
+def test_realtime_usage_without_provider_usage_keeps_reservation_outstanding():
+    from types import SimpleNamespace
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    call_id = "b" * 32
+    task = SimpleNamespace(
+        result_counts={
+            "_provider_budget_reservations": [
+                {
+                    "call_id": call_id,
+                    "date": "2026-09-13",
+                    "cost_yuan": "0.50000000",
+                    "reserved_cost_yuan": "0.50000000",
+                    "transport_mode": "realtime",
+                    "document_id": "document-b",
+                    "input_price_per_million": "1",
+                    "output_price_per_million": "1",
+                    "price_discount": "1",
+                }
+            ]
+        },
+        actual_usage={},
+    )
+
+    worker._persist_realtime_usage(
+        SimpleNamespace(commit=lambda: None),
+        task,
+        {"input_tokens": 0, "output_tokens": 0},
+        {"input_tokens": "unknown", "output_tokens": None},
+        call_id=call_id,
+    )
+
+    entry = task.result_counts["_provider_budget_reservations"][0]
+    assert entry["cost_yuan"] == "0.50000000"
+    assert "actual_cost_yuan" not in entry
+
+
+def test_provider_budget_ledger_with_one_corrupt_entry_fails_closed(service_db):
+    from decimal import Decimal
+    from zoneinfo import ZoneInfo
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="completed",
+        )
+        session.add(batch)
+        session.flush()
+        session.add(
+            ModelCleaningTask(
+                batch_id=batch.id,
+                mode="realtime",
+                model="qwen-plus",
+                prompt_version="test-v1",
+                status="failed",
+                candidate_fingerprint="b" * 64,
+                candidate_count=1,
+                estimated_input_tokens=1,
+                estimated_output_tokens=1,
+                result_counts={
+                    "_provider_budget_reservations": [
+                        {"date": today, "cost_yuan": "0.01"},
+                        {"date": "not-a-date", "cost_yuan": "not-a-cost"},
+                    ]
+                },
+            )
+        )
+        session.commit()
+
+        assert worker._daily_model_reserved_cost(session) >= Decimal(
+            str(worker.settings.cleaning_daily_budget_yuan)
+        )
+        assert worker._cumulative_model_reserved_cost(session) >= Decimal(
+            str(worker.settings.acceptance_cleaning_budget_max_yuan)
+        )
 
 
 def test_recover_created_provider_batches_does_not_revive_cancelled_task(service_db):
@@ -1504,6 +2408,97 @@ def test_cancelling_provider_batch_remains_active_until_cancelled(
         assert task.result_counts["provider_statuses"] == ["cancelling"]
 
 
+def test_poll_persists_exact_files_for_mixed_terminal_and_cancelling_batches(service_db, monkeypatch):
+    """Mixed Batch states retain a durable per-Batch file owner map."""
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    with service_db() as session:
+        batch = CleaningBatch(strategy_code="zsxq_post", knowledge_base_code="general")
+        session.add(batch)
+        session.flush()
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="batch",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="batch_running",
+            candidate_fingerprint="a" * 64,
+            candidate_count=2,
+            provider_batch_ids=["B1", "B2"],
+            provider_input_file_ids=["I1", "I2"],
+            result_counts={
+                "provider_batch_file_map": {
+                    "B1": {"input_file_id": "I1"},
+                    "B2": {"input_file_id": "I2"},
+                }
+            },
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+
+    class FakeClient:
+        def get_batch(self, provider_batch_id):
+            return {
+                "B1": {"status": "completed", "output_file_id": "O1", "error_file_id": "E1"},
+                "B2": {"status": "cancelling", "output_file_id": "O2", "error_file_id": "E2"},
+            }[provider_batch_id]
+
+        def close(self):
+            return None
+
+    scheduled: list[dict] = []
+    monkeypatch.setattr(worker, "_client", lambda: FakeClient())
+    monkeypatch.setattr(worker.poll_batch_model_task, "apply_async", lambda **kwargs: scheduled.append(kwargs))
+
+    assert worker.poll_batch_model_task.run(task_id) is True
+    assert scheduled == [{"args": [task_id], "queue": "ai_model_batch", "countdown": 60}]
+    with service_db() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        assert task is not None
+        assert task.provider_batch_ids == ["B2"]
+        assert task.provider_output_file_ids == ["O1"]
+        assert task.provider_error_file_ids == ["E1"]
+        assert task.result_counts["provider_batch_file_map"] == {
+            "B1": {"input_file_id": "I1", "output_file_id": "O1", "error_file_id": "E1"},
+            "B2": {"input_file_id": "I2", "output_file_id": "O2", "error_file_id": "E2"},
+        }
+
+
+def test_repair_batch_file_map_persists_two_independent_batches(service_db):
+    """Repair creates must not assign B3/B4 files by global list position."""
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    with service_db() as session:
+        task = ModelCleaningTask(
+            batch_id="repair-map-batch",
+            mode="batch",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="batch_running",
+            candidate_fingerprint="b" * 64,
+            candidate_count=2,
+        )
+        session.add(task)
+        session.flush()
+        worker._record_provider_batch_files(task, "B3", input_file_id="I3")
+        worker._record_provider_batch_files(task, "B4", input_file_id="I4")
+        worker._record_provider_batch_files(task, "B3", output_file_id="O3", error_file_id="E3")
+        worker._record_provider_batch_files(task, "B4", output_file_id="O4", error_file_id="E4")
+        session.commit()
+        task_id = task.id
+
+    with service_db() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        assert task is not None
+        assert task.result_counts["provider_batch_file_map"] == {
+            "B3": {"input_file_id": "I3", "output_file_id": "O3", "error_file_id": "E3"},
+            "B4": {"input_file_id": "I4", "output_file_id": "O4", "error_file_id": "E4"},
+        }
+
+
 def test_transient_batch_poll_failure_keeps_remote_batch_pollable(
     service_db,
     monkeypatch,
@@ -1844,10 +2839,8 @@ def test_terminal_batch_result_error_closes_task_and_cleans_provider_files(
         assert task.provider_batch_ids == []
         assert task.result_counts["candidate_count"] == 1
         assert task.last_error.startswith("百炼Batch结果解析失败")
-        assert document.status == "review_required"
-        assert document.audit_json["source_markdown_fallback"]["applied"] is False
-        assert document.audit_json["source_markdown_fallback"]["review_required"] is True
-        assert document.audit_json["source_markdown_fallback"]["artifact_path"]
+        assert document.status == "failed"
+        assert "source_markdown_fallback" not in (document.audit_json or {})
 
 
 def test_duplicate_poll_delivery_is_skipped_by_task_lock(service_db, monkeypatch):
@@ -2094,7 +3087,7 @@ def test_post_model_review_uses_keep_blocks_when_review_gate_is_disabled():
     assert document.audit_json["review_original_error"]["code"] == "MODEL_REVIEW_SKIPPED"
 
 
-def test_model_review_stores_source_markdown_until_explicit_approval():
+def test_model_review_does_not_store_source_fallback_for_content_models():
     from ai_management.workers.tasks.model_cleaning import _apply_source_markdown_fallback
 
     source_markdown = "# 原始标题\n\n表格清洗后的原始 Markdown 内容。"
@@ -2131,15 +3124,14 @@ def test_model_review_stores_source_markdown_until_explicit_approval():
         is False
     )
 
-    assert document.status == "review_required"
-    assert document.cleaned_markdown == source_markdown
+    assert document.status == "failed"
+    assert document.cleaned_markdown != source_markdown
     assert document.metadata_json == source_metadata
-    assert document.audit_json["source_markdown_fallback"]["model_output_ignored"] is True
-    assert document.audit_json["source_markdown_fallback"]["review_required"] is True
+    assert "source_markdown_fallback" not in document.audit_json
     assert document.error_code == "MODEL_NO_RESPONSE"
 
 
-def test_model_review_artifact_retains_payload_after_finalize(
+def test_model_review_artifact_does_not_retain_payload_after_finalize(
     service_db,
     tmp_path,
     monkeypatch,
@@ -2191,28 +3183,15 @@ def test_model_review_artifact_retains_payload_after_finalize(
         is False
     )
 
-    artifact_path = document.audit_json["source_markdown_fallback"]["artifact_path"]
-    artifact = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
-    assert artifact["entries"][0]["model_result"] == payload
-    assert artifact["entries"][0]["response_sha256"]
-    expected_request_sha = hashlib.sha256(
-        json.dumps(
-            request_context,
-            ensure_ascii=False,
-            sort_keys=True,
-            default=str,
-        ).encode("utf-8")
-    ).hexdigest()
-    assert artifact["entries"][0]["request_sha256"] == expected_request_sha
-    assert artifact["entries"][0]["repair_hint_sha256"] == ""
-    artifact_file = Path(artifact_path)
-    if os.name != "nt":
-        assert stat.S_IMODE(artifact_file.stat().st_mode) == 0o600
-        assert stat.S_IMODE(artifact_file.parent.stat().st_mode) == 0o700
-    assert not list(artifact_file.parent.glob("*.tmp"))
+    assert document.status == "failed"
+    assert "source_markdown_fallback" not in document.audit_json
+    assert "provider_trace" not in json.dumps(document.audit_json, ensure_ascii=False)
+    assert "_model_review_payload" not in document.audit_json
+    assert "_model_review_request" not in document.audit_json
+    assert not list(tmp_path.rglob("*.json"))
 
 
-def test_model_review_artifact_uses_request_context_after_provider_failure(
+def test_model_review_artifact_does_not_store_request_context_after_provider_failure(
     tmp_path,
     monkeypatch,
 ):
@@ -2257,27 +3236,10 @@ def test_model_review_artifact_uses_request_context_after_provider_failure(
         is False
     )
 
-    artifact_path = document.audit_json["source_markdown_fallback"]["artifact_path"]
-    artifact = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
-    expected_request = worker._model_review_request_context(
-        request,
-        model_name="qwen-plus",
-        prompt_version="test-v3",
-        repair_hint="请完整输出所有输入 blocks。",
-    )
-    expected_request_sha = hashlib.sha256(
-        json.dumps(
-            expected_request,
-            ensure_ascii=False,
-            sort_keys=True,
-            default=str,
-        ).encode("utf-8")
-    ).hexdigest()
-    assert artifact["entries"][0]["request_sha256"] == expected_request_sha
-    assert (
-        artifact["entries"][0]["repair_hint_sha256"]
-        == hashlib.sha256("请完整输出所有输入 blocks。".encode("utf-8")).hexdigest()
-    )
+    assert document.status == "failed"
+    assert "source_markdown_fallback" not in document.audit_json
+    assert "_model_review_request" not in document.audit_json
+    assert not list(tmp_path.rglob("*.json"))
 
 
 def test_model_review_artifact_write_failure_does_not_stick_validation(
@@ -2323,12 +3285,100 @@ def test_model_review_artifact_write_failure_does_not_stick_validation(
         )
         is False
     )
-    assert document.status == "review_required"
+    assert document.status == "failed"
     assert document.error_code == "MODEL_CONTRACT_INVALID"
-    assert document.audit_json["source_markdown_fallback"]["artifact_path"] == ""
-    assert document.audit_json["source_markdown_fallback"]["artifact_write_error"]
+    assert "source_markdown_fallback" not in document.audit_json
     assert "_model_review_payload" not in document.audit_json
     assert "_model_review_request" not in document.audit_json
+
+
+@pytest.mark.parametrize(
+    "strategy_code",
+    sorted(
+        {
+            "personal_business_consultation",
+            "wechat_public_account_cognition",
+            "zsxq_post",
+            "xiaobot_post",
+        }
+    ),
+)
+def test_content_models_never_publish_source_fallback_even_when_legacy_policy_enables_it(
+    strategy_code,
+):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    source = "# 来源正文\n\n" + ("原始内容不得作为模型失败兜底发布。" * 10)
+    document = CleaningDocument(
+        file_id="file-1",
+        sequence=1,
+        title="内容模型失败",
+        status="failed",
+        stage="failed",
+        error_code="CONTENT_TOO_SHORT",
+        error_message="正文过短",
+        metadata_json={
+            "record_type": "article",
+            "_cleaning_review_policy": {
+                "enabled": True,
+                "review_required_enabled": True,
+                "source_markdown_fallback_enabled": True,
+            },
+        },
+        chunking_json={},
+        audit_json={"_model_review_payload": {"secret": "must-not-persist"}},
+        cleaned_markdown="模型输出",
+    )
+
+    assert (
+        worker._apply_source_markdown_fallback(
+            document,
+            strategy_code,
+            source_markdown=source,
+            source_metadata=document.metadata_json,
+            source_chunking={},
+        )
+        is False
+    )
+    assert document.status == "failed"
+    assert document.cleaned_markdown != source
+    assert "source_markdown_fallback" not in (document.audit_json or {})
+    assert "secret" not in json.dumps(document.audit_json or {}, ensure_ascii=False)
+
+
+def test_content_model_privacy_and_short_quality_fail_without_review_state():
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    privacy_document = CleaningDocument(
+        file_id="file-1",
+        sequence=1,
+        title="隐私失败",
+        status="pending",
+        stage="pending",
+        metadata_json={"cleaning_strategy": "zsxq_post"},
+        cleaned_markdown="保留来源但不能发布",
+        audit_json={},
+    )
+    worker._mark_privacy_review(privacy_document, "检测到潜在PII")
+    assert privacy_document.status == "failed"
+    assert privacy_document.error_code == "PRIVACY_REVIEW_REQUIRED"
+
+    short_document = CleaningDocument(
+        file_id="file-1",
+        sequence=2,
+        title="短正文失败",
+        status="pending",
+        stage="pending",
+        metadata_json={
+            "cleaning_strategy": "zsxq_post",
+            "_cleaning_review_policy": {"enabled": True, "min_chars": 200},
+        },
+        cleaned_markdown="短正文",
+        audit_json={},
+    )
+    worker._finalize_model_document(short_document, strategy_code="zsxq_post")
+    assert short_document.status == "failed"
+    assert short_document.error_code == "CONTENT_TOO_SHORT"
 
 
 def test_post_model_knowledge_units_become_independent_local_documents(service_db):
@@ -2369,7 +3419,7 @@ def test_post_model_knowledge_units_become_independent_local_documents(service_d
                 },
             },
             chunking_json={"parent_separator": "<<<P>>>"},
-            audit_json={"model_blocks": source_blocks},
+            audit_json={"model_blocks": source_blocks, "model_attempts": 2},
             warnings_json=[],
             cleaned_markdown="\n\n".join(source_blocks.values()),
         )
@@ -2436,6 +3486,30 @@ def test_post_model_knowledge_units_become_independent_local_documents(service_d
     assert {item.title for item in documents} == {"定位验证", "定价与交付边界"}
     assert all(item.status == "shard_pending" for item in documents)
     assert all(item.metadata_json.get("knowledge_unit_id") for item in documents)
+    assert [item.audit_json["model_attempts"] for item in documents] == [2, 0]
+
+
+def test_consultation_second_case_child_does_not_inherit_provider_audit(service_db):
+    from ai_management.workers.tasks.model_cleaning import _apply_model_payload
+    from knowledge_cleaner.consultation_rag import validate_consultation_rag_response
+
+    blocks = {"b0001": "客户反馈产品定位不清，客户反馈当前交付边界也不清晰。"}
+    with service_db() as session:
+        batch = CleaningBatch(strategy_code="personal_business_consultation", knowledge_base_code="general", upload_mode="cleaned", status="model_validating")
+        session.add(batch); session.flush()
+        file_row = _file(batch.id); session.add(file_row); session.flush()
+        document = CleaningDocument(file_id=file_row.id, sequence=1, title="匿名咨询", dify_document_name="case.md", document_key="case-1", status="model_processing", stage="model_running", content_sha256="c" * 64, metadata_json={"record_type": "consulting_case", "cleaning_strategy": "personal_business_consultation"}, chunking_json={}, audit_json={"model_attempts": 2, "model_blocks": blocks, "_model_review_trace": {"x": 1}}, warnings_json=[], cleaned_markdown=blocks["b0001"])
+        session.add(document); session.commit()
+        case = {"primary_problem": "客户反馈产品定位不清", "relevant_background": ["客户反馈产品定位不清"], "evidence": [{"kind": "problem", "quote": "客户反馈产品定位不清", "fact_state": "client_statement", "source_block_ids": ["b0001"]}, {"kind": "background", "quote": "客户反馈产品定位不清", "fact_state": "client_statement", "source_block_ids": ["b0001"]}]}
+        payload = {"schema_version": "consultation-rag-v1", "cases": [case, {**case, "primary_problem": "客户反馈当前交付边界也不清晰", "relevant_background": ["客户反馈当前交付边界也不清晰"], "evidence": [{"kind": "problem", "quote": "客户反馈当前交付边界也不清晰", "fact_state": "client_statement", "source_block_ids": ["b0001"]}, {"kind": "background", "quote": "客户反馈当前交付边界也不清晰", "fact_state": "client_statement", "source_block_ids": ["b0001"]}]}]}
+        assert len(validate_consultation_rag_response(payload, source_blocks=blocks).cases) == 2
+        _apply_model_payload(document, "personal_business_consultation", PromptRequest(strategy_code="personal_business_consultation", item_id=document.id, content_sha256=document.content_sha256, title=document.title, blocks=blocks), payload, session=session)
+        documents = list(session.scalars(select(CleaningDocument).where(CleaningDocument.file_id == file_row.id).order_by(CleaningDocument.sequence)))
+    assert len(documents) == 2
+    assert documents[0].audit_json["model_attempts"] == 2
+    assert documents[1].audit_json["model_attempts"] == 0
+    assert "model_blocks" not in documents[1].audit_json
+    assert "_model_review_trace" not in documents[1].audit_json
 
 
 def test_consultation_review_uses_kept_source_blocks_when_review_gate_is_disabled():
@@ -2503,7 +3577,7 @@ def test_consultation_review_uses_kept_source_blocks_when_review_gate_is_disable
     assert document.audit_json["review_original_error"]["code"] == "MODEL_REVIEW_SKIPPED"
 
 
-def test_privacy_review_can_continue_with_audit_when_review_gate_is_disabled():
+def test_consultation_privacy_review_fails_closed_when_review_gate_is_disabled():
     from ai_management.workers.tasks.model_cleaning import _mark_privacy_review
 
     document = CleaningDocument(
@@ -2523,16 +3597,221 @@ def test_privacy_review_can_continue_with_audit_when_review_gate_is_disabled():
 
     _mark_privacy_review(document, "测试隐私风险")
 
-    assert document.status == "pending"
-    assert document.error_code is None
-    assert document.audit_json["review_original_error"]["code"] == "PRIVACY_REVIEW_REQUIRED"
+    assert document.status == "failed"
+    assert document.stage == "failed"
+    assert document.error_code == "PRIVACY_REVIEW_REQUIRED"
+    assert "source_markdown_fallback" not in (document.audit_json or {})
+
+
+def _seed_realtime_post_task(service_db, *, strategy_code="zsxq_post"):
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code=strategy_code,
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="model_validating",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="商业复盘",
+            dify_document_name="cleaned-aaaaaaaaaaaaaaaa__001.md",
+            document_key="item-1",
+            status="awaiting_model",
+            stage="model_queued",
+            content_sha256="b" * 64,
+            metadata_json={
+                "record_type": "article",
+                "cleaning_strategy": strategy_code,
+                "_cleaning_review_policy": {
+                    "enabled": True,
+                    "review_required_enabled": True,
+                    "source_markdown_fallback_enabled": False,
+                    "min_chars": 80,
+                },
+            },
+            chunking_json={},
+            audit_json={
+                "model_attempts": 0,
+                "model_blocks": {
+                    "b0001": "来源内容足够长，用于验证客户问题和产品定位。" * 4,
+                    "b0002": "坏",
+                },
+            },
+            warnings_json=[],
+            cleaned_markdown="来源内容足够长，用于验证客户问题和产品定位。",
+        )
+        session.add(document)
+        session.flush()
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="realtime",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="queued",
+            candidate_fingerprint="f" * 64,
+            candidate_count=1,
+            estimated_input_tokens=100,
+            estimated_output_tokens=100,
+        )
+        session.add(task)
+        session.commit()
+        return task.id, document.id
+
+
+def test_realtime_mixed_units_keep_good_without_second_model_call(service_db, monkeypatch):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    task_id, document_id = _seed_realtime_post_task(service_db)
+    calls = 0
+
+    class FakeClient:
+        def close(self):
+            return None
+
+    def fake_chat(_client, _request, *, model, repair_hint=""):
+        nonlocal calls
+        calls += 1
+        assert not repair_hint
+        return (
+            {
+                "disposition": "keep",
+                "business_relevance": "direct",
+                "reason_code": "business_method",
+                "keep_block_ids": ["b0001", "b0002"],
+                "drop_block_ids": [],
+                "topic": "产品与客户",
+                "time_sensitive": False,
+                "confidence": 0.9,
+                "knowledge_units": [
+                    {
+                        "unit_id": "good",
+                        "title": "定位验证",
+                        "topic": "产品与客户",
+                        "problem": "客户问题需要确认并形成验证闭环。",
+                        "conclusion": "先访谈客户，再调整产品定位并验证结果。",
+                        "reasoning": "来源明确给出验证顺序和边界。",
+                        "applicable_conditions": ["需要确认真实客户问题"],
+                        "actions": ["访谈客户", "调整产品定位"],
+                        "risks_or_limits": ["不能把计划当成结果"],
+                        "source_block_ids": ["b0001"],
+                    },
+                    {
+                        "unit_id": "bad",
+                        "title": "坏单元",
+                        "topic": "产品与客户",
+                        "problem": "坏",
+                        "conclusion": "坏",
+                        "reasoning": "坏",
+                        "applicable_conditions": ["坏"],
+                        "actions": ["坏"],
+                        "risks_or_limits": ["坏"],
+                        "source_block_ids": ["b0002"],
+                    },
+                ],
+            },
+            {"input_tokens": 1, "output_tokens": 1},
+        )
+
+    monkeypatch.setattr(worker, "_client", FakeClient)
+    monkeypatch.setattr(worker, "_realtime_chat", fake_chat)
+    monkeypatch.setattr(worker, "_finish_model_task", lambda _task_id, **_kwargs: None)
+    assert worker.process_realtime_model_task.run(task_id) is True
+    assert calls == 1
+    with service_db() as session:
+        document = session.get(CleaningDocument, document_id)
+        assert document.status in {"shard_pending", "pending", "succeeded"}
+        assert document.metadata_json.get("knowledge_unit_id") == "good"
+        assert document.audit_json.get("rejected_knowledge_units")
+
+
+def test_realtime_provider_transport_failure_has_two_total_calls(service_db, monkeypatch):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    task_id, document_id = _seed_realtime_post_task(service_db)
+    calls = 0
+
+    class FakeClient:
+        def close(self):
+            return None
+
+    def fake_chat(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("provider transport unavailable")
+
+    monkeypatch.setattr(worker, "_client", FakeClient)
+    monkeypatch.setattr(worker, "_realtime_chat", fake_chat)
+    monkeypatch.setattr(worker, "_finish_model_task", lambda _task_id, **_kwargs: None)
+    assert worker.process_realtime_model_task.run(task_id) is True
+    assert calls == 2
+    with service_db() as session:
+        document = session.get(CleaningDocument, document_id)
+        assert document.status == "failed"
+        assert document.status != "review_required"
+        assert "source_markdown_fallback" not in (document.audit_json or {})
+
+
+@pytest.mark.parametrize("second_call_succeeds", [True, False])
+def test_consultation_transport_failure_retries_once_without_initial_contract_payload(
+    service_db, monkeypatch, second_call_succeeds
+):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    task_id, document_id = _seed_realtime_post_task(
+        service_db, strategy_code="personal_business_consultation"
+    )
+    calls = 0
+
+    class FakeClient:
+        def close(self):
+            return None
+
+    def fake_chat(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("provider transport unavailable")
+        if not second_call_succeeds:
+            raise RuntimeError("provider transport unavailable again")
+        return (
+            {"schema_version": "consultation-rag-v1", "cases": []},
+            {"input_tokens": 1, "output_tokens": 1},
+        )
+
+    def fake_apply(document, *_args, **_kwargs):
+        if second_call_succeeds:
+            document.cleaned_markdown = "咨询结果保留必要问题和来源边界。" * 8
+            document.status = "pending"
+            document.stage = "pending"
+            document.error_code = None
+            document.error_message = None
+        else:
+            raise ValueError("咨询案例模型未返回可发布案例")
+
+    monkeypatch.setattr(worker, "_client", FakeClient)
+    monkeypatch.setattr(worker, "_realtime_chat", fake_chat)
+    monkeypatch.setattr(worker, "_apply_model_payload", fake_apply)
+    monkeypatch.setattr(worker, "_finish_model_task", lambda _task_id, **_kwargs: None)
+    assert worker.process_realtime_model_task.run(task_id) is True
+    assert calls == 2
+    with service_db() as session:
+        document = session.get(CleaningDocument, document_id)
+        assert document.status == ("pending" if second_call_succeeds else "failed")
+        assert document.status != "review_required"
+        assert "source_markdown_fallback" not in (document.audit_json or {})
 
 
 def test_realtime_post_contract_failure_skips_without_retry(
     service_db,
     monkeypatch,
 ):
-    """A non-empty contract failure is recorded and skipped without retry."""
+    """Zero-core content is replayed once, then fails closed without fallback."""
 
     from ai_management.workers.tasks import model_cleaning as worker
 
@@ -2560,10 +3839,11 @@ def test_realtime_post_contract_failure_skips_without_retry(
             metadata_json={"record_type": "article"},
             chunking_json={},
             audit_json={
+                "model_attempts": 0,
                 "model_blocks": {
                     "b0001": "先访谈客户，再调整产品定位。",
                     "b0002": "加微信领取优惠。",
-                }
+                },
             },
             warnings_json=[],
             cleaned_markdown="先访谈客户，再调整产品定位。",
@@ -2653,22 +3933,29 @@ def test_realtime_post_contract_failure_skips_without_retry(
 
     monkeypatch.setattr(worker, "_client", FakeClient)
     monkeypatch.setattr(worker, "_realtime_chat", fake_realtime_chat)
-    monkeypatch.setattr(worker, "_finish_model_task", lambda _task_id: None)
+    monkeypatch.setattr(worker, "_finish_model_task", lambda _task_id, **_kwargs: None)
 
     assert worker.process_realtime_model_task.run(task_id) is True
     assert calls[0] == ""
-    assert len(calls) == 1
+    assert len(calls) == 2
     with service_db() as session:
         document = session.get(CleaningDocument, document_id)
         task = session.get(ModelCleaningTask, task_id)
-        assert document.status == "review_required"
-        assert document.error_code == "MODEL_CONTRACT_INVALID"
-        assert task.result_counts == {
+        assert document.status == "failed"
+        assert document.error_code in {"MODEL_CONTRACT_INVALID", "CONTENT_TOO_SHORT"}
+        assert "source_markdown_fallback" not in (document.audit_json or {})
+        assert {
+            key: value
+            for key, value in task.result_counts.items()
+            if key != "_provider_budget_reservations"
+        } == {
             "succeeded": 0,
             "excluded": 0,
-            "review": 1,
-            "failed": 0,
+            "review": 0,
+            "failed": 1,
         }
+        assert task.result_counts["_provider_budget_reservations"]
+        assert task.actual_usage == {"input_tokens": 2, "output_tokens": 2}
 
 
 def test_realtime_post_no_response_retries_once(service_db, monkeypatch):
@@ -2698,7 +3985,7 @@ def test_realtime_post_no_response_retries_once(service_db, monkeypatch):
             content_sha256="b" * 64,
             metadata_json={"record_type": "article"},
             chunking_json={},
-            audit_json={"model_blocks": {"b0001": body}},
+            audit_json={"model_attempts": 0, "model_blocks": {"b0001": body}},
             warnings_json=[],
             cleaned_markdown=body,
         )
@@ -2759,7 +4046,7 @@ def test_realtime_post_no_response_retries_once(service_db, monkeypatch):
 
     monkeypatch.setattr(worker, "_client", FakeClient)
     monkeypatch.setattr(worker, "_realtime_chat", fake_realtime_chat)
-    monkeypatch.setattr(worker, "_finish_model_task", lambda _task_id: None)
+    monkeypatch.setattr(worker, "_finish_model_task", lambda _task_id, **_kwargs: None)
 
     assert worker.process_realtime_model_task.run(task_id) is True
     assert calls == 2
@@ -2768,12 +4055,65 @@ def test_realtime_post_no_response_retries_once(service_db, monkeypatch):
         task = session.get(ModelCleaningTask, task_id)
         assert document.status == "shard_pending"
         assert document.audit_json["model_attempts"] == 2
-        assert task.result_counts == {
+        assert {
+            key: value
+            for key, value in task.result_counts.items()
+            if key != "_provider_budget_reservations"
+        } == {
             "succeeded": 1,
             "excluded": 0,
             "review": 0,
             "failed": 0,
         }
+        assert task.result_counts["_provider_budget_reservations"]
+
+
+def test_provider_input_reservation_uses_utf8_safe_upper_bound():
+    from ai_management.model_cleaning import PromptRequest
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    request = PromptRequest(
+        strategy_code="personal_business_consultation",
+        item_id="budget-utf8",
+        content_sha256="a" * 64,
+        title="中文咨询",
+        blocks={"b001": "真实需求验证与客户访谈。" * 80},
+    )
+    messages = worker.build_prompt_messages(request)
+    visible_utf8_bytes = sum(
+        len(str(message.get("content") or "").encode("utf-8")) for message in messages
+    )
+
+    assert worker._estimated_provider_input_tokens(request) >= visible_utf8_bytes
+    assert (
+        worker._estimated_provider_input_tokens(request)
+        > sum(len(str(message.get("content") or "")) for message in messages) // 2
+    )
+
+
+def test_provider_reservation_uses_actual_transport_price(monkeypatch):
+    from ai_management.model_cleaning import PromptRequest
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    task = ModelCleaningTask(mode="batch", model="qwen-plus", prompt_version="test-v1")
+    request = PromptRequest(
+        strategy_code="zsxq_post",
+        item_id="item-1",
+        content_sha256="a" * 64,
+        title="商业复盘",
+        blocks={"b0001": "先验证客户问题。"},
+    )
+    prices = {
+        "batch": ("batch", "2026-01-01", "2099-01-01", 1.0, 1.0, 0.5),
+        "realtime": ("realtime", "2026-01-01", "2099-01-01", 2.0, 2.0, 1.0),
+    }
+    monkeypatch.setattr(worker, "_price_snapshot", lambda mode: prices[mode])
+
+    batch_cost = worker._provider_call_cost(task, request)
+    realtime_cost = worker._provider_call_cost(task, request, transport_mode="realtime")
+
+    assert batch_cost > 0
+    assert realtime_cost == batch_cost * 4
 
 
 def test_batch_contract_failure_repairs_once_with_fresh_fallback_result(service_db, monkeypatch):
@@ -2887,14 +4227,23 @@ def test_batch_contract_failure_repairs_once_with_fresh_fallback_result(service_
 
     monkeypatch.setattr(worker, "_client", FakeClient)
     monkeypatch.setattr(worker, "_queue_publication_outputs", lambda *_args: None)
-    monkeypatch.setattr(worker, "_finish_model_task", lambda _task_id: None)
+    monkeypatch.setattr(worker, "_finish_model_task", lambda _task_id, **_kwargs: None)
     monkeypatch.setattr(
         worker,
         "_realtime_chat",
         lambda *_args, **_kwargs: (valid_payload, {"input_tokens": 1, "output_tokens": 1}),
     )
+    reservations: list[str] = []
+    monkeypatch.setattr(
+        worker,
+        "_reserve_provider_call",
+        lambda _session, _task, document, _request, **kwargs: (
+            reservations.append((document.id, kwargs.get("transport_mode"))) or 2
+        ),
+    )
 
     assert worker.poll_batch_model_task.run(task_id) is True
+    assert reservations == [(document_id, "realtime")]
     with service_db() as session:
         document = session.get(CleaningDocument, document_id)
         task = session.get(ModelCleaningTask, task_id)
@@ -2939,11 +4288,11 @@ def test_batch_contract_failure_repair_batch_persists_100_candidates(service_db,
 
         def upload_batch_path(self, path):
             uploaded.append(path)
-            return "input-repair-1"
+            return f"I{len(uploaded) + 2}"
 
         def create_batch(self, input_id):
             created.append(input_id)
-            return "batch-repair-1"
+            return f"B{len(created) + 2}"
 
         def delete_file(self, _file_id):
             return None
@@ -2993,14 +4342,24 @@ def test_batch_contract_failure_repair_batch_persists_100_candidates(service_db,
             estimated_output_tokens=100,
             provider_batch_ids=["provider-1"],
             provider_input_file_ids=["input-1"],
+            result_counts={"provider_batch_file_map": {"provider-1": {"input_file_id": "input-1"}}},
         )
         session.add(task)
         session.commit()
         task_id = task.id
 
     monkeypatch.setattr(worker, "_client", FakeClient)
+    monkeypatch.setattr(worker.settings, "cleaning_batch_max_requests", 50)
+    reservations: list[str] = []
+    monkeypatch.setattr(
+        worker,
+        "_reserve_provider_call",
+        lambda _session, _task, document, _request, **_kwargs: (
+            reservations.append(document.id) or 2
+        ),
+    )
     monkeypatch.setattr(worker, "_queue_publication_outputs", lambda *_args: None)
-    monkeypatch.setattr(worker, "_finish_model_task", lambda _task_id: None)
+    monkeypatch.setattr(worker, "_finish_model_task", lambda _task_id, **_kwargs: None)
     monkeypatch.setattr(
         worker.poll_batch_model_task,
         "apply_async",
@@ -3009,24 +4368,24 @@ def test_batch_contract_failure_repair_batch_persists_100_candidates(service_db,
 
     assert worker.poll_batch_model_task.run(task_id) is True
 
-    assert uploaded and created == ["input-repair-1"]
+    assert len(uploaded) == 2
+    assert created == ["I3", "I4"]
+    assert len(reservations) == 100
+    assert len(set(reservations)) == 100
     assert scheduled == [{"args": [task_id], "queue": "ai_model_batch", "countdown": 60}]
     with service_db() as session:
         task = session.get(ModelCleaningTask, task_id)
         assert task.status == "batch_running"
         assert task.candidate_count == 100
-        assert task.provider_input_file_ids == ["input-repair-1"]
-        assert task.provider_batch_ids == ["batch-repair-1"]
+        assert task.provider_input_file_ids == ["I3", "I4"]
+        assert task.provider_batch_ids == ["B3", "B4"]
         assert task.result_counts["retry_round"] == 1
         assert task.result_counts["retry_pending"] == 100
-
-        assert worker.poll_batch_model_task.run(task_id) is True
-        assert file_reads == ["output-old", "output-repair"]
-        with service_db() as session:
-            task = session.get(ModelCleaningTask, task_id)
-            assert set(task.result_counts["provider_terminal_batches"]) == {"batch-repair-1"}
-
-
+        assert task.result_counts["provider_batch_file_map"] == {
+            "provider-1": {"input_file_id": "input-1", "output_file_id": "output-old"},
+            "B3": {"input_file_id": "I3"},
+            "B4": {"input_file_id": "I4"},
+        }
 def _seed_terminal_recovery_task(service_db, worker):
     with service_db() as session:
         batch = CleaningBatch(
@@ -3172,7 +4531,7 @@ def test_terminal_output_fetch_failure_preserves_result_for_retry(service_db, mo
         "apply_async",
         lambda **kwargs: scheduled.append(kwargs),
     )
-    monkeypatch.setattr(model_cleaning, "_finish_model_task", lambda _task_id: None)
+    monkeypatch.setattr(model_cleaning, "_finish_model_task", lambda _task_id, **_kwargs: None)
 
     assert model_cleaning.poll_batch_model_task.run(task_id) is True
     with service_db() as session:
@@ -3240,6 +4599,8 @@ def test_finished_model_task_publishes_every_source_file(service_db, monkeypatch
             candidate_count=2,
             estimated_input_tokens=100,
             estimated_output_tokens=100,
+            lease_token="running-worker-token",
+            lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
         )
         session.add(task)
         session.commit()
@@ -3253,6 +4614,8 @@ def test_finished_model_task_publishes_every_source_file(service_db, monkeypatch
     with service_db() as session:
         task = session.get(ModelCleaningTask, task_id)
         assert task.status == "completed"
+        assert task.lease_token is None
+        assert task.lease_expires_at is None
         assert task.batch.status == "processing"
 
 
@@ -3356,10 +4719,12 @@ def test_model_contract_retry_requeues_one_realtime_item(service_db, monkeypatch
             content_sha256="b" * 64,
             metadata_json={},
             chunking_json={},
-            audit_json={"model_blocks": {"b0001": "咨询案例来源"}},
+            audit_json={"model_attempts": 1, "model_blocks": {"b0001": "咨询案例来源"}},
             warnings_json=["table_review:warning"],
             cleaned_markdown="# 个人商业咨询案例\n\n来源正文",
         )
+        session.add(document)
+        session.flush()
         task = ModelCleaningTask(
             batch_id=batch.id,
             mode="realtime",
@@ -3368,9 +4733,25 @@ def test_model_contract_retry_requeues_one_realtime_item(service_db, monkeypatch
             status="completed",
             candidate_fingerprint="f" * 64,
             candidate_count=1,
-            result_counts={"succeeded": 0, "review": 1},
+            result_counts={
+                "succeeded": 0,
+                "review": 1,
+                "_provider_budget_reservations": [
+                    {
+                        "call_id": "a" * 32,
+                        "document_id": document.id,
+                        "date": "2026-09-12",
+                        "cost_yuan": "0.1",
+                        "reserved_cost_yuan": "0.1",
+                        "transport_mode": "realtime",
+                        "input_price_per_million": "1",
+                        "output_price_per_million": "1",
+                        "price_discount": "1",
+                    }
+                ],
+            },
         )
-        session.add_all([document, task])
+        session.add(task)
         session.commit()
         batch_id, task_id, item_id = batch.id, task.id, document.id
 
@@ -3391,6 +4772,368 @@ def test_model_contract_retry_requeues_one_realtime_item(service_db, monkeypatch
         assert document.error_code is None
         assert task.status == "queued"
         assert batch.status == "model_validating"
+
+
+def test_model_contract_retry_allows_remaining_provider_call_after_exhausted_delivery_leases(
+    service_db, monkeypatch
+):
+    from ai_management.cleaning import retry_model_contract_item
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    queued: list[dict] = []
+    monkeypatch.setattr(
+        worker.process_realtime_model_task,
+        "apply_async",
+        lambda **kwargs: queued.append(kwargs),
+    )
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="personal_business_consultation",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="completed",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="个人商业咨询案例",
+            dify_document_name="cleaned-lease-limit__001.md",
+            document_key="lease-limit",
+            status="failed",
+            stage="failed",
+            error_code="MODEL_CONTRACT_INVALID",
+            content_sha256="d" * 64,
+            metadata_json={},
+            chunking_json={},
+            audit_json={"model_attempts": 1},
+            warnings_json=[],
+            cleaned_markdown="来源正文",
+        )
+        session.add(document)
+        session.flush()
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="realtime",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="completed",
+            attempts=2,
+            candidate_fingerprint="d" * 64,
+            candidate_count=1,
+            result_counts={
+                "_provider_budget_reservations": [
+                    {
+                        "call_id": "b" * 32,
+                        "document_id": document.id,
+                        "date": "2026-09-12",
+                        "cost_yuan": "0.1",
+                        "reserved_cost_yuan": "0.1",
+                        "transport_mode": "realtime",
+                        "input_price_per_million": "1",
+                        "output_price_per_million": "1",
+                        "price_discount": "1",
+                    }
+                ]
+            },
+        )
+        session.add(task)
+        session.commit()
+        result = retry_model_contract_item(batch.id, task.id, document.id, session)
+        assert result == {"task_id": task.id, "item_id": document.id, "status": "queued"}
+        assert task.status == "queued"
+        assert document.status == "awaiting_model"
+        assert task.lease_token is None
+        assert task.lease_expires_at is None
+    assert queued == [{"args": [task.id], "queue": "ai_model_realtime"}]
+
+
+def test_model_contract_retry_preserves_usage_and_rejects_a_third_provider_call(
+    service_db, monkeypatch
+):
+    from ai_management.cleaning import retry_model_contract_item
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    monkeypatch.setattr(
+        worker.process_realtime_model_task,
+        "apply_async",
+        lambda **_kwargs: pytest.fail("two-call item must not be requeued"),
+    )
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="personal_business_consultation",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="completed",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        file_row.status = file_row.outcome = "failed"
+        file_row.stage = "failed"
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="个人商业咨询案例",
+            dify_document_name="cleaned-aaaaaaaaaaaaaaaa__001.md",
+            document_key="item-two-calls",
+            status="failed",
+            stage="failed",
+            error_code="MODEL_CONTRACT_INVALID",
+            content_sha256="c" * 64,
+            metadata_json={},
+            chunking_json={},
+            audit_json={"model_attempts": 2, "model_blocks": {"b0001": "咨询案例来源"}},
+            warnings_json=[],
+            cleaned_markdown="# 个人商业咨询案例\n\n来源正文",
+        )
+        session.add(document)
+        session.flush()
+        task = ModelCleaningTask(
+            batch_id=batch.id,
+            mode="realtime",
+            model="qwen-plus",
+            prompt_version="test-v1",
+            status="completed",
+            candidate_fingerprint="a" * 64,
+            candidate_count=1,
+            actual_usage={"input_tokens": 10, "output_tokens": 20},
+            result_counts={
+                "_provider_budget_reservations": [
+                    {
+                        "call_id": "c" * 32,
+                        "document_id": document.id,
+                        "date": "2026-09-12",
+                        "cost_yuan": "0.1",
+                        "reserved_cost_yuan": "0.1",
+                        "transport_mode": "realtime",
+                        "input_price_per_million": "1",
+                        "output_price_per_million": "1",
+                        "price_discount": "1",
+                    },
+                    {
+                        "call_id": "d" * 32,
+                        "document_id": document.id,
+                        "date": "2026-09-12",
+                        "cost_yuan": "0.1",
+                        "reserved_cost_yuan": "0.1",
+                        "transport_mode": "realtime",
+                        "input_price_per_million": "1",
+                        "output_price_per_million": "1",
+                        "price_discount": "1",
+                    },
+                ]
+            },
+        )
+        session.add(task)
+        session.commit()
+        batch_id, task_id, item_id = batch.id, task.id, document.id
+
+    with service_db() as session:
+        with pytest.raises(ValueError, match="两次"):
+            retry_model_contract_item(batch_id, task_id, item_id, session)
+
+    with service_db() as session:
+        task = session.get(ModelCleaningTask, task_id)
+        document = session.get(CleaningDocument, item_id)
+        assert task.actual_usage == {"input_tokens": 10, "output_tokens": 20}
+        assert document.audit_json["model_attempts"] == 2
+
+
+def test_realtime_worker_does_not_call_provider_after_two_reserved_slots(service_db, monkeypatch):
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    task_id, document_id = _seed_realtime_post_task(service_db)
+    with service_db() as session:
+        document = session.get(CleaningDocument, document_id)
+        document.audit_json = {**document.audit_json, "model_attempts": 2}
+        session.commit()
+
+    class FakeClient:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(worker, "_client", FakeClient)
+    monkeypatch.setattr(
+        worker,
+        "_realtime_chat",
+        lambda *_args, **_kwargs: pytest.fail("a third provider call must not be sent"),
+    )
+    monkeypatch.setattr(worker, "_finish_model_task", lambda _task_id, **_kwargs: None)
+
+    assert worker.process_realtime_model_task.run(task_id) is True
+    with service_db() as session:
+        document = session.get(CleaningDocument, document_id)
+        assert document.status == "failed"
+        assert document.error_code == "MODEL_CALL_LIMIT_EXCEEDED"
+        assert document.audit_json["model_attempts"] == 2
+
+
+@pytest.mark.parametrize("attempts", [None, -1, "1", 1.0, True, "garbage", 3])
+def test_provider_attempt_counter_fails_closed_for_ambiguous_history(attempts):
+    from types import SimpleNamespace
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    document = SimpleNamespace(id="doc-1", audit_json={"model_attempts": attempts})
+    task = SimpleNamespace(result_counts={"_provider_budget_reservations": []})
+
+    with pytest.raises(worker._ModelCallLimitExceeded):
+        worker.model_attempt_count_for_document(document, task)
+
+
+def test_provider_attempt_counter_rejects_missing_document_reservation_for_a_known_call():
+    from types import SimpleNamespace
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    document = SimpleNamespace(id="doc-1", audit_json={"model_attempts": 1})
+    task = SimpleNamespace(result_counts={"_provider_budget_reservations": []})
+
+    with pytest.raises(worker._ModelCallLimitExceeded, match="账本与次数记录冲突"):
+        worker.model_attempt_count_for_document(document, task)
+
+
+def test_realtime_worker_does_not_call_provider_when_a_known_call_has_no_reservation(
+    service_db, monkeypatch
+):
+    from ai_management.models import CleaningDocument
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    task_id, document_id = _seed_realtime_post_task(service_db)
+    with service_db() as session:
+        document = session.get(CleaningDocument, document_id)
+        document.audit_json = {**document.audit_json, "model_attempts": 1}
+        session.commit()
+
+    class FakeClient:
+        def close(self):
+            return None
+
+    provider_calls: list[object] = []
+    monkeypatch.setattr(worker, "_client", FakeClient)
+    monkeypatch.setattr(
+        worker,
+        "_realtime_chat",
+        lambda *_args, **_kwargs: provider_calls.append(object()),
+    )
+    monkeypatch.setattr(worker, "_finish_model_task", lambda _task_id, **_kwargs: None)
+
+    assert worker.process_realtime_model_task.run(task_id) is True
+    assert provider_calls == []
+    with service_db() as session:
+        document = session.get(CleaningDocument, document_id)
+        assert document.status == "failed"
+        assert document.error_code == "MODEL_CALL_LIMIT_EXCEEDED"
+
+
+def test_provider_attempt_counter_can_rebuild_only_document_scoped_reservations():
+    from types import SimpleNamespace
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    document = SimpleNamespace(id="doc-1", audit_json={})
+    task = SimpleNamespace(
+        result_counts={
+            "_provider_budget_reservations": [
+                {
+                    "call_id": "a" * 32,
+                    "document_id": "doc-1",
+                    "date": "2026-09-12",
+                    "cost_yuan": "0.1",
+                    "reserved_cost_yuan": "0.1",
+                    "transport_mode": "realtime",
+                    "input_price_per_million": "1",
+                    "output_price_per_million": "1",
+                    "price_discount": "1",
+                }
+            ]
+        }
+    )
+
+    assert worker.model_attempt_count_for_document(document, task) == 1
+
+
+def test_provider_budget_ledger_rejects_document_from_another_task_batch():
+    """A task ledger cannot silently carry a reservation owned by another batch."""
+
+    from types import SimpleNamespace
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    task = SimpleNamespace(
+        result_counts={
+            "_provider_budget_reservations": [
+                {
+                    "call_id": "a" * 32,
+                    "document_id": "foreign-document",
+                    "date": "2026-09-12",
+                    "cost_yuan": "0.1",
+                    "reserved_cost_yuan": "0.1",
+                    "transport_mode": "realtime",
+                    "input_price_per_million": "1",
+                    "output_price_per_million": "1",
+                    "price_discount": "1",
+                }
+            ]
+        }
+    )
+
+    assert (
+        worker._provider_budget_ledger_is_corrupt(task, valid_document_ids={"current-document"})
+        is True
+    )
+
+
+def test_result_count_updates_preserve_provider_reservation_ledger():
+    from types import SimpleNamespace
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    task = SimpleNamespace(
+        result_counts={
+            "succeeded": 0,
+            "provider_candidate_document_ids": ["doc-1", "doc-2"],
+            "provider_batch_generation": 7,
+            "_provider_budget_reservations": [
+                {"document_id": "doc-1", "date": "2026-09-12", "cost_yuan": "0.1"}
+            ],
+        }
+    )
+
+    assert worker.merge_result_counts_preserving_provider_ledger(task, {"succeeded": 1}) == {
+        "succeeded": 1,
+        "provider_candidate_document_ids": ["doc-1", "doc-2"],
+        "provider_batch_generation": 7,
+        "_provider_budget_reservations": task.result_counts["_provider_budget_reservations"],
+    }
+
+
+def test_model_planning_defers_when_daily_budget_lock_is_unavailable(monkeypatch):
+    from contextlib import contextmanager
+
+    from ai_management.cache import LockState
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    @contextmanager
+    def unavailable_lock(*_args, **_kwargs):
+        yield LockState(acquired=False, available=False)
+
+    monkeypatch.setattr(worker.cache, "lock", unavailable_lock)
+    monkeypatch.setattr(
+        worker,
+        "_maybe_plan_model_task_unlocked",
+        lambda _batch_id: pytest.fail("unavailable budget lock must defer planning"),
+    )
+
+    assert worker.maybe_plan_model_task("batch-never-planned") is None
 
 
 def test_finished_catalog_model_task_refreshes_atomic_failure_file_state(service_db):
@@ -3689,7 +5432,7 @@ def test_post_shard_planner_appends_documents_created_after_reconcile(
         )
 
 
-def test_post_shard_planner_marks_late_exact_duplicate_without_unique_key_failure(
+def test_post_shard_planner_keeps_local_only_duplicate_publishable(
     service_db,
 ):
     from ai_management.workers.tasks import model_cleaning as worker
@@ -3738,16 +5481,821 @@ def test_post_shard_planner_marks_late_exact_duplicate_without_unique_key_failur
         session.commit()
         batch_id = batch.id
 
-        assert worker._plan_post_publication(session, batch_id) == []
+        shard_ids = worker._plan_post_publication(session, batch_id)
 
         session.refresh(document)
-        assert document.status == "excluded"
-        assert document.error_code == "EXACT_CONTENT_DUPLICATE"
+        assert document.status == "shard_pending"
+        assert document.error_code is None
+        assert document.shard_id in shard_ids
         assert (
             session.query(DifyPublicationShard)
             .filter(DifyPublicationShard.file_id == file_row.id)
             .count()
             == 1
+        )
+
+
+def test_post_shard_planner_carries_a_cross_file_remote_candidate_for_revalidation(service_db):
+    """Equal final content may reuse only the exact remotely verified shard."""
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    markdown = "# 同一正文\n\n可复用内容"
+    digest = worker._normalized_publication_digest(markdown)
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="partially_completed",
+        )
+        session.add(batch)
+        session.flush()
+        first_file = _file(batch.id)
+        second_file = _file(batch.id)
+        second_file.original_filename = "other-source.md"
+        second_file.storage_filename = "other-source.md"
+        newest_unrelated_file = _file(batch.id)
+        newest_unrelated_file.original_filename = "newest-unrelated.md"
+        newest_unrelated_file.storage_filename = "newest-unrelated.md"
+        session.add_all([first_file, second_file, newest_unrelated_file])
+        session.flush()
+        existing = DifyPublicationShard(
+            file_id=first_file.id,
+            shard_index=1,
+            status="succeeded",
+            item_count=1,
+            content_bytes=len(markdown.encode("utf-8")),
+            content_sha256=digest,
+            markdown=markdown,
+            metadata_json={
+                "record_type": "article",
+                "publication_content_sha256": digest,
+                "remote_content_witness_sha256": "b" * 64,
+            },
+            dify_document_id="remote-cross-file-shard",
+            dify_batch_id="remote-batch",
+            updated_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+        )
+        newest_unrelated = DifyPublicationShard(
+            file_id=newest_unrelated_file.id,
+            shard_index=1,
+            status="succeeded",
+            item_count=1,
+            content_bytes=len("# 不同正文\n\n不同内容".encode("utf-8")),
+            content_sha256=worker._normalized_publication_digest("# 不同正文\n\n不同内容"),
+            markdown="# 不同正文\n\n不同内容",
+            metadata_json={
+                "record_type": "article",
+                "publication_content_sha256": worker._normalized_publication_digest(
+                    "# 不同正文\n\n不同内容"
+                ),
+                "remote_content_witness_sha256": "c" * 64,
+            },
+            dify_document_id="remote-newest-unrelated-shard",
+            dify_batch_id="newest-remote-batch",
+            updated_at=datetime.now(timezone.utc),
+        )
+        document = CleaningDocument(
+            file_id=second_file.id,
+            sequence=1,
+            title="同一正文",
+            dify_document_name="other-source.md",
+            document_key="other-source:1",
+            status="shard_pending",
+            stage="shard_pending",
+            cleaned_markdown="可复用内容",
+            metadata_json={"record_type": "article", "source_title": "同一正文"},
+            chunking_json={},
+            audit_json={},
+            content_sha256="d" * 64,
+        )
+        session.add_all([existing, newest_unrelated, document])
+        session.commit()
+
+        shard_ids = worker._plan_post_publication(session, batch.id)
+
+        planned = session.get(DifyPublicationShard, document.shard_id)
+        assert planned is not None and planned.id in shard_ids
+        assert planned.dify_document_id == "remote-cross-file-shard"
+        assert planned.metadata_json["remote_content_witness_sha256"] == "b" * 64
+        assert planned.metadata_json["_dify_remote_reference_ownership"] == "shared_candidate"
+
+
+def test_shared_cross_file_shard_is_unlinked_before_last_reference_is_deleted(
+    service_db, monkeypatch, tmp_path
+):
+    """Deleting one source must not delete a remote result still used by another."""
+
+    from types import SimpleNamespace
+
+    from ai_management.api.routers import knowledge_admin
+    from ai_management.schemas import DeleteDocumentRequest
+
+    deleted: list[str] = []
+
+    class FakeDifyClient:
+        def delete_document(self, document_id):
+            deleted.append(document_id)
+
+        def close(self):
+            return None
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="partially_completed",
+        )
+        session.add(batch)
+        session.flush()
+        first = _file(batch.id)
+        first.original_filename = "first-source.md"
+        first.storage_filename = "first-source.md"
+        second = _file(batch.id)
+        second.original_filename = "second-source.md"
+        second.storage_filename = "second-source.md"
+        session.add_all([first, second])
+        session.flush()
+        session.add_all(
+            [
+                DifyPublicationShard(
+                    file_id=first.id,
+                    shard_index=1,
+                    status="succeeded",
+                    item_count=1,
+                    content_bytes=10,
+                    content_sha256="a" * 64,
+                    markdown="# A\n\n正文",
+                    metadata_json={"_dify_remote_reference_ownership": "owned"},
+                    dify_document_id="shared-remote-id",
+                ),
+                DifyPublicationShard(
+                    file_id=second.id,
+                    shard_index=1,
+                    status="succeeded",
+                    item_count=1,
+                    content_bytes=10,
+                    content_sha256="a" * 64,
+                    markdown="# B\n\n正文",
+                    metadata_json={"_dify_remote_reference_ownership": "shared"},
+                    dify_document_id="shared-remote-id",
+                ),
+            ]
+        )
+        session.commit()
+        first_id, second_id = first.id, second.id
+
+        monkeypatch.setattr(knowledge_admin, "_dataset_id", lambda _code: "dataset")
+        monkeypatch.setattr(knowledge_admin, "_client", lambda _code: FakeDifyClient())
+        monkeypatch.setattr(
+            knowledge_admin, "get_settings", lambda: SimpleNamespace(upload_root=tmp_path)
+        )
+        response = knowledge_admin.delete_uploaded_source(
+            "general",
+            second_id,
+            DeleteDocumentRequest(confirm_name="second-source.md"),
+            session,
+        )
+        assert response["deleted_document_count"] == 0
+        assert response["shared_document_count"] == 1
+        assert deleted == []
+        assert (
+            session.scalar(
+                select(DifyPublicationShard.dify_document_id).where(
+                    DifyPublicationShard.file_id == first_id
+                )
+            )
+            == "shared-remote-id"
+        )
+        assert (
+            session.scalar(
+                select(DifyPublicationShard.dify_document_id).where(
+                    DifyPublicationShard.file_id == second_id
+                )
+            )
+            is None
+        )
+
+    with service_db() as session:
+        response = knowledge_admin.delete_uploaded_source(
+            "general",
+            first_id,
+            DeleteDocumentRequest(confirm_name="first-source.md"),
+            session,
+        )
+        assert response["deleted_document_count"] == 1
+        assert response["shared_document_count"] == 0
+    assert deleted == ["shared-remote-id"]
+
+
+def test_delete_document_clears_all_local_shared_remote_references(service_db, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    import pytest
+    from ai_management.api.routers import knowledge_admin
+    from ai_management.schemas import DeleteDocumentRequest
+    from ai_management.errors import ServiceError
+    deleted = []
+    class Client:
+        def delete_document(self, doc_id): deleted.append(doc_id)
+        def close(self): pass
+    with service_db() as session:
+        batch = CleaningBatch(strategy_code="zsxq_post", knowledge_base_code="general", upload_mode="cleaned")
+        session.add(batch); session.flush()
+        files = [_file(batch.id), _file(batch.id)]
+        session.add_all(files); session.flush()
+        for index, file_row in enumerate(files):
+            shard = DifyPublicationShard(file_id=file_row.id, shard_index=1, status="succeeded", item_count=1, content_bytes=1, content_sha256="a" * 64, markdown="x", metadata_json={}, dify_document_id="same-remote")
+            session.add(shard); session.flush()
+            session.add(CleaningDocument(file_id=file_row.id, sequence=1, title=str(index), dify_document_name="same.md", document_key=str(index), status="succeeded", stage="completed", shard_id=shard.id, cleaned_markdown="x", metadata_json={}, chunking_json={}, audit_json={}, content_sha256="b" * 64, dify_document_id="same-remote"))
+        session.commit(); file_ids = [file.id for file in files]
+        monkeypatch.setattr(knowledge_admin, "_documents", lambda _kb: [{"id": "same-remote", "name": "same.md"}])
+        monkeypatch.setattr(knowledge_admin, "_dataset_id", lambda _kb: "dataset")
+        monkeypatch.setattr(knowledge_admin, "_client", lambda _kb: Client())
+        monkeypatch.setattr(knowledge_admin, "get_settings", lambda: SimpleNamespace(upload_root=tmp_path))
+        assert knowledge_admin.delete_document("general", "same-remote", DeleteDocumentRequest(confirm_name="same.md"), session)["deleted"]
+        assert session.scalars(select(CleaningDocument).where(CleaningDocument.file_id.in_(file_ids))).all()[0].dify_document_id is None
+        assert all(doc.dify_document_id is None for doc in session.scalars(select(CleaningDocument).where(CleaningDocument.file_id.in_(file_ids))))
+        assert all(shard.dify_document_id is None for shard in session.scalars(select(DifyPublicationShard).where(DifyPublicationShard.file_id.in_(file_ids))))
+        assert all(session.get(CleaningFile, file_id).dedupe_released_at is not None for file_id in file_ids)
+        monkeypatch.setattr(knowledge_admin, "_documents", lambda _kb: [])
+        with pytest.raises(ServiceError) as exc: knowledge_admin.delete_document("general", "same-remote", DeleteDocumentRequest(confirm_name="same.md"), session)
+        assert exc.value.status_code == 404
+    assert deleted == ["same-remote"]
+
+
+def test_shared_candidate_metadata_replacement_never_deletes_original_remote_result(
+    service_db, monkeypatch
+):
+    """A candidate from source A is not source B's replacement deletion target."""
+
+    from ai_management.workers.tasks import model_cleaning as worker
+    from knowledge_cleaner import dify as dify_module
+
+    deleted: list[str] = []
+
+    class FakeDifyClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def create_document(self, *_args, **_kwargs):
+            return "new-b-document", "new-b-batch"
+
+        def wait_for_indexing(self, *_args, **_kwargs):
+            return None
+
+        def verify_document_structure(self, *_args, **_kwargs):
+            return {"parent_count": 1, "child_count": 1}
+
+        def ensure_metadata_names(self, *_args, **_kwargs):
+            return {}
+
+        def set_document_metadata(self, *_args, **_kwargs):
+            return None
+
+        def verify_document_metadata(self, *_args, **_kwargs):
+            return None
+
+        def document_content_witness(self, *_args, **_kwargs):
+            return "b" * 64
+
+        def delete_document(self, document_id):
+            deleted.append(document_id)
+
+        def disable_document(self, document_id):
+            deleted.append(f"disabled:{document_id}")
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(dify_module, "DifyKnowledgeClient", FakeDifyClient)
+    monkeypatch.setattr(worker, "_shard_remote_is_live", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(worker.settings, "dify_publish_window_start_hour", 0)
+    monkeypatch.setattr(worker.settings, "dify_publish_window_end_hour", 24)
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="partially_completed",
+        )
+        session.add(batch)
+        session.flush()
+        first = _file(batch.id)
+        second = _file(batch.id)
+        second.original_filename = "candidate-source.md"
+        second.storage_filename = "candidate-source.md"
+        session.add_all([first, second])
+        session.flush()
+        original = DifyPublicationShard(
+            file_id=first.id,
+            shard_index=1,
+            status="succeeded",
+            item_count=1,
+            content_bytes=10,
+            content_sha256="a" * 64,
+            markdown="# A\n\n正文",
+            metadata_json={"_dify_remote_reference_ownership": "owned"},
+            dify_document_id="original-a-document",
+        )
+        candidate = DifyPublicationShard(
+            file_id=second.id,
+            shard_index=1,
+            status="shard_pending",
+            item_count=1,
+            content_bytes=10,
+            content_sha256="a" * 64,
+            markdown="# B\n\n正文",
+            metadata_json={
+                "_dify_remote_reference_ownership": "shared_candidate",
+                "publication_content_sha256": "a" * 64,
+            },
+            dify_document_id="original-a-document",
+        )
+        document = CleaningDocument(
+            file_id=second.id,
+            sequence=1,
+            title="候选来源B",
+            dify_document_name="candidate-source.md",
+            document_key="candidate-b",
+            status="shard_pending",
+            stage="shard_pending",
+            shard_id=candidate.id,
+            cleaned_markdown="正文",
+            metadata_json={"record_type": "article"},
+            chunking_json={},
+            audit_json={},
+            content_sha256="c" * 64,
+        )
+        session.add_all([original, candidate])
+        session.flush()
+        document.shard_id = candidate.id
+        session.add(document)
+        session.commit()
+        candidate_id, original_id = candidate.id, original.id
+
+    assert worker.publish_dify_shard.run(candidate_id) is True
+    assert "original-a-document" not in deleted
+    with service_db() as session:
+        original = session.get(DifyPublicationShard, original_id)
+        candidate = session.get(DifyPublicationShard, candidate_id)
+        assert original is not None and original.dify_document_id == "original-a-document"
+        assert candidate is not None and candidate.dify_document_id == "new-b-document"
+        assert candidate.metadata_json["_dify_remote_reference_ownership"] == "owned"
+        assert (
+            session.scalar(
+                select(ExternalDeletionTask).where(
+                    ExternalDeletionTask.kind == "dify_document",
+                    ExternalDeletionTask.external_id == "original-a-document",
+                )
+            )
+            is None
+        )
+
+
+@pytest.mark.parametrize("mode,expect_outbox", [("delete", False), ("disable", False), ("both_fail", True)])
+def test_replacement_cleanup_outbox_closes_only_after_old_remote_is_handled(service_db, monkeypatch, mode, expect_outbox):
+    from ai_management.workers.tasks import model_cleaning as worker
+    from knowledge_cleaner import dify as dify_module
+
+    deleted: list[str] = []
+    class FakeDifyClient:
+        def __init__(self, *_args, **_kwargs): pass
+        def create_document(self, *_args, **_kwargs): return "new-canonical", "new-batch"
+        def wait_for_indexing(self, *_args, **_kwargs): pass
+        def verify_document_structure(self, *_args, **_kwargs): return {"parent_count": 1, "child_count": 1}
+        def ensure_metadata_names(self, *_args, **_kwargs): return {}
+        def set_document_metadata(self, *_args, **_kwargs): pass
+        def verify_document_metadata(self, *_args, **_kwargs): pass
+        def document_content_witness(self, *_args, **_kwargs): return "b" * 64
+        def delete_document(self, doc_id):
+            deleted.append(f"delete:{doc_id}")
+            if mode != "delete": raise RuntimeError("delete failed")
+        def disable_document(self, doc_id):
+            deleted.append(f"disable:{doc_id}")
+            if mode == "both_fail": raise RuntimeError("disable failed")
+        def close(self): pass
+    monkeypatch.setattr(dify_module, "DifyKnowledgeClient", FakeDifyClient)
+    monkeypatch.setattr(worker, "_shard_remote_is_live", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(worker.settings, "dify_publish_window_start_hour", 0)
+    monkeypatch.setattr(worker.settings, "dify_publish_window_end_hour", 24)
+    with service_db() as session:
+        batch = CleaningBatch(strategy_code="zsxq_post", knowledge_base_code="general", upload_mode="cleaned", status="partially_completed")
+        session.add(batch); session.flush()
+        file_row = _file(batch.id); session.add(file_row); session.flush()
+        shard = DifyPublicationShard(file_id=file_row.id, shard_index=1, status="shard_pending", item_count=1, content_bytes=10, content_sha256="a" * 64, markdown="# R\n\n正文", metadata_json={"_dify_remote_reference_ownership": "owned"}, dify_document_id="old-replaced")
+        session.add(shard); session.flush()
+        session.add(CleaningDocument(file_id=file_row.id, sequence=1, title="替换", dify_document_name="replace.md", document_key="replace", status="shard_pending", stage="shard_pending", shard_id=shard.id, cleaned_markdown="正文", metadata_json={"record_type": "article"}, chunking_json={}, audit_json={}, content_sha256="c" * 64))
+        session.commit(); shard_id = shard.id
+    assert worker.publish_dify_shard.run(shard_id) is True
+    with service_db() as session:
+        shard = session.get(DifyPublicationShard, shard_id)
+        outboxes = list(session.scalars(select(ExternalDeletionTask).where(ExternalDeletionTask.kind == "dify_document", ExternalDeletionTask.external_id == "old-replaced")))
+        assert shard.status == "succeeded" and shard.dify_document_id == "new-canonical"
+        assert len(outboxes) == int(expect_outbox)
+    assert "delete:new-canonical" not in deleted
+
+
+def test_queued_dify_deletion_skips_a_remote_id_reused_by_another_source(service_db, monkeypatch):
+    """A delayed cleanup must re-check local references before remote deletion."""
+
+    from ai_management.workers.tasks import maintenance
+
+    deleted: list[str] = []
+
+    class FakeDifyClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def delete_document(self, document_id):
+            deleted.append(document_id)
+
+        def disable_document(self, document_id):
+            deleted.append(f"disabled:{document_id}")
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(maintenance, "DifyKnowledgeClient", FakeDifyClient)
+    monkeypatch.setattr(maintenance, "_reconcile_model_cleanup_work", lambda _session: None)
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="partially_completed",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        session.add_all(
+            [
+                DifyPublicationShard(
+                    file_id=file_row.id,
+                    shard_index=1,
+                    status="succeeded",
+                    item_count=1,
+                    content_bytes=10,
+                    content_sha256="a" * 64,
+                    markdown="# 引用\n\n正文",
+                    metadata_json={"_dify_remote_reference_ownership": "shared"},
+                    dify_document_id="reused-remote-id",
+                ),
+                ExternalDeletionTask(
+                    kind="dify_document",
+                    external_id="reused-remote-id",
+                    payload={"dataset_id": "dataset"},
+                    next_attempt_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+                ),
+            ]
+        )
+        session.commit()
+
+    maintenance._retry_external_deletions()
+
+    assert deleted == []
+    with service_db() as session:
+        assert (
+            session.scalar(
+                select(ExternalDeletionTask).where(
+                    ExternalDeletionTask.kind == "dify_document",
+                    ExternalDeletionTask.external_id == "reused-remote-id",
+                )
+            )
+            is None
+        )
+
+
+def test_post_shard_planner_does_not_attach_late_document_to_indexing_shard(service_db):
+    """A live publisher owns an indexing shard until it reaches a terminal state."""
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    markdown = "# 同一正文\n\n内容"
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="partially_completed",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="同一正文",
+            dify_document_name="late.md",
+            document_key="late",
+            status="shard_pending",
+            stage="shard_pending",
+            cleaned_markdown="内容",
+            metadata_json={"record_type": "article"},
+            chunking_json={},
+            audit_json={},
+            content_sha256="d" * 64,
+        )
+        shard = DifyPublicationShard(
+            file_id=file_row.id,
+            shard_index=1,
+            status="shard_indexing",
+            item_count=1,
+            content_bytes=len(markdown.encode("utf-8")),
+            content_sha256=worker._normalized_publication_digest(markdown),
+            markdown=markdown,
+            metadata_json={"record_type": "article"},
+        )
+        session.add_all([document, shard])
+        session.commit()
+
+        assert worker._plan_post_publication(session, batch.id) == []
+        session.refresh(document)
+        assert document.shard_id is None
+        assert document.status == "shard_pending"
+
+
+def test_post_shard_remote_witness_reuses_only_current_retrievable_result(service_db):
+    """A succeeded local shard is not enough; a current remote witness is required."""
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    class FakeDifyClient:
+        def get_document(self, document_id):
+            assert document_id == "remote-shard"
+            return {
+                "id": document_id,
+                "indexing_status": "completed",
+                "enabled": True,
+                "metadata": {"publication_content_sha256": "a" * 64},
+            }
+
+        def verify_document_metadata(self, document_id, metadata):
+            assert document_id == "remote-shard"
+            assert metadata["publication_content_sha256"] == "a" * 64
+
+        def document_content_witness(self, document_id):
+            assert document_id == "remote-shard"
+            return "b" * 64
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="partially_completed",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        shard = DifyPublicationShard(
+            file_id=file_row.id,
+            shard_index=1,
+            status="succeeded",
+            item_count=1,
+            content_bytes=20,
+            content_sha256="a" * 64,
+            markdown="# 同一正文\n\n内容",
+            metadata_json={"publication_content_sha256": "a" * 64},
+            dify_document_id="remote-shard",
+        )
+        session.add(shard)
+        session.flush()
+        shard.metadata_json = {
+            **shard.metadata_json,
+            "remote_content_witness_sha256": "b" * 64,
+        }
+
+        assert worker._shard_remote_is_live(session, client=FakeDifyClient(), shard=shard) is True
+
+
+def test_post_shard_remote_metadata_mismatch_requires_precise_replacement(service_db):
+    """A completed remote read with wrong controlled metadata is not a timeout."""
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    class FakeDifyClient:
+        def get_document(self, document_id):
+            return {
+                "id": document_id,
+                "indexing_status": "completed",
+                "enabled": True,
+                "metadata": {"publication_content_sha256": "a" * 64},
+            }
+
+        def document_content_witness(self, _document_id):
+            return "b" * 64
+
+        def verify_document_metadata(self, _document_id, _metadata):
+            raise RuntimeError("Dify metadata 回读不一致：topic")
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="partially_completed",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        shard = DifyPublicationShard(
+            file_id=file_row.id,
+            shard_index=1,
+            status="succeeded",
+            item_count=1,
+            content_bytes=20,
+            content_sha256="a" * 64,
+            markdown="# 同一正文\n\n内容",
+            metadata_json={
+                "publication_content_sha256": "a" * 64,
+                "remote_content_witness_sha256": "b" * 64,
+            },
+            dify_document_id="remote-shard",
+        )
+        session.add(shard)
+        session.flush()
+
+        assert worker._shard_remote_is_live(session, client=FakeDifyClient(), shard=shard) is False
+
+
+def test_publish_shard_reuses_a_verified_remote_result_without_new_indexing(
+    service_db, monkeypatch
+):
+    """A valid shard must be reused instead of spending another Dify index operation."""
+
+    from ai_management.workers.tasks import model_cleaning as worker
+    from knowledge_cleaner import dify as dify_module
+
+    created: list[str] = []
+    digest = worker._normalized_publication_digest("# 同一正文\n\n内容")
+
+    class FakeDifyClient:
+        def __init__(self, *_args, **_kwargs):
+            self.dataset_id = "general-dataset"
+
+        def get_document(self, document_id):
+            assert document_id == "remote-shard-reuse"
+            return {
+                "id": document_id,
+                "indexing_status": "completed",
+                "enabled": True,
+                "metadata": {"publication_content_sha256": digest},
+            }
+
+        def verify_document_metadata(self, document_id, metadata):
+            assert document_id == "remote-shard-reuse"
+            assert metadata["publication_content_sha256"] == digest
+
+        def document_content_witness(self, document_id):
+            assert document_id == "remote-shard-reuse"
+            return "b" * 64
+
+        def create_document(self, *_args, **_kwargs):
+            created.append("unexpected")
+            raise AssertionError("verified remote shard must be reused")
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(dify_module, "DifyKnowledgeClient", FakeDifyClient)
+    monkeypatch.setattr(worker.settings, "dify_publish_window_start_hour", 0)
+    monkeypatch.setattr(worker.settings, "dify_publish_window_end_hour", 24)
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="zsxq_post",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="partially_completed",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = _file(batch.id)
+        session.add(file_row)
+        session.flush()
+        shard = DifyPublicationShard(
+            file_id=file_row.id,
+            shard_index=1,
+            status="shard_pending",
+            item_count=1,
+            content_bytes=20,
+            content_sha256=digest,
+            markdown="# 同一正文\n\n内容",
+            metadata_json={
+                "publication_content_sha256": digest,
+                "remote_content_witness_sha256": "b" * 64,
+            },
+            dify_document_id="remote-shard-reuse",
+            dify_batch_id="remote-batch",
+        )
+        session.add(shard)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="同一正文",
+            dify_document_name="same.md",
+            document_key="same",
+            status="shard_pending",
+            stage="shard_pending",
+            shard_id=shard.id,
+            cleaned_markdown="内容",
+            metadata_json={"record_type": "article"},
+            chunking_json={},
+            audit_json={},
+            content_sha256="c" * 64,
+        )
+        session.add(document)
+        session.commit()
+        shard_id, document_id = shard.id, document.id
+
+    assert worker.publish_dify_shard.run(shard_id) is True
+    assert created == []
+    with service_db() as session:
+        shard = session.get(DifyPublicationShard, shard_id)
+        document = session.get(CleaningDocument, document_id)
+        assert shard.status == "succeeded"
+        assert shard.dify_document_id == "remote-shard-reuse"
+        assert document.status == "succeeded"
+        assert document.dify_document_id == "remote-shard-reuse"
+
+
+def test_realtime_lease_loss_during_usage_does_not_mark_document_failed(service_db, monkeypatch):
+    """An old worker must propagate a lost lease instead of committing a failure."""
+
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    task_id, document_id = _seed_realtime_post_task(service_db)
+
+    class FakeClient:
+        def close(self):
+            return None
+
+    def fake_chat(*_args, **_kwargs):
+        return (
+            {
+                "disposition": "exclude",
+                "business_relevance": "none",
+                "reason_code": "out_of_scope",
+                "keep_block_ids": [],
+                "drop_block_ids": ["b0001", "b0002"],
+                "topic": "",
+                "time_sensitive": False,
+                "confidence": 0.9,
+                "knowledge_units": [],
+            },
+            {"input_tokens": 1, "output_tokens": 1},
+        )
+
+    def lose_lease(session, task, *_args, **_kwargs):
+        task.lease_token = "new-worker-token"
+        task.lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+        session.commit()
+        raise worker._ModelLeaseLost("new worker has claimed the task")
+
+    monkeypatch.setattr(worker, "_client", FakeClient)
+    monkeypatch.setattr(worker, "_realtime_chat", fake_chat)
+    monkeypatch.setattr(worker, "_persist_realtime_usage", lose_lease)
+
+    assert worker.process_realtime_model_task.run(task_id) is False
+    with service_db() as session:
+        document = session.get(CleaningDocument, document_id)
+        task = session.get(ModelCleaningTask, task_id)
+        assert document.status != "failed"
+        assert task.lease_token == "new-worker-token"
+
+
+def test_realtime_capacity_wait_rechecks_lease_before_provider_reservation():
+    """Waiting for capacity must not turn an expired lease into a paid request."""
+
+    from ai_management.model_cleaning import PromptRequest
+    from ai_management.workers.tasks import model_cleaning as worker
+
+    request = PromptRequest(
+        strategy_code="zsxq_post",
+        item_id="lease-before-request",
+        content_sha256="a" * 64,
+        title="限流 lease",
+        blocks={"b001": "在发送模型请求前重新确认当前任务 lease。"},
+    )
+
+    def lose_lease():
+        raise worker._ModelLeaseLost("lease expired while waiting for rate limit")
+
+    with pytest.raises(worker._ModelLeaseLost):
+        worker._wait_for_realtime_capacity(
+            request,
+            model="qwen-plus",
+            before_request=lose_lease,
         )
 
 
@@ -4593,6 +7141,44 @@ def test_maintenance_reconciles_cancelled_cleanup_without_existing_work_item(
         )
         assert retry is not None
         assert retry.payload["file_ids"] == ["reconcile-input"]
+
+
+def test_maintenance_consumes_batch_owner_once_then_makes_no_provider_calls(service_db, monkeypatch):
+    from ai_management.workers.tasks import maintenance
+
+    due_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    with service_db() as session:
+        owner = ModelCleaningTask(
+            batch_id="owner-close-batch", mode="batch", model="qwen-plus", prompt_version="test-v1",
+            status="cancelled", cleanup_status="pending_retry", candidate_fingerprint="c" * 64,
+            candidate_count=1, provider_batch_ids=["B3"], provider_input_file_ids=["I3"],
+            provider_output_file_ids=["O3"], provider_error_file_ids=["E3"],
+            result_counts={"provider_batch_file_map": {"B3": {"input_file_id": "I3", "output_file_id": "O3", "error_file_id": "E3"}}},
+        )
+        session.add(owner); session.flush()
+        session.add(ExternalDeletionTask(kind="bailian_batch", external_id="B3", payload={"model_task_id": owner.id, "file_ids": ["I3", "O3", "E3"]}, next_attempt_at=due_at))
+        session.commit(); owner_id = owner.id
+
+    calls: list[str] = []
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs): pass
+        def cancel_batch(self, batch_id): calls.append(f"cancel:{batch_id}"); return {"status": "cancelled", "output_file_id": "O3", "error_file_id": "E3"}
+        def delete_file(self, file_id): calls.append(f"delete:{file_id}")
+        def close(self): pass
+    monkeypatch.setattr(maintenance, "BailianClient", FakeClient)
+    maintenance._retry_external_deletions()
+    first_calls = list(calls)
+    with service_db() as session:
+        owner = session.get(ModelCleaningTask, owner_id)
+        assert owner.cleanup_status == "completed"
+        assert owner.result_counts["provider_batch_file_map"] == {}
+        assert owner.provider_batch_ids == []
+        assert owner.provider_input_file_ids == []
+        assert owner.provider_output_file_ids == []
+        assert owner.provider_error_file_ids == []
+        assert session.scalar(select(ExternalDeletionTask).where(ExternalDeletionTask.external_id == "B3")) is None
+    maintenance._retry_external_deletions()
+    assert calls == first_calls
 
 
 def test_external_deletion_round_robin_does_not_starve_file_cleanup(

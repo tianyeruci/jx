@@ -36,7 +36,7 @@
     {
       "id": "activity-cleaning",
       "title": "活动清洗策略",
-      "status": "verified",
+      "status": "in_progress",
       "paths": [
         "ai_management/activity_cleaning.py",
         "ai_management/cleaning.py",
@@ -50,14 +50,14 @@
         "AC-004"
       ],
       "optional": false,
-      "updated_at": "2026-08-30T15:33:20+08:00",
-      "last_change_summary": "共享清理生命周期在取消异常时保留精确远端引用并可由 maintenance 重建；recent_activity 业务语义未改变。",
-      "last_changed_at": "2026-08-21T03:37:42+08:00"
+      "updated_at": "2026-09-13T19:41:40+08:00",
+      "last_change_summary": "确认 recent_activity 不参与 post-shard 共享引用判断；保留旧远端 document 的精确 outbox cleanup 与当前活动 Python 清洗行为。",
+      "last_changed_at": "2026-09-13T11:22:44+08:00"
     },
     {
       "id": "cleaning-publication",
       "title": "清洗发布与 metadata",
-      "status": "verified",
+      "status": "in_progress",
       "paths": [
         "ai_management/workers/tasks/cleaning.py",
         "knowledge_cleaner/dify.py"
@@ -67,14 +67,14 @@
         "AC-004"
       ],
       "optional": false,
-      "updated_at": "2026-08-31T14:36:58+08:00",
-      "last_change_summary": "共享清理生命周期在取消异常时保留精确远端引用并可由 maintenance 重建；recent_activity 业务语义未改变。",
-      "last_changed_at": "2026-08-21T03:37:42+08:00"
+      "updated_at": "2026-09-13T19:41:40+08:00",
+      "last_change_summary": "确认 recent_activity 不参与 post-shard 共享引用判断；保留旧远端 document 的精确 outbox cleanup 与当前活动 Python 清洗行为。",
+      "last_changed_at": "2026-09-13T11:22:44+08:00"
     },
     {
       "id": "activity-chatflow",
       "title": "活动 Chatflow",
-      "status": "verified",
+      "status": "in_progress",
       "paths": [
         "dify/商业顾问（当前使用版本）.yml",
         "tests/test_dify_activity_contract.py",
@@ -87,9 +87,9 @@
         "AC-007"
       ],
       "optional": false,
-      "updated_at": "2026-08-20T03:52:20+08:00",
-      "last_change_summary": "活动查询现在按自然表达识别列表与命名详情；详情走无时间窗口状态检索并支持第1至第5个序号；列表默认10条逐行输出名称、时间、状态，ACTIVITY_MAX_RESULTS可配置；最近活动保持实时Qwen。Dify发布后验证了最近/最新/全部活动与命名详情SSE形状。",
-      "last_changed_at": "2026-08-20T01:28:07+08:00"
+      "updated_at": "2026-09-13T19:41:40+08:00",
+      "last_change_summary": "确认 recent_activity 不参与 post-shard 共享引用判断；保留旧远端 document 的精确 outbox cleanup 与当前活动 Python 清洗行为。",
+      "last_changed_at": "2026-09-13T11:22:44+08:00"
     },
     {
       "id": "activity-validation-docs",
@@ -117,18 +117,13 @@
     }
   ],
   "documentation": {
-    "status": "stale",
-    "last_code_change_at": "2026-08-30T16:04:31+08:00",
-    "last_synced_at": "2026-08-21T03:37:42+08:00",
-    "last_sync_summary": "共享清理生命周期在取消异常时保留精确远端引用并可由 maintenance 重建；recent_activity 业务语义未改变。",
-    "pending_changed_paths": [
-      "ai_management/cleaning.py",
-      "ai_management/workers/tasks/cleaning.py",
-      "dify/商业顾问（当前使用版本）.yml",
-      "knowledge_cleaner/dify.py"
-    ],
-    "changelog_fingerprint": "6e97525135053ca093f512b2ff6efcce46e10dddd53e881c92b0e65388cbd484"
+    "status": "current",
+    "last_code_change_at": "2026-09-13T11:22:21+08:00",
+    "last_synced_at": "2026-09-13T11:22:44+08:00",
+    "last_sync_summary": "确认 recent_activity 不参与 post-shard 共享引用判断；保留旧远端 document 的精确 outbox cleanup 与当前活动 Python 清洗行为。",
+    "pending_changed_paths": [],
+    "changelog_fingerprint": "4dd64f543a2c771bd536f901d1fae6731d4d1f91c0bc92c8f08b59b57a08d54f"
   },
   "created_at": "2026-08-16T15:17:11+08:00",
-  "updated_at": "2026-08-31T14:36:58+08:00"
+  "updated_at": "2026-09-13T19:41:40+08:00"
 }

@@ -20,10 +20,7 @@ def _load(path: Path) -> dict[str, Any]:
 
 
 def _nodes(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {
-        str(node["id"]): node["data"]
-        for node in document["workflow"]["graph"]["nodes"]
-    }
+    return {str(node["id"]): node["data"] for node in document["workflow"]["graph"]["nodes"]}
 
 
 def build(source: dict[str, Any]) -> dict[str, Any]:
@@ -45,26 +42,24 @@ def validate(source: dict[str, Any], generated: dict[str, Any]) -> None:
     generated_start = _nodes(generated)["start"]
     if generated_start["variables"] != source_start["variables"]:
         raise ValueError("Start input contract changed")
-    if generated["workflow"]["environment_variables"] != source["workflow"][
-        "environment_variables"
-    ]:
+    if (
+        generated["workflow"]["environment_variables"]
+        != source["workflow"]["environment_variables"]
+    ):
         raise ValueError("environment variable contract changed")
-    if generated["workflow"]["conversation_variables"] != source["workflow"][
-        "conversation_variables"
-    ]:
+    if (
+        generated["workflow"]["conversation_variables"]
+        != source["workflow"]["conversation_variables"]
+    ):
         raise ValueError("conversation variable contract changed")
     source_nodes = _nodes(source)
     generated_nodes = _nodes(generated)
     for node_id in ("general_knowledge",):
-        if generated_nodes[node_id].get("dataset_ids") != source_nodes[node_id].get(
-            "dataset_ids"
-        ):
+        if generated_nodes[node_id].get("dataset_ids") != source_nodes[node_id].get("dataset_ids"):
             raise ValueError(f"knowledge base binding changed: {node_id}")
         if generated_nodes[node_id].get("multiple_retrieval_config", {}).get(
             "reranking_model"
-        ) != source_nodes[node_id].get("multiple_retrieval_config", {}).get(
-            "reranking_model"
-        ):
+        ) != source_nodes[node_id].get("multiple_retrieval_config", {}).get("reranking_model"):
             raise ValueError(f"reranking model changed: {node_id}")
 
 

@@ -36,8 +36,7 @@ class Catalog:
 
 def _generated_id(prefix: str, *parts: Any) -> str:
     normalized = "|".join(
-        unicodedata.normalize("NFKC", str(part)).strip().casefold()
-        for part in parts
+        unicodedata.normalize("NFKC", str(part)).strip().casefold() for part in parts
     )
     if not normalized.replace("|", ""):
         raise ValueError(f"无法为缺少名称的 {prefix} 生成稳定ID")
@@ -114,13 +113,9 @@ def load_catalog_text(text: str) -> Catalog:
     name_to_ids: dict[str, list[str]] = {}
     for course in courses:
         name_to_ids.setdefault(course.name.strip(), []).append(course.course_id)
-    ambiguous_names = {
-        name: ids for name, ids in name_to_ids.items() if len(ids) > 1
-    }
+    ambiguous_names = {name: ids for name, ids in name_to_ids.items() if len(ids) > 1}
     if ambiguous_names:
-        raise ValueError(
-            f"课程名称重复，路线不能按名称解析：{sorted(ambiguous_names)}"
-        )
+        raise ValueError(f"课程名称重复，路线不能按名称解析：{sorted(ambiguous_names)}")
     name_to_id = {name: ids[0] for name, ids in name_to_ids.items()}
     _resolve_route_course_names(route_values, name_to_id=name_to_id)
     routes = [RouteRecord.model_validate(raw) for raw in route_values]
@@ -151,9 +146,7 @@ def load_course_records_text(
     return courses
 
 
-def load_route_records_text(
-    text: str, *, known_courses: dict[str, str]
-) -> list[RouteRecord]:
+def load_route_records_text(text: str, *, known_courses: dict[str, str]) -> list[RouteRecord]:
     values = _catalog_blocks(text)
     raw_routes = [_prepare_route(item) for item in values if item.get("record_type") == "route"]
     if len(raw_routes) != len(values):
@@ -216,11 +209,7 @@ def validate_catalog(
             raise ValueError(f"路线 {route.route_id} 的阶段必须按顺序书写")
         if stage_orders != list(range(1, len(stage_orders) + 1)):
             raise ValueError(f"路线 {route.route_id} 的阶段顺序必须从1连续递增")
-        route_course_ids = [
-            course_id
-            for stage in route.stages
-            for course_id in stage.course_ids
-        ]
+        route_course_ids = [course_id for stage in route.stages for course_id in stage.course_ids]
         if len(route_course_ids) != len(set(route_course_ids)):
             raise ValueError(f"路线 {route.route_id} 的课程不能跨阶段重复")
         unknown = {
@@ -236,9 +225,13 @@ def validate_catalog(
 def catalog_summary(catalog: Catalog) -> dict[str, Any]:
     return {
         "courses": len(catalog.courses),
-        "enabled_courses": sum(item.enabled and item.review_status == "approved" for item in catalog.courses),
+        "enabled_courses": sum(
+            item.enabled and item.review_status == "approved" for item in catalog.courses
+        ),
         "routes": len(catalog.routes),
-        "enabled_routes": sum(item.enabled and item.review_status == "approved" for item in catalog.routes),
+        "enabled_routes": sum(
+            item.enabled and item.review_status == "approved" for item in catalog.routes
+        ),
         "course_ids": [item.course_id for item in catalog.courses],
         "route_ids": [item.route_id for item in catalog.routes],
     }
@@ -342,7 +335,9 @@ def _sync_collection_membership(
     """
 
     collection_id = str(payload.get("collection_id") or "").strip()
-    collection_name = str(payload.get("collection_name") or payload.get("series_name") or "").strip()
+    collection_name = str(
+        payload.get("collection_name") or payload.get("series_name") or ""
+    ).strip()
     if not collection_id or not collection_name:
         return
     collection = session.get(CourseCollection, collection_id)
@@ -448,12 +443,14 @@ def _route_text(
     ordered_stages = sorted(
         route.stages,
         key=lambda item: (
-            0,
-            CANONICAL_STAGE_ORDER[canonical_stage_name(item.name)],
-            item.order,
-        )
-        if canonical_stage_name(item.name) in CANONICAL_STAGE_ORDER
-        else (1, item.order, item.name),
+            (
+                0,
+                CANONICAL_STAGE_ORDER[canonical_stage_name(item.name)],
+                item.order,
+            )
+            if canonical_stage_name(item.name) in CANONICAL_STAGE_ORDER
+            else (1, item.order, item.name)
+        ),
     )
     for position, stage in enumerate(ordered_stages, start=1):
         courses = "、".join(
@@ -534,7 +531,9 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
         )
         with SessionLocal() as session:
             existing_courses = {item.course_id: item for item in session.scalars(select(Course))}
-            existing_routes = {item.route_id: item for item in session.scalars(select(LearningRoute))}
+            existing_routes = {
+                item.route_id: item for item in session.scalars(select(LearningRoute))
+            }
 
         for course in catalog.courses:
             previous = existing_courses.get(course.course_id)
@@ -563,7 +562,9 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
                     "stage": course.stage,
                     "source_platform": course.source_platform,
                     "series_name": course.series_name or "",
-                    "status": "active" if course.enabled and course.review_status == "approved" else "inactive",
+                    "status": "active"
+                    if course.enabled and course.review_status == "approved"
+                    else "inactive",
                 },
                 fields,
             )
@@ -576,7 +577,9 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
                     "stage": course.stage,
                     "source_platform": course.source_platform or "小鹅通",
                     "series_name": course.series_name or "",
-                    "status": "active" if course.enabled and course.review_status == "approved" else "inactive",
+                    "status": "active"
+                    if course.enabled and course.review_status == "approved"
+                    else "inactive",
                 },
             )
             replacements[("course", course.course_id)] = document_id
@@ -606,7 +609,9 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
                     "document_type": "learning_route",
                     "route_id": route.route_id,
                     "direction": route.direction,
-                    "status": "active" if route.enabled and route.review_status == "approved" else "inactive",
+                    "status": "active"
+                    if route.enabled and route.review_status == "approved"
+                    else "inactive",
                 },
                 fields,
             )
@@ -616,7 +621,9 @@ def publish_catalog(catalog: Catalog, source_file: Path) -> dict[str, Any]:
                     "document_type": "learning_route",
                     "route_id": route.route_id,
                     "direction": route.direction,
-                    "status": "active" if route.enabled and route.review_status == "approved" else "inactive",
+                    "status": "active"
+                    if route.enabled and route.review_status == "approved"
+                    else "inactive",
                 },
             )
             replacements[("route", route.route_id)] = document_id

@@ -215,9 +215,7 @@ def create_plan(
     safe = {
         "schema_version": PLAN_SCHEMA_VERSION,
         "database_counts": database_counts,
-        "dify_document_counts": {
-            code: len(values) for code, values in documents.items()
-        },
+        "dify_document_counts": {code: len(values) for code, values in documents.items()},
         "redis_key_count": len(redis_keys),
         "basis_sha256": plan["basis_sha256"],
     }
@@ -227,10 +225,7 @@ def create_plan(
 
 def _load_plan(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if (
-        payload.get("schema_version") != PLAN_SCHEMA_VERSION
-        or payload.get("kind") != PLAN_KIND
-    ):
+    if payload.get("schema_version") != PLAN_SCHEMA_VERSION or payload.get("kind") != PLAN_KIND:
         raise RuntimeError("reset requires a quick-test environment plan")
     basis = payload.get("basis")
     if not isinstance(basis, dict):
@@ -290,7 +285,12 @@ def _clear_database(session_factory: sessionmaker[Session]) -> dict[str, int]:
             session.execute(table.delete())
         session.commit()
         ensure_style_settings(session)
-        if int(session.scalar(select(func.count()).select_from(Base.metadata.tables["ai_style_setting"])) or 0) != len(STYLE_DEFAULTS):
+        if int(
+            session.scalar(
+                select(func.count()).select_from(Base.metadata.tables["ai_style_setting"])
+            )
+            or 0
+        ) != len(STYLE_DEFAULTS):
             raise RuntimeError("default AI style settings were not restored")
         return _table_counts(session)
 

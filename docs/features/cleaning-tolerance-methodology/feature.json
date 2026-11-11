@@ -1,0 +1,153 @@
+{
+  "schema_version": 4,
+  "id": "cleaning-tolerance-methodology",
+  "title": "文档清洗容错、咨询方案方法与隔离测试修复",
+  "kind": "engineering-change",
+  "risk": "high",
+  "status": "requirements_approved",
+  "retired": false,
+  "retired_status": null,
+  "retired_at": null,
+  "retire_reason": null,
+  "superseded_by": [],
+  "requirements_approved": true,
+  "requirements_fingerprint": "dd229506fd181c081b6a9e7266b690549bb26f991d2e7669c5fe34f5c95c7f0c",
+  "requirements_approved_at": "2026-09-13T12:29:49+08:00",
+  "implementation_approved": false,
+  "implementation_fingerprint": null,
+  "architecture_fingerprint": null,
+  "quality_config_fingerprint": null,
+  "feature_validation_fingerprint": null,
+  "module_plan_fingerprint": null,
+  "implementation_approved_at": "2026-09-12T04:25:18+08:00",
+  "ready_for_luna": false,
+  "prototype": {
+    "decision": "not-needed",
+    "status": "skipped",
+    "path": null,
+    "based_on_requirements_fingerprint": "1a3c28e3f547f1b1050b2547f7c6b3b7af7ee9f7a97676619cb4f4f7428942bb",
+    "artifact_fingerprint": null
+  },
+  "review_required": true,
+  "review_status": "pending",
+  "review_fingerprint": null,
+  "reviewed_at": null,
+  "modules": [
+    {
+      "id": "semantic-contract",
+      "title": "模型语义与合同",
+      "status": "in_progress",
+      "paths": [
+        "knowledge_cleaner/consultation_rag.py",
+        "ai_management/model_cleaning.py",
+        "tests/test_consultation_rag_integration.py",
+        "tests/test_model_cleaning_workflow.py"
+      ],
+      "acceptance_ids": [
+        "AC-001",
+        "AC-002",
+        "AC-003"
+      ],
+      "optional": false,
+      "updated_at": "2026-09-13T19:41:40+08:00",
+      "last_change_summary": "将跨来源远端删除保护限定为 live publication shard 引用，避免 recent_activity 历史 replacement 行阻断既有精确 outbox cleanup；保留 shared shard 最后引用删除和延迟任务复查。",
+      "last_changed_at": "2026-09-13T11:22:22+08:00"
+    },
+    {
+      "id": "cleaning-workers",
+      "title": "清洗 Worker 与去重",
+      "status": "in_progress",
+      "paths": [
+        "ai_management/workers/tasks/model_cleaning.py",
+        "ai_management/workers/tasks/cleaning.py",
+        "ai_management/cleaning.py",
+        "tests/test_model_cleaning_*.py",
+        "tests/test_ai_management.py"
+      ],
+      "acceptance_ids": [
+        "AC-001",
+        "AC-002",
+        "AC-005"
+      ],
+      "optional": false,
+      "updated_at": "2026-09-13T19:41:40+08:00",
+      "last_change_summary": "将跨来源远端删除保护限定为 live publication shard 引用，避免 recent_activity 历史 replacement 行阻断既有精确 outbox cleanup；保留 shared shard 最后引用删除和延迟任务复查。",
+      "last_changed_at": "2026-09-13T11:22:22+08:00"
+    },
+    {
+      "id": "pdf-ocr-route",
+      "title": "PDF 混合页 OCR 路由",
+      "status": "in_progress",
+      "paths": [
+        "knowledge_cleaner/pdf_convert.py",
+        "knowledge_cleaner/rapidocr_backend.py",
+        "tests/test_pdf_ocr_quality.py"
+      ],
+      "acceptance_ids": [
+        "AC-004"
+      ],
+      "optional": false,
+      "updated_at": "2026-09-13T19:41:40+08:00",
+      "last_change_summary": "将跨来源远端删除保护限定为 live publication shard 引用，避免 recent_activity 历史 replacement 行阻断既有精确 outbox cleanup；保留 shared shard 最后引用删除和延迟任务复查。",
+      "last_changed_at": "2026-09-13T11:22:22+08:00"
+    },
+    {
+      "id": "isolated-test-deploy",
+      "title": "隔离测试部署",
+      "status": "in_progress",
+      "paths": [
+        "docker-compose.cleaning-test.yml",
+        "docker-compose.cleaning-test-ui.yml",
+        "scripts/jx_*cleaning*",
+        "ai_management/config.py",
+        "ai_management/api/routers/knowledge_admin.py",
+        "ai_management/test_ui.py",
+        "tests/test_*isolated*.py",
+        "tests/test_test_ui.py"
+      ],
+      "acceptance_ids": [
+        "AC-006"
+      ],
+      "optional": false,
+      "updated_at": "2026-09-13T19:41:40+08:00",
+      "last_change_summary": "将跨来源远端删除保护限定为 live publication shard 引用，避免 recent_activity 历史 replacement 行阻断既有精确 outbox cleanup；保留 shared shard 最后引用删除和延迟任务复查。",
+      "last_changed_at": "2026-09-13T11:22:22+08:00"
+    },
+    {
+      "id": "contract-docs",
+      "title": "计划与验证文档",
+      "status": "in_progress",
+      "paths": [
+        "docs/执行计划合集/*.md",
+        "docs/troubleshooting/*.md",
+        "AI管理服务当前状态与后续测试交接.md"
+      ],
+      "acceptance_ids": [
+        "AC-001",
+        "AC-006"
+      ],
+      "optional": false,
+      "updated_at": "2026-09-13T19:41:40+08:00",
+      "last_change_summary": "记录 U06 测试合同已验证、canonical quality 通过及实施再批准 fail-closed 阻塞；不改变产品语义或远端边界。",
+      "last_changed_at": "2026-09-13T00:26:53+08:00"
+    }
+  ],
+  "validation_commands": [
+    {
+      "phase": "feature",
+      "command": "uv run python -m pytest -q tests/test_consultation_rag_integration.py tests/test_model_cleaning_workflow.py tests/test_cleaning_tolerance_methodology_regression.py tests/test_pdf_ocr_quality.py tests/test_pdf_cleaning_policy.py tests/test_cleaning_release_contract.py tests/test_cleaning_test_deploy_contract.py tests/test_governance_scope_contract.py tests/test_test_ui.py",
+      "cwd": ".",
+      "timeout": 600
+    }
+  ],
+  "documentation": {
+    "status": "current",
+    "last_code_change_at": "2026-09-13T11:22:21+08:00",
+    "last_synced_at": "2026-09-13T11:22:22+08:00",
+    "last_sync_summary": "将跨来源远端删除保护限定为 live publication shard 引用，避免 recent_activity 历史 replacement 行阻断既有精确 outbox cleanup；保留 shared shard 最后引用删除和延迟任务复查。",
+    "pending_changed_paths": [],
+    "changelog_fingerprint": "2eb23599d1ae79bede512ca8f5b020952fe52afac26f319f7b60b1e4358f1fd8"
+  },
+  "created_at": "2026-09-12T04:16:47+08:00",
+  "updated_at": "2026-09-13T19:41:40+08:00"
+}

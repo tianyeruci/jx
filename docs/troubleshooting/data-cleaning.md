@@ -41,7 +41,7 @@
 - 适用：`personal_business_consultation` 的 PDF 转换、OCR、隐私脱敏和 PDF 问题中心。
 - 触发：PDF 已完成 OCR 且正文/人名脱敏可继续，但仍记录 `PDF_CONSULTATION_IMAGE_PRIVACY_REVIEW` 并阻止发布。
 - 根因：旧逻辑把“pypdf 检测到图片”直接当作人工隐私审核条件；它没有把图片内容交给 OCR，因此把“图片存在”和“隐私无法判断”混为一谈。
-- 解决：咨询 PDF 只要含图片就强制整份进入 OCR；OCR 置信度、关键事实冲突、OCR 失败、正文为空和脱敏后残留隐私仍是硬门禁，但图片存在本身只记录 `pdf_consultation_image_ocr` 质量标记，不再触发人工审核。
+- 解决：咨询 PDF 的图片页与低可靠页必须 OCR，并进行匿名化/隐私检查；可靠且无图的 native 页保留。OCR 置信度、关键事实冲突、OCR 失败、正文为空和脱敏后残留隐私仍是硬门禁，但图片存在本身只记录 `pdf_consultation_image_ocr` 质量标记，不再触发人工审核。
 - 非解决：关闭 OCR、直接信任 PDF 原生文字层、忽略 OCR 低置信度或放过脱敏后的残留人名/联系方式。
 - 验证：`tests/test_pdf_ocr_quality.py` 覆盖含图咨询 PDF 自动 OCR、OCR 关闭仍阻断和旧人工审核码不再产生；远端需复核指定 PDF 日志从旧阻断转为已处理/不再新增。
 - 预防：咨询类 PDF 的安全边界由“强制 OCR + 脱敏 + 残留扫描 + 质量门禁”组成；不能恢复图片存在即人工审核的旧规则。
@@ -671,3 +671,39 @@
 - 预防：验收报告至少分列“任务模式与候选数”“本地文档终态与 Dify ID”“远端索引/Metadata 全量回读”“文档拆分差异”；保留脱敏报告，不输出正文、Token、真实用户 ID 或受保护映射。
 - 证据：[`full_remote_metadata_parity.safe.json`](../../var/reports/20260820-qwen-activity/full_remote_metadata_parity.safe.json)、`ai_management/model_cleaning.py`、`ai_management/workers/tasks/model_cleaning.py`。
 - 最后验证：2026-08-20。
+
+## DATA-053：混合 PDF 的 OCR 失败不能吞掉可靠原生文字页
+
+- 适用：`personal_business_consultation` 及其它内容清洗策略的图文混合 PDF 转换、OCR、匿名化和发布前质量门禁。
+- 触发：文档同时有可靠文字层页面与图片/低可靠页面，但 OCR 被关闭、超过页数上限、后端不可用或执行异常时，转换结果显示“正文为空”或丢失原生文字页。
+- 根因：旧的 `review`/咨询全页 OCR 路由在 OCR 不能完成时将整份 `pages` 清空；OCR 服务本身仍存在，问题是失败回退没有按页保留已可靠提取的文字。
+- 解决：普通混合 PDF 只对低可靠页做 OCR 并按原页序合并；咨询 PDF 对图片页与低可靠页 OCR，以覆盖图片中的身份信息，同时保留可靠无图 native 页。任何 OCR 失败均保留可靠 native 页和精确失败原因，但维持阻断/隐私门禁，不能据此自动发布。
+- 非解决：将图片存在直接判为人工复核、关闭 OCR 后发布原文、把 native 页当作图片页已经完成匿名化，或用“正文非空”忽略 OCR/隐私失败。
+- 验证：`tests/test_pdf_ocr_quality.py` 覆盖选择性 OCR、咨询图片/低可靠页 OCR、可靠 native 页保留、disabled/page-limit/backend failure 三种混合咨询回退；2026-09-12 本地相关回归 `241` 项曾通过。远端 OCR/Dify 实机验证尚未执行。
+- 预防：PDF 路由变更必须同时断言页号/页序、native 页保留、失败原因和咨询隐私状态；把“是否调用 OCR”与“能否保留已验证文字”分开检查。
+- 证据：`knowledge_cleaner/pdf_convert.py`、`knowledge_cleaner/rapidocr_backend.py`、`tests/test_pdf_ocr_quality.py`、`var/reports/W-20260912-041700/pytest-cleaning-review-r2-20260912.xml`。
+- 最后验证：2026-09-12。
+
+## DATA-054：普通重试必须按失败阶段 allowlist，模型费用按实际 transport 预留
+
+- 适用：内容模型策略、混合 PDF 及其隔离测试环境的失败恢复、Batch repair 和 Redis DB 6 启动门禁。
+- 触发：历史 `CleaningDocument` 可能将 OCR/source 失败错误地标成 `retryable=true`；小批量 Batch repair 实际改走 realtime；Redis URL 的 `?db=` 可以覆盖路径 DB。
+- 根因：旧 `retryable` 只表达“失败”而不表达“已通过源阶段”；预算根据任务模式而不是实际 provider transport 计价；配置只检查 Redis URL path。
+- 解决：普通条目发布重试只允许 `DIFY_PUBLICATION_FAILED` 与 `SOURCE_ATOMIC_ROLLBACK`；其它 source/OCR 错误仅在源文件存在时回源重跑，不存在即 `410`，模型错误不经普通 file/item retry 重建任务。每次 provider reservation 记录实际 transport，小批量 Batch repair 明确按 realtime 单价检查日预算和累计预算。`general-only` 配置拒绝任何 Redis `db` query，并要求唯一的 `/6`。
+- 非解决：仅依赖历史 `retryable` 字段、按 Batch 折扣为 realtime 调用预留、允许 `redis://.../6?db=5`，或为恢复而直接发布残留 Markdown。
+- 验证：`tests/test_ai_management.py`、`tests/test_model_cleaning_workflow.py`、`tests/test_cleaning_test_deploy_contract.py` 与完整相关回归曾有 `241` 项通过；当前完整差异的独立复审为 FAIL，必须在修复、质量与新复审后重新确认这些边界。
+- 预防：新增失败码时必须显式判定其恢复阶段；新增 provider transport 时必须传入 reservation；隔离 Redis URL 必须以运行库有效 DB 语义而非显示路径审核。
+- 证据：`ai_management/cleaning.py`、`ai_management/workers/tasks/model_cleaning.py`、`ai_management/config.py`、`var/reports/W-20260912-041700/pytest-cleaning-review-r2-20260912.xml`。
+- 最后验证：2026-09-12。
+
+## DATA-055：咨询 advice 忠实改写不得无依据替换明确执行主体
+
+- 适用：`personal_business_consultation` 的 `advice_summary`、候选方法判断与步骤字段。
+- 触发：同案例 advice 明确由创始人/负责人等主体执行，派生字段共享了动作短语却改为销售人员、运营人员或其他明确角色。
+- 根因：短语锚点、否定和商业条件屏障不足以识别角色置换；共享“验证需求”等词不能证明新的执行主体有来源。
+- 解决：保持忠实改写，不做通用实体识别；对一个小型、明确的业务角色词表，仅当派生字段新引入 advice 中没有的角色时丢弃该派生字段。可回溯 case 仍保留，不增加模型调用。
+- 非解决：要求逐字等于 advice、因一个派生字段不安全而删除整个 case，或把这个确定性词表写成完整语义蕴含证明。
+- 验证：`tests/test_cleaning_tolerance_methodology_regression.py` 覆盖“创始人→销售人员”负例；本轮完整相关组 `58 passed`，详见 `var/reports/W-20260912-041700/pytest-u03-u08-boundary-full-after-20260913.xml`。
+- 预防：新增可造成责任、付款、权益或结果变化的派生字段时，先加入当前 case advice 的行为反例；真实两份咨询原文对照仍单独必需。
+- 证据：`knowledge_cleaner/consultation_rag.py`、`tests/test_cleaning_tolerance_methodology_regression.py`。
+- 最后验证：2026-09-13。

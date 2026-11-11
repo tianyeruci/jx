@@ -71,12 +71,8 @@ def test_document_index_routes_current_structure_and_troubleshooting():
 def test_business_source_materials_are_routed_without_becoming_baseline():
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     readme = (ROOT / "docs" / "README.md").read_text(encoding="utf-8")
-    function_index = (ROOT / "docs" / "功能与接口索引.md").read_text(
-        encoding="utf-8"
-    )
-    governance = (
-        ROOT / "docs" / "Codex项目上下文与文档维护规则.md"
-    ).read_text(encoding="utf-8")
+    function_index = (ROOT / "docs" / "功能与接口索引.md").read_text(encoding="utf-8")
+    governance = (ROOT / "docs" / "Codex项目上下文与文档维护规则.md").read_text(encoding="utf-8")
 
     assert "业务来源材料" in agents
     assert "未确认增量不得指导实现" in agents
@@ -84,12 +80,10 @@ def test_business_source_materials_are_routed_without_becoming_baseline():
     assert "来源材料映射（非需求基线）" in function_index
     assert "来源材料不自动覆盖需求基线" in governance
 
-    source_section = readme.split("### 3.1 需求来源与追踪", 1)[1].split(
-        "## 4.", 1
+    source_section = readme.split("### 3.1 需求来源与追踪", 1)[1].split("## 4.", 1)[0]
+    mapping_section = function_index.split("### 3.1 来源材料映射（非需求基线）", 1)[1].split(
+        "### 3.2", 1
     )[0]
-    mapping_section = function_index.split(
-        "### 3.1 来源材料映射（非需求基线）", 1
-    )[1].split("### 3.2", 1)[0]
 
     for source_name, canonical_documents in BUSINESS_SOURCE_MATERIALS.items():
         assert (ROOT / source_name).is_file()
@@ -149,9 +143,7 @@ def test_project_troubleshooting_skill_is_discoverable_and_utf8():
 
 
 def test_current_status_handoff_keeps_a_change_record():
-    handoff = (ROOT / "AI管理服务当前状态与后续测试交接.md").read_text(
-        encoding="utf-8"
-    )
+    handoff = (ROOT / "AI管理服务当前状态与后续测试交接.md").read_text(encoding="utf-8")
     assert "## 9. 文档修改记录" in handoff
     for field in ("修改原因", "修改前", "修改后"):
         assert field in handoff
@@ -174,6 +166,12 @@ def test_dify_asset_index_includes_current_business_advisor_sources():
     assert ("DSL", "dify/商业顾问_统一修复版_Dify-1.13.3.yml") in assets
 
 
+def test_compose_index_includes_isolated_cleaning_test_entrypoints():
+    indexed = generate_project_index.collect_compose_services(ROOT)
+    assert any(source == "docker-compose.cleaning-test.yml" for _, source, _ in indexed)
+    assert any(source == "docker-compose.cleaning-test-ui.yml" for _, source, _ in indexed)
+
+
 def test_static_route_index_matches_test_configured_fastapi_app():
     from ai_management.main import app
 
@@ -186,10 +184,7 @@ def test_static_route_index_matches_test_configured_fastapi_app():
             if getattr(route, "path", None) is not None:
                 yield route
 
-    indexed = {
-        (route.method, route.path)
-        for route in generate_project_index.collect_routes(ROOT)
-    }
+    indexed = {(route.method, route.path) for route in generate_project_index.collect_routes(ROOT)}
     actual = {
         (method, route.path)
         for route in _iter_http_routes(app.routes)

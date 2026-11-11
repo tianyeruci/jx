@@ -116,8 +116,7 @@ def _explicit_stage_confirmation(query: str, stage: dict[str, Any]) -> bool:
     if not normalized or "吗" in query or "？" in query or "?" in query:
         return False
     has_confirmation = any(
-        token in normalized
-        for token in ("确认", "目前在", "现在在", "我在", "处于", "当前是")
+        token in normalized for token in ("确认", "目前在", "现在在", "我在", "处于", "当前是")
     )
     if not has_confirmation:
         return False
@@ -127,7 +126,10 @@ def _explicit_stage_confirmation(query: str, stage: dict[str, Any]) -> bool:
         stage_name,
         _normalize_text(_STAGE_ALIASES.get(str(stage.get("name") or ""), "")),
     }
-    return bool((stage_id and stage_id in normalized) or any(item and item in normalized for item in aliases))
+    return bool(
+        (stage_id and stage_id in normalized)
+        or any(item and item in normalized for item in aliases)
+    )
 
 
 def _explicit_stage_completion(query: str, stage: dict[str, Any]) -> bool:
@@ -182,7 +184,9 @@ def _is_route_related_query(query: str, snapshot: dict[str, Any]) -> bool:
     """Keep persisted route state from hijacking unrelated business QA."""
 
     normalized = _normalize_text(query)
-    if any(token in normalized for token in _ROUTE_HINTS + ("阶段", "进度", "完成", "重学", "重新开始")):
+    if any(
+        token in normalized for token in _ROUTE_HINTS + ("阶段", "进度", "完成", "重学", "重新开始")
+    ):
         return True
     return any(
         (name := _normalize_text(str(route.get("name") or ""))) and name in normalized
@@ -197,7 +201,8 @@ def _explicit_route_restart(query: str, route: dict[str, Any]) -> bool:
         return False
     name = _normalize_text(str(route.get("name") or ""))
     return bool(
-        name and name in normalized
+        name
+        and name in normalized
         and any(token in normalized for token in ("重新开始", "重学", "再学一遍", "重新学习"))
     )
 
@@ -234,9 +239,7 @@ def _context_route_from_message(
 
     recommendation = previous.recommendation if previous else None
     learning_route = (
-        recommendation.get("learning_route")
-        if isinstance(recommendation, dict)
-        else None
+        recommendation.get("learning_route") if isinstance(recommendation, dict) else None
     )
     if not isinstance(learning_route, dict) or learning_route.get("state") != state:
         return None
@@ -388,9 +391,7 @@ def _progress_confirmation_decision(
             )
         )
     )
-    completion_matches: list[
-        tuple[LearningRouteProgress, dict[str, Any], dict[str, Any]]
-    ] = []
+    completion_matches: list[tuple[LearningRouteProgress, dict[str, Any], dict[str, Any]]] = []
     matches: list[tuple[LearningRouteProgress, dict[str, Any], dict[str, Any]]] = []
     for progress in progresses:
         route = snapshot["routes"].get(progress.route_id)
@@ -534,7 +535,8 @@ def _route_revisit_decision(
         return None
     normalized = _normalize_text(query)
     exact = [
-        item for item in progresses
+        item
+        for item in progresses
         if (name := _normalize_text(str((snapshot["routes"][item.route_id]).get("name") or "")))
         and name in normalized
     ]
@@ -575,7 +577,9 @@ def _course_dict(course: Course) -> dict[str, Any]:
         "source_platform": course.source_platform or "小鹅通",
         "series_name": course.series_name or None,
         "published_at": course.published_at.isoformat() if course.published_at else None,
-        "first_imported_at": course.first_imported_at.isoformat() if course.first_imported_at else None,
+        "first_imported_at": course.first_imported_at.isoformat()
+        if course.first_imported_at
+        else None,
         "prerequisite_course_ids": course.prerequisite_course_ids or [],
     }
 
@@ -589,12 +593,14 @@ def _ordered_stage_dicts(stages: list[dict[str, Any]] | None) -> list[dict[str, 
     values = [dict(item) for item in (stages or []) if isinstance(item, dict)]
     values.sort(
         key=lambda item: (
-            0,
-            CANONICAL_STAGE_ORDER[canonical_stage_name(item.get("name"))],
-            int(item.get("order") or 0),
-        )
-        if canonical_stage_name(item.get("name")) in CANONICAL_STAGE_ORDER
-        else (1, int(item.get("order") or 0), str(item.get("name") or "")),
+            (
+                0,
+                CANONICAL_STAGE_ORDER[canonical_stage_name(item.get("name"))],
+                int(item.get("order") or 0),
+            )
+            if canonical_stage_name(item.get("name")) in CANONICAL_STAGE_ORDER
+            else (1, int(item.get("order") or 0), str(item.get("name") or ""))
+        ),
     )
     ordered: list[dict[str, Any]] = []
     for position, item in enumerate(values, start=1):
@@ -616,7 +622,9 @@ def _route_dict(route: LearningRoute) -> dict[str, Any]:
     }
 
 
-def _collection_dict(collection: CourseCollection, members: list[CourseCollectionMember]) -> dict[str, Any]:
+def _collection_dict(
+    collection: CourseCollection, members: list[CourseCollectionMember]
+) -> dict[str, Any]:
     ordered = sorted(members, key=lambda item: (item.order_rank, item.course_id))
     return {
         "collection_id": collection.collection_id,
@@ -672,19 +680,25 @@ def rebuild_snapshot(session: Session) -> dict[str, Any]:
         )
     )
     collection_ids = {item.collection_id for item in collection_rows}
-    collection_members = list(
-        session.scalars(
-            select(CourseCollectionMember).where(
-                CourseCollectionMember.collection_id.in_(collection_ids)
+    collection_members = (
+        list(
+            session.scalars(
+                select(CourseCollectionMember).where(
+                    CourseCollectionMember.collection_id.in_(collection_ids)
+                )
             )
         )
-    ) if collection_ids else []
+        if collection_ids
+        else []
+    )
     members_by_collection: dict[str, list[CourseCollectionMember]] = {}
     for member in collection_members:
         if member.course_id in active_course_ids:
             members_by_collection.setdefault(member.collection_id, []).append(member)
     collections = {
-        item.collection_id: _collection_dict(item, members_by_collection.get(item.collection_id, []))
+        item.collection_id: _collection_dict(
+            item, members_by_collection.get(item.collection_id, [])
+        )
         for item in collection_rows
         if members_by_collection.get(item.collection_id)
     }
@@ -700,7 +714,10 @@ def rebuild_snapshot(session: Session) -> dict[str, Any]:
                 continue
             parsed_header = _collection_header(raw_series)
             name = parsed_header[0] if parsed_header else raw_series
-            collection_id = "collection_" + __import__("hashlib").sha256(name.casefold().encode("utf-8")).hexdigest()[:12]
+            collection_id = (
+                "collection_"
+                + __import__("hashlib").sha256(name.casefold().encode("utf-8")).hexdigest()[:12]
+            )
             current = fallback.setdefault(
                 collection_id,
                 {
@@ -724,7 +741,9 @@ def rebuild_snapshot(session: Session) -> dict[str, Any]:
         "collections": collections,
     }
     cache.atomic_json_swap(COURSE_SNAPSHOT_KEY, snapshot)
-    serialized_bytes = len(json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    serialized_bytes = len(
+        json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
     snapshot["metrics"] = {
         "effective_records": len(courses) + len(routes),
         "serialized_bytes": serialized_bytes,
@@ -878,8 +897,7 @@ def _attach_course_collection_names(
         # render a complete route without exposing internal IDs.
         if courses is not None:
             stage["course_names"] = [
-                str((courses.get(course_id) or {}).get("name") or "")
-                for course_id in course_ids
+                str((courses.get(course_id) or {}).get("name") or "") for course_id in course_ids
             ]
         # Resolve collections from the stage's own course IDs.  A collection
         # may contain courses from another route in legacy/partially imported
@@ -896,8 +914,7 @@ def _attach_course_collection_names(
             if not name:
                 continue
             member_ids = [
-                str(course_id or "").strip()
-                for course_id in collection.get("course_ids") or []
+                str(course_id or "").strip() for course_id in collection.get("course_ids") or []
             ]
             scoped_ids = [course_id for course_id in member_ids if course_id in stage_course_set]
             if not scoped_ids:
@@ -948,15 +965,17 @@ def _latest_course_ids(query: str, courses: dict[str, dict[str, Any]]) -> list[s
         for item in matched
         if str(item.get("source_platform") or "")
     }
-    explicit_platform = next((item for item in sorted(platforms, key=len, reverse=True) if item in query), "")
+    explicit_platform = next(
+        (item for item in sorted(platforms, key=len, reverse=True) if item in query), ""
+    )
     if explicit_platform:
         matched = [item for item in matched if item.get("source_platform") == explicit_platform]
     series_names = {
-        str(item.get("series_name") or "")
-        for item in matched
-        if str(item.get("series_name") or "")
+        str(item.get("series_name") or "") for item in matched if str(item.get("series_name") or "")
     }
-    explicit_series = next((item for item in sorted(series_names, key=len, reverse=True) if item in query), "")
+    explicit_series = next(
+        (item for item in sorted(series_names, key=len, reverse=True) if item in query), ""
+    )
     if explicit_series:
         matched = [item for item in matched if item.get("series_name") == explicit_series]
     return [
@@ -978,7 +997,9 @@ def _collection_match_score(query: str, collection: dict[str, Any]) -> int:
     for suffix in ("课程", "课"):
         if normalized_name.endswith(suffix) and len(normalized_name) > len(suffix):
             candidates.add(normalized_name[: -len(suffix)])
-    if normalized_query in candidates or any(candidate in normalized_query for candidate in candidates):
+    if normalized_query in candidates or any(
+        candidate in normalized_query for candidate in candidates
+    ):
         return max(20, len(max(candidates, key=len)) * 3)
     return _score_query_match(query, name) if len(normalized_name) >= 4 else 0
 
@@ -992,7 +1013,9 @@ def infer_recommendation_decision(
     snapshot = get_snapshot(session)
     courses = snapshot["courses"]
     routes = snapshot["routes"]
-    route_like = any(hint in query for hint in _ROUTE_HINTS) or ("系统" in query and "学习" in query)
+    route_like = any(hint in query for hint in _ROUTE_HINTS) or (
+        "系统" in query and "学习" in query
+    )
     course_like = any(hint in query for hint in _COURSE_HINTS)
 
     approved_courses = {
@@ -1010,14 +1033,14 @@ def infer_recommendation_decision(
         for course_id in (decision.candidate_course_ids if decision else [])
         if course_id in approved_courses
     ]
-    route_requested = route_like or bool(
-        decision and decision.intent == "route_recommendation"
-    )
+    route_requested = route_like or bool(decision and decision.intent == "route_recommendation")
     explicit_direct_course = bool(decision and decision.intent == "direct_course")
 
     latest_ids = _latest_course_ids(query, approved_courses)
     if latest_ids:
-        latest_with_published_at = all(approved_courses[item].get("published_at") for item in latest_ids)
+        latest_with_published_at = all(
+            approved_courses[item].get("published_at") for item in latest_ids
+        )
         return RecommendationDecision(
             intent="direct_course",
             candidate_course_ids=latest_ids,
@@ -1033,13 +1056,19 @@ def infer_recommendation_decision(
     for collection in (snapshot.get("collections") or {}).values():
         if not collection.get("enabled") or collection.get("review_status") != "approved":
             continue
-        ids = [course_id for course_id in collection.get("course_ids", []) if course_id in approved_courses]
+        ids = [
+            course_id
+            for course_id in collection.get("course_ids", [])
+            if course_id in approved_courses
+        ]
         if not ids:
             continue
         score = _collection_match_score(query, collection)
         if score > 0:
             collection_matches.append((score, {**collection, "course_ids": ids}))
-    collection_matches.sort(key=lambda item: (item[0], str(item[1].get("collection_id") or "")), reverse=True)
+    collection_matches.sort(
+        key=lambda item: (item[0], str(item[1].get("collection_id") or "")), reverse=True
+    )
     if collection_matches:
         best_score, best_collection = collection_matches[0]
         second_score = collection_matches[1][0] if len(collection_matches) > 1 else -1
@@ -1134,9 +1163,7 @@ def infer_recommendation_decision(
     return RecommendationDecision(
         intent="direct_course",
         candidate_course_ids=[best_course_id],
-        answer_plan=(
-            "未找到匹配的官方学习路线，以下为独立课程推荐。" if route_like else ""
-        ),
+        answer_plan=("未找到匹配的官方学习路线，以下为独立课程推荐。" if route_like else ""),
     )
 
 
@@ -1145,7 +1172,9 @@ def _sign(payload: bytes) -> str:
     return hmac.new(secret, payload, hashlib.sha256).hexdigest()
 
 
-def create_redirect_token(course_id: str, user_hash: str, ttl_seconds: int = 60 * 60 * 24 * 30) -> str:
+def create_redirect_token(
+    course_id: str, user_hash: str, ttl_seconds: int = 60 * 60 * 24 * 30
+) -> str:
     body = json.dumps(
         {"course_id": course_id, "user_hash": user_hash, "exp": int(time.time()) + ttl_seconds},
         separators=(",", ":"),
@@ -1241,9 +1270,17 @@ def validate_recommendation(
     # An LLM-supplied route ID is evidence only, never an authorization to
     # auto-select a weak match.  Explicit confirmation actions are handled
     # below against the selected route/progress state.
-    if route and decision.intent == "route_recommendation" and (action.get("type") or "none") == "none":
+    if (
+        route
+        and decision.intent == "route_recommendation"
+        and (action.get("type") or "none") == "none"
+    ):
         inferred = infer_recommendation_decision(session, query=query, decision=decision)
-        if not inferred or inferred.intent != "route_recommendation" or inferred.candidate_route_id != route.get("route_id"):
+        if (
+            not inferred
+            or inferred.intent != "route_recommendation"
+            or inferred.candidate_route_id != route.get("route_id")
+        ):
             route = None
 
     progress_applied = False
@@ -1269,8 +1306,7 @@ def validate_recommendation(
             )
             route_confirmed = bool(
                 context_route
-                and str(context_route.get("route_id") or "")
-                == str(route.get("route_id") or "")
+                and str(context_route.get("route_id") or "") == str(route.get("route_id") or "")
             )
 
         if action_type == "confirm_route" and stages and route_confirmed:
@@ -1310,8 +1346,7 @@ def validate_recommendation(
                 )
                 stage_confirmed = bool(
                     context_route
-                    and str(context_route.get("route_id") or "")
-                    == str(route.get("route_id") or "")
+                    and str(context_route.get("route_id") or "") == str(route.get("route_id") or "")
                 )
             if stage and not stage_confirmed and _is_short_affirmative_reply(query):
                 context_hypothesis = _context_stage_hypothesis(
@@ -1323,8 +1358,7 @@ def validate_recommendation(
                     context_hypothesis
                     and str(context_hypothesis[0].get("route_id") or "")
                     == str(route.get("route_id") or "")
-                    and str(context_hypothesis[1].get("stage_id") or "")
-                    == confirmed_stage_id
+                    and str(context_hypothesis[1].get("stage_id") or "") == confirmed_stage_id
                 )
             if stage and stage_confirmed:
                 progress.current_stage_id = confirmed_stage_id
@@ -1346,17 +1380,22 @@ def validate_recommendation(
                     current_stage and _explicit_stage_completion(query, current_stage)
                 )
             else:
-                completion_confirmation = any(
-                    marker in _normalize_text(query)
-                    for marker in (
-                        "已完成",
-                        "已经完成",
-                        "完成了",
-                        "我完成",
-                        "跳过",
-                        "略过",
+                completion_confirmation = (
+                    any(
+                        marker in _normalize_text(query)
+                        for marker in (
+                            "已完成",
+                            "已经完成",
+                            "完成了",
+                            "我完成",
+                            "跳过",
+                            "略过",
+                        )
                     )
-                ) and "吗" not in query and "？" not in query and "?" not in query
+                    and "吗" not in query
+                    and "？" not in query
+                    and "?" not in query
+                )
                 current_index = next(
                     (
                         index
@@ -1384,7 +1423,9 @@ def validate_recommendation(
     if route:
         stages = sorted(route.get("stages", []), key=lambda item: item.get("order", 0))
         progress_status = progress.status if progress else "pending_route"
-        current_stage_id = progress.current_stage_id if progress and progress_status == "active" else None
+        current_stage_id = (
+            progress.current_stage_id if progress and progress_status == "active" else None
+        )
         next_stage_id: str | None = None
         allowed_course_ids: list[str] = []
         if current_stage_id:
@@ -1467,9 +1508,9 @@ def validate_recommendation(
         # links. A failed content gate suppresses only the expert portion;
         # validated course cards remain usable.
         forbidden = set(final_ids) | set(routes) | set(courses)
-        if not any(
-            value and value in expert_insight for value in forbidden
-        ) and not re.search(r"https?://|www\.", expert_insight, flags=re.IGNORECASE):
+        if not any(value and value in expert_insight for value in forbidden) and not re.search(
+            r"https?://|www\.", expert_insight, flags=re.IGNORECASE
+        ):
             expert_insight = re.sub(r"\s+", " ", expert_insight).strip()
             expert_insight = re.sub(
                 r"^(?:专家建议|下一步建议)\s*[:：]?\s*", "", expert_insight

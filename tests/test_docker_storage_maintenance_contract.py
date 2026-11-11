@@ -12,11 +12,11 @@ def test_storage_maintenance_has_read_only_plan_and_explicit_run_confirmation():
 
     assert "jx_docker_storage_maintenance.sh plan" in source
     assert "run --trigger=manual|post-release|scheduled" in source
-    assert 'MAINTAIN_JX_DOCKER_STORAGE' in source
-    assert 'manual|post-release|scheduled' in source
+    assert "MAINTAIN_JX_DOCKER_STORAGE" in source
+    assert "manual|post-release|scheduled" in source
     assert "buildx du" in source
     assert "--format=json" in source
-    assert "--filter \"id=$id\"" in source
+    assert '--filter "id=$id"' in source
     assert "--force" in source
     assert "docker system prune" not in source
     assert "docker volume rm" not in source

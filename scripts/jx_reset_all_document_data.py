@@ -73,7 +73,9 @@ def execute(manifest: Path, *, expected_scope_fingerprint: str) -> None:
         "shutil.rmtree(target)",
         "deployment .env values",
     )
-    raise RuntimeError("all-document reset requires scripts/jx_release_data.py plan-clean/clean with the exact manifest")
+    raise RuntimeError(
+        "all-document reset requires scripts/jx_release_data.py plan-clean/clean with the exact manifest"
+    )
 
 
 def main() -> int:
@@ -89,7 +91,10 @@ def main() -> int:
             raise SystemExit("execute requires --manifest")
         execute(args.manifest, expected_scope_fingerprint=args.scope_fingerprint)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(_safe_report(snapshot, status="planned"), ensure_ascii=False, indent=2), encoding="utf-8")
+    args.output.write_text(
+        json.dumps(_safe_report(snapshot, status="planned"), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     return 0
 
 

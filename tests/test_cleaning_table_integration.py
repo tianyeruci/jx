@@ -38,9 +38,7 @@ def test_consultation_pdf_result_cleans_markdown_after_conversion(monkeypatch, t
         to_dict=lambda include_page_markdown=False: {
             "source_checksum": "a" * 64,
             "document_id": "case_aaaaaaaaaaaaaaaa",
-            "review_reasons": [
-                "table_review:表格结构无法可靠对齐，已保留线性单元格文本:table=1"
-            ],
+            "review_reasons": ["table_review:表格结构无法可靠对齐，已保留线性单元格文本:table=1"],
         },
     )
 

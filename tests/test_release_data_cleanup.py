@@ -48,7 +48,7 @@ def test_cleanup_requires_a_verified_plan_before_writes():
 
 def test_cleanup_uses_exact_redis_keys_and_never_flushes_database():
     assert "redis_keys" in SOURCE
-    assert "startswith(\"ai:\")" in SOURCE
+    assert 'startswith("ai:")' in SOURCE
     assert "flushdb" not in SOURCE
 
 
@@ -224,9 +224,7 @@ def test_manual_test_ui_manifest_requires_its_own_scope_and_run_id(tmp_path):
             "chat_user_ids": [],
         },
     }
-    payload["integrity"] = {
-        "manifest_sha256": RELEASE_DATA._canonical_fingerprint(payload)
-    }
+    payload["integrity"] = {"manifest_sha256": RELEASE_DATA._canonical_fingerprint(payload)}
     manifest = _write_manifest(tmp_path, payload)
 
     loaded = RELEASE_DATA._load_v3_manifest(manifest)
@@ -253,9 +251,7 @@ def test_manual_incident_manifest_requires_its_own_scope_and_run_id(tmp_path):
             "chat_user_ids": [],
         },
     }
-    payload["integrity"] = {
-        "manifest_sha256": RELEASE_DATA._canonical_fingerprint(payload)
-    }
+    payload["integrity"] = {"manifest_sha256": RELEASE_DATA._canonical_fingerprint(payload)}
 
     loaded = RELEASE_DATA._load_v3_manifest(_write_manifest(tmp_path, payload))
 
@@ -311,12 +307,8 @@ def test_incident_capture_refuses_catalog_data_not_owned_by_exact_batches():
 
 def test_backup_and_cleanup_mount_the_current_release_data_script():
     """Backup evidence and cleanup must share the deployed release contract."""
-    backup = (ROOT / "scripts" / "jx_prebaseline_backup.sh").read_text(
-        encoding="utf-8"
-    )
-    cleanup = (ROOT / "scripts" / "jx_prebaseline_clean.sh").read_text(
-        encoding="utf-8"
-    )
+    backup = (ROOT / "scripts" / "jx_prebaseline_backup.sh").read_text(encoding="utf-8")
+    cleanup = (ROOT / "scripts" / "jx_prebaseline_clean.sh").read_text(encoding="utf-8")
 
     for source in (backup, cleanup):
         assert 'DATA_SCRIPT="$APP_DIR/scripts/jx_release_data.py"' in source

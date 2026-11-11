@@ -1,10 +1,18 @@
 # 千问 Batch/实时清洗一致性与商业顾问活动查询修复 — Requirement Spec
 
 - Feature ID: `qwen-batch-cleaning`
-- Status: APPROVED
+- Status: USER-APPROVED SHARED CONTRACT UPDATE; GOVERNANCE REAPPROVAL PENDING
 - Risk: `high`
 
 ## 1. Goal
+
+> **Current shared-path boundary (2026-09-13):** for jointly owned paths,
+> `cleaning-tolerance-methodology` and `recent-activity` provide the current
+> authority. Activity remains realtime-only with default/maximum `50/200`.
+> Normal runtime keeps `BAILIAN_BATCH_ENABLED=false`; an explicit, fail-closed
+> Batch acceptance seam is allowed only in the approved isolation boundary.
+> No new `review_required` or source Markdown fallback is produced, and existing
+> test DB 6/Dify data is preserved unless a later exact cleanup approval exists.
 
 完成四个内容模型策略的千问实时/Batch 双链路验证与修复，并同步修复商业顾问活动查询的语义路由和多活动展示：
 
@@ -19,7 +27,7 @@
 - 不改变生产默认 `BAILIAN_BATCH_ENABLED=false`、候选数阈值 `100` 或估算输入 Token 阈值 `200000`。
 - 不让咨询会议总结和认知分享共用业务 Schema、证据边界或输出用途。
 - 不让最近活动进入 Batch，不新增活动查询期 PostgreSQL/Redis 服务或公开 API。
-- 不修复历史清洗结果；用户已明确授权旧的目标清洗数据精确删除且无需备份，删除完成后只处理后续新上传数据；本轮新数据按验收要求保留。
+- 不自动修复、删除或改写历史清洗结果；既有测试 DB 6、测试数据库、卷和 Dify 文档默认保留，清理必须另有精确对象授权。
 - 不触碰 course、商业会话、用户画像、系统日志或其他无精确关联的数据。
 
 ## 3. Background / Evidence
@@ -45,7 +53,7 @@
 
 - 近期活动：未来 30 天内的 `normal`/`postponed` 活动。
 - 所有活动：前后 30 天窗口内的四种状态 `normal`、`cancelled`、`postponed`、`completed`。
-- 列表默认上限为 10 条，仍由 Chatflow 变量配置。
+- 列表默认上限为 50 条、最高 200 条，仍由当前 Chatflow 变量和边界控制。
 - 列表每条一行，格式为“活动名称｜活动时间｜活动状态”，延期未定明确显示“延期未定”。
 - 指定活动详情展示名称、时间、状态、地点/形式、简介和有效报名链接。
 - 无候选时明确说明无符合条件的活动，不编造事实。
@@ -58,7 +66,7 @@
 
 ### FR-004 模型调用一致性
 
-四个内容模型策略在服务器显式开启 Batch 且达到现有阈值时可走真实 Provider Batch；关闭或未达阈值时走实时。最近活动始终走实时。实时和 Batch 必须共用 Prompt 版本、Schema、结构/业务校验、一次定向修复、异常分类、Metadata 投影和 Dify 发布路径。仅采用与当前 Qwen 模型兼容的结构化 JSON、关闭思考、低随机参数和固定 seed 等稳定性措施；不支持的参数不得强行传入。
+四个内容模型策略 `personal_business_consultation`、`wechat_public_account_cognition`、`zsxq_post`、`xiaobot_post` 在免费本地确定性测试中覆盖 realtime/Batch 双模式；真实 Provider 对照只覆盖咨询与知识星球。正常运行和普通隔离运行均默认 Batch 关闭；只有明确的隔离 Batch acceptance seam、manifest、白名单、预算和正式健康门禁全部通过时才能显式走 Batch，且不得关闭 general-only 或降低生产阈值。最近活动始终走实时。实时和 Batch 必须共用 Prompt 版本、Schema、结构/业务校验、异常分类、Metadata 投影和 Dify 发布路径。只有调用异常或零可用核心内容时，才可对同一来源快照完整重跑一次；任一 transport、重投或新 batch ID 不得把跨来源的总上限扩展为第三次调用，有可用 case 但方案/方法遗漏也不得追加调用。历史调用未知或额度用尽时不得新增付费调用，回放不冒充当前真实结果。仅采用当前模型实际支持的结构化 JSON、关闭思考、低随机参数和固定 seed 等稳定性措施；不支持的参数不得强行传入。
 
 ### FR-005 Batch 生命周期与结果守恒
 
@@ -66,51 +74,52 @@ Batch 只在存在活动供应商任务时继续轮询；临时网络/数据库�
 
 ### FR-006 入库一致性
 
-实时与 Batch 均须验证文档数量、清洗终态、Metadata 字段名/类型/确定性值、Dify 索引终态、父子块、回读结果和无孤儿。生成摘要等文案允许非逐字差异，但活动硬事实、来源绑定和咨询证据边界必须一致。
+两 transport 均须验证清洗终态、受控 Metadata 字段名/类型/确定性值、chunking、parent/child、来源绑定、关键语义和发布计划；共用发布路径由本地/fake 合同覆盖。模型措辞、文档拆分数量、provider/远端 ID、时间戳和完成顺序允许不同；差异必须能由独立知识单元边界解释。Realtime 是不同 digest 时的固定 canonical 候选：任一 transport 不合格或语义不等价时两份都不发布；同 digest 只发布 Realtime并以共享有效成果验证 Batch `duplicate_noop`；不同 digest 但语义等价时只发布 Realtime并由其完成 Dify 索引、父子块回读和检索，Batch 仅保留未发布脱敏对照，不能声称独立远端检索或双写。
 
 ### FR-007 文档命名与跨源去重
 
 - 所有发布到知识库的文档名称必须以对应原始文件的安全 stem 为前缀；同一原始文件拆分出的多个文档在该前缀后追加稳定分片/知识单元标识，模型生成标题不得覆盖原始文件前缀。
-- 在同一知识库、同一策略/结果契约范围内，按最终规范化正文做跨原始文件、跨批次精确去重；保留一个可追溯发布记录，重复项进入 `excluded` 并记录去重原因。不同策略/结果契约之间不得互相去重。
+- 在同一知识库、同一策略/结果契约范围内，按最终规范化正文做跨原始文件、跨批次精确去重；保留一个经远端有效性验证的可追溯发布记录，重复项形成 `duplicate_noop` 关联而不是内容排除。不同策略/结果契约之间不得互相去重。
 - 去重必须具备数据库约束或等价并发锁，重试、并行 Batch 和 realtime 不能产生重复远端文档。
 
-### FR-008 模型结果未采用与人工审批
+### FR-008 模型结果未采用与失败边界
 
-- 模型返回但未通过契约校验时，必须保存脱敏审核材料和原始模型结果（服务端仅限内部存储），包括策略、原始文件名、清洗条目、模型请求/响应指纹、稳定错误码、字段路径和校验摘要。
-- 此类结果统一进入 `review_required`，不得自动将源 Markdown 兜底发布到知识库；现有对外接口保持兼容，内部增加审批状态与审核材料定位。
-- 人工 `approve` 后才允许使用源 Markdown 兜底结果入库；`exclude` 永不入库。审批操作必须幂等并留下审计记录。
+- 模型返回但未通过契约校验时，保存脱敏审核材料和受控模型结果，包括策略、清洗条目、请求/响应指纹、稳定错误码、字段路径和校验摘要；普通报告不得保存原始文件名、正文或身份信息。
+- 新链路不产生新的 `review_required`，不使用源 Markdown 或占位正文兜底。存在独立可用核心单元时保留合格单元并记录拒绝原因；调用异常或零可用核心内容时才按总上限完整重跑一次，两次仍失败则进入明确 `failed`。
+- `excluded` 仅表示模型明确判定不适合商业知识库且来源证据与判断均通过；技术失败、结构失败或未经验证的排除不得记为 `excluded`。
 
 ### FR-009 jx 测试与部署
 
-开始处理后续数据前，对目标策略对应的旧 `general` 清洗状态、Redis 键、上传目录和 Dify 文档按精确 manifest 删除；按用户授权不建立数据备份，但仍必须以可证明归属的精确 ID/键执行，不按名称模糊删除。删除完成后只处理用户指定的后续新样本和新上传数据，本轮结果不立即清理。Batch 测试保持现有阈值，使用现有费用 fail-closed 门禁。所有本地问题修复后部署 jx；DSL 发生语义变化时同步备份、导入、发布和真实 SSE 验证。
+恢复和验收前只读核对已有测试数据、Redis DB 6、队列、卷、镜像、Dataset 与费用，不预先清理旧状态。测试数据默认保留；任何删除都需要后来对精确对象的明确授权，不按名称、时间或整库操作。四策略先做免费本地 parity；本地质量、治理和独立复审闭合后才进入 jx 只读预检，预检和预算通过后只对咨询与知识星球做真实付费 parity。权威商业顾问 DSL 保持只读，不因本次清洗验收导入、回退或发布 DSL。
 
 ## 6. Resolved Decisions
 
 | Decision ID | Decision | Reason |
 |---|---|---|
 | RD-001 | 活动采用混合意图识别；案例/分析负向优先 | 覆盖自然表达并控制误路由 |
-| RD-002 | 活动列表默认 10 条，名称/时间/状态逐行；详情保留完整业务字段 | 满足一次展示多个活动并保留后续追问能力 |
+| RD-002 | 活动列表默认 50 条、最高 200 条，名称/时间/状态逐行；详情保留完整业务字段 | 与当前只读权威 DSL 及 recent-activity 合同一致 |
 | RD-003 | 最近活动固定实时；四个内容模型策略保留服务器可配实时/Batch 双模式 | 活动数据量小且需快速反馈，其他策略已有双通道 |
 | RD-004 | 三类清洗结果不共用业务边界，只共享稳定调用与发布工程机制 | 结果用途和事实边界不同 |
-| RD-005 | Batch 使用现有候选数 100/Token 200000 阈值，不降阈值 | 验证生产等价触发条件，避免改变默认成本行为 |
+| RD-005 | 生产 Batch 阈值和默认关闭保持不变；隔离验收可通过受保护 seam 强制覆盖允许策略 | 小样本可验证真实 transport，同时不改变正常成本行为 |
 | RD-006 | 一致性按结构、Metadata、索引、来源和关键语义验收，文案可有差异 | Qwen 新调用不保证字节级复现 |
-| RD-007 | 开始后续数据处理前精确删除目标策略的旧 general 数据且无需备份；删除后只处理新上传数据，结果保留 | 用户明确旧数据可删除且不需要备份；本轮新结果需人工复核 |
+| RD-007 | 既有测试数据默认保留；恢复、上传和付费前先核对归属、队列、费用和远端有效性 | 当前明确禁止清理 DB 6、测试数据库、卷或 Dataset；旧清理授权不适用于本任务 |
 | RD-008 | 发布名称始终由原始文件安全 stem + 稳定分片标识生成；同契约最终正文跨源/跨批次去重 | 可区分来源并消除重复知识；不同契约保持边界 |
-| RD-009 | 模型结果未采用保存服务端审核材料并进入 review_required；approve 才兜底入库，exclude 不入库 | 保留模型证据，阻断未经人工确认的低质量内容 |
+| RD-009 | 未采用结果保存脱敏原因；新链路不新增 review_required、不用源文兜底，零核心内容或调用异常才完整重跑一次 | 保留证据并阻断低质量内容，同时遵守两次总上限和当前状态边界 |
+| RD-010 | 四策略本地 parity、咨询与知识星球真实付费 parity；Realtime 固定 canonical | 覆盖咨询与帖子两类产物，控制费用并避免语义重复写入 |
 
 ## 7. Acceptance Criteria
 
 | ID | Observable result |
 |---|---|
 | AC-001 | “最新活动有哪些”“最近活动有哪些”“活动有哪些”等自然表达正确进入活动列表；分析/案例问题不误入 |
-| AC-002 | 活动列表默认最多 10 条，名称/时间/状态逐行；四种状态和延期未定显示正确 |
+| AC-002 | 活动列表默认最多 50 条且硬上限 200，名称/时间/状态逐行；四种状态和延期未定显示正确 |
 | AC-003 | 指定活动可返回完整详情，报名链接只在有效时出现 |
-| AC-004 | 最近活动模型任务无 Batch；四个内容模型策略在现有阈值下可分别完成实时和真实 Batch |
-| AC-005 | 实时/Batch 的文档数、状态、Metadata、索引、回读、来源绑定和关键语义符合各自策略契约 |
+| AC-004 | 最近活动无 Batch；四内容策略完成免费本地确定性 parity，咨询与知识星球在隔离门禁和预算内完成真实 realtime/Batch 对照 |
+| AC-005 | 实时/Batch 的状态、Metadata、chunking、父子块、索引、回读、来源绑定和关键业务语义符合各自策略契约，并按 Realtime canonical 规则只发布一份有效成果 |
 | AC-006 | Batch 临时错误可恢复轮询，终态后停止轮询；重复/缺失/坏结果可诊断且无半成品 |
-| AC-007 | jx 开始后续数据处理前，目标策略旧 general 数据按精确 manifest 删除且不影响非目标数据、不建立备份；之后只处理指定新样本/新上传数据，本轮数据保留；发布/DSL/真实 SSE 证据齐全 |
-| AC-008 | 所有远端文档名称保留原始文件安全 stem；同策略/契约跨源重复正文只有一个发布，其余为 excluded |
-| AC-009 | 模型结果未采用会保存可定位审核材料并为 review_required；未审批项无 Dify 文档，approve/exclude 行为幂等正确 |
+| AC-007 | jx 恢复前完成费用、队列、镜像、DB 6、测试 DB/role、卷、Dataset 和正式健康只读核对；既有测试数据保留，权威 DSL 不变 |
+| AC-008 | 所有远端文档名称保留原始文件安全 stem；同策略/契约跨源重复正文只有一个有效发布，其余经验证为 duplicate_noop |
+| AC-009 | 模型结果未采用会保存脱敏可定位原因；没有新的 review_required、源文兜底或第三次调用，excluded/failed 语义可区分 |
 | AC-010 | 本地质量、聚焦回归、jx 真实验收、问题统一修复和相关文档同步完成 |
 
 ## 8. Model-generated Test Intent
@@ -118,14 +127,14 @@ Batch 只在存在活动供应商任务时继续轮询；临时网络/数据库�
 | Acceptance | Happy path | Boundary / negative | Compatibility / safety |
 |---|---|---|---|
 | AC-001 | 自然表达、活动列表、指定活动 | 活动分析、复盘、案例、普通业务负例 | 保持原普通/案例路由 |
-| AC-002 | 1/3/10 条和混合状态 | 0 条、超过 10 条、延期未定、窗口边界 | 不泄露内部 Metadata |
+| AC-002 | 1/3/50 条和混合状态 | 0 条、超过 50/200、延期未定、窗口边界 | 不泄露内部 Metadata |
 | AC-003 | 名称、时间、状态、地点、简介、链接 | 无链接、截止、无新延期时间 | 不猜测事实 |
-| AC-004 | 四策略实时与 Batch | 开关关闭、未达阈值、recent_activity 禁止 Batch | 任务模式快照兼容 |
-| AC-005 | 同样本两通道最终入库 | 文案差异、Metadata 类型冲突、Dify 索引失败 | 三类策略边界独立 |
+| AC-004 | 四策略本地双模式、两策略真实对照 | 默认关闭、acceptance seam、recent_activity 禁止 Batch | 任务模式快照兼容；生产默认不变 |
+| AC-005 | 两 transport 独立合格后执行 canonical 裁决 | 文案/digest/拆分差异、Metadata 类型冲突、Dify 索引失败 | 三类策略边界独立；只发布 Realtime canonical |
 | AC-006 | 提交、轮询、完成、修复 Batch | 瞬时异常、供应商失败、重复/缺失/坏 JSON | 无孤儿、幂等 |
-| AC-007 | 精确 manifest 清理、jx 发布、测试数据保留 | 归属/预算/健康门禁失败即停止 | 不删除无关业务数据 |
-| AC-008 | 原始 stem 命名、跨源去重 | 并发/重试/分片 | 不跨契约去重 |
-| AC-009 | fallback 审核材料、approve/exclude | 审核材料缺失、重复审批 | 未审批不入库 |
+| AC-007 | 只读恢复清单、jx 隔离启动、数据保留 | 归属/预算/健康门禁失败即停止 | 不删除任何未精确授权数据，不改权威 DSL |
+| AC-008 | 原始 stem 命名、跨源去重、duplicate_noop | 并发/重试/分片、失效远端成果 | 不跨契约去重、不盲信本地成功 |
+| AC-009 | 未采用结果的脱敏原因和明确失败 | 缺失/坏结构/零核心/调用异常 | 无 review_required、无源文兜底、无第三次调用 |
 | AC-010 | 质量通过后部署 | 任一问题统一记录、修复后新批次重跑 | 文档和状态证据可追溯 |
 
 ## 9. Artifact Plan

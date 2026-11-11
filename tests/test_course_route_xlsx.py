@@ -4,8 +4,8 @@ import re
 from pathlib import Path
 from zipfile import ZipFile
 
-from openpyxl import Workbook
 import pytest
+from openpyxl import Workbook
 
 
 def _workbook(path: Path) -> None:

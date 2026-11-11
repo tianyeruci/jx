@@ -32,7 +32,7 @@ except Exception:
 state = read_json(active_path(root), {}) or {}
 tool = str(payload.get("tool_name") or "")
 tool_input = payload.get("tool_input") or {}
-command = str(tool_input.get("command") or "") if isinstance(tool_input, dict) else ""
+command = str((tool_input.get("command") or tool_input.get("cmd") or "") if isinstance(tool_input, dict) else "")
 session_id = payload.get("session_id")
 
 
@@ -121,6 +121,23 @@ def is_governance_cli(cmd):
         return False
     return ".codex/governance/gov.py" in c or ".codex/governance/gov.ps1" in c
 
+
+def deployment_change_command(cmd):
+    """Recognize remote deployment mutations without gating ordinary SSH reads."""
+    try:
+        from deployment_scope import looks_like_deployment_command
+        return looks_like_deployment_command(cmd)
+    except Exception:
+        return bool(re.search(
+            r"(?is)\bssh\b.*(?:docker\s+compose|\b(?:bash|sh)\b.*(?:deploy|release).*\.sh)",
+            cmd,
+        ))
+
+
+def local_project_service_command(cmd):
+    return bool(re.search(r"\b(?:docker\s+compose\b.*\b(?:up|down|restart|start|stop|rm)\b"
+                          r"|docker\s+run|uvicorn|fastapi\s+dev)\b", cmd, re.I))
+
 # Standard/High work has explicit human gates. Before implementation, allow requirements/architecture
 # docs and governance bookkeeping, but do not let normal local write tools start production coding early.
 preimplementation = state.get("phase") in {"discovery", "requirements", "prototype", "architecture", "planning", "blocked"}
@@ -184,7 +201,9 @@ protected_patterns = [
     r"(^|[;&|\n]\s*)netlify\s+deploy\b.*--prod\b",
     r"(^|[;&|\n]\s*)fly\s+deploy\b",
 ]
-if tool == "Bash" and command and any(re.search(p, command, re.I) for p in protected_patterns):
+if tool in {"Bash", "exec_command"} and command and any(
+    re.search(p, command, re.I) for p in protected_patterns
+):
     approval = read_json(release_approval_path(root), {}) or {}
     digest = hashlib.sha256(command.strip().encode("utf-8")).hexdigest()
     current_release_fp = git_fingerprint(root, scope="review")
@@ -197,4 +216,21 @@ if tool == "Bash" and command and any(re.search(p, command, re.I) for p in prote
             "Protected release/remote command requires explicit user approval for this exact command and the current reviewed diff. "
             "After all completion gates are current and the user approves it, record the approval with: "
             f"gov approve-release --command {json.dumps(command)} --confirmed-by-user, then retry."
+        )
+
+# Local project services and a second local environment are outside this deployment workflow.
+if command and not re.search(r"\bssh\b", command, re.I) and local_project_service_command(command):
+    block("Local project service/second environment commands are outside the authorized deployment target.")
+
+# Scope receipts cover only recognized deployment mutations. SSH status/read commands remain unaffected.
+if command and deployment_change_command(command) and tool in {"Bash", "exec_command"}:
+    try:
+        from deployment_scope import consume
+        protected, allowed, reason = consume(command)
+    except Exception:
+        protected, allowed, reason = True, False, "deployment scope validation failed closed"
+    if not protected or not allowed:
+        block(
+            f"Deployment mutation requires a current one-use exact-command scope receipt: {reason or 'no receipt'}. "
+            "Register the authorized endpoint/project/environment/actions, issue a receipt for this command, then retry."
         )

@@ -297,7 +297,12 @@ def _remote_name_matches_strategy_contract(
         if not sentinel.endswith(sentinel_suffix):
             return False
         base = sentinel[: -len(sentinel_suffix)]
-        return bool(re.fullmatch(re.escape(base) + r"__" + re.escape(safe_event_id) + r"__[A-Za-z0-9_-]{1,16}\.md", remote_name))
+        return bool(
+            re.fullmatch(
+                re.escape(base) + r"__" + re.escape(safe_event_id) + r"__[A-Za-z0-9_-]{1,16}\.md",
+                remote_name,
+            )
+        )
     if is_shard:
         source_title = str(
             metadata.get("source_title") or item.get("title") or original_filename
@@ -318,16 +323,17 @@ def _remote_name_matches_strategy_contract(
         case_id = str(metadata.get("case_id") or "")
         case_match = re.search(r"_c(\d{2})$", case_id)
         sequence = int(item.get("sequence") or 1)
-        case_index = int(case_match.group(1)) if case_match else (
-            sequence % 1000 if sequence >= 1000 else sequence
+        case_index = (
+            int(case_match.group(1))
+            if case_match
+            else (sequence % 1000 if sequence >= 1000 else sequence)
         )
         if case_index <= 1:
             expected_name = consultation_base
         else:
             child_name_path = Path(consultation_base or "consulting_case.md")
             expected_name = (
-                f"{child_name_path.stem}__{case_index:02d}"
-                f"{child_name_path.suffix or '.md'}"
+                f"{child_name_path.stem}__{case_index:02d}{child_name_path.suffix or '.md'}"
             )[:300]
         return remote_name == expected_name
     expected_name = _expected_remote_name(
@@ -376,9 +382,7 @@ def _single_input(case_root: Path, case_id: str) -> Path:
     return entries[0]
 
 
-def _write_simple_text_pdf(
-    path: Path, text: str, *, source_marker: str = ""
-) -> None:
+def _write_simple_text_pdf(path: Path, text: str, *, source_marker: str = "") -> None:
     """Create a minimal text-layer PDF without a report-generation dependency."""
     escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
     content = f"BT\n/F1 14 Tf\n72 720 Td\n({escaped}) Tj\nET\n".encode("ascii")
@@ -389,7 +393,9 @@ def _write_simple_text_pdf(
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
             b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
         ),
-        b"<< /Length " + str(len(content)).encode("ascii") + b" >>\nstream\n"
+        b"<< /Length "
+        + str(len(content)).encode("ascii")
+        + b" >>\nstream\n"
         + content
         + b"endstream",
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
@@ -407,10 +413,9 @@ def _write_simple_text_pdf(
     for offset in offsets[1:]:
         payload.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
     payload.extend(
-        (
-            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
-            f"startxref\n{xref}\n%%EOF\n"
-        ).encode("ascii")
+        (f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").encode(
+            "ascii"
+        )
     )
     # A PDF comment after EOF changes only the source bytes.  Parsers ignore
     # it, so each controlled upload exercises the full path without adding
@@ -708,9 +713,7 @@ def _parse_sse(
 
 
 class AcceptanceRunner:
-    def __init__(
-        self, *, base_url: str, input_root: Path, manifest_path: Path
-    ) -> None:
+    def __init__(self, *, base_url: str, input_root: Path, manifest_path: Path) -> None:
         settings = get_settings()
         self.settings = settings
         self.budget = AcceptanceBudget.from_settings(settings)
@@ -783,10 +786,7 @@ class AcceptanceRunner:
         payload = dict(self._manifest)
         payload["targets"] = {
             key: (
-                {
-                    code: sorted(set(values))
-                    for code, values in raw.items()
-                }
+                {code: sorted(set(values)) for code, values in raw.items()}
                 if isinstance(raw, dict)
                 else sorted(set(raw))
             )
@@ -803,9 +803,7 @@ class AcceptanceRunner:
             ).hexdigest()
         }
         self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.manifest_path.with_suffix(
-            f"{self.manifest_path.suffix}.tmp"
-        )
+        temporary = self.manifest_path.with_suffix(f"{self.manifest_path.suffix}.tmp")
         temporary.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
             encoding="utf-8",
@@ -837,9 +835,7 @@ class AcceptanceRunner:
         targets["dify_documents"][kb].extend(document_ids)
         targets["course_ids"].extend(course_ids)
         targets["route_ids"].extend(route_ids)
-        targets["direction_codes"] = sorted(
-            self._direction_codes() - self._initial_direction_codes
-        )
+        targets["direction_codes"] = sorted(self._direction_codes() - self._initial_direction_codes)
         self._write_manifest()
 
     def _direction_codes(self) -> set[str]:
@@ -847,11 +843,7 @@ class AcceptanceRunner:
         if response.status_code != 200:
             raise RuntimeError("cannot read course catalog directions")
         payload = response.json()
-        return {
-            str(item.get("code"))
-            for item in payload.get("items") or []
-            if item.get("code")
-        }
+        return {str(item.get("code")) for item in payload.get("items") or [] if item.get("code")}
 
     def _upload(
         self,
@@ -1145,11 +1137,7 @@ class AcceptanceRunner:
         status_counts = Counter(str(item.get("status") or "") for item in details)
         publication_shards = file_payload.get("publication_shards") or []
         document_ids = sorted(
-            {
-                str(item.get("dify_document_id"))
-                for item in details
-                if item.get("dify_document_id")
-            }
+            {str(item.get("dify_document_id")) for item in details if item.get("dify_document_id")}
         )
         course_ids = sorted(
             {
@@ -1177,12 +1165,10 @@ class AcceptanceRunner:
                 "item_count": len(details),
                 "item_status_counts": dict(status_counts),
                 "model_task_statuses": sorted(
-                    str(item.get("status") or "")
-                    for item in body.get("model_tasks") or []
+                    str(item.get("status") or "") for item in body.get("model_tasks") or []
                 ),
                 "publication_shard_statuses": sorted(
-                    str(item.get("status") or "")
-                    for item in publication_shards
+                    str(item.get("status") or "") for item in publication_shards
                 ),
             }
         )
@@ -1195,9 +1181,8 @@ class AcceptanceRunner:
             result["passed"] = False
             result["failure_codes"].append("ITEM_COUNT_BELOW_MINIMUM")
         minimum_succeeded = spec.get("min_succeeded_items")
-        if (
-            minimum_succeeded is not None
-            and status_counts.get("succeeded", 0) < int(minimum_succeeded)
+        if minimum_succeeded is not None and status_counts.get("succeeded", 0) < int(
+            minimum_succeeded
         ):
             result["passed"] = False
             result["failure_codes"].append("PUBLISHED_ITEM_COUNT_BELOW_MINIMUM")
@@ -1242,15 +1227,11 @@ class AcceptanceRunner:
             audit = item.get("audit") or {}
             forbidden = list(spec.get("forbidden") or [])
             forbidden.extend(
-                str(value)
-                for value in audit.get("forbidden_public_names") or []
-                if str(value)
+                str(value) for value in audit.get("forbidden_public_names") or [] if str(value)
             )
             forbidden = sorted(set(forbidden))
             public_metadata = {
-                key: value
-                for key, value in metadata.items()
-                if key not in SYSTEM_METADATA_FIELDS
+                key: value for key, value in metadata.items() if key not in SYSTEM_METADATA_FIELDS
             }
             leaks = _leak_fingerprints(
                 {
@@ -1278,9 +1259,7 @@ class AcceptanceRunner:
                 else:
                     remote_name = str(remote.get("name") or "")
                     remote_metadata = _remote_metadata(remote)
-                    custom_metadata_fields = (
-                        set(remote_metadata) - DIFY_BUILTIN_METADATA_FIELDS
-                    )
+                    custom_metadata_fields = set(remote_metadata) - DIFY_BUILTIN_METADATA_FIELDS
                     allowed = REMOTE_ALLOWED_FIELDS.get(spec["strategy"])
                     if allowed is not None:
                         allowed = allowed | REMOTE_PROVENANCE_FIELDS
@@ -1290,9 +1269,7 @@ class AcceptanceRunner:
                             item=item,
                             metadata=metadata,
                             remote_name=remote_name,
-                            original_filename=str(
-                                file_payload.get("original_filename") or ""
-                            ),
+                            original_filename=str(file_payload.get("original_filename") or ""),
                             source_sha256=result["source_sha256"],
                             details_count=len(details),
                         ),
@@ -1300,9 +1277,7 @@ class AcceptanceRunner:
                         "metadata_keys": sorted(remote_metadata),
                         "custom_metadata_keys": sorted(custom_metadata_fields),
                         "metadata_allowed": (
-                            True
-                            if allowed is None
-                            else custom_metadata_fields <= allowed
+                            True if allowed is None else custom_metadata_fields <= allowed
                         ),
                     }
                     if not remote_checks["name_matches"]:
@@ -1310,9 +1285,7 @@ class AcceptanceRunner:
                         result["failure_codes"].append("DIFY_NAME_MISMATCH")
                     if remote_checks["metadata_allowed"] is False:
                         result["passed"] = False
-                        result["failure_codes"].append(
-                            "DIFY_METADATA_OVEREXPOSED"
-                        )
+                        result["failure_codes"].append("DIFY_METADATA_OVEREXPOSED")
             if leaks:
                 result["passed"] = False
                 result["failure_codes"].append("IDENTITY_LEAK")
@@ -1320,8 +1293,7 @@ class AcceptanceRunner:
                 result["passed"] = False
                 result["failure_codes"].append("LOCAL_METADATA_INCOMPLETE")
             if forbidden and not (
-                isinstance(audit.get("identity_aliases"), dict)
-                or audit.get("privacy_level")
+                isinstance(audit.get("identity_aliases"), dict) or audit.get("privacy_level")
             ):
                 result["passed"] = False
                 result["failure_codes"].append("IDENTITY_AUDIT_MISSING")
@@ -1355,9 +1327,7 @@ class AcceptanceRunner:
         result.pop("batch_id", None)
         self.report["cases"].append(result)
 
-    def run_batch_submission_case(
-        self, case_id: str, path: Path, spec: dict[str, Any]
-    ) -> None:
+    def run_batch_submission_case(self, case_id: str, path: Path, spec: dict[str, Any]) -> None:
         result, _ = self._upload(case_id=case_id, path=path, spec=spec)
         if result["passed"]:
             result["batch_submission_accepted"] = self._wait_for_batch_submission(
@@ -1370,12 +1340,8 @@ class AcceptanceRunner:
         result.pop("batch_id", None)
         self.report["cases"].append(result)
 
-    def run_multi_case(
-        self, case_id: str, paths: list[Path], spec: dict[str, Any]
-    ) -> None:
-        result, upload_body = self._upload_many(
-            case_id=case_id, paths=paths, spec=spec
-        )
+    def run_multi_case(self, case_id: str, paths: list[Path], spec: dict[str, Any]) -> None:
+        result, upload_body = self._upload_many(case_id=case_id, paths=paths, spec=spec)
         if not result["passed"]:
             self.report["cases"].append(result)
             return
@@ -1510,9 +1476,7 @@ class AcceptanceRunner:
 
     def finalize(self) -> dict[str, Any]:
         case_passed = sum(bool(item.get("passed")) for item in self.report["cases"])
-        chat_passed = sum(
-            bool(item.get("passed")) for item in self.report["chat_checks"]
-        )
+        chat_passed = sum(bool(item.get("passed")) for item in self.report["chat_checks"])
         self.report["summary"] = {
             "case_total": len(self.report["cases"]),
             "case_passed": case_passed,
@@ -1530,10 +1494,7 @@ class AcceptanceRunner:
             "fingerprint": manifest["integrity"]["manifest_sha256"],
             "target_counts": {
                 key: (
-                    {
-                        code: len(values)
-                        for code, values in target.items()
-                    }
+                    {code: len(values) for code, values in target.items()}
                     if isinstance(target, dict)
                     else len(target)
                 )
@@ -1604,9 +1565,7 @@ def main() -> int:
                     {
                         "case_id": case_id,
                         "passed": False,
-                        "failure_codes": [
-                            f"RUNNER_EXCEPTION_{type(exc).__name__.upper()}"
-                        ],
+                        "failure_codes": [f"RUNNER_EXCEPTION_{type(exc).__name__.upper()}"],
                     }
                 )
         if not args.skip_batch_submission:
@@ -1621,9 +1580,7 @@ def main() -> int:
                     {
                         "case_id": "xiaobot_batch_submission",
                         "passed": False,
-                        "failure_codes": [
-                            f"RUNNER_EXCEPTION_{type(exc).__name__.upper()}"
-                        ],
+                        "failure_codes": [f"RUNNER_EXCEPTION_{type(exc).__name__.upper()}"],
                     }
                 )
         for case_id, case_paths in (
@@ -1657,9 +1614,7 @@ def main() -> int:
                     {
                         "case_id": case_id,
                         "passed": False,
-                        "failure_codes": [
-                            f"RUNNER_EXCEPTION_{type(exc).__name__.upper()}"
-                        ],
+                        "failure_codes": [f"RUNNER_EXCEPTION_{type(exc).__name__.upper()}"],
                     }
                 )
         runner.run_public_chat_checks()
@@ -1670,10 +1625,9 @@ def main() -> int:
             runner.close()
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
     summary = report.get("summary") or {}
-    return 1 if (
-        int(summary.get("case_failed") or 0)
-        or int(summary.get("chat_failed") or 0)
-    ) else 0
+    return (
+        1 if (int(summary.get("case_failed") or 0) or int(summary.get("chat_failed") or 0)) else 0
+    )
 
 
 if __name__ == "__main__":

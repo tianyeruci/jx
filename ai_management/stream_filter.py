@@ -29,9 +29,7 @@ _BRACKETED_INTERNAL_FIELDS = re.compile(
     re.IGNORECASE,
 )
 _INTERNAL_FIELD = re.compile(_INTERNAL_FIELD_BODY, re.IGNORECASE)
-_INTERNAL_PLACEHOLDER_TEXT = re.compile(
-    rf"{_INTERNAL_PLACEHOLDER}"
-)
+_INTERNAL_PLACEHOLDER_TEXT = re.compile(rf"{_INTERNAL_PLACEHOLDER}")
 _PUBLIC_ENTITY_FIELD = re.compile(
     rf"(?P<label>{_INTERNAL_FIELD_LABEL})\s*[:：=]\s*"
     rf"[\"'“”]?(?P<value>{_INTERNAL_FIELD_VALUE})[\"'“”]?"
@@ -197,7 +195,9 @@ def publicize_internal_references(
         result,
     )
     for machine_field, public_name in _PUBLIC_MACHINE_FIELDS.items():
-        result = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(machine_field)}(?![A-Za-z0-9_])", public_name, result)
+        result = re.sub(
+            rf"(?<![A-Za-z0-9_]){re.escape(machine_field)}(?![A-Za-z0-9_])", public_name, result
+        )
     result = _clean_removed_internal_punctuation(result)
     result = re.sub(r"(?m)^\s*\d+[.)、]\s*(?:\r?\n|$)", "", result)
     return result
@@ -213,10 +213,7 @@ def redact_internal_ids_in_value(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(redact_internal_ids_in_value(item) for item in value)
     if isinstance(value, dict):
-        return {
-            str(key): redact_internal_ids_in_value(item)
-            for key, item in value.items()
-        }
+        return {str(key): redact_internal_ids_in_value(item) for key, item in value.items()}
     return value
 
 
@@ -314,9 +311,7 @@ class StreamingTermRedactor:
 
     def __init__(self, replacements: Mapping[str, str]) -> None:
         self.replacements = {
-            str(term): str(replacement)
-            for term, replacement in replacements.items()
-            if str(term)
+            str(term): str(replacement) for term, replacement in replacements.items() if str(term)
         }
         self.terms = sorted(
             self.replacements,
@@ -388,8 +383,8 @@ class StreamingInternalIdRedactor:
             if match is None:
                 if len(self.pending) <= self._TAIL:
                     break
-                output.append(self.pending[:-self._TAIL])
-                self.pending = self.pending[-self._TAIL:]
+                output.append(self.pending[: -self._TAIL])
+                self.pending = self.pending[-self._TAIL :]
                 break
             output.append(self.pending[: match.start()])
             output.append(self.replacement)

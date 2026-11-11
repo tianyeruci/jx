@@ -10,10 +10,13 @@ from ai_management.stream_filter import (
 
 def test_internal_ids_are_redacted_across_stream_chunks():
     redactor = StreamingInternalIdRedactor()
-    output = "".join(
-        redactor.feed(chunk)
-        for chunk in ("推荐 course_7f69", "c4a8693d，路线 route_fd1490", "52e257。")
-    ) + redactor.finish()
+    output = (
+        "".join(
+            redactor.feed(chunk)
+            for chunk in ("推荐 course_7f69", "c4a8693d，路线 route_fd1490", "52e257。")
+        )
+        + redactor.finish()
+    )
     assert "course_" not in output
     assert "route_" not in output
     assert "内部标识已隐藏" not in output
@@ -35,14 +38,17 @@ def test_internal_ids_adjacent_to_chinese_are_redacted():
 
 def test_internal_labels_and_stage_ids_are_removed_across_stream_chunks():
     redactor = StreamingInternalIdRedactor()
-    output = "".join(
-        redactor.feed(chunk)
-        for chunk in (
-            "建议先确认（路线ID：route_ai_",
-            "basic，阶段ID：stage_1），再看课程ID：",
-            "course_ai_001。",
+    output = (
+        "".join(
+            redactor.feed(chunk)
+            for chunk in (
+                "建议先确认（路线ID：route_ai_",
+                "basic，阶段ID：stage_1），再看课程ID：",
+                "course_ai_001。",
+            )
         )
-    ) + redactor.finish()
+        + redactor.finish()
+    )
     assert "路线ID" not in output
     assert "阶段ID" not in output
     assert "课程ID" not in output
@@ -50,7 +56,9 @@ def test_internal_labels_and_stage_ids_are_removed_across_stream_chunks():
     assert "stage_1" not in output
     assert "course_ai_001" not in output
     assert "内部标识已隐藏" not in output
-    nested = redact_internal_ids("已确认路线（路线ID：（内部标识已隐藏）），当前阶段（阶段ID：stage_1）。")
+    nested = redact_internal_ids(
+        "已确认路线（路线ID：（内部标识已隐藏）），当前阶段（阶段ID：stage_1）。"
+    )
     assert nested == "已确认路线，当前阶段。"
 
 
@@ -102,8 +110,7 @@ def test_catalog_references_are_rendered_as_official_names_including_lists():
 
 def test_catalog_references_correct_wrong_name_and_unknown_id():
     result = publicize_internal_references(
-        "首门课程是「AI工具入门课」（课程ID：course_ai_001）；"
-        "课程ID：course_missing。",
+        "首门课程是「AI工具入门课」（课程ID：course_ai_001）；课程ID：course_missing。",
         {"course_ai_001": "学会AI写作，人人都可以拿到结果"},
     )
     assert "AI工具入门课" not in result
@@ -116,10 +123,10 @@ def test_catalog_public_redactor_handles_id_split_across_sse_chunks():
         {},
         catalog_names={"course_ai_001": "学会AI写作，人人都可以拿到结果"},
     )
-    output = "".join(
-        redactor.feed(chunk)
-        for chunk in ("课程ID：course_ai_", "001。")
-    ) + redactor.finish()
+    output = (
+        "".join(redactor.feed(chunk) for chunk in ("课程ID：course_ai_", "001。"))
+        + redactor.finish()
+    )
     assert output == "课程：学会AI写作，人人都可以拿到结果。"
 
 

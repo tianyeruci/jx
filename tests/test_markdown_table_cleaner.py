@@ -13,9 +13,7 @@ def test_reliable_gfm_table_becomes_contextual_sentences():
     )
 
     assert result.markdown == (
-        "# 目标\n\n"
-        "目标；项目：A；结果：通过。\n"
-        "目标；项目：B；结果：待复核。\n"
+        "# 目标\n\n目标；项目：A；结果：通过。\n目标；项目：B；结果：待复核。\n"
     )
     assert result.tables_converted == 1
     assert result.issues == ()

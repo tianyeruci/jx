@@ -1,10 +1,10 @@
-from pathlib import Path
-import hashlib
 import fnmatch
+import hashlib
 import json
 import os
+import re
 import subprocess
-from typing import Iterable
+from pathlib import Path
 
 GOVERNANCE_VERSION = "2.4.0"
 
@@ -122,10 +122,69 @@ def _changed_paths(root):
 def _scope_includes(rel: str, scope: str):
     rel = rel.replace("\\", "/")
     parts = tuple(x for x in rel.split("/") if x)
-    generated_dirs = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox", "node_modules", ".next", ".nuxt", ".svelte-kit", ".gradle", "target"}
+    generated_dirs = {
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".nox",
+        "node_modules",
+        ".next",
+        ".nuxt",
+        ".svelte-kit",
+        ".gradle",
+        "target",
+    }
     generated_names = {".coverage", "coverage.xml", ".DS_Store", "Thumbs.db"}
     generated_suffixes = (".pyc", ".pyo", ".class", ".o")
-    if any(part in generated_dirs for part in parts) or (parts and parts[-1] in generated_names) or rel.endswith(generated_suffixes):
+    # A source package can legitimately be named ``pytest-reporting``.  Only
+    # root-level, tool-generated pytest scratch paths are excluded; matching
+    # every path component silently omits real implementation from approval,
+    # quality, and review fingerprints.
+    root_name = parts[0].lower() if parts else ""
+    # Pytest's temporary roots are deliberately recognized by their actual
+    # generated names, rather than a broad ``pytest-`` prefix.  Projects can
+    # legitimately contain root packages such as ``pytest-plugin`` and source
+    # subdirectories named ``tmp``; omitting either from a fingerprint would
+    # allow an implementation change to evade the corresponding gate.
+    root_pytest_scratch = bool(
+        re.fullmatch(r"pytest-\d+", root_name)
+        or re.fullmatch(r"\.pytest-tmp(?:-\d+)?", root_name)
+        or re.fullmatch(
+            r"workprojectcjx-nowtmppytest-[A-Za-z0-9_-]+-basetemp(?:-\d+)?",
+            root_name,
+        )
+    )
+    # ``tmp`` itself may be a real root package.  New test runs use the
+    # explicit ``tmp/.pytest-tmp`` namespace.  Retain only the named legacy
+    # output roots already produced by this worktree; a broad ``pytest-``
+    # prefix would let a legitimate source package evade fingerprints.
+    root_temp_output = (
+        root_name == "tmp"
+        and len(parts) >= 2
+        and (
+            parts[1] == ".pytest-tmp"
+            or (len(parts) == 2 and re.fullmatch(r"pytest-[A-Za-z0-9_-]+\.xml", parts[1]))
+            or re.fullmatch(
+                r"pytest-(?:canonical-unit(?:-supplement)?|u03-u08-boundary(?:-full-after)?|review-findings-before|pdf-basetemp|tolerance-basetemp)(?:-\d+)?",
+                parts[1],
+            )
+        )
+    )
+    # Redacted run evidence is appended after each test/review iteration.  It is
+    # not implementation content and must not invalidate a completed quality or
+    # review gate; keep the exclusion narrow so other ``var`` source paths stay
+    # governed.
+    root_report_output = len(parts) >= 2 and parts[:2] == ("var", "reports")
+    if (
+        any(part in generated_dirs for part in parts)
+        or root_temp_output
+        or root_report_output
+        or root_pytest_scratch
+        or (parts and parts[-1] in generated_names)
+        or rel.endswith(generated_suffixes)
+    ):
         return False
     always_excluded = (
         ".codex/state/",
@@ -134,14 +193,20 @@ def _scope_includes(rel: str, scope: str):
     )
     if rel.startswith(always_excluded):
         return False
-    if rel in {".codex/governance/repo-facts.json", "docs/PROJECT_STATUS.md"}:
+    if rel in {
+        ".codex/governance/repo-facts.json",
+        "docs/PROJECT_STATUS.md",
+        "AI管理服务当前状态与后续测试交接.md",
+    }:
         return False
     if rel.endswith("/feature.json") and rel.startswith("docs/features/"):
         return False
     if scope in {"quality", "implementation", "source"}:
         if rel.startswith("docs/"):
             return False
-    if scope == "implementation" and (rel.startswith(".codex/") or rel in {"AGENTS.md", ".gitignore"}):
+    if scope == "implementation" and (
+        rel.startswith(".codex/") or rel in {"AGENTS.md", ".gitignore"}
+    ):
         # Product/module ownership excludes the governance control plane. Governance config
         # has separate approval/config fingerprints and must not become a business module.
         return False
@@ -182,7 +247,7 @@ def changed_paths(root, scope="implementation", include_preimplementation=False)
     return sorted(p for p in paths if _scope_includes(p, scope))
 
 
-def _worktree_index_snapshot(root):
+def _worktree_index_snapshot(root, scope="review"):
     """Return a Git-like current content snapshot independent of commit metadata.
 
     Clean/staged tracked files reuse index mode/blob identities. Unstaged and untracked
@@ -218,8 +283,9 @@ def _worktree_index_snapshot(root):
     filemode = p.returncode == 0 and p.stdout.strip().lower() == "true"
 
     dynamic = sorted(
-        rel for rel in (unstaged | untracked)
-        if os.path.lexists(root / rel) and not (root / rel).is_dir()
+        rel
+        for rel in (unstaged | untracked)
+        if _scope_includes(rel, scope) and os.path.lexists(root / rel) and not (root / rel).is_dir()
     )
     blob_ids = {}
     if dynamic:
@@ -236,7 +302,10 @@ def _worktree_index_snapshot(root):
                 stderr=subprocess.PIPE,
             )
             if proc.returncode != 0:
-                raise RuntimeError("git hash-object --stdin-paths failed: " + proc.stderr.decode("utf-8", errors="replace").strip())
+                raise RuntimeError(
+                    "git hash-object --stdin-paths failed: "
+                    + proc.stderr.decode("utf-8", errors="replace").strip()
+                )
             hashes = proc.stdout.decode("ascii", errors="replace").splitlines()
             if len(hashes) != len(normal):
                 raise RuntimeError("git hash-object returned an unexpected number of hashes")
@@ -281,7 +350,6 @@ def _worktree_index_snapshot(root):
     return snapshot
 
 
-
 def git_fingerprint(root, scope="review"):
     """Fingerprint current governed content, stable across content-preserving commits.
 
@@ -295,12 +363,14 @@ def git_fingerprint(root, scope="review"):
     h.update(f"scope:{scope}\0".encode())
 
     if is_git_repo(root):
-        snapshot = _worktree_index_snapshot(root)
+        snapshot = _worktree_index_snapshot(root, scope=scope)
         for rel in sorted(p for p in snapshot if _scope_includes(p, scope)):
-            h.update(rel.encode("utf-8", errors="surrogateescape")); h.update(b"\0")
+            h.update(rel.encode("utf-8", errors="surrogateescape"))
+            h.update(b"\0")
             identity = snapshot[rel]
             for part in identity:
-                h.update(str(part).encode("utf-8", errors="surrogateescape")); h.update(b"\0")
+                h.update(str(part).encode("utf-8", errors="surrogateescape"))
+                h.update(b"\0")
             h.update(b"\0")
         return h.hexdigest()
 
@@ -311,7 +381,8 @@ def git_fingerprint(root, scope="review"):
         rel = p.relative_to(root).as_posix()
         if not _scope_includes(rel, scope):
             continue
-        h.update(rel.encode("utf-8", errors="surrogateescape")); h.update(b"\0")
+        h.update(rel.encode("utf-8", errors="surrogateescape"))
+        h.update(b"\0")
         try:
             with p.open("rb") as f:
                 for chunk in iter(lambda: f.read(1024 * 1024), b""):
@@ -320,7 +391,6 @@ def git_fingerprint(root, scope="review"):
             h.update(b"<unreadable>")
         h.update(b"\0")
     return h.hexdigest()
-
 
 
 def feature_metadata_files(root):
@@ -357,7 +427,11 @@ def matching_modules(meta, paths):
     for module in (meta or {}).get("modules") or []:
         if not isinstance(module, dict) or not module.get("id"):
             continue
-        matched = [rel for rel in (paths or []) if any(path_matches_pattern(rel, pat) for pat in module.get("paths") or [])]
+        matched = [
+            rel
+            for rel in (paths or [])
+            if any(path_matches_pattern(rel, pat) for pat in module.get("paths") or [])
+        ]
         if matched:
             result[str(module["id"])] = sorted(dict.fromkeys(matched))
     return result
@@ -375,7 +449,11 @@ def related_features_for_paths(root, paths):
         if meta.get("retired") or meta.get("status") in {"archived", "superseded"}:
             continue
         fid = str(meta.get("id") or meta_path.parent.name)
-        matched = [rel for rel in (paths or []) if any(path_matches_pattern(rel, pat) for pat in module_path_patterns(meta))]
+        matched = [
+            rel
+            for rel in (paths or [])
+            if any(path_matches_pattern(rel, pat) for pat in module_path_patterns(meta))
+        ]
         if matched:
             related[fid] = sorted(dict.fromkeys(matched))
     return related
@@ -385,6 +463,7 @@ def unmapped_paths(root, paths):
     related = related_features_for_paths(root, paths)
     mapped = {p for values in related.values() for p in values}
     return sorted(p for p in (paths or []) if p not in mapped)
+
 
 def active_path(root):
     return Path(root) / ".codex" / "state" / "active-work.json"

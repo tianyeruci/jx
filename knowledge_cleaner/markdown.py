@@ -32,7 +32,11 @@ def unit_to_markdown(unit: SourceUnit) -> str:
         "source_checksum": unit.source_checksum,
         "review_status": unit.disposition.value,
     }
-    frontmatter = ["---", *(f"{key}: {_yaml_string(value)}" for key, value in metadata.items()), "---"]
+    frontmatter = [
+        "---",
+        *(f"{key}: {_yaml_string(value)}" for key, value in metadata.items()),
+        "---",
+    ]
     body = unit.body.strip()
     if unit.knowledge_nature == "experience":
         notice = "> 资料性质：个人经验或实践案例。回答时必须结合适用条件，不得表述为普遍事实。"

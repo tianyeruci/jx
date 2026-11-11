@@ -27,7 +27,9 @@ DEFAULT_SOURCE = Path("文件清洗样本/课程信息与学习路线/课程信�
 
 def _normalize_url(value: str) -> str:
     parsed = urlsplit(str(value or "").strip())
-    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), parsed.query, ""))
+    return urlunsplit(
+        (parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), parsed.query, "")
+    )
 
 
 def _source_sha256(path: Path) -> str:

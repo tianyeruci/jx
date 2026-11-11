@@ -75,10 +75,7 @@ class ModelRateLimiter:
                 self._local_window = minute
                 self._local_requests = 0
                 self._local_tokens = 0
-            if (
-                self._local_requests + 1 > rpm
-                or self._local_tokens + token_cost > tpm
-            ):
+            if self._local_requests + 1 > rpm or self._local_tokens + token_cost > tpm:
                 return local_wait
             self._local_requests += 1
             self._local_tokens += token_cost

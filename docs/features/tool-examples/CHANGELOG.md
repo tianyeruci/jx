@@ -774,3 +774,87 @@ This is a semantic change log, not a copy of Git diff.
 - **Changed paths:**
   - `AI管理服务当前状态与后续测试交接.md`
   - `tests/test_cleaning_release_contract.py`
+
+## 2026-09-12T06:08:39+08:00 — 本轮接口索引由生成器刷新且测试页回归执行；未改变工具案例 API、存储或 Dify 行为，仅同步共享路径触及的状态。
+
+- **Purpose:** 本轮接口索引由生成器刷新且测试页回归执行；未改变工具案例 API、存储或 Dify 行为，仅同步共享路径触及的状态。
+- **Affected modules:**
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** final-regression-r3: 231 passed, 1 skipped; Ruff format/check; compileall; project index --write/--check; 未执行外部发布。
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+
+## 2026-09-12T20:12:55+08:00 — 本轮仅同步共享状态文档与接口索引；未改变朋友圈/日常写作案例、接口、存储或 Dify 业务行为。
+
+- **Purpose:** 本轮仅同步共享状态文档与接口索引；未改变朋友圈/日常写作案例、接口、存储或 Dify 业务行为。
+- **Affected modules:**
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 项目文档契约、接口索引和完整 gov quality 通过；未执行外部发布。
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+
+## 2026-09-12T20:32:55+08:00 — 治理工具在内容指纹前排除 tmp 与 pytest 生成物，避免本地临时文件拖慢质量/同步；工具案例、接口、存储和 Dify 业务语义不变。
+
+- **Purpose:** 治理工具在内容指纹前排除 tmp 与 pytest 生成物，避免本地临时文件拖慢质量/同步；工具案例、接口、存储和 Dify 业务语义不变。
+- **Affected modules:**
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 生成物不再进入 implementation 路径，治理模块编译和差异检查通过；后续完整质量将复跑。
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+
+## 2026-09-13T00:10:24+08:00 — 滚动交接区分已完成的本地聚焦回归和仍待进行的完整质量、独立复审与隔离验收。
+
+- **Purpose:** 滚动交接区分已完成的本地聚焦回归和仍待进行的完整质量、独立复审与隔离验收。
+- **Affected modules:**
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-model-workflow-r3-20260913.xml
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+
+## 2026-09-13T00:12:14+08:00 — 滚动交接区分已完成的本地聚焦回归和仍待进行的完整质量、独立复审与隔离验收。
+
+- **Purpose:** 滚动交接区分已完成的本地聚焦回归和仍待进行的完整质量、独立复审与隔离验收。
+- **Affected modules:**
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-model-workflow-r3-20260913.xml
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+
+## 2026-09-13T00:16:08+08:00 — 仅格式化共享测试夹具；滚动交接的未完成验收边界不变。
+
+- **Purpose:** 仅格式化共享测试夹具；滚动交接的未完成验收边界不变。
+- **Affected modules:**
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-u06-fixture-r3-20260913.xml
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`
+
+## 2026-09-13T00:27:18+08:00 — 交接明确 canonical quality 已通过，独立复审、合法再批准和真实隔离验收仍未完成。
+
+- **Purpose:** 交接明确 canonical quality 已通过，独立复审、合法再批准和真实隔离验收仍未完成。
+- **Affected modules:**
+  - `examples-docs — 接口、索引与状态交接文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** .codex/state/quality.json
+- **Changed paths:**
+  - `AI管理服务当前状态与后续测试交接.md`

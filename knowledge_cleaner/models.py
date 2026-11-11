@@ -51,4 +51,3 @@ class SourceUnit:
         if self.page_start == self.page_end:
             return str(self.page_start)
         return f"{self.page_start}-{self.page_end}"
-

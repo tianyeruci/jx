@@ -1,18 +1,22 @@
 # jx 快速代码测试部署操作手册
 
 > 用途：修改 `ai_management` 后，压缩、上传、在服务器运行脚本，然后直接打开测试页看效果。  
-> 默认方式：保留现有测试数据，不清理 AI 数据、上传文件或 Dify 数据。  
-> 适用环境：本地 Windows PowerShell；jx 服务器 Linux x86_64、Bash、root、Docker/Compose。
+> 默认方式：在确认项目归属后直接替换 `ys` 上本项目；已确认属于本项目且允许丢弃的旧 test 数据可按边界清理，除非本次明确选择保留。
+> 适用环境：本地 Windows PowerShell；默认目标为本项目 `ys` test 服务器（Linux x86_64、Bash、Docker/Compose，实际账号和权限以现场只读回读为准）。明确 production 时不适用本手册的 test 清理语义，改按正式发布规则执行。
 
-## 1. 先记住这 3 个固定位置
+> **环境边界（2026-11-04）**：默认 test 直接替换服务器上的本项目；可删除的数据必须先证明属于本项目且允许丢弃。不要求普通 test 部署备份、恢复演练、临时数据库/schema、隔离栈、并行版本或旧数据兼容。脚本为破坏性清理、production 或具体回滚不确定性保留的备份材料，不得被解释为普通 test 的通用门禁；已有 scope 授权覆盖范围内的替换、重启、验证和必要修复，不逐条重新审批。
+
+> **JX 历史示例警告**：本手册下文的 `jx` SSH 别名、`/opt/ai-management`、`root`、固定脚本路径、Compose 服务名、数据库/Redis DB、`8000/8501` 端口、备份目录和命令均是旧 JX 环境的历史示例，不是 YS 的实时事实。不得把这些值机械替换主机名后执行；YS 必须先现场只读回读实际 SSH 入口、项目根、运行账号、脚本位置、Compose 文件、服务、端口、数据库/Redis 目标和数据归属，再据回读结果生成命令。已知 `YS` 项目根 `/home/admin/ai-management-ys` 仅作历史定位线索，不确认其当前存在、归属或可写。
+
+## 1. JX 历史示例位置（YS 不得直接复用）
 
 | 内容 | 固定位置 | 是否每次上传 |
 |---|---|---|
 | 本地要压缩的代码目录 | `D:\work\projectc\jx-now\ai_management` | 每次修改代码后重新压缩 |
-| 服务器部署脚本 | `/opt/ai-management/scripts/jx_quick_deploy.sh` | 不需要，脚本已长期安装 |
-| 服务器代码压缩包 | `/opt/ai-management/incoming/ai_management.zip` | 每次部署都要重新上传 |
+| JX 历史部署脚本示例 | `/opt/ai-management/scripts/jx_quick_deploy.sh` | 不代表 YS 当前存在或已适配 |
+| JX 历史代码压缩包示例 | `/opt/ai-management/incoming/ai_management.zip` | YS 必须现场确认实际接收路径 |
 
-最重要的结论：**不要把本地整个 `scripts` 目录上传或覆盖到服务器。** 日常只上传 `ai_management.zip`。部署脚本已经在服务器固定位置，它会调用服务器已有的 Compose、备份脚本、wheelhouse 和其他发布资产。
+最重要的结论：**不要把本地整个 `scripts` 目录上传或覆盖到服务器。** 日常只上传 `ai_management.zip`。上表脚本和目录仅为 JX 历史示例；旧脚本实现不构成当前 test 的必需条件，必须先核对其是否属于目标项目、是否符合 2026-11-04 policy，再决定是否适配后采用。不得假定脚本已在 YS 长期安装，也不得原样执行旧命令。
 
 如果本次只修改服务器 `.env` 中的 Dify Chatflow 访问 Key，不要制作或上传 `ai_management.zip`，也不要运行本快速代码部署流程；直接按 [V2 部署回滚手册第 0.1 节](V2从开发到服务器部署与回滚手册.md#01-仅修改-chatflow-访问配置不改代码) 备份 `.env` 并强制重建核心服务。
 
@@ -244,7 +248,7 @@ RESET_JX_TEST_ENVIRONMENT
 
 不会删除：Dify App、Chatflow/Workflow、应用发布版本、应用会话、Dataset 本身、Dify 容器、Dify 持久卷、Dify 镜像、Dify PostgreSQL 数据库或其他 Redis DB。
 
-清理前会生成并验证数据库 dump、Redis RDB、上传卷、Dify 存储、配置和镜像备份。已确认清掉的数据不会在部署失败时自动恢复，因为恢复共享 Dify 数据库或 Redis RDB 会影响其他 Dify 状态；需要恢复时必须停止写入并按完整发布手册评审处理。
+旧 JX 脚本实现可能在清理前生成并验证数据库 dump、Redis RDB、上传卷、Dify 存储、配置和镜像备份；这只是旧实现行为，不构成当前 test 的必需门禁。当前 test 仅按项目归属和可丢弃边界清理，production 或具体回滚不确定性才按正式 backup 规则处理。已确认清掉的数据不会在部署失败时自动恢复；不得因此把旧脚本原样搬到 YS，需先完成现场回读和 policy 适配。
 
 ## 4. 脚本自动做了什么
 

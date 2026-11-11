@@ -1,0 +1,600 @@
+app:
+  description: 单入口朋友圈助手：先以无模型固定规则处理高确定性寒暄，再按 type 路由；基于 conversation_id 最近6轮对话自动提取必要信息，信息不足一次询问，信息充分直接成稿。
+  icon: 💬
+  icon_background: '#E0F2FE'
+  icon_type: emoji
+  mode: advanced-chat
+  name: 朋友圈顾问
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/tongyi:0.0.27@4bb3f3eb6149b01f92aa6038a6bb074cc4224b8c015f54c888e5c5a30fc1ab50
+    version: null
+kind: app
+version: 0.6.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions:
+      - .JPG
+      - .JPEG
+      - .PNG
+      - .GIF
+      - .WEBP
+      - .SVG
+      allowed_file_types:
+      - image
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        attachment_image_file_size_limit: 2
+        audio_file_size_limit: 50
+        batch_count_limit: 2
+        file_size_limit: 128
+        file_upload_limit: 20
+        image_file_batch_limit: 10
+        image_file_size_limit: 10
+        single_chunk_attachment_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        sourceType: start
+        targetType: code
+      id: start-fixed_filter
+      source: start
+      sourceHandle: source
+      target: fixed_filter
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: code
+        targetType: if-else
+      id: fixed_filter-direct_router
+      source: fixed_filter
+      sourceHandle: source
+      target: direct_router
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: if-else
+        targetType: answer
+      id: direct-router-answer
+      source: direct_router
+      sourceHandle: 'true'
+      target: direct_answer
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: if-else
+        targetType: if-else
+      id: direct-router-type
+      source: direct_router
+      sourceHandle: 'false'
+      target: type_router
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: if-else
+        targetType: llm
+      id: router-sales
+      source: type_router
+      sourceHandle: 'true'
+      target: sales_llm
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: if-else
+        targetType: llm
+      id: router-seeding
+      source: type_router
+      sourceHandle: 8f71e734-25c5-48df-9f4b-6dbd9d9fb0a1
+      target: seeding_llm
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: if-else
+        targetType: llm
+      id: router-polish
+      source: type_router
+      sourceHandle: f62699ce-84dc-4938-a9ce-177972478ea1
+      target: polish_llm
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: if-else
+        targetType: answer
+      id: router-invalid
+      source: type_router
+      sourceHandle: 'false'
+      target: invalid_type_answer
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: llm
+        targetType: answer
+      id: sales-answer
+      source: sales_llm
+      sourceHandle: source
+      target: sales_answer
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: llm
+        targetType: answer
+      id: seeding-answer
+      source: seeding_llm
+      sourceHandle: source
+      target: seeding_answer
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: llm
+        targetType: answer
+      id: polish-answer
+      source: polish_llm
+      sourceHandle: source
+      target: polish_answer
+      targetHandle: target
+      type: custom
+    nodes:
+    - data:
+        selected: false
+        title: 开始
+        type: start
+        variables:
+        - label: 写作类型
+          max_length: 16
+          required: false
+          type: text-input
+          variable: type
+        - label: 管理员输出风格
+          max_length: 2500
+          required: false
+          type: paragraph
+          variable: admin_output_style
+      height: 134
+      id: start
+      position:
+        x: 0
+        y: 29
+      positionAbsolute:
+        x: 0
+        y: 29
+      type: custom
+      width: 242
+    - data:
+        code: "import re\n\n\ndef main(query: str) -> dict:\n    raw = str(query or\
+          \ \"\").strip()\n\n    if not raw:\n        return {\n            \"should_direct\"\
+          : \"true\",\n            \"direct_response\": \"请告诉我你想写什么朋友圈，或者把需要润色的内容直接发给我。\"\
+          ,\n        }\n\n    # 统一大小写并移除空白/标点，只对整句做高确定性匹配。\n    # 因此“你好”会命中，但“你好，帮我写朋友圈”不会被误拦截。\n\
+          \    normalized = re.sub(r\"[^0-9a-zA-Z\\u4e00-\\u9fff]\", \"\", raw.lower())\n\
+          \n    # 兼容“你好呀 / 谢谢啦”等常见结尾语气词。\n    base = normalized\n    if len(base)\
+          \ > 1 and base[-1] in {\"呀\", \"啊\", \"呢\", \"啦\", \"哦\", \"哈\", \"嘛\"}:\n\
+          \        base = base[:-1]\n\n    greetings = {\n        \"你好\", \"您好\",\
+          \ \"嗨\", \"哈喽\", \"哈啰\", \"在吗\", \"在不在\", \"有人吗\",\n        \"早上好\", \"\
+          上午好\", \"中午好\", \"下午好\", \"晚上好\", \"hi\", \"hello\",\n    }\n    capabilities\
+          \ = {\n        \"你是谁\", \"你是干什么的\", \"你能做什么\", \"你会什么\", \"你能干什么\",\n  \
+          \      \"能做什么\", \"能干什么\", \"介绍一下你自己\", \"介绍下你自己\",\n    }\n    thanks =\
+          \ {\n        \"谢谢\", \"谢谢你\", \"非常感谢\", \"感谢\", \"多谢\", \"thanks\", \"thx\"\
+          , \"thankyou\",\n    }\n    goodbyes = {\n        \"再见\", \"拜拜\", \"下次见\"\
+          , \"回头见\", \"先这样\", \"bye\", \"goodbye\",\n    }\n\n    direct_groups =\
+          \ (\n        (greetings, \"你好，我可以帮你写销售型、种草型朋友圈，也可以润色已有文案。直接告诉我你想写什么即可。\"\
+          ),\n        (capabilities, \"我是朋友圈写作助手，可以帮你写销售型、种草型朋友圈，也可以润色和继续优化已有文案。直接告诉我你的需求即可。\"\
+          ),\n        (thanks, \"不客气。你可以继续告诉我想怎么调整，或者直接开始下一条朋友圈。\"),\n        (goodbyes,\
+          \ \"好的，需要写或修改朋友圈时随时告诉我。\"),\n    )\n\n    for terms, response in direct_groups:\n\
+          \        if base in terms:\n            return {\n                \"should_direct\"\
+          : \"true\",\n                \"direct_response\": response,\n          \
+          \  }\n\n    return {\n        \"should_direct\": \"false\",\n        \"\
+          direct_response\": \"\",\n    }\n"
+        code_language: python3
+        dependencies: []
+        desc: 仅处理空输入、问候、能力询问、感谢和告别等高确定性固定语句。整句归一化匹配，混合业务消息不会被截断。
+        outputs:
+          direct_response:
+            children: null
+            type: string
+          should_direct:
+            children: null
+            type: string
+        selected: false
+        title: 固定信息过滤
+        type: code
+        variables:
+        - value_selector:
+          - sys
+          - query
+          variable: query
+      height: 111
+      id: fixed_filter
+      position:
+        x: 342
+        y: 40
+      positionAbsolute:
+        x: 342
+        y: 40
+      selected: false
+      type: custom
+      width: 241
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: 4b3a3009-2d56-42db-990c-ac2661839efd
+            value: 'true'
+            varType: string
+            variable_selector:
+            - fixed_filter
+            - should_direct
+          id: 'true'
+          logical_operator: and
+        desc: 固定信息过滤命中时直接回复；未命中时进入朋友圈类型路由。
+        selected: false
+        title: 是否直接回复
+        type: if-else
+      height: 191
+      id: direct_router
+      position:
+        x: 683
+        y: 0
+      positionAbsolute:
+        x: 683
+        y: 0
+      selected: false
+      type: custom
+      width: 241
+    - data:
+        answer: '{{#fixed_filter.direct_response#}}'
+        selected: false
+        title: 固定信息直接回复
+        type: answer
+        variables: []
+      height: 102
+      id: direct_answer
+      position:
+        x: 1044
+        y: 64
+      positionAbsolute:
+        x: 1044
+        y: 64
+      type: custom
+      width: 241
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: 27835083-d731-5e61-878b-85d494748555
+            value: sales
+            varType: string
+            variable_selector:
+            - start
+            - type
+          id: 'true'
+          logical_operator: and
+        - case_id: 8f71e734-25c5-48df-9f4b-6dbd9d9fb0a1
+          conditions:
+          - comparison_operator: is
+            id: 747e4a64-a076-5848-a102-9b1077db73d7
+            value: seeding
+            varType: string
+            variable_selector:
+            - start
+            - type
+          id: 8f71e734-25c5-48df-9f4b-6dbd9d9fb0a1
+          logical_operator: and
+        - case_id: f62699ce-84dc-4938-a9ce-177972478ea1
+          conditions:
+          - comparison_operator: is
+            id: 878fe3f5-9274-522b-a719-161917c7fb10
+            value: polish
+            varType: string
+            variable_selector:
+            - start
+            - type
+          id: f62699ce-84dc-4938-a9ce-177972478ea1
+          logical_operator: and
+        desc: 按结构化 type 精确路由；仅支持 sales / seeding / polish。固定信息已在前置 Code 节点处理，正常业务不增加额外
+          LLM 类型识别。
+        selected: false
+        title: 朋友圈类型路由
+        type: if-else
+      height: 295
+      id: type_router
+      position:
+        x: 1044
+        y: 246
+      positionAbsolute:
+        x: 1044
+        y: 246
+      selected: true
+      type: custom
+      width: 241
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        memory:
+          query_prompt_template: '当前用户消息（本轮最新输入，优先级高于历史）：
+
+            {{#sys.query#}}'
+          role_prefix:
+            assistant: ''
+            user: ''
+          window:
+            enabled: true
+            size: 6
+        model:
+          completion_params:
+            max_tokens: 512
+            temperature: 0.45
+          mode: chat
+          name: qwen-plus
+          provider: langgenius/tongyi/tongyi
+        prompt_template:
+        - id: 2c2333a6-d02e-5f1c-8dd3-668939304551
+          role: system
+          text: "你是朋友圈 sales 专用节点。任务是完成“销售型朋友圈”的对话式信息收集与成稿，一次请求只做一次模型调用。\n\n【对话信息规则】\n\
+            - 用户只有一个文字输入口。不要要求调用端提供“原始素材、目标受众、语气、本次要求、其他限制”等独立字段；这些都从当前用户消息和会话历史中理解。\n\
+            - 当前用户消息是本轮最新信息，优先级高于历史。当前明确修改某项信息时，以当前值覆盖旧值；当前没有提到某项时，才沿用历史中最近一次由用户明确提供或确认的值。\n\
+            - 如果当前消息是在回答你上一轮的澄清问题，必须先结合上一轮问题理解答案。用户只回复“1/2/3/4”等序号时，按上一轮选项解析；用户直接输入新内容时，以新内容为准。已经得到答案的信息不得重复询问。\n\
+            - 历史中的助手文案不是事实证据。只有用户当前或历史中明确说过/确认过的信息可作为事实。例外：当用户明确要求“修改/润色/缩短上一版”时，可以把上一版助手文案作为待处理文本，但不能因此新增或强化未经用户确认的事实。\n\
+            - 当前 type 已由工作流路由确定，当前 type 控制本轮任务；允许同一 conversation_id 中切换 type。\n\n\
+            \            【业务边界与前置过滤兜底】\n\n            - 本工作流只服务于朋友圈内容的创作、润色、修改与继续优化。\n\
+            \n            - 纯问候、感谢、告别、身份/能力询问通常会被前置固定规则直接处理；若因罕见写法进入本节点，可自然简短回应，但不要追问目标受众、产品或原文。\n\
+            \n            - 若当前用户明确请求的是与朋友圈创作/润色/修改完全无关的任务，并且当前消息没有要求把该内容用于朋友圈，直接回复：“我主要帮助你创作、润色和继续优化朋友圈内容。你可以告诉我想发什么、推广什么，或者把现有文案发给我。”不要回答该无关任务本身，也不要追问朋友圈必要信息。\n\
+            \n            - “消息里出现无关领域内容”不等于“无关请求”。例如“今天天气很好，帮我写成朋友圈”“把这段代码学习心得写成朋友圈”仍属于朋友圈任务，应继续正常处理。\n\
+            \n            - 历史中的寒暄、固定回复、与朋友圈无关的问题不得作为写作事实、受众、素材或写作要求。\n\n\n【先判断信息是否足够】\n\
+            - 先从“当前消息 + 最近会话历史”提取本类型的必要信息，再决定是追问还是生成。\n- 如果同时缺少多项必要信息，一次性全部询问，禁止一轮只问一项。\n\
+            - 语气、字数、CTA、卖点、禁用词、具体场景、价格、活动、其他限制均不是默认必问信息：用户说了就遵守，没说不要追问。\n- 信息已经足够时直接生成，禁止为了确认而重复提问。\n\
+            - 信息不足时，本轮只输出澄清问题/选项，不生成半成品朋友圈，也不解释内部判断。\n\n【目标受众追问规则】\n- 目标受众是本类型必要信息。若当前和历史都没有明确受众，必须给用户可选项。\n\
+            - 根据已知产品/服务/主题/原文动态给出 2–4 个最合理的候选受众；总选项最多 5 个，最后一个固定为“其他，请手动输入”。\n- 若上下文不足以做精确候选，可给较宽泛但明显不同的候选；不要伪装成已经知道用户受众。\n\
+            - 选项要短、互斥度尽量高、方便用户直接回复序号。\n\n【真实性与安全边界】\n- 不得编造用户未提供的时间、地点、人物原话、客户反馈、产品功能、价格、数据、优惠、流程、效果、结果、资质或承诺。\n\
+            - 可使用概括性表达，但不能把推测写成事实。\n- 商业内容避免绝对化承诺、夸大结果和虚假稀缺。\n\n【优先级】\n事实真实性与安全边界\
+            \ > 当前用户明确要求/当前确认信息 > 当前 type 策略 > 历史用户明确信息 > 管理员输出风格 > 默认写作风格。\n管理员输出风格：{{#start.admin_output_style#}}\n\
+            \n【sales 必要信息】\n1. 要销售/推广的对象：产品、服务、课程、活动或明确业务对象。\n2. 目标受众。\n只要这两项能从当前消息或历史中确定，就直接生成；不要因为缺少卖点、语气、价格、活动等继续追问。\n\
+            \n【sales 成稿策略】\n- 以“产品推广 + 真实反馈/证据（仅在用户提供时）+ 必要的专业价值”为主。\n- 优先写清受众正在面对的问题、产品/服务能提供的真实价值，以及自然的下一步行动；避免开头就硬推销。\n\
+            - 若用户提供真实反馈，可提炼“用户特征 → 疑虑/问题 → 使用/解决过程 → 反馈结果 → 自然转化”；缺任何事实环节就不要补造。\n\
+            - 若事实素材有限，用概括表达销售价值，不虚构具体场景或结果。\n- 用户未指定长度时，通常控制在约100–220个中文字，原则上不超过300个中文字；用户明确字数优先。\n\
+            - 信息充分时只输出一条可直接发布的朋友圈正文，不输出标题、分析、标签、写作建议或多个版本。\n"
+        selected: false
+        title: 销售型朋友圈生成
+        type: llm
+        vision:
+          enabled: false
+      height: 87
+      id: sales_llm
+      position:
+        x: 1405
+        y: 217
+      positionAbsolute:
+        x: 1405
+        y: 217
+      selected: false
+      type: custom
+      width: 241
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        memory:
+          query_prompt_template: '当前用户消息（本轮最新输入，优先级高于历史）：
+
+            {{#sys.query#}}'
+          role_prefix:
+            assistant: ''
+            user: ''
+          window:
+            enabled: true
+            size: 6
+        model:
+          completion_params:
+            max_tokens: 512
+            temperature: 0.65
+          mode: chat
+          name: qwen-plus
+          provider: langgenius/tongyi/tongyi
+        prompt_template:
+        - id: 1858aff6-a95b-51ff-978a-c8256f2b38a4
+          role: system
+          text: "你是朋友圈 seeding 专用节点。任务是完成“种草型朋友圈”的对话式信息收集与成稿，一次请求只做一次模型调用。\n\n【对话信息规则】\n\
+            - 用户只有一个文字输入口。不要要求调用端提供“原始素材、目标受众、语气、本次要求、其他限制”等独立字段；这些都从当前用户消息和会话历史中理解。\n\
+            - 当前用户消息是本轮最新信息，优先级高于历史。当前明确修改某项信息时，以当前值覆盖旧值；当前没有提到某项时，才沿用历史中最近一次由用户明确提供或确认的值。\n\
+            - 如果当前消息是在回答你上一轮的澄清问题，必须先结合上一轮问题理解答案。用户只回复“1/2/3/4”等序号时，按上一轮选项解析；用户直接输入新内容时，以新内容为准。已经得到答案的信息不得重复询问。\n\
+            - 历史中的助手文案不是事实证据。只有用户当前或历史中明确说过/确认过的信息可作为事实。例外：当用户明确要求“修改/润色/缩短上一版”时，可以把上一版助手文案作为待处理文本，但不能因此新增或强化未经用户确认的事实。\n\
+            - 当前 type 已由工作流路由确定，当前 type 控制本轮任务；允许同一 conversation_id 中切换 type。\n\n\
+            \            【业务边界与前置过滤兜底】\n\n            - 本工作流只服务于朋友圈内容的创作、润色、修改与继续优化。\n\
+            \n            - 纯问候、感谢、告别、身份/能力询问通常会被前置固定规则直接处理；若因罕见写法进入本节点，可自然简短回应，但不要追问目标受众、产品或原文。\n\
+            \n            - 若当前用户明确请求的是与朋友圈创作/润色/修改完全无关的任务，并且当前消息没有要求把该内容用于朋友圈，直接回复：“我主要帮助你创作、润色和继续优化朋友圈内容。你可以告诉我想发什么、推广什么，或者把现有文案发给我。”不要回答该无关任务本身，也不要追问朋友圈必要信息。\n\
+            \n            - “消息里出现无关领域内容”不等于“无关请求”。例如“今天天气很好，帮我写成朋友圈”“把这段代码学习心得写成朋友圈”仍属于朋友圈任务，应继续正常处理。\n\
+            \n            - 历史中的寒暄、固定回复、与朋友圈无关的问题不得作为写作事实、受众、素材或写作要求。\n\n\n【先判断信息是否足够】\n\
+            - 先从“当前消息 + 最近会话历史”提取本类型的必要信息，再决定是追问还是生成。\n- 如果同时缺少多项必要信息，一次性全部询问，禁止一轮只问一项。\n\
+            - 语气、字数、CTA、卖点、禁用词、具体场景、价格、活动、其他限制均不是默认必问信息：用户说了就遵守，没说不要追问。\n- 信息已经足够时直接生成，禁止为了确认而重复提问。\n\
+            - 信息不足时，本轮只输出澄清问题/选项，不生成半成品朋友圈，也不解释内部判断。\n\n【目标受众追问规则】\n- 目标受众是本类型必要信息。若当前和历史都没有明确受众，必须给用户可选项。\n\
+            - 根据已知产品/服务/主题/原文动态给出 2–4 个最合理的候选受众；总选项最多 5 个，最后一个固定为“其他，请手动输入”。\n- 若上下文不足以做精确候选，可给较宽泛但明显不同的候选；不要伪装成已经知道用户受众。\n\
+            - 选项要短、互斥度尽量高、方便用户直接回复序号。\n\n【真实性与安全边界】\n- 不得编造用户未提供的时间、地点、人物原话、客户反馈、产品功能、价格、数据、优惠、流程、效果、结果、资质或承诺。\n\
+            - 可使用概括性表达，但不能把推测写成事实。\n- 商业内容避免绝对化承诺、夸大结果和虚假稀缺。\n\n【优先级】\n事实真实性与安全边界\
+            \ > 当前用户明确要求/当前确认信息 > 当前 type 策略 > 历史用户明确信息 > 管理员输出风格 > 默认写作风格。\n管理员输出风格：{{#start.admin_output_style#}}\n\
+            \n【seeding 必要信息】\n1. 被种草的对象：产品、服务、课程、工具，或用户明确要求种草的主题/对象。\n2. 目标受众。\n只要这两项能从当前消息或历史中确定，就直接生成；不要因为缺少卖点、语气、价格、活动等继续追问。\n\
+            \n【seeding 成稿策略】\n- 以“生活感/体验感 + 软植入 + 可选的专业价值或互动”为主，目标是让人产生兴趣，不是强迫成交。\n\
+            - 如果用户给了真实使用场景、感受或细节，可自然放大可感知性；如果没有，不得虚构“我昨天用了”“客户都说”等经历。\n- 可以从痛点、使用价值、适合人群、选择理由切入，表达要像自然分享而不是广告说明书。\n\
+            - 默认弱CTA；用户没有要求时，不强行加入“私聊我、马上买、限时”等行动话术。\n- 用户未指定长度时，通常控制在约80–220个中文字，原则上不超过300个中文字；用户明确字数优先。\n\
+            - 信息充分时只输出一条可直接发布的朋友圈正文，不输出标题、分析、标签、写作建议或多个版本。\n"
+        selected: false
+        title: 种草型朋友圈生成
+        type: llm
+        vision:
+          enabled: false
+      height: 87
+      id: seeding_llm
+      position:
+        x: 1405
+        y: 399
+      positionAbsolute:
+        x: 1405
+        y: 399
+      selected: false
+      type: custom
+      width: 241
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        memory:
+          query_prompt_template: '当前用户消息（本轮最新输入，优先级高于历史）：
+
+            {{#sys.query#}}'
+          role_prefix:
+            assistant: ''
+            user: ''
+          window:
+            enabled: true
+            size: 6
+        model:
+          completion_params:
+            max_tokens: 512
+            temperature: 0.25
+          mode: chat
+          name: qwen-plus
+          provider: langgenius/tongyi/tongyi
+        prompt_template:
+        - id: d5414bb9-8910-563b-8ddd-ef6c450b614e
+          role: system
+          text: "你是朋友圈 polish 专用节点。任务是完成“朋友圈润色”的对话式信息收集与改写，一次请求只做一次模型调用。\n\n【对话信息规则】\n\
+            - 用户只有一个文字输入口。不要要求调用端提供“原始素材、目标受众、语气、本次要求、其他限制”等独立字段；这些都从当前用户消息和会话历史中理解。\n\
+            - 当前用户消息是本轮最新信息，优先级高于历史。当前明确修改某项信息时，以当前值覆盖旧值；当前没有提到某项时，才沿用历史中最近一次由用户明确提供或确认的值。\n\
+            - 如果当前消息是在回答你上一轮的澄清问题，必须先结合上一轮问题理解答案。用户只回复“1/2/3/4”等序号时，按上一轮选项解析；用户直接输入新内容时，以新内容为准。已经得到答案的信息不得重复询问。\n\
+            - 历史中的助手文案不是事实证据。只有用户当前或历史中明确说过/确认过的信息可作为事实。例外：当用户明确要求“修改/润色/缩短上一版”时，可以把上一版助手文案作为待处理文本，但不能因此新增或强化未经用户确认的事实。\n\
+            - 当前 type 已由工作流路由确定，当前 type 控制本轮任务；允许同一 conversation_id 中切换 type。\n\n\
+            \            【业务边界与前置过滤兜底】\n\n            - 本工作流只服务于朋友圈内容的创作、润色、修改与继续优化。\n\
+            \n            - 纯问候、感谢、告别、身份/能力询问通常会被前置固定规则直接处理；若因罕见写法进入本节点，可自然简短回应，但不要追问目标受众、产品或原文。\n\
+            \n            - 若当前用户明确请求的是与朋友圈创作/润色/修改完全无关的任务，并且当前消息没有要求把该内容用于朋友圈，直接回复：“我主要帮助你创作、润色和继续优化朋友圈内容。你可以告诉我想发什么、推广什么，或者把现有文案发给我。”不要回答该无关任务本身，也不要追问朋友圈必要信息。\n\
+            \n            - “消息里出现无关领域内容”不等于“无关请求”。例如“今天天气很好，帮我写成朋友圈”“把这段代码学习心得写成朋友圈”仍属于朋友圈任务，应继续正常处理。\n\
+            \n            - 历史中的寒暄、固定回复、与朋友圈无关的问题不得作为写作事实、受众、素材或写作要求。\n\n\n【先判断信息是否足够】\n\
+            - 先从“当前消息 + 最近会话历史”提取本类型的必要信息，再决定是追问还是生成。\n- 如果同时缺少多项必要信息，一次性全部询问，禁止一轮只问一项。\n\
+            - 语气、字数、CTA、卖点、禁用词、具体场景、价格、活动、其他限制均不是默认必问信息：用户说了就遵守，没说不要追问。\n- 信息已经足够时直接生成，禁止为了确认而重复提问。\n\
+            - 信息不足时，本轮只输出澄清问题/选项，不生成半成品朋友圈，也不解释内部判断。\n\n【目标受众追问规则】\n- 目标受众是本类型必要信息。若当前和历史都没有明确受众，必须给用户可选项。\n\
+            - 根据已知产品/服务/主题/原文动态给出 2–4 个最合理的候选受众；总选项最多 5 个，最后一个固定为“其他，请手动输入”。\n- 若上下文不足以做精确候选，可给较宽泛但明显不同的候选；不要伪装成已经知道用户受众。\n\
+            - 选项要短、互斥度尽量高、方便用户直接回复序号。\n\n【真实性与安全边界】\n- 不得编造用户未提供的时间、地点、人物原话、客户反馈、产品功能、价格、数据、优惠、流程、效果、结果、资质或承诺。\n\
+            - 可使用概括性表达，但不能把推测写成事实。\n- 商业内容避免绝对化承诺、夸大结果和虚假稀缺。\n\n【优先级】\n事实真实性与安全边界\
+            \ > 当前用户明确要求/当前确认信息 > 当前 type 策略 > 历史用户明确信息 > 管理员输出风格 > 默认写作风格。\n管理员输出风格：{{#start.admin_output_style#}}\n\
+            \n【polish 必要信息】\n1. 待润色文本：可来自当前用户消息；若用户明确说“润色/修改/缩短上一版”等，可把最近相关的助手文案作为待处理文本。\n\
+            2. 目标受众。\n只要这两项能从当前消息或历史中确定，就直接润色；不要因为缺少语气、字数等继续追问。\n\n【polish 成稿策略】\n\
+            - 保留原文核心事实、意图和立场，不擅自改成销售文案，也不擅自改变产品、受众或结论。\n- 静默判断原文更接近生活、好评反馈、专业干货、产品推广或互动中的哪类，再用相应方法提升自然度、信息密度和可读性；不要向用户输出分类结果。\n\
+            - 生活类：增强已有真实细节和人情味，但不补造场景。\n- 好评反馈类：重点前置、结构更清楚，但只保留用户真实提供的反馈与结果。\n- 专业干货类：强化问题—方法—结论/互动的可读结构，不捏造步骤或数据。\n\
+            - 产品推广类：减弱硬广，突出真实用途和适合人群，不新增效果承诺。\n- 互动类：让问题更简单易答、更有参与感，但不凭空添加奖励或福利。\n\
+            - 用户未指定长度时，尽量接近原文字数；若原文明显冗长，可适度压缩，原则上控制在300个中文字以内。用户明确要求扩写/缩写时优先。\n- 信息充分时只输出一条最终润色稿，不输出修改说明、分析、标题、标签或多个版本。\n"
+        selected: false
+        title: 朋友圈润色
+        type: llm
+        vision:
+          enabled: false
+      height: 87
+      id: polish_llm
+      position:
+        x: 1405
+        y: 566
+      positionAbsolute:
+        x: 1405
+        y: 566
+      selected: false
+      type: custom
+      width: 241
+    - data:
+        answer: '{{#sales_llm.text#}}'
+        selected: false
+        title: 销售型输出
+        type: answer
+        variables: []
+      height: 102
+      id: sales_answer
+      position:
+        x: 1746
+        y: 210
+      positionAbsolute:
+        x: 1746
+        y: 210
+      type: custom
+      width: 241
+    - data:
+        answer: '{{#seeding_llm.text#}}'
+        selected: false
+        title: 种草型输出
+        type: answer
+        variables: []
+      height: 102
+      id: seeding_answer
+      position:
+        x: 1746
+        y: 392
+      positionAbsolute:
+        x: 1746
+        y: 392
+      type: custom
+      width: 241
+    - data:
+        answer: '{{#polish_llm.text#}}'
+        selected: false
+        title: 润色输出
+        type: answer
+        variables: []
+      height: 102
+      id: polish_answer
+      position:
+        x: 1766
+        y: 574
+      positionAbsolute:
+        x: 1766
+        y: 574
+      type: custom
+      width: 241
+    - data:
+        answer: 请先选择写作类型：sales（销售型）、seeding（种草型）或 polish（润色）。
+        selected: false
+        title: 类型错误提示
+        type: answer
+        variables: []
+      height: 131
+      id: invalid_type_answer
+      position:
+        x: 1405
+        y: 733
+      positionAbsolute:
+        x: 1405
+        y: 733
+      type: custom
+      width: 241
+    viewport:
+      x: -974.5499999999998
+      y: -22.099999999999966
+      zoom: 0.7
+  rag_pipeline_variables: []

@@ -739,7 +739,9 @@ def test_recent_activity_cleanup_outbox_survives_post_commit_crash(service_db, m
         assert len(cleanup) == 1
 
 
-def test_recent_activity_rejects_duplicate_event_ids_in_one_source(service_db, monkeypatch):
+def test_recent_activity_duplicate_event_ids_only_fail_the_conflicting_units(
+    service_db, monkeypatch
+):
     from ai_management.workers.tasks import cleaning as task_module
 
     batch_id, file_id = _seed_activity_replacement(service_db)
@@ -760,6 +762,22 @@ def test_recent_activity_rejects_duplicate_event_ids_in_one_source(service_db, m
                 },
             )
         )
+        session.add(
+            CleaningDocument(
+                file_id=file_id,
+                sequence=3,
+                title="独立活动",
+                dify_document_name="独立活动__third.md",
+                document_key="new:3",
+                status="pending",
+                stage="pending",
+                cleaned_markdown="# 独立活动\n\n可继续发布",
+                metadata_json={
+                    "event_id": "evt_unique_activity",
+                    "source_title": "独立活动",
+                },
+            )
+        )
         session.commit()
     client = _ActivityPublicationClient()
     monkeypatch.setattr(task_module, "_knowledge_client", lambda _batch: client)
@@ -768,9 +786,9 @@ def test_recent_activity_rejects_duplicate_event_ids_in_one_source(service_db, m
         batch = session.get(CleaningBatch, batch_id)
         file_row = session.get(CleaningFile, file_id)
         assert batch is not None and file_row is not None
-        assert task_module._publish_source_file(session, file_row=file_row, batch=batch) is False
+        assert task_module._publish_source_file(session, file_row=file_row, batch=batch) is True
 
-    assert client.remote_documents == {}
+    assert set(client.remote_documents) == {"new-activity-1"}
     with service_db() as session:
         file_row = session.get(CleaningFile, file_id)
         documents = list(
@@ -781,10 +799,20 @@ def test_recent_activity_rejects_duplicate_event_ids_in_one_source(service_db, m
             )
         )
         assert file_row is not None
-        assert file_row.status == "failed"
-        assert file_row.error_code == "DUPLICATE_ACTIVITY_EVENT_ID"
-        assert all(document.status == "failed" for document in documents)
-        assert all(document.error_code == "DUPLICATE_ACTIVITY_EVENT_ID" for document in documents)
+        assert file_row.status == "mixed"
+        conflicting = [
+            document
+            for document in documents
+            if document.metadata_json["event_id"] == "evt_same_activity"
+        ]
+        independent = next(
+            document
+            for document in documents
+            if document.metadata_json["event_id"] == "evt_unique_activity"
+        )
+        assert all(document.status == "failed" for document in conflicting)
+        assert all(document.error_code == "DUPLICATE_ACTIVITY_EVENT_ID" for document in conflicting)
+        assert independent.status == "succeeded"
 
 
 def test_recent_activity_duplicate_preflight_catches_identical_content_inputs():
@@ -798,7 +826,7 @@ def test_recent_activity_duplicate_preflight_catches_identical_content_inputs():
     ) == ["evt_same_activity"]
 
 
-def test_recent_activity_process_preflight_beats_identical_content_dedupe(
+def test_recent_activity_process_preflight_keeps_independent_activity_units(
     service_db, monkeypatch, tmp_path
 ):
     from ai_management.cleaning import CleanedDocument
@@ -806,6 +834,12 @@ def test_recent_activity_process_preflight_beats_identical_content_dedupe(
     from ai_management.workers.tasks import cleaning as task_module
 
     monkeypatch.setattr(get_settings(), "upload_root", tmp_path)
+    queued: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        task_module.process_cleaning_document,
+        "apply_async",
+        lambda args, queue: queued.append((args[0], queue)),
+    )
 
     class DuplicateActivityStrategy:
         supported_extensions = {".md"}
@@ -816,6 +850,11 @@ def test_recent_activity_process_preflight_beats_identical_content_dedupe(
                     markdown="# 同名活动\n\n同一内容",
                     title="同名活动",
                     metadata={"event_id": "evt_same_activity", "source_title": "同名活动"},
+                ),
+                CleanedDocument(
+                    markdown="# 独立活动\n\n可继续处理",
+                    title="独立活动",
+                    metadata={"event_id": "evt_unique_activity", "source_title": "独立活动"},
                 ),
                 CleanedDocument(
                     markdown="# 同名活动\n\n同一内容",
@@ -861,15 +900,29 @@ def test_recent_activity_process_preflight_beats_identical_content_dedupe(
         row = session.get(CleaningFile, file_id)
         batch = session.get(CleaningBatch, batch_id)
         assert row is not None and batch is not None
-        assert row.status == "failed"
-        assert row.error_code == "DUPLICATE_ACTIVITY_EVENT_ID"
-        assert batch.status == "completed"
-        assert (
-            list(
-                session.scalars(select(CleaningDocument).where(CleaningDocument.file_id == file_id))
+        documents = list(
+            session.scalars(
+                select(CleaningDocument)
+                .where(CleaningDocument.file_id == file_id)
+                .order_by(CleaningDocument.sequence)
             )
-            == []
         )
+        assert row.status == "processing"
+        assert batch.status == "processing"
+        assert len(documents) == 3
+        assert [document.status for document in documents].count("failed") == 2
+        assert all(
+            document.error_code == "DUPLICATE_ACTIVITY_EVENT_ID"
+            for document in documents
+            if document.status == "failed"
+        )
+        assert any(document.status == "pending" for document in documents)
+        assert queued == [
+            (
+                next(document.id for document in documents if document.status == "pending"),
+                "ai_publication",
+            )
+        ]
 
 
 def _course_payload(course_id: str, name: str) -> dict[str, object]:

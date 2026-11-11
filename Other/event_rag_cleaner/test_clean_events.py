@@ -1,16 +1,36 @@
-from pathlib import Path
+import json
 import sys
+from datetime import datetime
+from pathlib import Path
+
+import pytest
 from pydantic import ValidationError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from clean_events import (
+    DIFY_METADATA_TYPES,
+    AIEnrichment,
+    DifyClient,
+    EventFacts,
+    QwenCallError,
+    QwenClient,
+    RunLogger,
+    apply_source_overrides,
+    build_parser,
+    finalize_event,
     infer_delivery_mode,
+    load_state,
+    metadata_for_event,
+    normalize_source_status,
     parse_event_time,
     parse_facts,
-    build_parser,
+    parse_optional_deadline,
+    render_markdown,
     run,
     split_by_activity_name,
     stable_event_id,
+    validate_ai_business,
     validate_required,
 )
 
@@ -63,26 +83,6 @@ def test_event_id_stable():
     a = stable_event_id("AI 老板增长营", p.start)
     b = stable_event_id("AI  老板增长营", p.start)
     assert a == b
-
-import json
-from datetime import datetime
-import pytest
-
-from clean_events import (
-    AIEnrichment,
-    DifyClient,
-    DIFY_METADATA_TYPES,
-    EventFacts,
-    QwenCallError,
-    QwenClient,
-    enrichment_json_schema,
-    metadata_for_event,
-    normalize_source_status,
-    parse_optional_deadline,
-    render_markdown,
-    apply_source_overrides,
-    validate_ai_business,
-)
 
 
 def _facts(**overrides):
@@ -139,7 +139,9 @@ def test_qwen_client_uses_bailian_api_key(monkeypatch):
 def test_qwen_client_rejects_dashscope_api_key_without_network(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
     monkeypatch.delenv("BAILIAN_API_KEY", raising=False)
-    monkeypatch.setattr("clean_events.requests.post", lambda *args, **kwargs: pytest.fail("不应调用网络"))
+    monkeypatch.setattr(
+        "clean_events.requests.post", lambda *args, **kwargs: pytest.fail("不应调用网络")
+    )
 
     q = QwenClient(mode="realtime", mock=False)
 
@@ -170,12 +172,14 @@ def test_markdown_heading_split_and_extract():
 def test_date_only_registration_deadline_uses_end_of_day():
     ts = parse_optional_deadline("2026年8月18日", "Asia/Shanghai")
     assert ts is not None
-    dt = datetime.fromtimestamp(ts, tz=__import__('zoneinfo').ZoneInfo("Asia/Shanghai"))
+    dt = datetime.fromtimestamp(ts, tz=__import__("zoneinfo").ZoneInfo("Asia/Shanghai"))
     assert dt.strftime("%Y-%m-%d %H:%M:%S") == "2026-08-18 23:59:59"
 
 
 def test_unknown_source_status_is_rejected():
-    facts = _facts(source_status_raw="老板说看情况", source_status=normalize_source_status("老板说看情况"))
+    facts = _facts(
+        source_status_raw="老板说看情况", source_status=normalize_source_status("老板说看情况")
+    )
     missing, _ = validate_required(facts, "Asia/Shanghai")
     assert "活动状态无法标准化" in missing
 
@@ -205,7 +209,9 @@ def test_qwen_payload_uses_strict_json_schema_and_minimal_evidence():
 
 def test_ai_business_validation_rejects_invented_hard_fact():
     facts = _facts()
-    bad = _ai(retrieval_summary="面向企业老板的AI训练营，2026年9月1日在北京举办，围绕AI经营落地展开。")
+    bad = _ai(
+        retrieval_summary="面向企业老板的AI训练营，2026年9月1日在北京举办，围绕AI经营落地展开。"
+    )
     with pytest.raises(ValueError, match="硬事实"):
         validate_ai_business(bad, facts)
 
@@ -230,7 +236,9 @@ def test_metadata_deadline_uses_requested_timezone():
     facts = _facts(registration_deadline_raw="2026年8月18日")
     pt = parse_event_time(facts.time_raw, "Asia/Shanghai")
     meta = metadata_for_event(facts, _ai(), pt, "evt_test", "Asia/Shanghai")
-    dt = datetime.fromtimestamp(meta["registration_deadline_ts"], tz=__import__('zoneinfo').ZoneInfo("Asia/Shanghai"))
+    dt = datetime.fromtimestamp(
+        meta["registration_deadline_ts"], tz=__import__("zoneinfo").ZoneInfo("Asia/Shanghai")
+    )
     assert dt.strftime("%H:%M:%S") == "23:59:59"
 
 
@@ -249,7 +257,9 @@ def test_dify_metadata_payload_has_event_record_and_numeric_timestamps(monkeypat
             return {}
 
     DifyClient.set_document_metadata(
-        FakeDify(), "doc_1", metadata,
+        FakeDify(),
+        "doc_1",
+        metadata,
         {name: {"id": f"id_{name}"} for name in DIFY_METADATA_TYPES},
     )
     payload = captured["kwargs"]["json"]
@@ -278,7 +288,12 @@ def test_batch_output_parser_contract():
         "response": {
             "status_code": 200,
             "body": {
-                "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(ai.model_dump(), ensure_ascii=False)}}]
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": json.dumps(ai.model_dump(), ensure_ascii=False)},
+                    }
+                ]
             },
         },
         "error": None,
@@ -299,6 +314,7 @@ def test_permanent_http_error_does_not_retry(monkeypatch):
         status_code = 400
         text = "bad request"
         headers = {}
+
         def json(self):
             return {}
 
@@ -326,6 +342,7 @@ def test_429_retries_then_succeeds(monkeypatch):
             self.ok = status == 200
             self.text = "rate limited" if status != 200 else "{}"
             self.headers = {"Retry-After": "0"}
+
         def json(self):
             return {"ok": True}
 
@@ -350,14 +367,24 @@ def test_true_batch_file_orchestration_without_network(monkeypatch, tmp_path):
     q.api_key = "test-key"
     facts = _facts()
     ai = _ai()
-    output_line = json.dumps({
-        "custom_id": "evt_123",
-        "response": {
-            "status_code": 200,
-            "body": {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(ai.model_dump(), ensure_ascii=False)}}]},
+    output_line = json.dumps(
+        {
+            "custom_id": "evt_123",
+            "response": {
+                "status_code": 200,
+                "body": {
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {"content": json.dumps(ai.model_dump(), ensure_ascii=False)},
+                        }
+                    ]
+                },
+            },
+            "error": None,
         },
-        "error": None,
-    }, ensure_ascii=False)
+        ensure_ascii=False,
+    )
     calls = []
 
     class FakeResp:
@@ -367,6 +394,7 @@ def test_true_batch_file_orchestration_without_network(monkeypatch, tmp_path):
             self.ok = True
             self.status_code = 200
             self.headers = {}
+
         def json(self):
             return self._payload
 
@@ -393,8 +421,6 @@ def test_true_batch_file_orchestration_without_network(monkeypatch, tmp_path):
         ("GET", "/files/file_out/content"),
     ]
 
-from clean_events import finalize_event, RunLogger, load_state
-
 
 def test_dify_document_id_persisted_before_metadata_side_effect(monkeypatch, tmp_path):
     facts = _facts()
@@ -408,22 +434,33 @@ def test_dify_document_id_persisted_before_metadata_side_effect(monkeypatch, tmp
         dataset_id = "dataset_x"
         creates = 0
         updates = 0
+
         def create_document(self, name, text):
             self.creates += 1
             return {"document": {"id": "doc_123"}}
+
         def update_document(self, document_id, name, text):
             self.updates += 1
             return {"document": {"id": document_id}}
+
         def set_document_metadata(self, document_id, metadata, fields):
             raise RuntimeError("metadata temporary failure")
 
     dify = FakeDify()
     with pytest.raises(RuntimeError, match="metadata temporary failure"):
         finalize_event(
-            facts=facts, ai=_ai(), pt=pt, event_id="evt_test",
-            base_dir=tmp_path, timezone="Asia/Shanghai", runlog=runlog,
-            dify=dify, dify_fields={"record_type": {"id": "m1"}},
-            state=state, state_path=state_path, qwen_mode="realtime",
+            facts=facts,
+            ai=_ai(),
+            pt=pt,
+            event_id="evt_test",
+            base_dir=tmp_path,
+            timezone="Asia/Shanghai",
+            runlog=runlog,
+            dify=dify,
+            dify_fields={"record_type": {"id": "m1"}},
+            state=state,
+            state_path=state_path,
+            qwen_mode="realtime",
         )
     saved = load_state(state_path)
     assert saved["evt_test"]["document_id"] == "doc_123"
@@ -434,21 +471,34 @@ def test_dify_document_id_persisted_before_metadata_side_effect(monkeypatch, tmp
 def test_non_stop_finish_reason_is_classified(monkeypatch):
     q = QwenClient(mode="realtime", mock=False)
     q.api_key = "test-key"
-    monkeypatch.setattr(q, "_post_json_with_retry", lambda *args, **kwargs: {
-        "choices": [{"finish_reason": "content_filter", "message": {"content": "{}"}}]
-    })
+    monkeypatch.setattr(
+        q,
+        "_post_json_with_retry",
+        lambda *args, **kwargs: {
+            "choices": [{"finish_reason": "content_filter", "message": {"content": "{}"}}]
+        },
+    )
     with pytest.raises(QwenCallError, match="非正常结束"):
-        q._chat_structured("s", "u", "x", {"type": "object", "properties": {}, "required": [], "additionalProperties": False})
+        q._chat_structured(
+            "s",
+            "u",
+            "x",
+            {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+        )
 
 
 def _run_mock(base_dir, source_text):
     source = base_dir / "source.md"
     source.write_text(source_text, encoding="utf-8")
-    args = build_parser().parse_args([
-        "--base-dir", str(base_dir),
-        "--qwen-mode", "realtime",
-        "--mock-ai",
-    ])
+    args = build_parser().parse_args(
+        [
+            "--base-dir",
+            str(base_dir),
+            "--qwen-mode",
+            "realtime",
+            "--mock-ai",
+        ]
+    )
     assert run(args) == 0
     return json.loads((base_dir / "logs" / "run_summary.json").read_text(encoding="utf-8"))
 
@@ -487,11 +537,13 @@ def test_audit_metadata_omits_raw_text_and_source_filename(tmp_path):
 
 
 def test_middle_missing_time_does_not_block_following_event(tmp_path):
-    source = "\n".join([
-        _valid_online_event("前一个活动"),
-        "活动名称：缺时间活动\n主要内容：这条资料故意缺少日期。\n地点：线上\n状态：正常报名\n",
-        _valid_online_event("后一个活动", "2026年8月21日"),
-    ])
+    source = "\n".join(
+        [
+            _valid_online_event("前一个活动"),
+            "活动名称：缺时间活动\n主要内容：这条资料故意缺少日期。\n地点：线上\n状态：正常报名\n",
+            _valid_online_event("后一个活动", "2026年8月21日"),
+        ]
+    )
     summary = _run_mock(tmp_path, source)
     assert summary["events_seen"] == 3
     assert summary["events_cleaned"] == 2
@@ -502,10 +554,16 @@ def test_middle_missing_time_does_not_block_following_event(tmp_path):
     assert len(list((tmp_path / "output" / "cleaned").glob("*.md"))) == 2
 
 
-@pytest.mark.parametrize("block, reason", [
-    ("活动名称：\n时间：2026年8月20日\n地点：线上\n主要内容：内容\n状态：正常报名\n", "活动名称"),
-    ("活动名称：缺内容\n时间：2026年8月20日\n地点：线上\n状态：正常报名\n", "主要内容"),
-])
+@pytest.mark.parametrize(
+    "block, reason",
+    [
+        (
+            "活动名称：\n时间：2026年8月20日\n地点：线上\n主要内容：内容\n状态：正常报名\n",
+            "活动名称",
+        ),
+        ("活动名称：缺内容\n时间：2026年8月20日\n地点：线上\n状态：正常报名\n", "主要内容"),
+    ],
+)
 def test_missing_name_or_main_content_is_skipped(block, reason):
     facts = parse_facts(block, "x.md", 1)
     missing, _ = validate_required(facts, "Asia/Shanghai")
@@ -515,7 +573,8 @@ def test_missing_name_or_main_content_is_skipped(block, reason):
 def test_online_without_specific_address_is_valid():
     facts = parse_facts(
         "活动名称：线上活动\n时间：2026年8月20日\n活动形式：线上\n主要内容：线上内容\n状态：正常报名\n",
-        "x.md", 1,
+        "x.md",
+        1,
     )
     missing, _ = validate_required(facts, "Asia/Shanghai")
     assert missing == []
@@ -548,11 +607,14 @@ def test_missing_event_type_is_classified_and_source_audience_is_preserved():
     assert final.target_audience == "只给原文的人群"
 
 
-@pytest.mark.parametrize("raw", [
-    "2026年8月20日—8月22日",
-    "2026年8月20日 09:00",
-    "2026年8月20日 23:00—2026年8月21日 01:00",
-])
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "2026年8月20日—8月22日",
+        "2026年8月20日 09:00",
+        "2026年8月20日 23:00—2026年8月21日 01:00",
+    ],
+)
 def test_supported_single_day_and_cross_day_time_forms(raw):
     parsed = parse_event_time(raw, "Asia/Shanghai")
     assert parsed.end >= parsed.start
@@ -577,11 +639,14 @@ def test_schema_extra_and_invalid_enum_are_rejected():
         AIEnrichment.model_validate({**base, "event_type": "不存在的类型"})
 
 
-@pytest.mark.parametrize("summary", [
-    "面向企业老板的活动安排在8月20日举行，帮助解决经营问题。",
-    "面向企业老板的活动收费999元，帮助解决经营问题。",
-    "面向企业老板的活动报名地址是https://evil.example，帮助解决经营问题。",
-])
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "面向企业老板的活动安排在8月20日举行，帮助解决经营问题。",
+        "面向企业老板的活动收费999元，帮助解决经营问题。",
+        "面向企业老板的活动报名地址是https://evil.example，帮助解决经营问题。",
+    ],
+)
 def test_ai_cannot_invent_month_day_price_or_link(summary):
     with pytest.raises(ValueError, match="硬事实"):
         validate_ai_business(_ai(retrieval_summary=summary), _facts())
@@ -596,11 +661,13 @@ def test_single_model_failure_does_not_block_following_events(monkeypatch, tmp_p
         return original(self, facts)
 
     monkeypatch.setattr(QwenClient, "enrich", fail_one)
-    source = "\n".join([
-        _valid_online_event("前一个活动"),
-        _valid_online_event("中间失败活动", "2026年8月21日"),
-        _valid_online_event("后一个活动", "2026年8月22日"),
-    ])
+    source = "\n".join(
+        [
+            _valid_online_event("前一个活动"),
+            _valid_online_event("中间失败活动", "2026年8月21日"),
+            _valid_online_event("后一个活动", "2026年8月22日"),
+        ]
+    )
     summary = _run_mock(tmp_path, source)
     assert summary["events_cleaned"] == 2
     assert summary["events_failed"] == 1

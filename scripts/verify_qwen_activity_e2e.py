@@ -31,7 +31,16 @@ def main() -> int:
     deployment = load("deployment.safe.json")
     assert deployment.get("release") == "20260819-qwen-activity-d0e3f9c8"
     health = deployment.get("health") or {}
-    assert health.get("status") == "ready" and all(health.get(key) is True for key in ("database", "redis", "dify_apps_configured", "dify_knowledge_configured", "dify_reachable"))
+    assert health.get("status") == "ready" and all(
+        health.get(key) is True
+        for key in (
+            "database",
+            "redis",
+            "dify_apps_configured",
+            "dify_knowledge_configured",
+            "dify_reachable",
+        )
+    )
     assert deployment.get("service_image_release_match") is True
     assert deployment.get("historical_cleanup_exact_manifest") is True
     assert deployment.get("test_sample_data_retained") is True
@@ -41,37 +50,56 @@ def main() -> int:
     assert names.get("local_remote_name_equal_count") == 80
     rows = names.get("rows") or []
     assert rows and all(row.get("remote_metadata_fetch_failed") is not True for row in rows)
-    assert all(row.get("local_remote_name_equal") or row.get("document_status") == "excluded" for row in rows)
+    assert all(
+        row.get("local_remote_name_equal") or row.get("document_status") == "excluded"
+        for row in rows
+    )
 
     parity = load("model-parity.safe.json")
     summary = parity.get("summary") or {}
     for category, count in (("consultation", 3), ("recent_activity", 3)):
         item = summary.get(category) or {}
-        assert item.get("documents") == count and item.get("document_statuses") == {"succeeded": count}
+        assert item.get("documents") == count and item.get("document_statuses") == {
+            "succeeded": count
+        }
         assert item.get("document_projected_metadata_equal_count") == count
         assert item.get("document_projected_metadata_equal_total") == count
     consultation = summary["consultation"]
-    assert consultation.get("task_modes") == ["realtime"] and consultation.get("task_statuses") == ["completed"]
+    assert consultation.get("task_modes") == ["realtime"] and consultation.get("task_statuses") == [
+        "completed"
+    ]
     activity = summary["recent_activity"]
     assert activity.get("tasks_total") == 0
     for category in ("wechat", "xiaobot", "zsxq"):
         item = summary.get(category) or {}
         assert item.get("task_modes") == ["realtime"] and item.get("task_statuses") == ["completed"]
-        assert item.get("shard_metadata_subset_equal_count") == item.get("shard_metadata_subset_equal_total")
+        assert item.get("shard_metadata_subset_equal_count") == item.get(
+            "shard_metadata_subset_equal_total"
+        )
         assert item.get("shard_metadata_subset_equal_total", 0) > 0
 
     batch = load("batch-parity.safe.json")
     assert batch.get("mode") == "batch" and batch.get("status") == "completed"
-    assert batch.get("document_status") == "succeeded" and batch.get("dify_document_present") is True
+    assert (
+        batch.get("document_status") == "succeeded" and batch.get("dify_document_present") is True
+    )
     assert batch.get("metadata_subset_equal") is True
     assert batch.get("request_body_parity") is True
 
     dify = load("dify-sse.safe.json")
     assert dify.get("published") is True and dify.get("parameters_status") == 200
     queries = dify.get("queries") or []
-    assert len(queries) >= 4 and all(item.get("status") == "completed" and item.get("passed") is True for item in queries)
+    assert len(queries) >= 4 and all(
+        item.get("status") == "completed" and item.get("passed") is True for item in queries
+    )
     assert dify.get("negative_case_passed") is True
-    print(json.dumps({"status": "passed", "evidence_files": 5, "query_count": len(queries)}, ensure_ascii=False, sort_keys=True))
+    print(
+        json.dumps(
+            {"status": "passed", "evidence_files": 5, "query_count": len(queries)},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
@@ -79,5 +107,9 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except AssertionError as exc:
-        print(json.dumps({"status": "blocked", "reason": str(exc)}, ensure_ascii=False, sort_keys=True))
+        print(
+            json.dumps(
+                {"status": "blocked", "reason": str(exc)}, ensure_ascii=False, sort_keys=True
+            )
+        )
         raise SystemExit(1)

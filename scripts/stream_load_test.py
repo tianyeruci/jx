@@ -90,9 +90,7 @@ async def run(args: argparse.Namespace) -> dict:
         "succeeded": len(successful),
         "failed": len(results) - len(successful),
         "first_event_p95_ms": first_events[p95_index] if first_events else None,
-        "total_mean_ms": statistics.mean(
-            item.total_ms for item in successful
-        )
+        "total_mean_ms": statistics.mean(item.total_ms for item in successful)
         if successful
         else None,
         "sample_errors": [item.error for item in results if not item.ok][:10],
@@ -112,4 +110,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -49,7 +49,9 @@ def test_v2_rejects_unknown_or_uncovered_source_block() -> None:
     payload, _ = _sample()
     payload["source_coverage"]["kept"].pop()
     with pytest.raises(ValueError, match="完整覆盖"):
-        validate_case_payload(payload, source_blocks={f"b{index:03d}": "x" for index in range(1, 100)})
+        validate_case_payload(
+            payload, source_blocks={f"b{index:03d}": "x" for index in range(1, 100)}
+        )
 
 
 def test_v2_accepts_legacy_four_digit_source_block_ids() -> None:
@@ -96,7 +98,15 @@ def test_docx_extraction_anonymizes_contact_fields_before_publish(tmp_path: Path
 
 
 class _FakeRetrievalClient:
-    def retrieve(self, query: str, *, top_k: int, search_method: str, score_threshold: float | None, reranking: dict | None):
+    def retrieve(
+        self,
+        query: str,
+        *,
+        top_k: int,
+        search_method: str,
+        score_threshold: float | None,
+        reranking: dict | None,
+    ):
         # b001 is relevant for the first query; the threshold/rerank values are
         # retained by the real runner in its matrix report.
         return [{"id": "doc_case", "doc_metadata": [{"name": "doc_id", "value": "case_1234"}]}]

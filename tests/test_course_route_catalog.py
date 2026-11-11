@@ -106,7 +106,9 @@ prerequisite_course_ids: [course_base]
         session.commit()
     document = STRATEGY_REGISTRY["course_information"].clean(source, source.name)[0]
     assert document.audit["catalog_record"]["prerequisite_course_ids"] == ["course_base"]
-    source.write_text(source.read_text(encoding="utf-8").replace("course_base", "missing"), encoding="utf-8")
+    source.write_text(
+        source.read_text(encoding="utf-8").replace("course_base", "missing"), encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="不存在的前置课程"):
         STRATEGY_REGISTRY["course_information"].clean(source, source.name)
 
@@ -245,7 +247,12 @@ def test_route_cards_require_stage_confirmation_and_keep_route_order(service_db)
                 direction="AI商业",
                 target="测试",
                 stages=[
-                    {"stage_id": "s1", "name": "第一阶段", "order": 1, "course_ids": ["c1", "c2", "c3", "c4", "c5", "c6"]},
+                    {
+                        "stage_id": "s1",
+                        "name": "第一阶段",
+                        "order": 1,
+                        "course_ids": ["c1", "c2", "c3", "c4", "c5", "c6"],
+                    },
                     {"stage_id": "s2", "name": "第二阶段", "order": 2, "course_ids": ["c7", "c8"]},
                 ],
             )
@@ -261,7 +268,9 @@ def test_route_cards_require_stage_confirmation_and_keep_route_order(service_db)
                 "evidence_quote": "我确认选择有序路线",
             },
         )
-        pending = validate_recommendation(session, selected, user_hash="u", query="我确认选择有序路线")
+        pending = validate_recommendation(
+            session, selected, user_hash="u", query="我确认选择有序路线"
+        )
         assert pending["course_cards"] == []
         assert [stage["name"] for stage in pending["learning_route"]["stages"]] == [
             "第一阶段",
@@ -270,7 +279,10 @@ def test_route_cards_require_stage_confirmation_and_keep_route_order(service_db)
         assert pending["learning_route"]["stages"][0]["course_names"] == [
             "c1",
             "c2",
-            "c3", "c4", "c5", "c6",
+            "c3",
+            "c4",
+            "c5",
+            "c6",
         ]
         confirmed = RecommendationDecision(
             intent="route_recommendation",
@@ -282,8 +294,17 @@ def test_route_cards_require_stage_confirmation_and_keep_route_order(service_db)
                 "evidence_quote": "我确认目前在第一阶段",
             },
         )
-        active = validate_recommendation(session, confirmed, user_hash="u", query="我确认目前在第一阶段")
-        assert [item["course_id"] for item in active["course_cards"]] == ["c1", "c2", "c3", "c4", "c5", "c6"]
+        active = validate_recommendation(
+            session, confirmed, user_hash="u", query="我确认目前在第一阶段"
+        )
+        assert [item["course_id"] for item in active["course_cards"]] == [
+            "c1",
+            "c2",
+            "c3",
+            "c4",
+            "c5",
+            "c6",
+        ]
         assert "expert_insight" not in active
         assert active["learning_route"]["current_stage_id"] == "s1"
         assert active["learning_route"]["next_stage_id"] == "s2"
@@ -372,10 +393,12 @@ def test_ambiguous_route_request_never_degrades_to_direct_course(service_db):
 
 def test_route_snapshot_uses_authoritative_stage_order_and_public_names(service_db):
     with service_db() as session:
-        session.add_all([
-            _course("beginner", name="入门课程", stage="入门阶段"),
-            _course("advanced", name="进阶课程", stage="高手进阶"),
-        ])
+        session.add_all(
+            [
+                _course("beginner", name="入门课程", stage="入门阶段"),
+                _course("advanced", name="进阶课程", stage="高手进阶"),
+            ]
+        )
         session.add(
             LearningRoute(
                 route_id="route_ai_order",
@@ -383,8 +406,18 @@ def test_route_snapshot_uses_authoritative_stage_order_and_public_names(service_
                 direction="AI写作",
                 target="测试",
                 stages=[
-                    {"stage_id": "stage_advanced", "name": "高手进阶", "order": 1, "course_ids": ["advanced"]},
-                    {"stage_id": "stage_beginner", "name": "入门阶段", "order": 2, "course_ids": ["beginner"]},
+                    {
+                        "stage_id": "stage_advanced",
+                        "name": "高手进阶",
+                        "order": 1,
+                        "course_ids": ["advanced"],
+                    },
+                    {
+                        "stage_id": "stage_beginner",
+                        "name": "入门阶段",
+                        "order": 2,
+                        "course_ids": ["beginner"],
+                    },
                 ],
             )
         )
@@ -421,15 +454,9 @@ def test_learning_route_adds_stage_collection_names_from_snapshot_order(service_
         session.flush()
         session.add_all(
             [
-                CourseCollectionMember(
-                    collection_id="collection_a", course_id="c1", order_rank=1
-                ),
-                CourseCollectionMember(
-                    collection_id="collection_a", course_id="c2", order_rank=2
-                ),
-                CourseCollectionMember(
-                    collection_id="collection_b", course_id="c3", order_rank=1
-                ),
+                CourseCollectionMember(collection_id="collection_a", course_id="c1", order_rank=1),
+                CourseCollectionMember(collection_id="collection_a", course_id="c2", order_rank=2),
+                CourseCollectionMember(collection_id="collection_b", course_id="c3", order_rank=1),
             ]
         )
         session.add(
@@ -472,7 +499,10 @@ def test_learning_route_adds_stage_collection_names_from_snapshot_order(service_
             query="我确认选择课程集路线",
         )
 
-        assert "course_collection_names" not in snapshot["routes"]["route_collection_names"]["stages"][0]
+        assert (
+            "course_collection_names"
+            not in snapshot["routes"]["route_collection_names"]["stages"][0]
+        )
         assert result["learning_route"]["stages"][0]["course_collection_names"] == [
             "课程集A",
             "课程集B",
@@ -679,17 +709,25 @@ def test_route_revisit_is_user_level_and_completed_route_needs_explicit_restart(
         )
         session.add(
             LearningRouteProgress(
-                user_hash="revisit-user", route_id="route_revisit", current_stage_id="intro", status="active"
+                user_hash="revisit-user",
+                route_id="route_revisit",
+                current_stage_id="intro",
+                status="active",
             )
         )
         session.commit()
         rebuild_snapshot(session)
         resumed = validate_recommendation(
-            session, RecommendationDecision(intent="general_qa"), user_hash="revisit-user", query="我的学习路线学到哪里了"
+            session,
+            RecommendationDecision(intent="general_qa"),
+            user_hash="revisit-user",
+            query="我的学习路线学到哪里了",
         )
         assert resumed["learning_route"]["state"] == "active"
         assert [item["course_id"] for item in resumed["course_cards"]] == ["c1"]
-        progress = session.scalar(select(LearningRouteProgress).where(LearningRouteProgress.user_hash == "revisit-user"))
+        progress = session.scalar(
+            select(LearningRouteProgress).where(LearningRouteProgress.user_hash == "revisit-user")
+        )
         assert progress is not None
         advanced_stage = validate_recommendation(
             session,
@@ -703,12 +741,18 @@ def test_route_revisit_is_user_level_and_completed_route_needs_explicit_restart(
         progress.current_stage_id = "advanced"
         session.flush()
         completed = validate_recommendation(
-            session, RecommendationDecision(intent="general_qa"), user_hash="revisit-user", query="续学路线的学习进度"
+            session,
+            RecommendationDecision(intent="general_qa"),
+            user_hash="revisit-user",
+            query="续学路线的学习进度",
         )
         assert completed["learning_route"]["state"] == "completed"
         assert completed["course_cards"] == []
         restarted = validate_recommendation(
-            session, RecommendationDecision(intent="general_qa"), user_hash="revisit-user", query="我要重新开始续学路线"
+            session,
+            RecommendationDecision(intent="general_qa"),
+            user_hash="revisit-user",
+            query="我要重新开始续学路线",
         )
         assert restarted["learning_route"]["state"] == "awaiting_stage_confirmation"
         assert restarted["course_cards"] == []
@@ -788,9 +832,12 @@ def test_route_availability_question_cannot_be_treated_as_route_confirmation(ser
         )
         assert result["course_cards"] == []
         assert result["learning_route"]["state"] == "awaiting_route_confirmation"
-        assert session.scalar(
-            select(LearningRouteProgress).where(LearningRouteProgress.user_hash == "u")
-        ) is None
+        assert (
+            session.scalar(
+                select(LearningRouteProgress).where(LearningRouteProgress.user_hash == "u")
+            )
+            is None
+        )
 
 
 def test_snapshot_recovery_syncs_memory_snapshot_before_reading_old_redis_value():
@@ -857,9 +904,7 @@ def test_snapshot_rebuilds_when_db_catalog_revision_changes(service_db):
 
 
 def test_course_retrieval_nodes_filter_active_dify_metadata():
-    flow = yaml.safe_load(
-        open("dify/dsl/business_advisor.yml", encoding="utf-8")
-    )
+    flow = yaml.safe_load(open("dify/dsl/business_advisor.yml", encoding="utf-8"))
     nodes = {item["id"]: item["data"] for item in flow["workflow"]["graph"]["nodes"]}
     for node_id in ("course_knowledge", "course_knowledge_mixed"):
         node = nodes[node_id]
@@ -868,6 +913,4 @@ def test_course_retrieval_nodes_filter_active_dify_metadata():
             "logical_operator": "and",
             "conditions": [{"name": "status", "comparison_operator": "is", "value": "active"}],
         }
-    assert "expert_insight" not in open(
-        "dify/dsl/business_advisor.yml", encoding="utf-8"
-    ).read()
+    assert "expert_insight" not in open("dify/dsl/business_advisor.yml", encoding="utf-8").read()

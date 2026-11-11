@@ -119,7 +119,9 @@ class _FakeClient:
     def __init__(self, **_: object) -> None:
         self.calls = 0
 
-    def chat_json(self, _messages: object, *, model: str) -> tuple[dict[str, object], dict[str, int]]:
+    def chat_json(
+        self, _messages: object, *, model: str
+    ) -> tuple[dict[str, object], dict[str, int]]:
         del model
         self.calls += 1
         type(self).calls = self.calls
@@ -132,7 +134,9 @@ class _FakeClient:
         return None
 
 
-def _run_case(tmp_path: Path, monkeypatch, client: type[_FakeClient]) -> tuple[Path, Path, int, str]:
+def _run_case(
+    tmp_path: Path, monkeypatch, client: type[_FakeClient]
+) -> tuple[Path, Path, int, str]:
     input_dir = tmp_path / "input"
     output_root = tmp_path / "results"
     input_dir.mkdir()
@@ -171,9 +175,7 @@ def test_run_saves_model_result_and_selects_validated_markdown(tmp_path: Path, m
     assert item["audit"]["model_result"]["schema_version"] == "legacy_sections"
     assert "text" not in item["audit"]["model_result"]
 
-    model_payload = json.loads(
-        (run_dir / item["model_payload_path"]).read_text(encoding="utf-8")
-    )
+    model_payload = json.loads((run_dir / item["model_payload_path"]).read_text(encoding="utf-8"))
     assert model_payload["payload"] == _legacy_payload()
     final_markdown = (run_dir / item["final_path"]).read_text(encoding="utf-8")
     assert "## 顾问判断" in final_markdown
@@ -197,9 +199,9 @@ def test_v2_model_result_uses_controlled_parent_child_validation(
     assert item["audit"]["model_result"]["boundary_mode"] == "consultation_v2_parent_child"
     final_markdown = (run_dir / item["final_path"]).read_text(encoding="utf-8")
     assert "<<<DIFY_CHILD>>>" in final_markdown
-    assert '"boundary_mode": "consultation_v2_parent_child"' in (
-        run_dir / "run.log"
-    ).read_text(encoding="utf-8")
+    assert '"boundary_mode": "consultation_v2_parent_child"' in (run_dir / "run.log").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_invalid_model_contract_logs_validation_failure_and_falls_back(
@@ -227,9 +229,9 @@ def test_invalid_model_contract_logs_validation_failure_and_falls_back(
     assert item["status"] == "fallback"
     assert item["selected"] == "source_markdown_fallback"
     assert item["error_code"] == "MODEL_CONTRACT_INVALID"
-    assert (
-        run_dir / item["final_path"]
-    ).read_text(encoding="utf-8") == (input_dir / "case.md").read_text(encoding="utf-8")
+    assert (run_dir / item["final_path"]).read_text(encoding="utf-8") == (
+        input_dir / "case.md"
+    ).read_text(encoding="utf-8")
 
     log = (run_dir / "run.log").read_text(encoding="utf-8")
     stdout = capsys.readouterr().out
@@ -256,8 +258,7 @@ def test_model_no_response_retries_once_then_falls_back(
     assert item["status"] == "fallback"
     assert item["error_code"] == "MODEL_NO_RESPONSE"
     lines = [
-        json.loads(line)
-        for line in (run_dir / "run.log").read_text(encoding="utf-8").splitlines()
+        json.loads(line) for line in (run_dir / "run.log").read_text(encoding="utf-8").splitlines()
     ]
     responses = [entry for entry in lines if entry["phase"] == "model_response"]
     assert len(responses) == 2

@@ -24,7 +24,7 @@ For a cross-domain task, read only the domains that the change can affect. Searc
 1. Record the task domain, current version/environment and the relevant known pitfalls in the task notes.
 2. Identify the expected evidence and the safe rollback or cleanup boundary.
 3. Do not treat an old symptom as the current cause; verify it against code, configuration and a reproducible check.
-4. For remote or destructive work, follow the repository runbook and stop on missing backup, identity, scope or isolation evidence.
+4. For remote or destructive work, verify identity, exact project ownership and authorized scope. Follow the deployment modes in `dev-workflow` and project `AGENTS.md`: disposable test data needs no backup or restore rehearsal; production requires preserved live data, prior runnable version/configuration and a complete/readable same-target backup. Stop only the affected action when a required boundary or production recovery prerequisite is missing; do not ask for repeated command approval within an already authorized scope.
 
 ## Capture and promote issues
 

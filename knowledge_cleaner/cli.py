@@ -24,9 +24,15 @@ def _add_batch_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input", type=Path, default=Path("文件清洗样本"))
     parser.add_argument("--output", type=Path, default=Path("清洗文档/批量清洗输出"))
     parser.add_argument("--pilot", action="store_true", help="仅处理三类代表性样本")
-    parser.add_argument("--include", action="append", default=[], help="仅处理文件名包含该文字的文件，可重复")
-    parser.add_argument("--review-overrides", type=Path, help="人工复核CSV；按doc_id覆盖keep/no_index/review")
-    parser.add_argument("--no-ocr", action="store_true", help="扫描PDF不尝试本地RapidOCR，直接进入复核")
+    parser.add_argument(
+        "--include", action="append", default=[], help="仅处理文件名包含该文字的文件，可重复"
+    )
+    parser.add_argument(
+        "--review-overrides", type=Path, help="人工复核CSV；按doc_id覆盖keep/no_index/review"
+    )
+    parser.add_argument(
+        "--no-ocr", action="store_true", help="扫描PDF不尝试本地RapidOCR，直接进入复核"
+    )
     parser.add_argument("--no-classifier", action="store_true", help="模糊项不调用Dify分类Workflow")
     parser.add_argument("--legacy-pdf", action="store_true", help=argparse.SUPPRESS)
 
@@ -51,7 +57,9 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--base-url", default=os.getenv("DIFY_KNOWLEDGE_BASE_URL", ""))
     publish.add_argument("--api-key", default=os.getenv("DIFY_KNOWLEDGE_API_KEY", ""))
     publish.add_argument("--dataset-id", default=os.getenv("DIFY_DATASET_ID", ""))
-    publish.add_argument("--publish", action="store_true", help="必须显式指定；否则不会发起网络请求")
+    publish.add_argument(
+        "--publish", action="store_true", help="必须显式指定；否则不会发起网络请求"
+    )
     publish.add_argument("--indexing-timeout", type=int, default=900)
 
     evaluate = subparsers.add_parser("evaluate", help="使用黄金问题集测试Dify Recall@K和MRR")
@@ -97,7 +105,9 @@ def _run_batch(args: argparse.Namespace, *, decisions: Path | None = None) -> in
                 input_path=args.input.resolve(),
                 output_path=args.output.resolve(),
                 classifier=classifier,
-                review_overrides=(decisions or args.review_overrides).resolve() if (decisions or args.review_overrides) else None,
+                review_overrides=(decisions or args.review_overrides).resolve()
+                if (decisions or args.review_overrides)
+                else None,
                 include_patterns=patterns,
                 enable_ocr=not args.no_ocr,
             )
@@ -112,7 +122,11 @@ def _run_batch(args: argparse.Namespace, *, decisions: Path | None = None) -> in
 def _require_connection(args: argparse.Namespace) -> None:
     missing = [
         name
-        for name, value in (("base-url", args.base_url), ("api-key", args.api_key), ("dataset-id", args.dataset_id))
+        for name, value in (
+            ("base-url", args.base_url),
+            ("api-key", args.api_key),
+            ("dataset-id", args.dataset_id),
+        )
         if not value
     ]
     if missing:
@@ -143,7 +157,9 @@ def main(argv: list[str] | None = None) -> int:
         _require_connection(args)
         client = DifyKnowledgeClient(args.base_url, args.api_key, args.dataset_id)
         try:
-            result = publish_clean_output(args.output.resolve(), client, indexing_timeout=args.indexing_timeout)
+            result = publish_clean_output(
+                args.output.resolve(), client, indexing_timeout=args.indexing_timeout
+            )
         finally:
             client.close()
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
@@ -151,7 +167,9 @@ def main(argv: list[str] | None = None) -> int:
     _require_connection(args)
     client = DifyKnowledgeClient(args.base_url, args.api_key, args.dataset_id)
     try:
-        metrics = evaluate_retrieval(client, load_evaluation_cases(args.cases.resolve()), k=args.top_k)
+        metrics = evaluate_retrieval(
+            client, load_evaluation_cases(args.cases.resolve()), k=args.top_k
+        )
     finally:
         client.close()
     payload = json.dumps(asdict(metrics), ensure_ascii=False, indent=2) + "\n"

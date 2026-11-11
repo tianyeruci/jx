@@ -62,7 +62,9 @@ def _nonempty_string(value: Any, field: str, *, maximum: int = 100) -> str:
     return result
 
 
-def _string_array(value: Any, field: str, *, maximum_items: int, maximum_length: int) -> tuple[str, ...]:
+def _string_array(
+    value: Any, field: str, *, maximum_items: int, maximum_length: int
+) -> tuple[str, ...]:
     if not isinstance(value, list):
         raise ClassificationValidationError(f"{field}必须是字符串数组")
     if len(value) > maximum_items:
@@ -144,7 +146,10 @@ def classification_decision(result: ClassificationResult, *, body_length: int) -
         and has_evidence
     ):
         return "keep"
-    excluded = result.domain_class in {"off_scope", "promotion_or_catalog"} or result.quality_class == "low_info"
+    excluded = (
+        result.domain_class in {"off_scope", "promotion_or_catalog"}
+        or result.quality_class == "low_info"
+    )
     if excluded and result.confidence >= 0.92 and has_evidence:
         # Short, self-contained observations are easy for a model to under-rate.
         return "review" if body_length < 150 else "no_index"
@@ -191,9 +196,13 @@ class DifyWorkflowClassifier:
             raise ClassificationValidationError("Dify Workflow响应缺少outputs对象")
         if frozenset(outputs) == CLASSIFICATION_KEYS:
             return outputs
-        candidates = [outputs[key] for key in ("result", "classification", "output") if key in outputs]
+        candidates = [
+            outputs[key] for key in ("result", "classification", "output") if key in outputs
+        ]
         if len(candidates) != 1:
-            raise ClassificationValidationError("outputs必须直接符合分类schema或只包含一个约定结果字段")
+            raise ClassificationValidationError(
+                "outputs必须直接符合分类schema或只包含一个约定结果字段"
+            )
         return candidates[0]
 
     def classify(self, title: str, body: str, source_type: str) -> ClassificationOutcome:

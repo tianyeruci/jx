@@ -52,10 +52,7 @@ def test_final_markdown_invariant_removes_tables_but_keeps_headings_and_lists():
 
 def test_dify_names_are_markdown_and_split_names_are_sequenced():
     assert dify_document_name("访谈记录.docx", "a" * 64, 1) == "访谈记录.md"
-    assert (
-        dify_document_name("另一个名字.pdf", "a" * 64, 12, split=True)
-        == "另一个名字__012.md"
-    )
+    assert dify_document_name("另一个名字.pdf", "a" * 64, 12, split=True) == "另一个名字__012.md"
 
 
 def test_table_review_is_internal_only_for_consultation_documents(monkeypatch, tmp_path):
@@ -83,18 +80,26 @@ def test_table_review_is_internal_only_for_consultation_documents(monkeypatch, t
 
     assert document.warnings == []
     assert document.disposition == "awaiting_model"
-    assert "table_review:表格结构无法可靠对齐:table=1" in document.audit["pdf_conversion"]["review_reasons"]
+    assert (
+        "table_review:表格结构无法可靠对齐:table=1"
+        in document.audit["pdf_conversion"]["review_reasons"]
+    )
 
 
 def test_user_visible_warning_filter_keeps_non_table_warnings():
-    assert user_visible_warnings(
-        ["table_review:表格结构无法可靠对齐", "目录需要复核"]
-    ) == ["目录需要复核"]
+    assert user_visible_warnings(["table_review:表格结构无法可靠对齐", "目录需要复核"]) == [
+        "目录需要复核"
+    ]
 
 
 def test_raw_worker_path_does_not_disable_table_cleaning():
     source = Path("ai_management/workers/tasks/cleaning.py").read_text(encoding="utf-8")
-    raw_branch = source[source.index('if batch.upload_mode == "raw":') : source.index("else:\n                assert strategy is not None", source.index('if batch.upload_mode == "raw":'))]
+    raw_branch = source[
+        source.index('if batch.upload_mode == "raw":') : source.index(
+            "else:\n                assert strategy is not None",
+            source.index('if batch.upload_mode == "raw":'),
+        )
+    ]
     assert "clean_tables=True" in raw_branch
     assert "clean_tables=False" not in raw_branch
 

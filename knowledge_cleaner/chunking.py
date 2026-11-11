@@ -141,7 +141,9 @@ def prepare_chunks(
         child_parts = _children(parent)
         rendered = "\n".join([context, *child_parts])
         result.append(
-            PreparedChunk(index=index, content=rendered, children=child_parts, char_count=len(parent))
+            PreparedChunk(
+                index=index, content=rendered, children=child_parts, char_count=len(parent)
+            )
         )
     return result
 

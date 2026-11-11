@@ -3,15 +3,11 @@ from __future__ import annotations
 import re
 
 _MARKDOWN_LINK = re.compile(r"\[([^\]\n]+)\]\((?:https?://|mailto:)[^)]+\)", re.IGNORECASE)
-_BARE_URL = re.compile(
-    r"(?i)(?:https?://|www\.)[^\s<>()\[\]{}，。；、]+"
-)
+_BARE_URL = re.compile(r"(?i)(?:https?://|www\.)[^\s<>()\[\]{}，。；、]+")
 _EMAIL = re.compile(r"(?i)(?<![\w.+-])[\w.+-]+@[\w.-]+\.[a-z]{2,}(?![\w.-])")
 _MOBILE = re.compile(r"(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)")
 _QQ = re.compile(r"(?i)(?:QQ(?:号)?\s*[:：]?\s*)[1-9]\d{4,11}")
-_WECHAT = re.compile(
-    r"(?i)(?:微信(?:号|ID)?|wechat|wx)\s*[:：]?\s*[a-z][-_a-z0-9]{5,19}"
-)
+_WECHAT = re.compile(r"(?i)(?:微信(?:号|ID)?|wechat|wx)\s*[:：]?\s*[a-z][-_a-z0-9]{5,19}")
 _CONTACT_ONLY = re.compile(
     r"^\s*(?:扫码|长按|添加|加|联系|私信|回复|发送|进群|入群)"
     r".{0,24}(?:微信|二维码|客服|助理|好友|领取|报名|咨询|资料|群)"

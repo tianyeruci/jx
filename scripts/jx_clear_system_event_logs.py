@@ -106,7 +106,9 @@ def main() -> int:
 
         with SessionLocal() as verify_session:
             after = _count(verify_session)
-        print(json.dumps({"table": SystemEventLog.__tablename__, "deleted": deleted, "after": after}))
+        print(
+            json.dumps({"table": SystemEventLog.__tablename__, "deleted": deleted, "after": after})
+        )
         if after != 0 or deleted != before:
             return 1
     return 0

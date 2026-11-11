@@ -270,7 +270,9 @@ def test_dify_wait_for_indexing_keeps_terminal_error_semantics():
 
 
 def test_semantic_rules_keep_transferable_experience_and_exclude_securities():
-    useful = classify_text("定位复盘", "我访谈了二十位客户，调整产品以后成交率提高，并总结了三个步骤。")
+    useful = classify_text(
+        "定位复盘", "我访谈了二十位客户，调整产品以后成交率提高，并总结了三个步骤。"
+    )
     finance = classify_text("今日策略", "建议买入某个股票代码，设置仓位、止盈和止损。")
     assert useful.disposition == "keep"
     assert finance.disposition == "no_index"
@@ -311,7 +313,9 @@ def test_batch_pipeline_builds_fresh_snapshot_and_exact_deduplicates(tmp_path):
     (source / "合集 (1).md").write_text(body, encoding="utf-8")
     output = tmp_path / "output"
     result = BatchCleaningPipeline(BatchOptions(source, output)).run()
-    records = [json.loads(line) for line in (output / "manifest.jsonl").read_text("utf-8").splitlines()]
+    records = [
+        json.loads(line) for line in (output / "manifest.jsonl").read_text("utf-8").splitlines()
+    ]
     assert result.parsed_documents == 2
     assert sum(item["disposition"] == "duplicate" for item in records) == 1
     assert (output / "quality_report.json").is_file()

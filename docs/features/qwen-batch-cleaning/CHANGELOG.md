@@ -1011,3 +1011,769 @@ This is a semantic change log, not a copy of Git diff.
   - `测试111.md`
   - `测试2.md`
   - `测试66.md`
+
+## 2026-09-12T06:06:54+08:00 — 本轮共享模型清洗 Worker 的失败处理改为内容策略 fail-closed；Provider Batch 在本轮始终关闭，未执行 Batch、未改变其调用阈值或发布语义。
+
+- **Purpose:** 本轮共享模型清洗 Worker 的失败处理改为内容策略 fail-closed；Provider Batch 在本轮始终关闭，未执行 Batch、未改变其调用阈值或发布语义。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 本轮相关回归与静态检查通过；未针对该特性执行外部发布。
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-12T20:07:33+08:00 — 共享 Worker 的失败阶段 allowlist 与小批量 Batch repair 的 realtime 实际计价已覆盖；Provider Batch 持续关闭，未执行 Batch、未改变正式发布语义。
+
+- **Purpose:** 共享 Worker 的失败阶段 allowlist 与小批量 Batch repair 的 realtime 实际计价已覆盖；Provider Batch 持续关闭，未执行 Batch、未改变正式发布语义。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 模型清洗与大规模回归、241 项相关回归和完整 gov quality 通过；未执行 provider 或远端操作。
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-12T20:09:30+08:00 — 补全上次未完成的治理同步：共享 Worker 失败阶段 allowlist 与小批量 Batch repair 的 realtime 实际计价已记录；Provider Batch 持续关闭，未执行 Batch 或远端操作。
+
+- **Purpose:** 补全上次未完成的治理同步：共享 Worker 失败阶段 allowlist 与小批量 Batch repair 的 realtime 实际计价已记录；Provider Batch 持续关闭，未执行 Batch 或远端操作。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 模型清洗与大规模回归、241 项相关回归和完整 gov quality 通过。
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-12T20:32:26+08:00 — 治理工具在内容指纹前排除 tmp 与 pytest 生成物，避免本地临时文件拖慢质量/同步；共享 Worker 的费用与失败阶段保护、Batch 关闭状态和发布语义不变。
+
+- **Purpose:** 治理工具在内容指纹前排除 tmp 与 pytest 生成物，避免本地临时文件拖慢质量/同步；共享 Worker 的费用与失败阶段保护、Batch 关闭状态和发布语义不变。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** 生成物不再进入 implementation 路径，治理模块编译和差异检查通过；后续完整质量将复跑。
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-13T00:10:24+08:00 — 共享模型清洗路径保留 provider 预算预留账本；新任务显式计数，历史不确定计数拒绝自动调用。
+
+- **Purpose:** 共享模型清洗路径保留 provider 预算预留账本；新任务显式计数，历史不确定计数拒绝自动调用。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-model-workflow-r3-20260913.xml
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-13T00:12:03+08:00 — 共享模型清洗路径保留 provider 预算预留账本；新任务显式计数，历史不确定计数拒绝自动调用。
+
+- **Purpose:** 共享模型清洗路径保留 provider 预算预留账本；新任务显式计数，历史不确定计数拒绝自动调用。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-model-workflow-r3-20260913.xml
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-13T00:15:42+08:00 — 仅格式化已验证的共享模型测试夹具与账本断言；行为边界、实现范围和远端门禁不变。
+
+- **Purpose:** 仅格式化已验证的共享模型测试夹具与账本断言；行为边界、实现范围和远端门禁不变。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-u06-fixture-r3-20260913.xml
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-13T00:27:01+08:00 — 记录共享模型测试的 U06 质量证据和未完成治理门禁；不改变模型调用或远端边界。
+
+- **Purpose:** 记录共享模型测试的 U06 质量证据和未完成治理门禁；不改变模型调用或远端边界。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-model-workflow-r3-20260913.xml; .codex/state/quality.json
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-13T00:37:01+08:00 — 治理指纹仅排除动态运行证据，保留业务源文件；canonical 覆盖已补齐。
+
+- **Purpose:** 治理指纹仅排除动态运行证据，保留业务源文件；canonical 覆盖已补齐。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** var/reports/W-20260912-041700/pytest-u11-dynamic-scope-20260913.xml
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-13T02:02:51+08:00 — 新 reservation 保存 call ID、文档、transport、定价快照；realtime 仅结算匹配 reservation，缺 usage 继续保留预留，历史不完整账本 fail-closed。Batch 未结算预留继续占用预算。
+
+- **Purpose:** 新 reservation 保存 call ID、文档、transport、定价快照；realtime 仅结算匹配 reservation，缺 usage 继续保留预留，历史不完整账本 fail-closed。Batch 未结算预留继续占用预算。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-model-workflow-round6-20260913.xml=101 passed
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-13T02:54:41+08:00 — 共享模型清洗语义保持历史账本 fail-closed；本轮只新增咨询派生字段对无依据付费条件的本地丢弃规则。Batch 运行行为、费用和远端验收未执行。
+
+- **Purpose:** 共享模型清洗语义保持历史账本 fail-closed；本轮只新增咨询派生字段对无依据付费条件的本地丢弃规则。Batch 运行行为、费用和远端验收未执行。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-u03-consultation-after-20260913.xml: 37 passed; pytest-u02-u04-u07-u09-after-20260913.xml: 11 passed
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-13T03:19:58+08:00 — 仅修正测试在执行时生成 future manifest 时间；未启用 Batch、未改变模型或费用行为。
+
+- **Purpose:** 仅修正测试在执行时生成 future manifest 时间；未启用 Batch、未改变模型或费用行为。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-u08-manifest-time-after-20260913.xml: 11 passed
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-13T03:21:49+08:00 — future manifest 测试在执行时构造；仅格式化，模型、Batch、费用和远端行为不变。
+
+- **Purpose:** future manifest 测试在执行时构造；仅格式化，模型、Batch、费用和远端行为不变。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-u08-manifest-time-after-20260913.xml: 11 passed
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-13T03:33:01+08:00 — 共享测试 helper 在工作区临时目录写入并清理 env/manifest；未改变 Batch、模型、费用或远端行为。
+
+- **Purpose:** 共享测试 helper 在工作区临时目录写入并清理 env/manifest；未改变 Batch、模型、费用或远端行为。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-u08-manifest-default-temp-after-20260913.xml: 12 passed
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-13T03:57:08+08:00 — 本轮未改变 Qwen Batch 行为、Batch 开关或 provider transport；仅新增咨询 advice 主体反例和隔离镜像不可变 ID 启动前检查，Batch 仍关闭。
+
+- **Purpose:** 本轮未改变 Qwen Batch 行为、Batch 开关或 provider transport；仅新增咨询 advice 主体反例和隔离镜像不可变 ID 启动前检查，Batch 仍关闭。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-u03-u08-boundary-full-after-20260913.xml: 58 passed
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-13T03:59:05+08:00 — 仅格式化隔离 manifest 测试夹具；未改变 Qwen Batch 行为、开关或费用边界。
+
+- **Purpose:** 仅格式化隔离 manifest 测试夹具；未改变 Qwen Batch 行为、开关或费用边界。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-u03-u08-boundary-full-after-20260913.xml: 58 passed
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-13T04:52:01+08:00 — 共享模型清洗改为 UTF-8 保守输入预算预留，并拒绝耗尽 Worker lease 的精确重试，保持每文档两次 provider 调用上限。
+
+- **Purpose:** 共享模型清洗改为 UTF-8 保守输入预算预留，并拒绝耗尽 Worker lease 的精确重试，保持每文档两次 provider 调用上限。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-13T05:47:26+08:00 — 精确 retry 释放旧 delivery lease，当前 token 围栏 reservation、文档写入和完成；provider 两次上限仅由文档计数和账本决定。
+
+- **Purpose:** 精确 retry 释放旧 delivery lease，当前 token 围栏 reservation、文档写入和完成；provider 两次上限仅由文档计数和账本决定。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-review5-worker-regression-20260913.xml: 7 passed; pytest-review5-affected-full-r3-20260913.xml: 153 passed
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-13T06:22:22+08:00 — 共享 realtime Worker 在限流后续租并让 lease 丢失绕过修复与失败写入；Batch 业务语义未变。
+
+- **Purpose:** 共享 realtime Worker 在限流后续租并让 lease 丢失绕过修复与失败写入；Batch 业务语义未变。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-13T07:17:50+08:00 — 保留历史 Batch 验收记录，但禁止用过期 10 条、review fallback、清理或 Batch 条款驱动当前共享代码或 jx 操作。
+
+- **Purpose:** 保留历史 Batch 验收记录，但禁止用过期 10 条、review fallback、清理或 Batch 条款驱动当前共享代码或 jx 操作。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-review7-doc-contract-r2-20260913.xml: 13 passed
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-13T08:07:57+08:00 — Documented the current superseding ledger boundary: Batch remains disabled and incomplete historical provider accounting is fail-closed without mutating history.
+
+- **Purpose:** Documented the current superseding ledger boundary: Batch remains disabled and incomplete historical provider accounting is fail-closed without mutating history.
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+
+## 2026-09-13T09:17:54+08:00 — Shared model worker now rejects reservations outside the task batch and carries cross-file final-content candidates only to exact remote verification; no Batch service is enabled.
+
+- **Purpose:** Shared model worker now rejects reservations outside the task batch and carries cross-file final-content candidates only to exact remote verification; no Batch service is enabled.
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-review8-model-full-r5-after-20260913.xml
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_release_acceptance_contract.py`
+
+## 2026-09-13T09:18:14+08:00 — Shared model worker now rejects reservations outside the task batch and carries cross-file final-content candidates only to exact remote verification; no Batch service is enabled.
+
+- **Purpose:** Shared model worker now rejects reservations outside the task batch and carries cross-file final-content candidates only to exact remote verification; no Batch service is enabled.
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-review8-model-full-r5-after-20260913.xml
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_release_acceptance_contract.py`
+
+## 2026-09-13T09:31:42+08:00 — Cross-file shard planning now selects a matching verified candidate instead of only the newest row; provider cost summaries validate batch document ownership.
+
+- **Purpose:** Cross-file shard planning now selects a matching verified candidate instead of only the newest row; provider cost summaries validate batch document ownership.
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** Pending
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_release_acceptance_contract.py`
+
+## 2026-09-13T10:38:23+08:00 — 跨文件Dify shard将远端ID明确区分为候选、共享或当前来源拥有；删除、replacement和延迟清理仅在无其他live本地引用时作用于远端对象。Provider reservation、日/累计费用按task batch的完整document集合对账，任何漏账历史fail-closed。
+
+- **Purpose:** 跨文件Dify shard将远端ID明确区分为候选、共享或当前来源拥有；删除、replacement和延迟清理仅在无其他live本地引用时作用于远端对象。Provider reservation、日/累计费用按task batch的完整document集合对账，任何漏账历史fail-closed。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** N/A
+- **After:** N/A
+- **Impact / Notes:** None
+- **Validation:** pytest-review10-focused-r5-after-20260913.xml; pytest-review10-affected-full-r2-20260913.xml (182 passed)
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_release_acceptance_contract.py`
+
+## 2026-09-13T11:22:39+08:00 — 跨来源共享远端 shard 的删除保护改为只查询 live DifyPublicationShard；继续保证最后本地引用才精确删除远端成果，未改变 Batch=false 运行边界。
+
+- **Purpose:** 跨来源共享远端 shard 的删除保护改为只查询 live DifyPublicationShard；继续保证最后本地引用才精确删除远端成果，未改变 Batch=false 运行边界。
+- **Affected modules:**
+  - `model-cleaning-policy — 模型清洗策略规划`
+  - `model-cleaning-orchestration — Batch 生命周期与轮询`
+  - `model-cleaning-contract-tests — 模型清洗契约测试`
+  - `jx-cleaning-acceptance — jx 清洗验收证据`
+  - `activity-chatflow — 活动意图与 Chatflow`
+  - `strategy-contracts — 三类策略契约与发布`
+  - `cleaning-contract-tests — 模型清洗契约回归`
+  - `jx-acceptance-docs — jx 验收与文档`
+- **Before:** 共享引用 guard 包含普通 replacement 历史行，可能混淆 post-shard ownership 与历史关联。
+- **After:** guard 仅基于 live shard，跨文件复用、replacement 与延迟删除仍按最后引用保护。
+- **Impact / Notes:** None
+- **Validation:** pytest-review10-activity-cleanup-r1 4 passed；pytest-review10-affected-full-r3 202 passed
+- **Changed paths:**
+  - `ai_management/cleaning.py`
+  - `ai_management/config.py`
+  - `ai_management/model_cleaning.py`
+  - `ai_management/workers/tasks/model_cleaning.py`
+  - `dify/商业顾问_统一修复版_Dify-1.13.3.yml`
+  - `dify/商业顾问（当前使用版本）.yml`
+  - `knowledge_cleaner/dify.py`
+  - `scripts/jx_cleaning_test_switch.sh`
+  - `tests/test_business_advisor_unified_dsl.py`
+  - `tests/test_dify_activity_contract.py`
+  - `tests/test_large_scale_cleaning.py`
+  - `tests/test_model_cleaning_workflow.py`
+  - `tests/test_release_acceptance_contract.py`

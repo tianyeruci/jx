@@ -7,7 +7,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -50,6 +50,7 @@ from ...services.bailian_cleanup import (
     clear_successful_bailian_file_tasks,
     ensure_bailian_cleanup_tasks,
 )
+from ...services.dify_references import has_other_live_dify_reference
 from ...services.observability import record_event
 
 router = APIRouter(
@@ -80,6 +81,11 @@ async def _read_upload_bounded(upload: UploadFile, limit: int) -> bytes:
 
 def _dataset_id(kb_code: str) -> str:
     settings = get_settings()
+    if settings.cleaning_general_only and kb_code != "general":
+        raise HTTPException(
+            status_code=403,
+            detail="cleaning-test general-only:该知识库写入入口已禁用",
+        )
     if kb_code == "general":
         return settings.dify_general_dataset_id
     if kb_code == "course":
@@ -1076,6 +1082,7 @@ def set_document_status(
     payload: DocumentStatusRequest,
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
+    _dataset_id(kb_code)
     matches = [item for item in _documents(kb_code) if str(item.get("id") or "") == document_id]
     if not matches:
         raise ServiceError("VALIDATION_ERROR", "知识库文档不存在", 404, False)
@@ -1147,6 +1154,7 @@ def delete_document(
     payload: DeleteDocumentRequest,
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
+    _dataset_id(kb_code)
     matches = [item for item in _documents(kb_code) if str(item.get("id") or "") == document_id]
     if not matches:
         raise ServiceError("VALIDATION_ERROR", "知识库文档不存在", 404, False)
@@ -1168,25 +1176,26 @@ def delete_document(
         raise ServiceError("DIFY_UNAVAILABLE", "Dify 删除失败，未标记为成功", 502, True) from exc
     finally:
         client.close()
-    local_document = session.scalar(
-        select(CleaningDocument)
+    local_documents = list(
+        session.scalars(
+            select(CleaningDocument)
         .where(CleaningDocument.dify_document_id == document_id)
         .options(selectinload(CleaningDocument.file))
+        )
     )
-    if local_document is not None:
-        local_document.remote_deleted_at = datetime.now(timezone.utc)
-        local_document.dify_document_id = None
+    if local_documents:
+        affected_files = {document.file for document in local_documents if document.file is not None}
+        for local_document in local_documents:
+            local_document.remote_deleted_at = datetime.now(timezone.utc)
+            local_document.dify_document_id = None
         for shard in session.scalars(
             select(DifyPublicationShard).where(DifyPublicationShard.dify_document_id == document_id)
         ):
             shard.remote_deleted_at = datetime.now(timezone.utc)
             shard.dify_document_id = None
-        if local_document.file and not any(
-            item.dify_document_id
-            for item in local_document.file.documents
-            if item.id != local_document.id
-        ):
-            local_document.file.dedupe_released_at = datetime.now(timezone.utc)
+        for file_row in affected_files:
+            if not any(item.dify_document_id for item in file_row.documents):
+                file_row.dedupe_released_at = datetime.now(timezone.utc)
         session.commit()
     record_event(
         level="INFO",
@@ -1215,6 +1224,7 @@ def delete_uploaded_source(
     The source file is the duplicate-protection unit: re-upload is released
     only after all known remote document IDs have been deleted successfully.
     """
+    _dataset_id(kb_code)
     file_row = session.scalar(
         select(CleaningFile)
         .join(CleaningBatch, CleaningBatch.id == CleaningFile.batch_id)
@@ -1235,13 +1245,17 @@ def delete_uploaded_source(
         str(item.dify_document_id) for item in file_row.publication_shards if item.dify_document_id
     }
     client = _client(kb_code) if ids else None
+    shared_ids: set[str] = set()
     try:
         for document_id in sorted(ids):
-            try:
-                client.delete_document(document_id)
-            except Exception as exc:
-                if not (getattr(getattr(exc, "response", None), "status_code", None) == 404):
-                    raise
+            if has_other_live_dify_reference(session, document_id, excluding_file_id=file_row.id):
+                shared_ids.add(document_id)
+            else:
+                try:
+                    client.delete_document(document_id)
+                except Exception as exc:
+                    if not (getattr(getattr(exc, "response", None), "status_code", None) == 404):
+                        raise
             for item in file_row.documents:
                 if item.dify_document_id == document_id:
                     item.remote_deleted_at = datetime.now(timezone.utc)
@@ -1300,6 +1314,15 @@ def delete_uploaded_source(
         actor_hash="admin",
         resource_type="cleaning_file",
         resource_id=file_id,
-        details={"kb_code": kb_code, "deleted_document_count": len(ids)},
+        details={
+            "kb_code": kb_code,
+            "deleted_document_count": len(ids) - len(shared_ids),
+            "shared_document_count": len(shared_ids),
+        },
     )
-    return {"deleted": True, "file_id": file_id, "deleted_document_count": len(ids)}
+    return {
+        "deleted": True,
+        "file_id": file_id,
+        "deleted_document_count": len(ids) - len(shared_ids),
+        "shared_document_count": len(shared_ids),
+    }

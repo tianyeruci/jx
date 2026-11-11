@@ -36,7 +36,9 @@ class DifyAppClient:
             detail = response.text
         if response.status_code == 429:
             raise dify_error(detail, rate_limited=True)
-        raise ServiceError("DIFY_UNAVAILABLE", "Dify 应用调用失败", 502, response.status_code >= 500)
+        raise ServiceError(
+            "DIFY_UNAVAILABLE", "Dify 应用调用失败", 502, response.status_code >= 500
+        )
 
     def stream_chat(
         self,
@@ -94,7 +96,9 @@ class DifyAppClient:
         payload = {"inputs": inputs, "response_mode": "blocking", "user": user}
         try:
             with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(f"{self.base_url}/workflows/run", headers=self.headers, json=payload)
+                response = client.post(
+                    f"{self.base_url}/workflows/run", headers=self.headers, json=payload
+                )
                 self._raise(response)
                 return response.json()
         except ServiceError:
@@ -117,7 +121,9 @@ class DifyAppClient:
     def stop_workflow(self, task_id: str, user: str) -> dict[str, Any]:
         return self._post(f"/workflows/tasks/{task_id}/stop", {"user": user})
 
-    def feedback(self, message_id: str, user: str, rating: str | None, content: str) -> dict[str, Any]:
+    def feedback(
+        self, message_id: str, user: str, rating: str | None, content: str
+    ) -> dict[str, Any]:
         return self._post(
             f"/messages/{message_id}/feedbacks",
             {"user": user, "rating": rating, "content": content},

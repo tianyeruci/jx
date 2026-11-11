@@ -96,9 +96,7 @@ def list_pdf_conversion_issues(
 
     filters = [
         SystemEventLog.category == "pdf_conversion",
-        SystemEventLog.event_code.in_(
-            ["PDF_CONVERSION_WARNING", "PDF_CONVERSION_BLOCKED"]
-        ),
+        SystemEventLog.event_code.in_(["PDF_CONVERSION_WARNING", "PDF_CONVERSION_BLOCKED"]),
     ]
     if from_time:
         filters.append(SystemEventLog.occurred_at >= from_time)
@@ -125,7 +123,9 @@ def list_pdf_conversion_issues(
     total = len(candidates)
     start = (page - 1) * limit
     return {
-        "items": [event_to_dict(item, include_details=True) for item in candidates[start : start + limit]],
+        "items": [
+            event_to_dict(item, include_details=True) for item in candidates[start : start + limit]
+        ],
         "page": page,
         "limit": limit,
         "total": total,

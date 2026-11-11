@@ -37,7 +37,11 @@ def _flatten_outline(reader: PdfReader, items: Iterable[object]) -> list[tuple[s
 def _text_layer_is_missing(pages: list[PageText]) -> bool:
     if not pages:
         return True
-    sample = pages if len(pages) <= 12 else pages[:4] + pages[len(pages) // 2 - 2 : len(pages) // 2 + 2] + pages[-4:]
+    sample = (
+        pages
+        if len(pages) <= 12
+        else pages[:4] + pages[len(pages) // 2 - 2 : len(pages) // 2 + 2] + pages[-4:]
+    )
     readable = sum(len(re.sub(r"\s+", "", page.text)) >= 40 for page in sample)
     return readable < max(1, len(sample) // 3)
 

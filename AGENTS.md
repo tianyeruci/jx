@@ -12,6 +12,8 @@
 - `AI管理服务当前状态与后续测试交接.md` 是给后续协作者使用的滚动交接，可在任务范围内直接修改；每次修改必须在文档结尾追加记录，写明修改原因、修改前和修改后。
 - 写入前一次性确认会实质影响范围、安全、权限、成本或不可逆结果的歧义；次要歧义采用安全、可逆默认值并说明假设。
 - 同一任务内已读取且未变化的文件不机械重读。仅在跨域、索引失真、结构变化或文档冲突时扩大搜索。
+- 接续任务先从当前权威 SPEC/IMPLEMENTATION 识别最终交付和完成证据，再区分必须完成的前置门禁与实际交付。不得把文档同步、Quality、review 或计划维护本身当成部署/验收任务的终点；门禁满足后立即推进目标环境中的操作。进度先报告交付是否发生、剩余的必要阻塞和范围内验收结果，避免因重复检查偏离主目标。
+- 后续用户明确纠正同一任务的执行重心时，以其最新有效要求统一当前权威文档；历史摘要或已处理控制消息不构成新要求。已通过且仍有效的检查不重复运行；只为实际变更、明确风险或仓库必需门禁补充检查。详细步骤按阶段加载。
 
 ## 事实与权威
 
@@ -30,8 +32,10 @@
 
 - 保留用户改动和无关工作树变化；不清理、覆盖或提交无关文件。
 - 缺陷有合适测试面时先写失败测试，再修复；只运行仓库已有且与改动风险相称的检查。
-- 高风险发布按当前验收方案完成基线、统一修复、本地回归、备份、远端回归和精确清理。基线阶段不得中途修改服务行为。
-- 测试工具阻塞时保留原始脱敏证据，完成可执行部分后统一修正并从头重跑。
+- 高风险发布按当前已确认方案执行；用户明确免除可丢弃测试环境的备份/恢复要求时，不得重新将其作为部署门禁，也不得将例外扩大到正式资源或未授权的数据删除。基线阶段不得中途修改服务行为。
+- 每个新增部署阻塞必须说明具体受影响资源、失败证据及最小解除条件；历史测试任务未收口、可选恢复演练或范围外改进不得自动升级为整个部署的阻塞。确有风险时仅停止依赖该风险的动作，部分部署不得报告为整套完成。
+- 复审对同一候选集中给出阻断项，统一修复后核验变更及必要回归；仍有效的完整差异审查结论继续保留，不反复更换审查者重开同一范围。再次发现阻断时须说明新证据或前次遗漏，不以无限追加 review 替代交付；内容指纹和必需门禁仍按实际状态校验。
+- 测试工具阻塞时保留原始脱敏证据，完成其余安全有效的测试后统一修正，重跑受影响用例及必要回归；仅当测试证据整体失效或仓库硬门禁要求时重跑完整检查，不自动扩大业务验收范围。
 - 任何“已完成、已部署、已清理、可回滚”结论都必须有可定位证据，不能只依据退出码或口头状态。
 
 ## 文档同步
@@ -58,9 +62,9 @@
 
 - 不输出、提交或写入报告：`.env` 密钥、Token、正文、真实用户 ID、原始敏感文件名、未脱敏样本和受保护映射。
 - 正式课程、路线、配置和业务文档默认保留。删除 Dify 数据必须能由精确 document ID、测试标记或本服务关联记录证明属于测试；仅凭名称正则不得删除。
-- 整库清 Redis 前必须证明目标 DB 为本服务独占且已有可恢复备份；否则只删除精确键。
-- 真实样本、生产数据、远端部署和 Dify 发布只在任务明确授权的范围内操作；发布前后都要快照、核对和精确清理。
-- 不直接修改 Dify 业务数据库，不在容器内热改代码，不删除持久卷，不执行 Git push，除非用户另行明确授权。
+- 清理 Redis 优先使用精确项目键；整库清理必须证明目标 DB 为该项目独占。明确可丢弃的测试数据不要求备份，正式数据须按下方部署规则保留并备份；共享 DB 不得整库清理。
+- 真实样本、生产数据、远端部署和 Dify 发布只在任务明确授权的范围内操作；操作前核对目标归属，操作后读取实际状态。测试环境不强制备份，正式环境按下方规则保存回滚材料。
+- 不直接修改 Dify 业务数据库，不在容器内热改代码，不执行 Git push。仅在已授权的测试项目重建范围内可删除已证明专属于该项目的可丢弃持久卷；正式、共享或归属不明的卷不得删除。
 
 ## 维护本文件
 
@@ -73,42 +77,35 @@
 # Codex Repository Governance
 
 ## Sources of truth
-- Current project status: `docs/PROJECT_STATUS.md` (generated).
-- Architecture baseline: `docs/architecture/PROFILE.md`.
-- Active feature requirements: `docs/features/<id>/SPEC.md`.
-- Active implementation contract: `docs/features/<id>/IMPLEMENTATION.md`.
-- Machine state/config: `.codex/governance/project.json`.
-- Local active-work state under `.codex/state/` is generated and must not be committed.
+
+`docs/PROJECT_STATUS.md`（生成状态）、`docs/architecture/PROFILE.md`、`docs/features/<id>/SPEC.md`、`docs/features/<id>/IMPLEMENTATION.md`、`.codex/governance/project.json` 依次为状态、架构、需求、实施与质量配置权威；`.codex/state/` 仅为本地生成状态，不提交。
 
 ## Workflow
-- Route substantive development through the user-level `dev-workflow` skill.
-- Preserve existing architecture unless an approved Implementation/Engineering Change authorizes structural migration.
-- For Standard/High feature/engineering work, use `gov approve-requirements` and `gov approve-implementation` only after the explicit human gates; `gov set-phase implementation` verifies their content fingerprints and refuses stale approval.
-- Before the Implementation Gate, do not edit production/project source. Requirements/architecture/governance documents and approved disposable prototypes are the only pre-implementation write targets.
-- Bug fixes use evidence-driven diagnosis and do not require a full feature-doc chain when expected behavior is already clear.
+
+- 实质开发走 `dev-workflow` 并保持现有架构；Standard/High 须在明确人类门禁后执行 `gov approve-requirements`、`gov approve-implementation`，实施门禁前不改生产源码。
+- 预期明确的缺陷按证据驱动修复，不强制完整 Feature 文档链。
 
 ## Functional module ownership
-- Standard/High Feature contracts register module path/glob ownership before implementation approval.
-- A shared implementation path may affect multiple active Features; all related current Feature docs must be synchronized before completion.
-- Module status is derived from implementation/Quality/completion; do not manually claim completion to bypass validation.
-- Retired Features remain historical and no longer participate in current path ownership.
+
+Standard/High 合同先登记模块路径；共享路径同步所有受影响 Feature，模块状态只由改动、Quality 与完成门禁派生；已退役 Feature 不再拥有当前路径。
 
 ## Quality
-Use the canonical commands in `.codex/governance/project.json`.
-Before completion, run:
-- Windows: `powershell -NoProfile -ExecutionPolicy Bypass -File .codex/governance/gov.ps1 quality`
-- WSL/Linux: `python3 .codex/governance/gov.py quality`
+
+按 `.codex/governance/project.json` 的规范命令验证；Windows 用 `powershell -NoProfile -ExecutionPolicy Bypass -File .codex/governance/gov.ps1 quality`，WSL/Linux 用 `python3 .codex/governance/gov.py quality`。
 
 ## Documentation
-- One current SPEC and IMPLEMENTATION file per feature; do not create versioned duplicates.
-- Implementation writes automatically mark the bound feature docs stale and regenerate `docs/PROJECT_STATUS.md`; do not hand-edit that generated file.
-- For Standard/High bound work, clear stale docs with `gov sync-docs --reason "..." --summary "..."` only after semantic docs match the code. The CLI appends the semantic before/after CHANGELOG entry and refuses a no-summary bypass.
-- Update SPEC/IMPLEMENTATION/Architecture Profile only when their actual semantics changed, because such edits intentionally invalidate the corresponding approval.
-- Create ops/incident/ADR docs only when triggered by a real need.
+
+每个 Feature 只保留一份当前 SPEC/IMPLEMENTATION，不手改生成的 `PROJECT_STATUS.md`。Standard/High 在语义文档与代码一致后以 `gov sync-docs --reason "..." --summary "..."` 收口；语义未变不改 SPEC/IMPLEMENTATION/Profile，按真实需要才创建 ADR、事故或运行文档。
 
 ## Safety
-- No silent production push/merge/deploy, irreversible migration, destructive resource change, permission/secret change, or unapproved production dependency.
-- Never commit secrets.
-- Use one write owner per checkout; use worktrees for parallel write tasks.
-- Common remote/production Bash actions are protected by repo hooks and require an exact recorded release approval after the user explicitly approves the command.
+
+- **部署授权一次生效**：用户已明确目标环境、项目和部署范围后，范围内的替换、重启、验证及常规修复自动推进，不再逐条命令或逐个候选请求人工审批。真实授权来源与执行回执由工具记录，不伪造 `--confirmed-by-user`。
+- **默认环境与位置**：用户未说明时默认测试环境，本项目直接在 `ys` 部署和验证；用户明确指定正式环境时才走正式流程，已有明确正式环境归属不被默认值覆盖。一台服务器只对应一种环境，不新增隔离栈、临时测试数据库/schema、并行版本或本地项目部署。本地可做静态检查和不启动服务的门禁模拟验证。
+- **测试环境**：核对项目归属后，删除该项目的旧部署及已允许丢弃的专属旧数据，再部署新版本并测试。不要求旧数据兼容、备份、恢复演练、并行版本，也不把最终全量测试/复审完成作为首次测试部署的前提；涉及共享资源或越界风险的具体问题须先解决。
+- **正式环境**：保留业务数据、旧版可运行镜像/代码及必要配置；备份同一目标的数据并核验完整、可读取且恢复工具可用，通过适用的候选检查后重新部署并验证，保留回滚材料。不得以有备份为由清空正式数据；无明确要求或具体恢复疑点时不增加全量恢复演练。
+- **执行与验收**：使用已安装的范围授权执行器，或支持复用任务授权的回执命令；旧工具不支持时做最小本地兼容调整，保留现有任务及验证记录，不关闭钩子或伪造审批。部署后核验目标版本及关键流程；普通测试问题集中修复，阻塞后续测试的问题先修复，仍有效的证据继续复用。
+- **本项目执行入口**：使用 `.codex/governance/deployment_scope.py`。Agent 用 `create-scope` 记录已有真实授权及目标服务器/实际部署项目名，用 `issue-receipt` 绑定原命令，再以 `run --receipt-id` 显式执行，回读后用 `record-result` 留证。这些是自动执行记录，不是要求用户逐条确认；显式入口不依赖桌面自动加载项目 hook。旧 `gov.py` 的人工精确审批入口不再用于上述已授权部署；其他未授权发布动作及平台原生确认不受此例外影响。
+- 执行入口使用 Agent 根据目标现场回读生成的项目核验清单，绑定实际 endpoint、Compose project、配置路径与制品摘要；签发和执行时核对命令真实目标及动作，不能只信传入标签。未识别的脚本/复杂命令先做最小技术适配，不借此重复索要同一范围授权；旧 JX 路径或封存脚本不能直接视为 YS 的有效清单。
+- 当前入口只提供直接 SSH/Compose 的窄适配；脚本执行明确不支持，不能只凭脚本摘要或动作标签放行。单条 Compose 只读查询可用于准备现场清单；混合写入命令仍受校验。尚未执行的回执可用 `cancel` 撤销后复用原授权，执行中或结果未知的回执必须先回读核实。
+- 仅在目标/动作超出授权、出现未授权费用或正式数据丢失风险、必要信息无法查明时补充最少确认。平台原生强制确认仍须遵守。一处 checkout 仅一个写入者；不得提交密钥，部署授权不包含 Git push/merge 或其他项目的破坏性操作。
 <!-- codex-repo-governance:end -->

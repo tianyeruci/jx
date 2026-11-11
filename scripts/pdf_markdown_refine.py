@@ -73,8 +73,7 @@ def convert_file(
                 markdown = table_result.markdown
                 result["table_cleaning"] = table_result.as_dict()
                 result["warnings"].extend(
-                    f"table_{issue.action}:{issue.reason}"
-                    for issue in table_result.issues
+                    f"table_{issue.action}:{issue.reason}" for issue in table_result.issues
                 )
             if not markdown.strip():
                 raise ValueError("no_effective_text_after_table_cleaning")
@@ -111,7 +110,11 @@ def _arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _arguments(argv)
     if not 120 <= args.ocr_dpi <= 300:
-        print(json.dumps({"status": "failed", "error": "--ocr-dpi 必须在 120-300 之间"}, ensure_ascii=False))
+        print(
+            json.dumps(
+                {"status": "failed", "error": "--ocr-dpi 必须在 120-300 之间"}, ensure_ascii=False
+            )
+        )
         return 2
     if args.input is not None:
         paths = [args.input]
@@ -125,7 +128,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         output_path = args.output_dir / (path.stem + ".md")
         if output_path.exists() and not args.force:
             summaries.append(
-                {"input": str(path), "output": str(output_path), "status": "skipped", "warnings": ["output_exists"]}
+                {
+                    "input": str(path),
+                    "output": str(output_path),
+                    "status": "skipped",
+                    "warnings": ["output_exists"],
+                }
             )
             continue
         summaries.append(

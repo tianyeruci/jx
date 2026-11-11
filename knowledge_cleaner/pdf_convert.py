@@ -49,10 +49,14 @@ _WECHAT = re.compile(
     r"(?i)(?P<label>微信(?:号|ID)?|wechat)\s*[:：]?\s*(?P<value>[A-Za-z][-_A-Za-z0-9]{5,19})"
 )
 _QQ = re.compile(r"(?i)(?P<label>QQ(?:号|ID)?)\s*[:：]?\s*(?P<value>[1-9]\d{4,11})")
-_ID_CARD = re.compile(r"(?<![0-9Xx])\d{6}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[0-9Xx](?![0-9Xx])")
+_ID_CARD = re.compile(
+    r"(?<![0-9Xx])\d{6}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[0-9Xx](?![0-9Xx])"
+)
 _BANK_CARD = re.compile(r"(?<!\d)\d{16,19}(?!\d)")
 _URL = re.compile(r"(?i)(?:https?://|www\.)[^\s<>]+")
-_ADDRESS_FIELD = re.compile(r"(?m)^(?P<label>(?:联系|家庭|办公|公司)?地址)\s*[:：]\s*(?P<value>[^\n]{4,100})$")
+_ADDRESS_FIELD = re.compile(
+    r"(?m)^(?P<label>(?:联系|家庭|办公|公司)?地址)\s*[:：]\s*(?P<value>[^\n]{4,100})$"
+)
 _FIELD_PREFIX = r"\s*(?:#{1,6}\s*)?(?:[-*+]\s*)?(?:\*\*)?"
 _FIELD_SUFFIX = r"(?:\*\*)?\s*[:：]\s*"
 _PERSON_FIELD = re.compile(
@@ -74,6 +78,22 @@ _LEGAL_COMPANY_SCAN = re.compile(
 
 class OptionalBackendUnavailable(RuntimeError):
     """Raised internally when a lazy optional PDF backend is unavailable."""
+
+
+class OCRPageCoverageMismatch(RuntimeError):
+    """OCR did not return exactly the page set requested by the converter."""
+
+
+class _UnavailableOCRBackend:
+    """Adapt an invalid backend selection into the normal review result path."""
+
+    name = "ocr_unavailable"
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    def extract(self, *_args: Any, **_kwargs: Any) -> list[PDFPageResult]:
+        raise OptionalBackendUnavailable(self.reason)
 
 
 @dataclass(slots=True, frozen=True)
@@ -278,9 +298,7 @@ def _table_reliability_reasons(rows: Sequence[Sequence[Any] | None]) -> list[str
     width = max((len(row) for row in table), default=0)
     if width < 2:
         reasons.append("fewer_than_2_columns")
-    sparse_rows = sum(
-        1 for row in table if sum(bool(cell) for cell in row) < 2
-    )
+    sparse_rows = sum(1 for row in table if sum(bool(cell) for cell in row) < 2)
     if sparse_rows:
         reasons.append(f"sparse_rows={sparse_rows}")
     return reasons
@@ -385,10 +403,14 @@ def _join_words(words: Sequence[Mapping[str, Any]]) -> str:
     return result
 
 
-def _words_to_line_events(words: Sequence[Mapping[str, Any]], tolerance: float = 3.0) -> list[tuple[float, float, str]]:
+def _words_to_line_events(
+    words: Sequence[Mapping[str, Any]], tolerance: float = 3.0
+) -> list[tuple[float, float, str]]:
     rows: list[list[Mapping[str, Any]]] = []
     row_tops: list[float] = []
-    for word in sorted(words, key=lambda item: (float(item.get("top", 0)), float(item.get("x0", 0)))):
+    for word in sorted(
+        words, key=lambda item: (float(item.get("top", 0)), float(item.get("x0", 0)))
+    ):
         top = float(word.get("top", 0))
         if not rows or abs(top - row_tops[-1]) > tolerance:
             rows.append([word])
@@ -537,9 +559,18 @@ def _collect_table_candidates(
     for candidate in sorted(candidates, key=lambda item: item.score, reverse=True):
         overlap = False
         for existing in selected:
-            x_overlap = max(0.0, min(candidate.bbox[2], existing.bbox[2]) - max(candidate.bbox[0], existing.bbox[0]))
-            y_overlap = max(0.0, min(candidate.bbox[3], existing.bbox[3]) - max(candidate.bbox[1], existing.bbox[1]))
-            area = max((candidate.bbox[2] - candidate.bbox[0]) * (candidate.bbox[3] - candidate.bbox[1]), 1.0)
+            x_overlap = max(
+                0.0,
+                min(candidate.bbox[2], existing.bbox[2]) - max(candidate.bbox[0], existing.bbox[0]),
+            )
+            y_overlap = max(
+                0.0,
+                min(candidate.bbox[3], existing.bbox[3]) - max(candidate.bbox[1], existing.bbox[1]),
+            )
+            area = max(
+                (candidate.bbox[2] - candidate.bbox[0]) * (candidate.bbox[3] - candidate.bbox[1]),
+                1.0,
+            )
             if x_overlap * y_overlap / area >= 0.55:
                 overlap = True
                 break
@@ -548,12 +579,16 @@ def _collect_table_candidates(
     return sorted(selected, key=lambda item: (item.bbox[1], item.bbox[0]))
 
 
-def _word_line_blocks(words: Sequence[Mapping[str, Any]], tolerance: float = 3.0) -> list[dict[str, Any]]:
+def _word_line_blocks(
+    words: Sequence[Mapping[str, Any]], tolerance: float = 3.0
+) -> list[dict[str, Any]]:
     """Group words into ordered lines while retaining heading evidence."""
 
     rows: list[list[Mapping[str, Any]]] = []
     tops: list[float] = []
-    for word in sorted(words, key=lambda item: (float(item.get("top", 0)), float(item.get("x0", 0)))):
+    for word in sorted(
+        words, key=lambda item: (float(item.get("top", 0)), float(item.get("x0", 0)))
+    ):
         top = float(word.get("top", 0))
         if not rows or abs(top - tops[-1]) > tolerance:
             rows.append([word])
@@ -604,7 +639,12 @@ def _heading_level(
     if len(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", text)) < 2:
         return None
     size = float(block.get("size") or 0)
-    numbered = bool(re.match(r"^(?:第\s*[0-9一二三四五六七八九十百]+[章节部分篇]|[0-9]{1,2}[.、)]|[一二三四五六七八九十]+[、.])", text))
+    numbered = bool(
+        re.match(
+            r"^(?:第\s*[0-9一二三四五六七八九十百]+[章节部分篇]|[0-9]{1,2}[.、)]|[一二三四五六七八九十]+[、.])",
+            text,
+        )
+    )
     line_width = max(0.0, float(block.get("x1", 0)) - float(block.get("x0", 0)))
     centered = (
         line_width <= page_width * 0.62
@@ -716,7 +756,9 @@ def _merge_cross_page_tables(layouts: Sequence[_PageLayout]) -> None:
         elif previous_rows and current_rows[0] and not current_rows[0][0]:
             tail = previous_rows[-1]
             head = current_rows.pop(0)
-            if len(tail) == len(head) and all(not head[idx] or tail[idx] for idx in range(len(head))):
+            if len(tail) == len(head) and all(
+                not head[idx] or tail[idx] for idx in range(len(head))
+            ):
                 previous_rows[-1] = [
                     (f"{tail[idx]} {head[idx]}".strip() if head[idx] else tail[idx])
                     for idx in range(len(tail))
@@ -728,7 +770,9 @@ def _merge_cross_page_tables(layouts: Sequence[_PageLayout]) -> None:
             continue
         previous_page = previous_layout.page
         current_page = current_layout.page
-        previous_page.markdown = previous_page.markdown.replace(previous.markdown, merged_markdown, 1)
+        previous_page.markdown = previous_page.markdown.replace(
+            previous.markdown, merged_markdown, 1
+        )
         current_page.markdown = current_page.markdown.replace(current.markdown, "", 1)
         previous_page.table_count = max(previous_page.table_count, int(reliable))
         current_page.table_count = max(0, current_page.table_count - 1)
@@ -743,8 +787,7 @@ def _merge_cross_page_tables(layouts: Sequence[_PageLayout]) -> None:
             }
             current_page.table_issues.append(issue)
             current_page.warnings.append(
-                "table_review:跨页表格结构未能唯一确认，已保守线性化:"
-                f"table={table_index}"
+                f"table_review:跨页表格结构未能唯一确认，已保守线性化:table={table_index}"
             )
 
 
@@ -752,7 +795,9 @@ def _extract_pdfplumber_pages(path: Path) -> list[PDFPageResult]:
     try:
         pdfplumber = importlib.import_module("pdfplumber")
     except ImportError as exc:
-        raise OptionalBackendUnavailable("pdfplumber 未安装，无法验证和结构化提取数字PDF表格") from exc
+        raise OptionalBackendUnavailable(
+            "pdfplumber 未安装，无法验证和结构化提取数字PDF表格"
+        ) from exc
 
     # The diagnostic CLI and the formal text-PDF path must use the same
     # deterministic layout core.  Keep the page-result adapter here so the
@@ -1042,20 +1087,15 @@ def _classify_pdf_type(pages: Sequence[PDFPageResult]) -> str:
     if all(kind == "text" for kind in kinds):
         return "text"
 
-    low_pages = [
-        page
-        for page, kind in zip(pages, kinds)
-        if kind in {"low", "uncertain"}
-    ]
+    low_pages = [page for page, kind in zip(pages, kinds) if kind in {"low", "uncertain"}]
     blank_pages = [page for page, kind in zip(pages, kinds) if kind == "blank"]
     text_pages = [page for page, kind in zip(pages, kinds) if kind == "text"]
     if not text_pages:
         # Preserve the historical OCR route for an entirely blank pypdf probe:
         # a PDF with no text or image resources is indistinguishable from a
         # raster scan at this stage. Synthetic/fake backends remain uncertain.
-        if (
-            all(kind == "blank" for kind in kinds)
-            and all(page.backend == "pypdf" and page.image_count == 0 for page in pages)
+        if all(kind == "blank" for kind in kinds) and all(
+            page.backend == "pypdf" and page.image_count == 0 for page in pages
         ):
             return "scan"
         return "review"
@@ -1063,10 +1103,7 @@ def _classify_pdf_type(pages: Sequence[PDFPageResult]) -> str:
         return "review"
 
     page_count = len(pages)
-    if all(
-        page.page_number in {1, page_count} and page.image_count == 0
-        for page in low_pages
-    ):
+    if all(page.page_number in {1, page_count} and page.image_count == 0 for page in low_pages):
         return "text"
 
     # A page with an embedded image and a short native text layer is common in
@@ -1076,13 +1113,14 @@ def _classify_pdf_type(pages: Sequence[PDFPageResult]) -> str:
     # native layer is the complete source of record.  Image-only pages were
     # handled above and still require review.
     image_low_pages = [
-        page for page, kind in zip(pages, kinds)
+        page
+        for page, kind in zip(pages, kinds)
         if kind == "uncertain" and page.image_count > 0 and page.text_characters > 0
     ]
     if image_low_pages and all(page.text_characters > 0 for page in pages):
         native_chars = sum(page.text_characters for page in pages)
         if native_chars >= 200 and any(page.text_characters >= 40 for page in pages):
-            return "text"
+            return "review"
     return "review"
 
 
@@ -1093,7 +1131,9 @@ def _remove_repeated_marginal_lines(pages: Sequence[PDFPageResult]) -> None:
     for page in pages:
         lines = [line.strip() for line in page.markdown.splitlines() if line.strip()]
         candidates = set(lines[:2] + lines[-2:])
-        counts.update(line for line in candidates if 2 <= len(line) <= 100 and not line.startswith("|"))
+        counts.update(
+            line for line in candidates if 2 <= len(line) <= 100 and not line.startswith("|")
+        )
     threshold = max(3, (len(pages) + 2) // 3)
     repeated = {line for line, count in counts.items() if count >= threshold}
     if not repeated:
@@ -1138,7 +1178,9 @@ def _entity_tokens(value: str) -> list[str]:
     ignored = {"客户", "用户", "案例客户", "顾问", "老师", "主持人", "记录人", "匿名参与者"}
     result: list[str] = []
     for token in tokens:
-        token = re.sub(r"\s*[（(](?:顾问|咨询师|主持人|记录人|客户|用户|老师)[）)]\s*$", "", token.strip())
+        token = re.sub(
+            r"\s*[（(](?:顾问|咨询师|主持人|记录人|客户|用户|老师)[）)]\s*$", "", token.strip()
+        )
         if 1 < len(token) <= 40 and token not in ignored:
             result.append(token)
     return result
@@ -1272,18 +1314,93 @@ def scan_residual_pii(text: str) -> list[PIIFinding]:
     return sorted(findings, key=lambda item: (item.start, item.end, item.category))
 
 
-def _backend_extract(backend: OCRBackend, path: Path, *, dpi: int) -> list[PDFPageResult]:
+def _backend_extract(
+    backend: OCRBackend,
+    path: Path,
+    *,
+    dpi: int,
+    page_numbers: set[int] | None = None,
+) -> list[PDFPageResult]:
     """Call old third-party/fake backends while preferring DPI-aware APIs."""
 
     try:
-        return list(backend.extract(path, dpi=dpi))
+        pages = list(backend.extract(path, dpi=dpi, page_numbers=page_numbers))
     except TypeError as exc:
         # Existing integrations implemented ``extract(path)`` before quality
         # diagnostics were introduced.  Keep them source-compatible; only
         # swallow an argument mismatch, never a backend processing failure.
-        if "dpi" not in str(exc):
+        if "page_numbers" not in str(exc) and "dpi" not in str(exc):
             raise
-        return list(backend.extract(path))  # type: ignore[call-arg]
+        try:
+            pages = list(backend.extract(path, dpi=dpi))  # type: ignore[call-arg]
+        except TypeError:
+            pages = list(backend.extract(path))  # type: ignore[call-arg]
+    # Legacy and Paddle-style backends may not accept page_numbers and return
+    # the whole document.  Do not let their unrelated pages replace reliable
+    # native pages; filtering leaves the existing coverage guard to reject a
+    # backend that cannot supply every requested target.
+    if page_numbers is not None:
+        pages = [page for page in pages if page.page_number in page_numbers]
+    return pages
+
+
+def _merge_selective_ocr_pages(
+    native_pages: Sequence[PDFPageResult],
+    ocr_pages: Sequence[PDFPageResult],
+    *,
+    expected_page_numbers: set[int] | None = None,
+    replace_page_numbers: set[int] | None = None,
+) -> list[PDFPageResult]:
+    """Keep reliable native pages and replace only pages needing OCR."""
+
+    if expected_page_numbers is not None:
+        actual_numbers = [page.page_number for page in ocr_pages]
+        actual_set = set(actual_numbers)
+        missing = sorted(expected_page_numbers - actual_set)
+        extra = sorted(actual_set - expected_page_numbers)
+        duplicates = sorted(
+            page_number for page_number in actual_set if actual_numbers.count(page_number) > 1
+        )
+        if missing or extra or duplicates:
+            details = []
+            if missing:
+                details.append("missing=" + ",".join(map(str, missing)))
+            if extra:
+                details.append("extra=" + ",".join(map(str, extra)))
+            if duplicates:
+                details.append("duplicate=" + ",".join(map(str, duplicates)))
+            raise OCRPageCoverageMismatch("OCR_PAGE_COVERAGE_MISMATCH:" + ";".join(details))
+    by_number = {page.page_number: page for page in ocr_pages}
+    merged: list[PDFPageResult] = []
+    for native in native_pages:
+        needs_ocr = native.text_characters < 40 or (
+            replace_page_numbers is not None and native.page_number in replace_page_numbers
+        )
+        replacement = by_number.get(native.page_number) if needs_ocr else None
+        merged.append(replacement or native)
+    return merged
+
+
+def _ocr_native_key_fact_conflicts(native: str, ocr: str) -> list[str]:
+    """Detect only decisive OCR-vs-native disagreements before page choice."""
+    fact_pattern = re.compile(r"\d+(?:\.\d+)?(?:万元|元|%|年|月|日)|\d{4}[-/]\d{1,2}[-/]\d{1,2}")
+    native_facts = set(fact_pattern.findall(native))
+    ocr_facts = set(fact_pattern.findall(ocr))
+    conflicts: list[str] = []
+    if native_facts and ocr_facts and native_facts != ocr_facts:
+        conflicts.append("金额或日期不一致")
+    negative = re.compile(r"(?:不|未|无|禁止|不得|非)")
+    if bool(negative.search(native)) != bool(negative.search(ocr)):
+        conflicts.append("否定词不一致")
+    return conflicts
+
+
+def _append_ocr_unique_content(native: PDFPageResult, ocr: PDFPageResult) -> None:
+    """Preserve a reliable native layer and add only OCR content it lacks."""
+    if not ocr.markdown.strip() or ocr.markdown.strip() in native.markdown:
+        return
+    native.markdown = (native.markdown.rstrip() + "\n\n" + ocr.markdown.strip()).strip()
+    native.text_characters = _compact_length(native.markdown)
 
 
 def _ocr_quality(
@@ -1322,8 +1439,7 @@ def _ocr_quality(
         reasons = []
     if missing_confidence_pages:
         reasons.append(
-            "OCR缺少置信度证据:"
-            + ",".join(map(str, sorted(set(missing_confidence_pages))))
+            "OCR缺少置信度证据:" + ",".join(map(str, sorted(set(missing_confidence_pages))))
         )
     if conflicts:
         reasons.append(f"OCR关键事实冲突:{len(conflicts)}处")
@@ -1341,18 +1457,24 @@ def _prefer_ocr_pages(
     if not retry or len(retry) != len(first):
         return list(first)
 
-    def rank(page: PDFPageResult) -> tuple[int, float, int, int]:
+    def rank(page: PDFPageResult) -> tuple[int, int, float, int]:
         conflict_penalty = len(page.key_fact_conflicts) + sum(
             warning.startswith("key_fact_conflict:") for warning in page.warnings
         )
         empty_penalty = int(not page.markdown.strip())
         confidence = page.confidence if page.confidence is not None else 0.0
-        return (empty_penalty, -confidence, conflict_penalty, -page.text_characters)
+        # A confident recognition that conflicts with a key fact is not an
+        # improvement over a lower-confidence non-conflicting page.  Preserve
+        # factual safety before the softer OCR quality signals.
+        return (empty_penalty, conflict_penalty, -confidence, -page.text_characters)
 
     selected: list[PDFPageResult] = []
     for original, candidate in zip(first, retry):
         page = candidate if rank(candidate) < rank(original) else original
-        page.ocr_attempts = max(original.ocr_attempts, 1) + int(page is candidate)
+        # This is execution evidence, not merely the selected rendition: a
+        # retry was attempted for this page even when the first pass remains
+        # the safer result.
+        page.ocr_attempts = max(original.ocr_attempts, candidate.ocr_attempts, 1) + 1
         if page is candidate and page.dpi is None:
             page.dpi = 300
         selected.append(page)
@@ -1405,10 +1527,10 @@ def convert_pdf(
     For consultation sources, ``consultation=True`` anonymizes the output and
     blocks ``ready`` status whenever residual PII remains.  If a scan-only PDF
     cannot run the configured OCR backend, the result contains no invented
-    placeholder body and is explicitly marked ``review``.  Scanned PDFs are
-    limited by ``ocr_max_pages``; text-layer PDFs are not, and mixed or
-    uncertain page types are rejected for manual review rather than processed
-    by two backends.
+    placeholder body and is explicitly marked ``review``.  Scan-only PDFs
+    are limited by ``ocr_max_pages``; text-layer PDFs are not.  Mixed PDFs
+    keep reliable native-text pages and apply the same limit only to the
+    selected OCR pages before merging both paths in source order.
     """
 
     source = Path(path)
@@ -1453,25 +1575,20 @@ def convert_pdf(
             metadata={
                 "doc_id": document_id,
                 "source_type": "consultation" if consultation else "pdf",
-                "privacy_level": "restricted_source_anonymized_output" if consultation else "public",
+                "privacy_level": "restricted_source_anonymized_output"
+                if consultation
+                else "public",
             },
         )
 
     pdf_type = _classify_pdf_type(pypdf_pages)
-    consultation_image_ocr = consultation and any(
-        page.image_count > 0 for page in pypdf_pages
-    )
+    consultation_image_ocr = consultation and any(page.image_count > 0 for page in pypdf_pages)
     if consultation_image_ocr:
-        # Consultation images are part of the privacy boundary.  Route the
-        # complete file through the configured OCR path so names or contact
-        # details embedded in images are covered by the same anonymization and
-        # residual-PII checks as native text.  OCR quality and privacy gates
-        # remain blocking; the presence of an image alone is not a manual gate.
+        # Consultation images are part of the privacy boundary. OCR every
+        # image-bearing page, but do not throw away reliable native text from
+        # unrelated pages merely because the same file has an image.
         quality_flags.append("pdf_consultation_image_ocr")
-        pdf_type = "scan"
-    boundary_low_text_pages = (
-        _boundary_low_text_pages(pypdf_pages) if pdf_type == "text" else []
-    )
+    boundary_low_text_pages = _boundary_low_text_pages(pypdf_pages) if pdf_type == "text" else []
     if boundary_low_text_pages:
         quality_flags.append("pdf_boundary_low_text")
         review_reasons.append(
@@ -1493,34 +1610,58 @@ def convert_pdf(
         if len(image_low_text_pages) > 20:
             page_preview += f"…共{len(image_low_text_pages)}页"
         review_reasons.append(
-            "PDF_TEXT_LAYER_IMAGE_PAGE_WARNING:文字层优先，含图低文字页仅作质量提示:"
-            + page_preview
+            "PDF_TEXT_LAYER_IMAGE_PAGE_WARNING:文字层优先，含图低文字页仅作质量提示:" + page_preview
         )
     if pdf_type == "review":
-        pages = []
-        backend_name = "pdf_type_review"
-        review_reasons.append(
-            "PDF_TYPE_REVIEW_REQUIRED:文件包含混合、低文字或无法判定页面，禁止混合处理"
-        )
-        scanned = False
-    else:
-        scanned = pdf_type == "scan"
+        review_reasons.append("PDF_TYPE_MIXED:将可靠文字页与选择性OCR页按页序合并")
+    selective_ocr = pdf_type == "review" or (consultation_image_ocr and pdf_type == "text")
+    scanned = pdf_type in {"scan", "review"} or selective_ocr
     pages: list[PDFPageResult]
     backend_name: str
-    if pdf_type == "review":
-        pass
-    elif scanned:
+    if scanned:
+        native_failure_pages = []
+        ocr_page_numbers = None
+        if selective_ocr:
+            ocr_page_numbers = {
+                page.page_number
+                for page in pypdf_pages
+                if page.image_count > 0 or (pdf_type == "review" and page.text_characters < 40)
+            }
+            if not ocr_page_numbers:
+                ocr_page_numbers = set()
+        # The OCR resource limit applies to the pages that will actually be
+        # rendered and recognized.  A mixed PDF may have hundreds of native
+        # text pages but only a few image/low-text pages; applying the limit
+        # to the whole file would reject work that never reaches OCR.
+        ocr_target_count = (
+            len(ocr_page_numbers) if ocr_page_numbers is not None else len(reader.pages)
+        )
         if not enable_ocr:
-            pages = []
+            pages = (
+                _merge_selective_ocr_pages(
+                    pypdf_pages,
+                    [],
+                    expected_page_numbers=None,
+                )
+                if selective_ocr
+                else native_failure_pages
+            )
             backend_name = "ocr_disabled"
             review_reasons.append("PDF缺少可用文字层，OCR已禁用")
-        elif len(reader.pages) > ocr_max_pages:
-            pages = []
+        elif ocr_target_count > ocr_max_pages:
+            pages = (
+                _merge_selective_ocr_pages(
+                    pypdf_pages,
+                    [],
+                    expected_page_numbers=None,
+                )
+                if selective_ocr
+                else native_failure_pages
+            )
             backend_name = "ocr_page_limit"
             quality_flags.append("ocr_page_limit")
             review_reasons.append(
-                "OCR_PAGE_LIMIT_REVIEW:"
-                f"扫描型PDF页数超过配置上限:{len(reader.pages)}>{ocr_max_pages}"
+                f"OCR_PAGE_LIMIT_REVIEW:待OCR页数超过配置上限:{ocr_target_count}>{ocr_max_pages}"
             )
         else:
             backend = ocr_backend
@@ -1543,31 +1684,115 @@ def convert_pdf(
                         retry_dpi=ocr_retry_dpi,
                     )
                 else:
-                    raise OptionalBackendUnavailable(
-                        f"不支持的OCR后端:{ocr_backend_name}"
-                    )
+                    backend = _UnavailableOCRBackend(f"不支持的OCR后端:{ocr_backend_name}")
             backend_name = getattr(backend, "name", type(backend).__name__)
             try:
                 ocr_used = True
-                pages = _backend_extract(backend, source, dpi=ocr_render_dpi)
-                for page in pages:
+                ocr_pages = _backend_extract(
+                    backend,
+                    source,
+                    dpi=ocr_render_dpi,
+                    page_numbers=ocr_page_numbers,
+                )
+                expected_ocr_pages = (
+                    set(ocr_page_numbers)
+                    if ocr_page_numbers is not None
+                    else {page.page_number for page in pypdf_pages}
+                )
+                native_by_number = {page.page_number: page for page in pypdf_pages}
+                for ocr_page in ocr_pages:
+                    native_page = native_by_number.get(ocr_page.page_number)
+                    if native_page is not None and native_page.text_characters >= 40:
+                        ocr_page.key_fact_conflicts.extend(
+                            _ocr_native_key_fact_conflicts(native_page.markdown, ocr_page.markdown)
+                        )
+                if selective_ocr:
+                    replace_pages = expected_ocr_pages if pdf_type == "review" else set()
+                    pages = _merge_selective_ocr_pages(
+                        pypdf_pages,
+                        ocr_pages,
+                        expected_page_numbers=expected_ocr_pages,
+                        replace_page_numbers=replace_pages,
+                    )
+                    if consultation_image_ocr and pdf_type == "text":
+                        for ocr_page in ocr_pages:
+                            native_page = native_by_number.get(ocr_page.page_number)
+                            if native_page is not None and native_page.text_characters >= 40:
+                                _append_ocr_unique_content(native_page, ocr_page)
+                else:
+                    _merge_selective_ocr_pages(
+                        pypdf_pages,
+                        ocr_pages,
+                        expected_page_numbers=expected_ocr_pages,
+                    )
+                    pages = ocr_pages
+                for page in ocr_pages if selective_ocr else pages:
                     page.dpi = page.dpi or ocr_render_dpi
                     page.ocr_attempts = max(page.ocr_attempts, 1)
                 low_pages, quality_reasons = _ocr_quality(
-                    pages,
+                    ocr_pages if selective_ocr else pages,
                     min_confidence=ocr_min_confidence,
                     auto_confidence=ocr_auto_confidence,
                     max_low_conf_ratio=ocr_max_low_conf_ratio,
                 )
-                if low_pages or quality_reasons:
-                    retry_pages = _backend_extract(backend, source, dpi=ocr_retry_dpi)
+                if low_pages:
+                    retry_target_pages = set(low_pages)
+                    retry_pages = _backend_extract(
+                        backend,
+                        source,
+                        dpi=ocr_retry_dpi,
+                        page_numbers=retry_target_pages,
+                    )
                     for page in retry_pages:
                         page.dpi = page.dpi or ocr_retry_dpi
                         page.ocr_attempts = max(page.ocr_attempts, 1)
-                    pages = _prefer_ocr_pages(pages, retry_pages)
+                        native_page = native_by_number.get(page.page_number)
+                        if native_page is not None and native_page.text_characters >= 40:
+                            page.key_fact_conflicts.extend(
+                                _ocr_native_key_fact_conflicts(native_page.markdown, page.markdown)
+                            )
+                    _merge_selective_ocr_pages(
+                        pypdf_pages,
+                        retry_pages,
+                        expected_page_numbers=retry_target_pages,
+                        replace_page_numbers=retry_target_pages,
+                    )
+                    retry_by_number = {page.page_number: page for page in retry_pages}
+                    merged_ocr_pages: list[PDFPageResult] = []
+                    for first_pass_page in ocr_pages:
+                        retry_page = retry_by_number.get(first_pass_page.page_number)
+                        if retry_page is None:
+                            merged_ocr_pages.append(first_pass_page)
+                        else:
+                            merged_ocr_pages.extend(
+                                _prefer_ocr_pages([first_pass_page], [retry_page])
+                            )
+                    ocr_pages = merged_ocr_pages
+                    if selective_ocr:
+                        pages = _merge_selective_ocr_pages(
+                            pypdf_pages,
+                            ocr_pages,
+                            expected_page_numbers=expected_ocr_pages,
+                            replace_page_numbers=(
+                                expected_ocr_pages if pdf_type == "review" else set()
+                            ),
+                        )
+                        if consultation_image_ocr and pdf_type == "text":
+                            for ocr_page in ocr_pages:
+                                native_page = native_by_number.get(ocr_page.page_number)
+                                if native_page is not None and native_page.text_characters >= 40:
+                                    _append_ocr_unique_content(native_page, ocr_page)
+                    else:
+                        _merge_selective_ocr_pages(
+                            pypdf_pages,
+                            ocr_pages,
+                            expected_page_numbers=expected_ocr_pages,
+                        )
+                        pages = ocr_pages
                     ocr_retry_count = 1
+                quality_pages = ocr_pages if selective_ocr else pages
                 ocr_low_confidence_pages, quality_reasons = _ocr_quality(
-                    pages,
+                    quality_pages,
                     min_confidence=ocr_min_confidence,
                     auto_confidence=ocr_auto_confidence,
                     max_low_conf_ratio=ocr_max_low_conf_ratio,
@@ -1575,8 +1800,15 @@ def convert_pdf(
                 ocr_key_fact_conflicts = list(
                     dict.fromkeys(
                         conflict
-                        for page in pages
-                        for conflict in page.key_fact_conflicts
+                        for page in (quality_pages if selective_ocr else pages)
+                        for conflict in (
+                            list(page.key_fact_conflicts)
+                            + [
+                                warning.split(":", 1)[1]
+                                for warning in page.warnings
+                                if warning.startswith("key_fact_conflict:") and ":" in warning
+                            ]
+                        )
                     )
                 )
                 if ocr_low_confidence_pages:
@@ -1588,18 +1820,44 @@ def convert_pdf(
                 if ocr_key_fact_conflicts:
                     quality_flags.append("ocr_key_fact_conflict")
                     review_reasons.append(
-                        "OCR_KEY_FACT_CONFLICT:"
-                        + ",".join(ocr_key_fact_conflicts[:10])
+                        "OCR_KEY_FACT_CONFLICT:" + ",".join(ocr_key_fact_conflicts[:10])
                     )
                 if quality_reasons:
                     review_reasons.extend(quality_reasons)
                     if any(reason.startswith("OCR缺少置信度证据") for reason in quality_reasons):
                         quality_flags.append("ocr_confidence_missing")
-            except OptionalBackendUnavailable as exc:
-                pages = []
+            except OCRPageCoverageMismatch as exc:
+                pages = (
+                    _merge_selective_ocr_pages(
+                        pypdf_pages,
+                        [],
+                        expected_page_numbers=set(),
+                    )
+                    if selective_ocr
+                    else native_failure_pages
+                )
                 review_reasons.append(str(exc))
+            except OptionalBackendUnavailable as exc:
+                pages = (
+                    _merge_selective_ocr_pages(
+                        pypdf_pages,
+                        [],
+                        expected_page_numbers=set(),
+                    )
+                    if selective_ocr
+                    else native_failure_pages
+                )
+                review_reasons.append("OCR_BACKEND_UNAVAILABLE:" + str(exc))
             except Exception as exc:
-                pages = []
+                pages = (
+                    _merge_selective_ocr_pages(
+                        pypdf_pages,
+                        [],
+                        expected_page_numbers=set(),
+                    )
+                    if selective_ocr
+                    else native_failure_pages
+                )
                 review_reasons.append(f"OCR执行失败:{type(exc).__name__}")
     else:
         try:
@@ -1617,7 +1875,9 @@ def convert_pdf(
 
     _remove_repeated_marginal_lines(pages)
     for page in pages:
-        review_reasons.extend(warning for warning in page.warnings if warning.startswith("table_review:"))
+        review_reasons.extend(
+            warning for warning in page.warnings if warning.startswith("table_review:")
+        )
     markdown = _page_document(pages)
     redactions: list[RedactionSummary] = []
     residual: list[PIIFinding] = []
@@ -1725,6 +1985,7 @@ def convert_consultation_pdf(
 
 __all__ = [
     "OCRBackend",
+    "OCRPageCoverageMismatch",
     "OptionalBackendUnavailable",
     "PDFConversionResult",
     "PDFPageResult",

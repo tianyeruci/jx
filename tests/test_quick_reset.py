@@ -113,9 +113,7 @@ def test_quick_reset_plans_exact_targets_and_restores_empty_defaults(service_db,
     assert safe_plan["dify_document_counts"] == {"general": 1, "course": 1}
     assert safe_plan["redis_key_count"] == 4
     private_payload = json.loads(plan_path.read_text(encoding="utf-8"))
-    assert private_payload["basis"]["dify_documents"]["general"] == [
-        "document_general_001"
-    ]
+    assert private_payload["basis"]["dify_documents"]["general"] == ["document_general_001"]
 
     result = execute_plan(
         private_plan=plan_path,

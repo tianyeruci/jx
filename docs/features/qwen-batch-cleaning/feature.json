@@ -36,7 +36,7 @@
     {
       "id": "model-cleaning-policy",
       "title": "模型清洗策略规划",
-      "status": "verified",
+      "status": "in_progress",
       "paths": [
         "ai_management/model_cleaning.py",
         "ai_management/config.py"
@@ -47,14 +47,14 @@
         "AC-005"
       ],
       "optional": false,
-      "updated_at": "2026-08-31T14:36:57+08:00",
-      "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
-      "last_changed_at": "2026-08-21T03:37:39+08:00"
+      "updated_at": "2026-09-13T19:41:40+08:00",
+      "last_change_summary": "跨来源共享远端 shard 的删除保护改为只查询 live DifyPublicationShard；继续保证最后本地引用才精确删除远端成果，未改变 Batch=false 运行边界。",
+      "last_changed_at": "2026-09-13T11:22:39+08:00"
     },
     {
       "id": "model-cleaning-orchestration",
       "title": "Batch 生命周期与轮询",
-      "status": "verified",
+      "status": "in_progress",
       "paths": [
         "ai_management/workers/tasks/model_cleaning.py",
         "ai_management/services/bailian_cleanup.py"
@@ -66,14 +66,14 @@
         "AC-006"
       ],
       "optional": false,
-      "updated_at": "2026-08-31T14:36:57+08:00",
-      "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
-      "last_changed_at": "2026-08-21T03:37:39+08:00"
+      "updated_at": "2026-09-13T19:41:40+08:00",
+      "last_change_summary": "跨来源共享远端 shard 的删除保护改为只查询 live DifyPublicationShard；继续保证最后本地引用才精确删除远端成果，未改变 Batch=false 运行边界。",
+      "last_changed_at": "2026-09-13T11:22:39+08:00"
     },
     {
       "id": "model-cleaning-contract-tests",
       "title": "模型清洗契约测试",
-      "status": "verified",
+      "status": "in_progress",
       "paths": [
         "tests/test_model_cleaning_workflow.py"
       ],
@@ -84,14 +84,14 @@
         "AC-004"
       ],
       "optional": false,
-      "updated_at": "2026-08-30T15:33:18+08:00",
-      "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
-      "last_changed_at": "2026-08-21T03:37:39+08:00"
+      "updated_at": "2026-09-13T19:41:40+08:00",
+      "last_change_summary": "跨来源共享远端 shard 的删除保护改为只查询 live DifyPublicationShard；继续保证最后本地引用才精确删除远端成果，未改变 Batch=false 运行边界。",
+      "last_changed_at": "2026-09-13T11:22:39+08:00"
     },
     {
       "id": "jx-cleaning-acceptance",
       "title": "jx 清洗验收证据",
-      "status": "verified",
+      "status": "in_progress",
       "paths": [
         "scripts/jx_*.sh"
       ],
@@ -100,14 +100,14 @@
         "AC-006"
       ],
       "optional": false,
-      "updated_at": "2026-08-31T14:36:57+08:00",
-      "last_change_summary": "四个内容清洗策略继续保留实时/Batch配置，最近活动固定实时；实时与Batch共用temperature 0.01、seed 1234、enable_thinking false和JSON object请求体；活动列表/详情DSL已发布并验证环境变量默认10。验收脚本补齐源树预算模块、咨询多案例子文档命名契约，Dify SSE安全证据已生成；四策略真实Batch对照仍待jx部署后按100候选阈值完成。",
-      "last_changed_at": "2026-08-20T01:28:20+08:00"
+      "updated_at": "2026-09-13T19:41:40+08:00",
+      "last_change_summary": "跨来源共享远端 shard 的删除保护改为只查询 live DifyPublicationShard；继续保证最后本地引用才精确删除远端成果，未改变 Batch=false 运行边界。",
+      "last_changed_at": "2026-09-13T11:22:39+08:00"
     },
     {
       "id": "activity-chatflow",
       "title": "活动意图与 Chatflow",
-      "status": "verified",
+      "status": "in_progress",
       "paths": [
         "dify/商业顾问（当前使用版本）.yml",
         "dify/商业顾问_统一修复版_Dify-1.13.3.yml",
@@ -120,14 +120,14 @@
         "AC-003"
       ],
       "optional": false,
-      "updated_at": "2026-08-20T03:52:19+08:00",
-      "last_change_summary": "四个内容清洗策略继续保留实时/Batch配置，最近活动固定实时；实时与Batch共用temperature 0.01、seed 1234、enable_thinking false和JSON object请求体；活动列表/详情DSL已发布并验证环境变量默认10。验收脚本补齐源树预算模块、咨询多案例子文档命名契约，Dify SSE安全证据已生成；四策略真实Batch对照仍待jx部署后按100候选阈值完成。",
-      "last_changed_at": "2026-08-20T01:28:20+08:00"
+      "updated_at": "2026-09-13T19:41:40+08:00",
+      "last_change_summary": "跨来源共享远端 shard 的删除保护改为只查询 live DifyPublicationShard；继续保证最后本地引用才精确删除远端成果，未改变 Batch=false 运行边界。",
+      "last_changed_at": "2026-09-13T11:22:39+08:00"
     },
     {
       "id": "strategy-contracts",
       "title": "三类策略契约与发布",
-      "status": "verified",
+      "status": "in_progress",
       "paths": [
         "ai_management/cleaning.py",
         "ai_management/activity_cleaning.py",
@@ -139,14 +139,14 @@
         "AC-009"
       ],
       "optional": false,
-      "updated_at": "2026-08-30T15:33:18+08:00",
-      "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
-      "last_changed_at": "2026-08-21T03:37:39+08:00"
+      "updated_at": "2026-09-13T19:41:40+08:00",
+      "last_change_summary": "跨来源共享远端 shard 的删除保护改为只查询 live DifyPublicationShard；继续保证最后本地引用才精确删除远端成果，未改变 Batch=false 运行边界。",
+      "last_changed_at": "2026-09-13T11:22:39+08:00"
     },
     {
       "id": "cleaning-contract-tests",
       "title": "模型清洗契约回归",
-      "status": "verified",
+      "status": "in_progress",
       "paths": [
         "tests/test_model_cleaning_workflow.py",
         "tests/test_large_scale_cleaning.py",
@@ -161,14 +161,14 @@
         "AC-009"
       ],
       "optional": false,
-      "updated_at": "2026-08-30T15:33:18+08:00",
-      "last_change_summary": "取消 RPC 异常和 cancelling 状态均保留精确 Batch/input 引用并建立可重试清理 work item；终态清理、publication 入队失败和清理公平调度修复保持不变。",
-      "last_changed_at": "2026-08-21T03:37:39+08:00"
+      "updated_at": "2026-09-13T19:41:40+08:00",
+      "last_change_summary": "跨来源共享远端 shard 的删除保护改为只查询 live DifyPublicationShard；继续保证最后本地引用才精确删除远端成果，未改变 Batch=false 运行边界。",
+      "last_changed_at": "2026-09-13T11:22:39+08:00"
     },
     {
       "id": "jx-acceptance-docs",
       "title": "jx 验收与文档",
-      "status": "verified",
+      "status": "in_progress",
       "paths": [
         "scripts/jx_*.sh",
         "docs/features/qwen-batch-cleaning/**",
@@ -181,9 +181,9 @@
         "AC-010"
       ],
       "optional": false,
-      "updated_at": "2026-08-31T14:36:57+08:00",
-      "last_change_summary": "四个内容清洗策略继续保留实时/Batch配置，最近活动固定实时；实时与Batch共用temperature 0.01、seed 1234、enable_thinking false和JSON object请求体；活动列表/详情DSL已发布并验证环境变量默认10。验收脚本补齐源树预算模块、咨询多案例子文档命名契约，Dify SSE安全证据已生成；四策略真实Batch对照仍待jx部署后按100候选阈值完成。",
-      "last_changed_at": "2026-08-20T01:28:20+08:00"
+      "updated_at": "2026-09-13T19:41:40+08:00",
+      "last_change_summary": "跨来源共享远端 shard 的删除保护改为只查询 live DifyPublicationShard；继续保证最后本地引用才精确删除远端成果，未改变 Batch=false 运行边界。",
+      "last_changed_at": "2026-09-13T11:22:39+08:00"
     }
   ],
   "validation_commands": [
@@ -196,13 +196,13 @@
   ],
   "documentation": {
     "status": "current",
-    "last_code_change_at": "2026-08-31T15:31:16+08:00",
-    "last_synced_at": "2026-08-31T15:31:17+08:00",
-    "last_sync_summary": "work0831 的北京时间默认与原始文件名清洗命名已部署到 jx；服务健康、容器时区和远端命名函数均已核验，历史数据与 DSL 不变。",
+    "last_code_change_at": "2026-09-13T11:22:21+08:00",
+    "last_synced_at": "2026-09-13T11:22:39+08:00",
+    "last_sync_summary": "跨来源共享远端 shard 的删除保护改为只查询 live DifyPublicationShard；继续保证最后本地引用才精确删除远端成果，未改变 Batch=false 运行边界。",
     "pending_changed_paths": [],
-    "changelog_fingerprint": "3253a1c15a9ff1b8f3658f4bb642333127cb8dc104f020c283f134fedb6274df"
+    "changelog_fingerprint": "10ac811d7559de3b39ffc0a50608e6ed7d8a5797a0ace57c3648b929ffb5b529"
   },
   "created_at": "2026-08-18T08:01:54+08:00",
-  "updated_at": "2026-08-31T15:39:11+08:00",
+  "updated_at": "2026-09-13T19:41:40+08:00",
   "last_abandon_reason": "用户明确确认 work0831 从 work 派生并承接本次测试与 jx 发布；旧 work 工作已完成 review/文档同步但未收尾，现关闭其悬挂状态以建立当前分支治理上下文"
 }

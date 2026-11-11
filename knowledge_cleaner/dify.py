@@ -33,6 +33,8 @@ METADATA_FIELDS = (
 )
 
 MANAGED_ID_PREFIX = "kc_"
+_DOCUMENT_CONTENT_WITNESS_MAX_PAGES = 1000
+_DOCUMENT_CONTENT_WITNESS_MAX_ENTRIES = 100000
 
 
 @dataclass(slots=True)
@@ -430,6 +432,214 @@ class DifyKnowledgeClient:
             f"datasets/{self.dataset_id}/documents/{document_id}/segments/{segment_id}/child_chunks",
             params={"page": page, "limit": limit},
         )
+
+    def document_content_witness(self, document_id: str) -> str:
+        """Digest the currently retrievable Dify parent/child bodies.
+
+        This intentionally derives its input from Dify's read API rather than
+        from caller-provided metadata.  It is an opaque local audit witness:
+        no chunk text or source identity is copied into remote metadata.
+        """
+
+        entries: list[dict[str, str]] = []
+
+        def _page_payload(
+            response: dict[str, Any], *, label: str
+        ) -> tuple[list[dict[str, Any]], bool | None, int | None]:
+            if not isinstance(response, dict):
+                raise RuntimeError(f"Dify正文见证{label}响应格式无效")
+            envelope = response.get("data")
+            nested = envelope if isinstance(envelope, dict) else None
+            data = (
+                (nested.get("data") or nested.get("segments") or [])
+                if nested is not None
+                else (envelope or response.get("segments") or [])
+            )
+            if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+                raise RuntimeError(f"Dify正文见证{label}响应格式无效")
+
+            def pagination_value(name: str) -> Any:
+                values = [response[name]] if name in response else []
+                if nested is not None and name in nested:
+                    values.append(nested[name])
+                if not values:
+                    return None
+                if any(value != values[0] for value in values[1:]):
+                    raise RuntimeError(f"Dify正文见证{label}分页声明冲突")
+                return values[0]
+
+            has_more = pagination_value("has_more")
+            if has_more is not None and not isinstance(has_more, bool):
+                raise RuntimeError(f"Dify正文见证{label}分页声明无效")
+            total = pagination_value("total")
+            if total is not None and (
+                isinstance(total, bool) or not isinstance(total, int) or total < 0
+            ):
+                raise RuntimeError(f"Dify正文见证{label}总数声明无效")
+            return data, has_more, total
+
+        def continues(has_more: bool | None, data: list[dict[str, Any]]) -> bool:
+            # Dify/proxies have historically emitted a false ``has_more`` on a
+            # full page. A full page therefore still needs one bounded probe;
+            # an empty follow-up is safe, while skipping it would omit content.
+            return has_more is True or len(data) >= 100
+
+        def _append_entry(
+            item: dict[str, Any],
+            *,
+            kind: str,
+            page_number: int,
+            position: int,
+            parent_id: str = "",
+        ) -> None:
+            if item.get("enabled") is False or item.get("is_enabled") is False:
+                raise RuntimeError(f"Dify正文见证{kind}不可检索")
+            state = (
+                str(item.get("indexing_status") or item.get("status") or item.get("state") or "")
+                .strip()
+                .lower()
+            )
+            if state and state != "completed":
+                raise RuntimeError(f"Dify正文见证{kind}不可检索")
+            content = item.get("content") or item.get("text") or item.get("answer")
+            if not isinstance(content, str) or not content.strip():
+                raise RuntimeError(f"Dify正文见证缺少{kind}正文")
+            item_id = str(item.get("id") or "").strip()
+            if not item_id:
+                raise RuntimeError(f"Dify正文见证缺少{kind}标识")
+            entries.append(
+                {
+                    "kind": kind,
+                    "parent_id": parent_id,
+                    "page": str(page_number),
+                    "position": str(position),
+                    "id": item_id,
+                    "content": content,
+                    "state": state or "enabled",
+                }
+            )
+
+        # A malformed proxy response must not let a publication Worker loop
+        # forever by repeating a full page. Keep the same bounded reading
+        # contract as ``iter_documents`` and require every page to progress.
+        total_entries = 0
+
+        def count_entries(page_entries: list[dict[str, Any]]) -> None:
+            nonlocal total_entries
+            if total_entries + len(page_entries) > _DOCUMENT_CONTENT_WITNESS_MAX_ENTRIES:
+                raise RuntimeError("Dify正文见证父子块数量超过上限")
+            total_entries += len(page_entries)
+
+        seen_parent_ids: set[str] = set()
+        seen_parent_pages: set[str] = set()
+        parent_count = 0
+        parent_expected_total: int | None = None
+        page = 1
+        while True:
+            if page > _DOCUMENT_CONTENT_WITNESS_MAX_PAGES:
+                raise RuntimeError("Dify正文见证父块分页超过上限")
+            response = self.list_segments(document_id, page=page, limit=100)
+            data, has_more, expected_total = _page_payload(response, label="父块")
+            if expected_total is not None:
+                if parent_expected_total is None:
+                    parent_expected_total = expected_total
+                elif expected_total != parent_expected_total:
+                    raise RuntimeError("Dify正文见证父块总数不一致")
+            count_entries(data)
+            parent_ids = tuple(str(item.get("id") or "").strip() for item in data)
+            parent_page_fingerprint = hashlib.sha256(
+                json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            if parent_page_fingerprint in seen_parent_pages:
+                raise RuntimeError("Dify正文见证父块分页重复")
+            seen_parent_pages.add(parent_page_fingerprint)
+            if not data and continues(has_more, data):
+                raise RuntimeError("Dify正文见证父块分页未推进")
+            if any(not item_id for item_id in parent_ids) or any(
+                item_id in seen_parent_ids for item_id in parent_ids
+            ):
+                raise RuntimeError("Dify正文见证父块分页重复")
+            seen_parent_ids.update(parent_ids)
+            parent_count += len(data)
+            if parent_expected_total is not None and parent_count > parent_expected_total:
+                raise RuntimeError("Dify正文见证父块总数不一致")
+            for position, item in enumerate(data):
+                _append_entry(item, kind="parent", page_number=page, position=position)
+                segment_id = str(item.get("id") or "").strip()
+                seen_child_ids: set[str] = set()
+                seen_child_pages: set[str] = set()
+                child_count = 0
+                child_expected_total_fixed: int | None = None
+                child_page = 1
+                while True:
+                    if child_page > _DOCUMENT_CONTENT_WITNESS_MAX_PAGES:
+                        raise RuntimeError("Dify正文见证子块分页超过上限")
+                    children_response = self.list_child_chunks(
+                        document_id, segment_id, page=child_page, limit=100
+                    )
+                    children, child_has_more, child_expected_total = _page_payload(
+                        children_response, label="子块"
+                    )
+                    if child_expected_total is not None:
+                        if child_expected_total_fixed is None:
+                            child_expected_total_fixed = child_expected_total
+                        elif child_expected_total != child_expected_total_fixed:
+                            raise RuntimeError("Dify正文见证子块总数不一致")
+                    count_entries(children)
+                    child_ids = tuple(str(child.get("id") or "").strip() for child in children)
+                    child_page_fingerprint = hashlib.sha256(
+                        json.dumps(
+                            children, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    if child_page_fingerprint in seen_child_pages:
+                        raise RuntimeError("Dify正文见证子块分页重复")
+                    seen_child_pages.add(child_page_fingerprint)
+                    if not children and continues(child_has_more, children):
+                        raise RuntimeError("Dify正文见证子块分页未推进")
+                    if any(not child_id for child_id in child_ids) or any(
+                        child_id in seen_child_ids for child_id in child_ids
+                    ):
+                        raise RuntimeError("Dify正文见证子块分页重复")
+                    seen_child_ids.update(child_ids)
+                    child_count += len(children)
+                    if (
+                        child_expected_total_fixed is not None
+                        and child_count > child_expected_total_fixed
+                    ):
+                        raise RuntimeError("Dify正文见证子块总数不一致")
+                    for child_position, child in enumerate(children):
+                        _append_entry(
+                            child,
+                            kind="child",
+                            page_number=child_page,
+                            position=child_position,
+                            parent_id=segment_id,
+                        )
+                    if not continues(child_has_more, children):
+                        if (
+                            child_expected_total_fixed is not None
+                            and child_count != child_expected_total_fixed
+                        ):
+                            raise RuntimeError("Dify正文见证子块总数不一致")
+                        break
+                    child_page += 1
+            if not continues(has_more, data):
+                if parent_expected_total is not None and parent_count != parent_expected_total:
+                    raise RuntimeError("Dify正文见证父块总数不一致")
+                break
+            page += 1
+        if not entries:
+            raise RuntimeError("Dify正文见证没有分块")
+        payload = json.dumps(
+            {"version": "dify-retrievable-content-v2", "entries": entries},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def verify_document_structure(
         self,

@@ -103,7 +103,11 @@ def admin_conversations(
     limit: int = Query(default=50, ge=1, le=200),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    statement = select(BusinessConversation).order_by(BusinessConversation.last_active_at.desc()).limit(limit)
+    statement = (
+        select(BusinessConversation)
+        .order_by(BusinessConversation.last_active_at.desc())
+        .limit(limit)
+    )
     if user_id:
         statement = statement.join(
             BusinessProfile,
@@ -115,18 +119,29 @@ def admin_conversations(
             BusinessProfile.user_hash == BusinessConversation.user_hash,
         ).where(BusinessProfile.display_name.ilike(f"%{user_name.strip()}%"))
     rows = list(session.scalars(statement))
-    profiles = {
-        item.user_hash: item
-        for item in session.scalars(
-            select(BusinessProfile).where(BusinessProfile.user_hash.in_([row.user_hash for row in rows]))
-        )
-    } if rows else {}
+    profiles = (
+        {
+            item.user_hash: item
+            for item in session.scalars(
+                select(BusinessProfile).where(
+                    BusinessProfile.user_hash.in_([row.user_hash for row in rows])
+                )
+            )
+        }
+        if rows
+        else {}
+    )
     return {
         "items": [
             {
                 "conversation_id": row.id,
-                "user_id": (profiles.get(row.user_hash).user_id if profiles.get(row.user_hash) else "") or "",
-                "user_name": profiles.get(row.user_hash).display_name if profiles.get(row.user_hash) else "",
+                "user_id": (
+                    profiles.get(row.user_hash).user_id if profiles.get(row.user_hash) else ""
+                )
+                or "",
+                "user_name": profiles.get(row.user_hash).display_name
+                if profiles.get(row.user_hash)
+                else "",
                 "title": row.title,
                 "summary": row.summary,
                 "summary_gap": row.summary_gap,
@@ -197,9 +212,7 @@ def admin_course_clicks(
         for row in rows
     }
     today = business_today()
-    if (from_date is None or from_date <= today) and (
-        to_date is None or to_date >= today
-    ):
+    if (from_date is None or from_date <= today) and (to_date is None or to_date >= today):
         course_query = select(Course.course_id)
         if course_id:
             course_query = course_query.where(Course.course_id == course_id)
@@ -235,7 +248,12 @@ def admin_course_clicks(
     for item in all_items:
         aggregate = course_totals.setdefault(
             item["course_id"],
-            {"course_id": item["course_id"], "course_name": item.get("course_name", ""), "clicks": 0, "unique_users": 0},
+            {
+                "course_id": item["course_id"],
+                "course_name": item.get("course_name", ""),
+                "clicks": 0,
+                "unique_users": 0,
+            },
         )
         aggregate["clicks"] += int(item["clicks"])
         aggregate["unique_users"] += int(item["unique_users"])
@@ -245,9 +263,7 @@ def admin_course_clicks(
         "limit": limit,
         "total": total,
         "total_clicks": sum(int(item["clicks"]) for item in all_items),
-        "total_unique_users": sum(
-            int(item["unique_users"]) for item in all_items
-        ),
+        "total_unique_users": sum(int(item["unique_users"]) for item in all_items),
         "course_totals": list(course_totals.values()),
     }
 
@@ -279,26 +295,36 @@ def delete_user_ai_data(
             )
             external_tasks += 1
         session.delete(conversation)
-    session.execute(delete(LearningRouteProgress).where(LearningRouteProgress.user_hash == subject_hash))
+    session.execute(
+        delete(LearningRouteProgress).where(LearningRouteProgress.user_hash == subject_hash)
+    )
     session.execute(delete(BusinessProfile).where(BusinessProfile.user_hash == subject_hash))
     session.commit()
     cache.delete(f"ai:profile:{subject_hash}")
     cache.delete(f"ai:route-progress:{subject_hash}")
     record_event(
-        level="INFO", category="operation", component="admin_api",
-        event_code="USER_AI_DATA_DELETED", status="succeeded", message="用户 AI 数据已清除",
-        actor_hash="admin", resource_type="user", resource_id=subject_hash,
+        level="INFO",
+        category="operation",
+        component="admin_api",
+        event_code="USER_AI_DATA_DELETED",
+        status="succeeded",
+        message="用户 AI 数据已清除",
+        actor_hash="admin",
+        resource_type="user",
+        resource_id=subject_hash,
         details={"conversation_count": len(conversations), "external_deletions": external_tasks},
     )
-    return {"deleted": True, "conversation_count": len(conversations), "external_deletions_queued": external_tasks}
+    return {
+        "deleted": True,
+        "conversation_count": len(conversations),
+        "external_deletions_queued": external_tasks,
+    }
 
 
 @router.get("/catalog")
 def admin_catalog(session: Session = Depends(get_session)) -> dict[str, Any]:
     courses = list(session.scalars(select(Course).order_by(Course.course_id)))
-    routes = list(
-        session.scalars(select(LearningRoute).order_by(LearningRoute.route_id))
-    )
+    routes = list(session.scalars(select(LearningRoute).order_by(LearningRoute.route_id)))
     return {
         "courses": [
             {
@@ -309,7 +335,9 @@ def admin_catalog(session: Session = Depends(get_session)) -> dict[str, Any]:
                 "source_platform": item.source_platform,
                 "series_name": item.series_name,
                 "published_at": item.published_at.isoformat() if item.published_at else None,
-                "first_imported_at": item.first_imported_at.isoformat() if item.first_imported_at else None,
+                "first_imported_at": item.first_imported_at.isoformat()
+                if item.first_imported_at
+                else None,
                 "prerequisite_course_ids": item.prerequisite_course_ids or [],
                 "enabled": item.enabled,
                 "review_status": item.review_status,

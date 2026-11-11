@@ -7,20 +7,99 @@ from pathlib import Path
 from .models import Disposition, PageText, SourceUnit
 
 BUSINESS_TERMS = {
-    "个人ip", "定位", "内容", "写作", "自媒体", "获客", "私域", "流量", "销售", "成交",
-    "产品", "定价", "变现", "交付", "经营", "创业", "一人公司", "社群", "课程", "学习",
-    "能力", "品牌", "运营", "ai", "智能体", "提示词", "文案", "收入", "赚钱", "副业",
-    "客户", "市场", "渠道", "朋友圈", "发售", "分销", "咨询", "战略", "目标", "执行",
-    "复盘", "团队", "管理", "商业", "用户", "服务", "项目", "营销", "增长", "盈利",
+    "个人ip",
+    "定位",
+    "内容",
+    "写作",
+    "自媒体",
+    "获客",
+    "私域",
+    "流量",
+    "销售",
+    "成交",
+    "产品",
+    "定价",
+    "变现",
+    "交付",
+    "经营",
+    "创业",
+    "一人公司",
+    "社群",
+    "课程",
+    "学习",
+    "能力",
+    "品牌",
+    "运营",
+    "ai",
+    "智能体",
+    "提示词",
+    "文案",
+    "收入",
+    "赚钱",
+    "副业",
+    "客户",
+    "市场",
+    "渠道",
+    "朋友圈",
+    "发售",
+    "分销",
+    "咨询",
+    "战略",
+    "目标",
+    "执行",
+    "复盘",
+    "团队",
+    "管理",
+    "商业",
+    "用户",
+    "服务",
+    "项目",
+    "营销",
+    "增长",
+    "盈利",
 }
 METHOD_TERMS = {
-    "步骤", "方法", "建议", "前提", "条件", "限制", "原因", "结果", "复盘", "案例", "问题",
-    "行动", "指标", "适合", "不适合", "错误", "实践", "经验", "如何", "为什么", "首先", "其次",
+    "步骤",
+    "方法",
+    "建议",
+    "前提",
+    "条件",
+    "限制",
+    "原因",
+    "结果",
+    "复盘",
+    "案例",
+    "问题",
+    "行动",
+    "指标",
+    "适合",
+    "不适合",
+    "错误",
+    "实践",
+    "经验",
+    "如何",
+    "为什么",
+    "首先",
+    "其次",
 }
 OUT_OF_SCOPE_TERMS = {"解梦", "旅游", "菜谱", "养生", "健康", "疾病", "电影推荐", "播客推荐"}
 FINANCE_TERMS = {
-    "股票", "基金", "债券", "定投", "仓位", "止盈", "止损", "收益率", "证券", "炒股", "个股",
-    "资产配置", "估值", "大盘", "牛市", "熊市",
+    "股票",
+    "基金",
+    "债券",
+    "定投",
+    "仓位",
+    "止盈",
+    "止损",
+    "收益率",
+    "证券",
+    "炒股",
+    "个股",
+    "资产配置",
+    "估值",
+    "大盘",
+    "牛市",
+    "熊市",
 }
 
 CTA_PATTERNS = [
@@ -40,7 +119,9 @@ DOT_LEADER = re.compile(r"[.．·…]{3,}\s*\d+\s*$")
 PHONE = re.compile(r"(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)")
 EMAIL = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
 WECHAT = re.compile(r"(?i)(微信(?:号|ID)?|wechat)\s*[:：]?\s*[A-Za-z][-_A-Za-z0-9]{5,19}")
-LEGAL_COMPANY = re.compile(r"[\u4e00-\u9fffA-Za-z0-9（）()·]{2,40}(?:有限责任公司|股份有限公司|有限公司)")
+LEGAL_COMPANY = re.compile(
+    r"[\u4e00-\u9fffA-Za-z0-9（）()·]{2,40}(?:有限责任公司|股份有限公司|有限公司)"
+)
 CONTEXT_COMPANY = re.compile(
     r"(?:(?:就职|任职|来自|所在|创办|服务)于?|公司(?:名称)?是)[:：]?\s*"
     r"([\u4e00-\u9fffA-Za-z0-9（）()·]{2,24}(?:公司|工作室|机构|学校|团队))"
@@ -70,9 +151,10 @@ def repeated_noise_lines(pages: list[PageText]) -> set[str]:
 
 def looks_like_toc(text: str) -> bool:
     lines = [normalize_line(line) for line in text.splitlines() if normalize_line(line)]
-    return any(line in {"目录", "目 录", "contents"} for line in lines[:8]) and sum(
-        bool(DOT_LEADER.search(line)) for line in lines
-    ) >= 3
+    return (
+        any(line in {"目录", "目 录", "contents"} for line in lines[:8])
+        and sum(bool(DOT_LEADER.search(line)) for line in lines) >= 3
+    )
 
 
 def clean_page_text(text: str, repeated: set[str]) -> str:
@@ -209,7 +291,9 @@ def anonymize_consultation(text: str, path: Path) -> tuple[str, list[str]]:
         redactions.append("联系方式")
 
     result, legal_count = LEGAL_COMPANY.subn("某公司", result)
-    result, contextual_count = CONTEXT_COMPANY.subn(lambda m: m.group(0).replace(m.group(1), "某机构"), result)
+    result, contextual_count = CONTEXT_COMPANY.subn(
+        lambda m: m.group(0).replace(m.group(1), "某机构"), result
+    )
     if legal_count + contextual_count:
         redactions.append("公司或机构名称")
 

@@ -14,9 +14,7 @@ from .config import get_settings
 
 def load_cases(path: Path) -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
-    for line_number, line in enumerate(
-        path.read_text(encoding="utf-8-sig").splitlines(), start=1
-    ):
+    for line_number, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), start=1):
         if not line.strip():
             continue
         try:
@@ -53,17 +51,13 @@ def evaluate(path: Path, *, top_k: int = 5) -> dict[str, Any]:
         "course": settings.dify_course_dataset_id,
     }.items():
         selected = [
-            item
-            for item in cases
-            if item["dataset"] == dataset_code and item["relevant_ids"]
+            item for item in cases if item["dataset"] == dataset_code and item["relevant_ids"]
         ]
         result["retrieval_cases"] += len(selected)
         if not selected:
             continue
         if not settings.dify_knowledge_api_key or not dataset_id:
-            raise ValueError(
-                f"评测 {dataset_code} 前必须配置知识库 API Key 和对应 Dataset ID"
-            )
+            raise ValueError(f"评测 {dataset_code} 前必须配置知识库 API Key 和对应 Dataset ID")
         client = DifyKnowledgeClient(
             settings.knowledge_base_url,
             settings.dify_knowledge_api_key,
@@ -120,17 +114,13 @@ def evaluate(path: Path, *, top_k: int = 5) -> dict[str, Any]:
     ]
     aggregate_recall = sum(all_recall) / len(all_recall) if all_recall else 0.0
     aggregate_hit = sum(all_hits) / len(all_hits) if all_hits else 0.0
-    critical_hit = (
-        sum(critical_hits) / len(critical_hits) if critical_hits else 0.0
-    )
+    critical_hit = sum(critical_hits) / len(critical_hits) if critical_hits else 0.0
     result["aggregate"] = {
         "k": top_k,
         "recall_at_k": aggregate_recall,
         "hit_at_k": aggregate_hit,
         "critical_hit_at_k": critical_hit,
-        "retrieval_gate_passed": (
-            aggregate_recall >= 0.80 and critical_hit >= 0.90
-        ),
+        "retrieval_gate_passed": (aggregate_recall >= 0.80 and critical_hit >= 0.90),
         "remaining_manual_gates": [
             "引用完整率",
             "无依据回答率",

@@ -107,10 +107,19 @@ def _decision_from_model(value: Any, fallback: SemanticDecision) -> SemanticDeci
     outcome_decision = str(getattr(value, "decision", ""))
     result = getattr(value, "result", None)
     if result is not None:
-        data = {name: getattr(result, name) for name in (
-            "domain_class", "content_type", "knowledge_nature", "topics",
-            "time_sensitive", "quality_class", "evidence_spans", "confidence",
-        )}
+        data = {
+            name: getattr(result, name)
+            for name in (
+                "domain_class",
+                "content_type",
+                "knowledge_nature",
+                "topics",
+                "time_sensitive",
+                "quality_class",
+                "evidence_spans",
+                "confidence",
+            )
+        }
     else:
         data = value if isinstance(value, dict) else {}
     domain = str(data.get("domain_class") or "uncertain")
@@ -120,9 +129,19 @@ def _decision_from_model(value: Any, fallback: SemanticDecision) -> SemanticDeci
     has_evidence = bool(evidence)
     if outcome_decision in {"keep", "no_index", "review"}:
         disposition = outcome_decision
-    elif domain in {"business_core", "business_support"} and quality in {"useful", "core", "context", "evidence"} and confidence >= 0.85 and has_evidence:
+    elif (
+        domain in {"business_core", "business_support"}
+        and quality in {"useful", "core", "context", "evidence"}
+        and confidence >= 0.85
+        and has_evidence
+    ):
         disposition = "keep"
-    elif domain in {"off_scope", "promotion_or_catalog"} and quality in {"off_scope", "promotion", "low_info"} and confidence >= 0.92 and has_evidence:
+    elif (
+        domain in {"off_scope", "promotion_or_catalog"}
+        and quality in {"off_scope", "promotion", "low_info"}
+        and confidence >= 0.92
+        and has_evidence
+    ):
         disposition = "review" if len(str(data.get("body") or "")) < 150 else "no_index"
     else:
         disposition = "review"
@@ -170,7 +189,9 @@ def _render_audit(doc: BatchDocument) -> str:
         "review_status": doc.disposition,
         "reason": doc.reason,
     }
-    frontmatter = "\n".join(f"{key}: {json.dumps(value, ensure_ascii=False)}" for key, value in metadata.items())
+    frontmatter = "\n".join(
+        f"{key}: {json.dumps(value, ensure_ascii=False)}" for key, value in metadata.items()
+    )
     return f"---\n{frontmatter}\n---\n\n# {doc.title}\n\n{doc.body.strip()}\n"
 
 
@@ -217,19 +238,37 @@ class BatchCleaningPipeline:
 
     def _files(self) -> list[Path]:
         root = self.options.input_path
-        candidates = [root] if root.is_file() else sorted(
-            path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in {".txt", ".md", ".markdown", ".pdf"}
+        candidates = (
+            [root]
+            if root.is_file()
+            else sorted(
+                path
+                for path in root.rglob("*")
+                if path.is_file() and path.suffix.lower() in {".txt", ".md", ".markdown", ".pdf"}
+            )
         )
         if not self.options.include_patterns:
             return candidates
-        return [path for path in candidates if any(pattern.lower() in path.name.lower() for pattern in self.options.include_patterns)]
+        return [
+            path
+            for path in candidates
+            if any(
+                pattern.lower() in path.name.lower() for pattern in self.options.include_patterns
+            )
+        ]
 
     def _from_parsed(self, unit: ParsedSourceUnit, root: Path) -> BatchDocument:
         raw_hash = _sha256_bytes(unit.source_path.read_bytes())
-        decision = classify_text(unit.title, unit.body, hinted_type="lesson" if unit.source_type == "markdown_course" else "article")
+        decision = classify_text(
+            unit.title,
+            unit.body,
+            hinted_type="lesson" if unit.source_type == "markdown_course" else "article",
+        )
         if decision.disposition == "review" and self.options.classifier is not None:
             try:
-                classified = self.options.classifier.classify(title=unit.title, body=unit.body, source_type=unit.source_type)
+                classified = self.options.classifier.classify(
+                    title=unit.title, body=unit.body, source_type=unit.source_type
+                )
                 decision = _decision_from_model(classified, decision)
             except Exception as exc:
                 unit.warnings.append(f"classifier_failed:{type(exc).__name__}")
@@ -333,7 +372,11 @@ class BatchCleaningPipeline:
                 doc.reason = "清洗后正文与canonical文档完全相同"
 
     def run(self) -> BatchResult:
-        source_root = self.options.input_path if self.options.input_path.is_dir() else self.options.input_path.parent
+        source_root = (
+            self.options.input_path
+            if self.options.input_path.is_dir()
+            else self.options.input_path.parent
+        )
         files = self._files()
         result = BatchResult(source_files=len(files))
         documents: list[BatchDocument] = []
@@ -343,10 +386,14 @@ class BatchCleaningPipeline:
                 if path.suffix.lower() == ".pdf":
                     documents.append(self._parse_pdf(path, source_root))
                 else:
-                    documents.extend(self._from_parsed(unit, source_root) for unit in parse_source(path))
+                    documents.extend(
+                        self._from_parsed(unit, source_root) for unit in parse_source(path)
+                    )
             except Exception as exc:
                 result.parse_errors += 1
-                parse_errors.append({"source_path": str(path), "error": f"{type(exc).__name__}: {exc}"})
+                parse_errors.append(
+                    {"source_path": str(path), "error": f"{type(exc).__name__}: {exc}"}
+                )
         result.parsed_documents = len(documents)
         self._deduplicate(documents)
         overrides = _read_overrides(self.options.review_overrides)
@@ -356,12 +403,20 @@ class BatchCleaningPipeline:
                 doc.reason = note
                 doc.extra["manual_override"] = True
             if doc.disposition == "keep":
-                doc.chunks = prepare_chunks(doc.body, title=doc.title, collection=doc.collection, content_type=doc.content_type, topics=doc.topics)
+                doc.chunks = prepare_chunks(
+                    doc.body,
+                    title=doc.title,
+                    collection=doc.collection,
+                    content_type=doc.content_type,
+                    topics=doc.topics,
+                )
                 if not doc.chunks:
                     doc.disposition = "content_missing"
                     doc.reason = "未生成可用检索块"
 
-        stage = self.options.output_path.with_name(f"{self.options.output_path.name}.staging-{uuid.uuid4().hex[:8]}")
+        stage = self.options.output_path.with_name(
+            f"{self.options.output_path.name}.staging-{uuid.uuid4().hex[:8]}"
+        )
         stage.mkdir(parents=True, exist_ok=False)
         records: list[dict[str, Any]] = []
         chunk_records: list[dict[str, Any]] = []
@@ -393,17 +448,47 @@ class BatchCleaningPipeline:
                                 "content_preview": chunk.content[:300],
                             }
                         )
-                records.append(_manifest_record(doc, str(audit_target.relative_to(stage)), dify_relative))
+                records.append(
+                    _manifest_record(doc, str(audit_target.relative_to(stage)), dify_relative)
+                )
 
-            write_text_atomic(stage / "manifest.jsonl", "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in records))
-            write_text_atomic(stage / "chunks.jsonl", "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in chunk_records))
-            write_text_atomic(stage / "parse_errors.jsonl", "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in parse_errors))
+            write_text_atomic(
+                stage / "manifest.jsonl",
+                "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in records),
+            )
+            write_text_atomic(
+                stage / "chunks.jsonl",
+                "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in chunk_records),
+            )
+            write_text_atomic(
+                stage / "parse_errors.jsonl",
+                "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in parse_errors),
+            )
             with (stage / "review.csv").open("w", encoding="utf-8-sig", newline="") as handle:
-                writer = csv.DictWriter(handle, fieldnames=["doc_id", "title", "source_type", "disposition", "reason", "review_note"])
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "doc_id",
+                        "title",
+                        "source_type",
+                        "disposition",
+                        "reason",
+                        "review_note",
+                    ],
+                )
                 writer.writeheader()
                 for doc in documents:
                     if doc.disposition == "review":
-                        writer.writerow({"doc_id": doc.doc_id, "title": doc.title, "source_type": doc.source_type, "disposition": "review", "reason": doc.reason, "review_note": ""})
+                        writer.writerow(
+                            {
+                                "doc_id": doc.doc_id,
+                                "title": doc.title,
+                                "source_type": doc.source_type,
+                                "disposition": "review",
+                                "reason": doc.reason,
+                                "review_note": "",
+                            }
+                        )
 
             counts = Counter(doc.disposition for doc in documents)
             result.kept = counts["keep"]
@@ -413,19 +498,28 @@ class BatchCleaningPipeline:
             result.content_missing = counts["content_missing"]
             result.chunks = len(chunk_records)
             result.ocr_required = sum("ocr_required" in doc.quality_flags for doc in documents)
-            result.privacy_blocked = sum(bool(doc.extra.get("privacy_findings")) for doc in documents)
+            result.privacy_blocked = sum(
+                bool(doc.extra.get("privacy_findings")) for doc in documents
+            )
             report = {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "result": asdict(result),
                 "by_source_type": dict(Counter(doc.source_type for doc in documents)),
                 "by_disposition": dict(counts),
-                "quality_flags": dict(Counter(flag for doc in documents for flag in doc.quality_flags)),
+                "quality_flags": dict(
+                    Counter(flag for doc in documents for flag in doc.quality_flags)
+                ),
             }
-            write_text_atomic(stage / "quality_report.json", json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+            write_text_atomic(
+                stage / "quality_report.json",
+                json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+            )
 
             target = self.options.output_path
             if target.exists():
-                backup = target.with_name(f"{target.name}.previous-{datetime.now().strftime('%Y%m%d%H%M%S%f')}")
+                backup = target.with_name(
+                    f"{target.name}.previous-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+                )
                 target.replace(backup)
             stage.replace(target)
         except Exception:

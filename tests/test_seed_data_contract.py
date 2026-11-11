@@ -19,9 +19,7 @@ def _frontmatter(path: Path) -> dict[str, object]:
 
 
 def test_synthetic_seed_v1_contract() -> None:
-    expected = json.loads(
-        (TEST_DATA / "合成测试种子v1.expected.json").read_text(encoding="utf-8")
-    )
+    expected = json.loads((TEST_DATA / "合成测试种子v1.expected.json").read_text(encoding="utf-8"))
 
     course_path = TEST_DATA / expected["course_catalog"]["file"]
     course_metadata = _frontmatter(course_path)
@@ -40,7 +38,11 @@ def test_synthetic_seed_v1_contract() -> None:
     ]
     assert sum(record.get("record_type") == "course" for record in course_records) == 9
     assert sum(record.get("record_type") == "route" for record in course_records) == 2
-    assert all("example.com" in record["official_url"] for record in course_records if record.get("record_type") == "course")
+    assert all(
+        "example.com" in record["official_url"]
+        for record in course_records
+        if record.get("record_type") == "course"
+    )
 
     samples = expected["knowledge_samples"]
     assert len(samples) == 6
@@ -57,9 +59,7 @@ def test_synthetic_seed_v1_contract() -> None:
 
 
 def test_business_advisor_seed_questions_and_no_fabrication_boundaries() -> None:
-    expected = json.loads(
-        (TEST_DATA / "合成测试种子v1.expected.json").read_text(encoding="utf-8")
-    )
+    expected = json.loads((TEST_DATA / "合成测试种子v1.expected.json").read_text(encoding="utf-8"))
     dsl_path = ROOT / "dify" / "dsl" / "business_advisor.yml"
     dsl_text = dsl_path.read_text(encoding="utf-8")
     dsl = yaml.safe_load(dsl_text)

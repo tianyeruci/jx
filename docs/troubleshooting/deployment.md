@@ -48,18 +48,18 @@
 - 证据：[V2 部署回滚手册](../V2从开发到服务器部署与回滚手册.md:20)。
 - 最后验证：2026-07-30。
 
-## DEPLOY-003：发布前先做可恢复备份
+## DEPLOY-003：按环境执行发布前恢复保护
 
-- 适用：任何 jx 写入、迁移、清理或镜像切换。
-- 触发：准备执行远端写入，但缺少可恢复备份、目标身份或回滚点证据。
-- 根因：只有备份文件而未验证恢复，不能证明数据和配置可回滚。
-- 解决：备份 AI 数据库、Dify Redis RDB、上传卷、环境配置副本、旧镜像和状态快照；数据库备份必须恢复到临时库验证表结构。
-- 非解决：只依据备份命令退出码，或仅保存未验证的单一数据库文件。
-- 停止条件：备份、恢复验证、目标主机指纹、配置隔离或回滚点任一缺失。
-- 验证：临时恢复成功、关键表结构可读，且回滚镜像和配置快照可定位。
-- 预防：远端发布清单把恢复演练作为写入前门禁。
-- 证据：[V2 部署回滚手册](../V2从开发到服务器部署与回滚手册.md:155)。
-- 最后验证：2026-07-30。
+- 适用：jx/ys 的远端迁移、生产发布、正式数据清理或其他可能影响不可丢弃数据的写入。
+- 触发：目标被明确标为 production，或操作会触及正式/共享数据，却缺少同目标备份、目标身份、资源归属或回滚点证据。
+- 根因：只有备份文件而未核验完整、可读和恢复工具可用，不能证明 production 数据和配置可回滚；但该 production 门禁不能反向套用于可丢弃的 test 项目数据。
+- 解决：production 保留业务数据、旧版可运行物和必要配置，创建同目标备份并核验完整可读、恢复工具可用，再执行适用候选检查、数据保留迁移和部署；test 默认直接在项目已知 ys 测试服务器替换项目，删除前仅核对项目归属和允许丢弃边界，不要求备份、临时数据库/schema、恢复演练、旧数据兼容、隔离栈或并行版本。
+- 非解决：把 production 的备份/临时库恢复要求作为所有 test 写入的统一门禁；仅依据备份命令退出码宣称 production 可回滚；或以备份为由清空正式/共享数据。
+- 停止条件：production 的同目标备份不可读、恢复工具不可用、目标身份/数据归属不明，或操作超出已授权项目边界；test 仅在共享资源、归属不明或会影响正式服务时停止受影响动作。
+- 验证：production 记录备份完整性、可读性、目标绑定和旧版本/配置回滚材料；test 记录实际目标、项目归属、删除边界、部署后目标状态和关键流程结果。
+- 预防：发布清单必须先区分 test/production；不要把恢复演练设为通用门禁。已有范围授权覆盖范围内的替换、重启、验证和必要修复，不因技术命令或重试机制重复要求人工确认。
+- 证据：[V2 部署回滚手册](../V2从开发到服务器部署与回滚手册.md:155)；环境分层以项目 `AGENTS.md` 和 `dev-workflow` 当前部署政策为准。
+- 最后验证：2026-11-04（按用户确认的环境分层规则修订）。
 
 ## DEPLOY-004：宿主机 pyproject 落后会让源码重打 wheel 丢失既有依赖
 
@@ -385,3 +385,23 @@
 - 预防：发布前检查远端 migration revision 唯一性；对 legacy/formal 文件名使用显式常量和精确路径；保留迁移前数据库 revision 与可恢复备份。
 - 证据：`var/reports/tool-conversation-initial-20260826/issues.jsonl`；jx `/opt/ai-management/var/reports/v2/toolconv-20260830-155349-contractfix2-deploy`。
 - 最后验证：2026-08-30。
+
+## DEPLOY-032：隔离启动 manifest 必须绑定不可变 Docker image ID
+
+- 适用：`ai-management-cleaning-test` 在 jx 的 API/UI/OCR 容器启动前隔离预检。
+- 触发：manifest 只记录可变 image tag 与 Git commit；同一 tag 被重建或重标后，仍处于有效期的 manifest 会误授权另一份镜像启动。
+- 根因：tag 与未提交工作树的 `HEAD` 都不是容器内容标识，不能证明预检时的 wheel/源码就是即将启动的 artifact。
+- 解决：manifest 保留 image tag 和 Git provenance，同时必须记录 API/UI/OCR 的 Docker image ID；启动脚本在 `compose up` 前用 `docker image inspect` 重新比对三项 ID，任一缺失、格式错误、镜像不可读或不一致均 fail closed。
+- 非解决：仅比较 tag、只比较 `git rev-parse HEAD`、在预检后重建同名 tag，或因测试镜像不存在而跳过 artifact 核验。
+- 验证：`tests/test_cleaning_test_deploy_contract.py` 的 source 脚本正例与 retagged-image 负例通过；本轮完整相关组 `58 passed`，证据为 `var/reports/W-20260912-041700/pytest-u03-u08-boundary-full-after-20260913.xml`。
+- 预防：jx 只读预检清单同时保存脱敏 image ID、wheel/source provenance 与 manifest 签发时间；缺少任一项不启动会消费队列的 Worker。
+- 证据：`scripts/jx_cleaning_test_switch.sh`、`tests/test_cleaning_test_deploy_contract.py`。
+- 最后验证：2026-09-13。
+
+## DEPLOY-033：本机基础镜像的仓库摘要引用可能触发镜像源查询
+
+- 适用：YS 上用本机既有项目镜像离线构建替换版本。
+- 触发与根因：`FROM name@sha256:...` 未在本机镜像存储解析，BuildKit 转向仓库镜像源查询元数据并收到 HTTP 403；`build.pull: false` 不保证该引用完全跳过远端解析。
+- 解决：读取已有本机标签的 image ID，与已确认的旧运行镜像 ID 精确比较；一致后以该标签作为构建基础，并核对构建实际解析的摘要。不因这个错误改动共享 Docker 镜像源、拉取同名未知镜像或提前停服。
+- 验证：首次构建失败时旧 API 仍运行、候选镜像未生成；改用核对过的本机标签后，在 `network: none` 构建中成功，并读回候选镜像 ID。
+- 证据：[失败读回](../../var/reports/0910-review-20261015/ys-scoped-20261110/build-failed-readback.json)、[成功读回](../../var/reports/0910-review-20261015/ys-scoped-20261110/build-readback.json)。最后验证：2026-11-10。

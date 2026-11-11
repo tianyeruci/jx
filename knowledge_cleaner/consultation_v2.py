@@ -89,7 +89,10 @@ class DecisionUnit(BaseModel):
             raise ValueError("决策单元至少需要problem或mechanism_or_diagnosis")
         if not self.actions and self.evidence_level != EvidenceLevel.E0:
             raise ValueError("非E0决策单元必须包含actions")
-        if self.evidence_level in {EvidenceLevel.E2, EvidenceLevel.E3} and not self.observed_outcomes:
+        if (
+            self.evidence_level in {EvidenceLevel.E2, EvidenceLevel.E3}
+            and not self.observed_outcomes
+        ):
             raise ValueError("E2/E3必须包含observed_outcomes")
         if self.evidence_level == EvidenceLevel.E3 and self.result_status != "verified":
             raise ValueError("E3必须标记为verified")
@@ -99,7 +102,11 @@ class DecisionUnit(BaseModel):
             "mechanism_or_diagnosis": {FactState.CONSULTANT_JUDGMENT},
             "actions": {FactState.PLANNED_ACTION, FactState.DECISION},
             "observed_outcomes": {FactState.OBSERVED_RESULT},
-            "stated_conditions": {FactState.CUSTOMER_FACT, FactState.CONSULTANT_JUDGMENT, FactState.DERIVED_CONDITION},
+            "stated_conditions": {
+                FactState.CUSTOMER_FACT,
+                FactState.CONSULTANT_JUDGMENT,
+                FactState.DERIVED_CONDITION,
+            },
             "derived_conditions": {FactState.DERIVED_CONDITION},
             "risks_or_limits": {FactState.CONSULTANT_JUDGMENT, FactState.DERIVED_CONDITION},
         }
@@ -147,7 +154,9 @@ class ConsultationCaseV2(BaseModel):
 
     @model_validator(mode="after")
     def check_case(self) -> "ConsultationCaseV2":
-        if self.disposition == CaseDisposition.KEEP and (not self.shared_context or not self.decision_units):
+        if self.disposition == CaseDisposition.KEEP and (
+            not self.shared_context or not self.decision_units
+        ):
             raise ValueError("keep_as_case必须包含共享背景和决策单元")
         if not self.time_sensitive and self.time_sensitive_items:
             raise ValueError("time_sensitive为false时不能存在time_sensitive_items")
@@ -157,7 +166,10 @@ class ConsultationCaseV2(BaseModel):
             unit.observed_outcomes for unit in self.decision_units
         ):
             raise ValueError("整体E2/E3必须至少包含一个已观察结果")
-        if self.background_sufficiency == BackgroundSufficiency.LOW and self.disposition == CaseDisposition.KEEP:
+        if (
+            self.background_sufficiency == BackgroundSufficiency.LOW
+            and self.disposition == CaseDisposition.KEEP
+        ):
             raise ValueError("背景充分度low不得直接keep_as_case")
         return self
 
@@ -185,7 +197,12 @@ _PII_RE = (
     ("phone", re.compile(r"(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)")),
     ("email", re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")),
     ("wechat", re.compile(r"(?i)(?:微信(?:号|ID)?|wechat)\s*[:：]?\s*[A-Za-z][-_A-Za-z0-9]{5,19}")),
-    ("id_card", re.compile(r"(?<![0-9Xx])\d{6}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[0-9Xx](?![0-9Xx])")),
+    (
+        "id_card",
+        re.compile(
+            r"(?<![0-9Xx])\d{6}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[0-9Xx](?![0-9Xx])"
+        ),
+    ),
     ("url", re.compile(r"(?i)(?:https?://|www\.)\S+")),
 )
 
@@ -240,8 +257,17 @@ def extract_docx(path: str | Path) -> SourceExtraction:
     residual = scan_residual_pii(anonymized)
     findings = tuple(sorted({item.category for item in residual}))
     disposition = "review_required" if findings or not anonymized.strip() else "ready"
-    reason = "脱敏后仍检测到隐私信息" if findings else ("正文为空" if not anonymized.strip() else "")
-    return SourceExtraction(source, _sha256(source), _blocks_from_text(anonymized), disposition, reason, privacy_findings=findings)
+    reason = (
+        "脱敏后仍检测到隐私信息" if findings else ("正文为空" if not anonymized.strip() else "")
+    )
+    return SourceExtraction(
+        source,
+        _sha256(source),
+        _blocks_from_text(anonymized),
+        disposition,
+        reason,
+        privacy_findings=findings,
+    )
 
 
 def extract_pdf(path: str | Path, *, enable_ocr: bool = True) -> SourceExtraction:
@@ -263,12 +289,20 @@ def extract_pdf(path: str | Path, *, enable_ocr: bool = True) -> SourceExtractio
         "PDF_BOUNDARY_LOW_TEXT_WARNING:",
         "PDF_TEXT_LAYER_IMAGE_PAGE_WARNING:",
     )
-    blocking = tuple(
-        item for item in warnings if not item.startswith(non_blocking_prefixes)
+    blocking = tuple(item for item in warnings if not item.startswith(non_blocking_prefixes))
+    disposition = (
+        "review_required" if blocking or findings or not converted.markdown.strip() else "ready"
     )
-    disposition = "review_required" if blocking or findings or not converted.markdown.strip() else "ready"
     reason = "；".join(blocking) if blocking else ("正文为空" if not blocks else "")
-    return SourceExtraction(source, _sha256(source), blocks, disposition, reason, privacy_findings=findings, warnings=warnings)
+    return SourceExtraction(
+        source,
+        _sha256(source),
+        blocks,
+        disposition,
+        reason,
+        privacy_findings=findings,
+        warnings=warnings,
+    )
 
 
 def extract_consultation(path: str | Path, *, enable_ocr: bool = True) -> SourceExtraction:
@@ -287,6 +321,7 @@ def validate_case_payload(
 ) -> ConsultationCaseV2:
     """Validate strict v2 JSON and enforce source coverage conservation."""
     case = ConsultationCaseV2.model_validate(dict(payload))
+
     def canonical_block_id(value: str) -> str:
         match = re.fullmatch(r"b(\d+)", value.strip(), re.I)
         return f"b{int(match.group(1)):03d}" if match else value.strip()
@@ -300,14 +335,22 @@ def validate_case_payload(
         referenced.extend(item.source_block_ids)
     for unit in case.decision_units:
         for collection in (
-            unit.local_context, unit.problem, unit.mechanism_or_diagnosis,
-            unit.actions, unit.observed_outcomes, unit.stated_conditions,
-            unit.derived_conditions, unit.risks_or_limits,
+            unit.local_context,
+            unit.problem,
+            unit.mechanism_or_diagnosis,
+            unit.actions,
+            unit.observed_outcomes,
+            unit.stated_conditions,
+            unit.derived_conditions,
+            unit.risks_or_limits,
         ):
             for item in collection:
                 referenced.extend(item.source_block_ids)
     coverage = case.source_coverage
-    covered = [canonical_block_id(item.block_id) for item in (*coverage.kept, *coverage.dropped, *coverage.unresolved)]
+    covered = [
+        canonical_block_id(item.block_id)
+        for item in (*coverage.kept, *coverage.dropped, *coverage.unresolved)
+    ]
     if len(covered) != len(set(covered)):
         raise ValueError("source_coverage中block_id不能重复")
     if all_ids:
@@ -316,7 +359,10 @@ def validate_case_payload(
         unknown = {canonical_block_id(item) for item in referenced} - all_ids
         if unknown:
             raise ValueError(f"结构化结果引用未知来源块：{sorted(unknown)}")
-    if any(item.status == FactState.DERIVED_CONDITION for item in (*case.shared_context, *case.objectives)):
+    if any(
+        item.status == FactState.DERIVED_CONDITION
+        for item in (*case.shared_context, *case.objectives)
+    ):
         raise ValueError("shared_context/objectives不能直接使用derived_condition")
     if case.disposition == CaseDisposition.KEEP and not coverage.kept:
         raise ValueError("keep_as_case必须存在kept来源块")
@@ -344,10 +390,23 @@ def render_case_markdown(case: ConsultationCaseV2) -> str:
         "；".join(_render_item(item) for item in case.shared_context),
     ]
     if case.objectives:
-        lines.extend(["", "## 咨询目标", "", "；".join(_render_item(item) for item in case.objectives)])
-    lines.extend(["", f"> 证据等级：{case.overall_evidence_level.value}；背景充分度：{case.background_sufficiency.value}"])
+        lines.extend(
+            ["", "## 咨询目标", "", "；".join(_render_item(item) for item in case.objectives)]
+        )
+    lines.extend(
+        [
+            "",
+            f"> 证据等级：{case.overall_evidence_level.value}；背景充分度：{case.background_sufficiency.value}",
+        ]
+    )
     if case.time_sensitive_items:
-        lines.extend(["", "> 时效提示：" + "；".join(_render_item(item) for item in case.time_sensitive_items)])
+        lines.extend(
+            [
+                "",
+                "> 时效提示："
+                + "；".join(_render_item(item) for item in case.time_sensitive_items),
+            ]
+        )
     for unit in case.decision_units:
         lines.extend(["", "<<<DIFY_CHILD>>>", "", f"## 决策单元：{unit.topic}", ""])
         # ``retrieval_summary`` is produced from the structured fields and is
@@ -389,7 +448,9 @@ def prepare_consultation_v2(
     if extraction.disposition != "ready":
         return {
             "disposition": "review_required",
-            "error_code": "PRIVACY_REVIEW_REQUIRED" if extraction.privacy_findings else "CONSULTATION_SOURCE_REVIEW_REQUIRED",
+            "error_code": "PRIVACY_REVIEW_REQUIRED"
+            if extraction.privacy_findings
+            else "CONSULTATION_SOURCE_REVIEW_REQUIRED",
             "reason": extraction.reason or "咨询源文件需要人工复核",
             "source_sha256": extraction.source_sha256,
             "source_blocks": sorted(source_text),
@@ -408,8 +469,12 @@ def prepare_consultation_v2(
         }
     if case.disposition != CaseDisposition.KEEP:
         return {
-            "disposition": "review_required" if case.disposition == CaseDisposition.REVIEW else "excluded",
-            "reason": "模型结果标记为人工复核" if case.disposition == CaseDisposition.REVIEW else "模型结果明确排除",
+            "disposition": "review_required"
+            if case.disposition == CaseDisposition.REVIEW
+            else "excluded",
+            "reason": "模型结果标记为人工复核"
+            if case.disposition == CaseDisposition.REVIEW
+            else "模型结果明确排除",
             "source_sha256": extraction.source_sha256,
         }
     case_checksum = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
@@ -435,12 +500,16 @@ def prepare_consultation_v2(
             "schema_version": case.schema_version,
             "source_coverage": case.source_coverage.model_dump(mode="json"),
             "source_block_count": len(source_text),
-            "parent_child": verify_parent_child_blocks(markdown, expected_children=len(case.decision_units)),
+            "parent_child": verify_parent_child_blocks(
+                markdown, expected_children=len(case.decision_units)
+            ),
         },
     }
 
 
-def verify_parent_child_blocks(markdown: str, *, expected_children: int | None = None) -> dict[str, Any]:
+def verify_parent_child_blocks(
+    markdown: str, *, expected_children: int | None = None
+) -> dict[str, Any]:
     """Verify Dify parent/child separator integrity without remote mutation."""
     text = markdown.strip()
     if not text:
@@ -478,20 +547,29 @@ def build_shadow_manifest(
             raise ValueError(f"案例{case.case_id}的源文件不在授权清单")
         rendered = render_case_markdown(case)
         check = verify_parent_child_blocks(rendered, expected_children=len(case.decision_units))
-        documents.append({
-            "case_id": case.case_id,
-            "case_group_id": case.case_group_id,
-            "dataset_code": dataset_code,
-            "source_authorization_hash": (
-                hashlib.sha256(str(Path(source_path).resolve()).encode("utf-8")).hexdigest()[:16]
-                if source_path is not None else ""
-            ),
-            "source_ids": sorted({entry.block_id for entry in case.source_coverage.kept}),
-            "markdown_sha256": hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
-            "parent_count": check["parent_count"],
-            "child_count": check["child_count"],
-        })
-    return {"dataset_code": dataset_code, "authorized_source_count": len(allowed), "documents": documents}
+        documents.append(
+            {
+                "case_id": case.case_id,
+                "case_group_id": case.case_group_id,
+                "dataset_code": dataset_code,
+                "source_authorization_hash": (
+                    hashlib.sha256(str(Path(source_path).resolve()).encode("utf-8")).hexdigest()[
+                        :16
+                    ]
+                    if source_path is not None
+                    else ""
+                ),
+                "source_ids": sorted({entry.block_id for entry in case.source_coverage.kept}),
+                "markdown_sha256": hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
+                "parent_count": check["parent_count"],
+                "child_count": check["child_count"],
+            }
+        )
+    return {
+        "dataset_code": dataset_code,
+        "authorized_source_count": len(allowed),
+        "documents": documents,
+    }
 
 
 def evaluate_rerank_threshold_matrix(
@@ -517,27 +595,49 @@ def evaluate_rerank_threshold_matrix(
                 score_threshold=threshold,
                 reranking={"reranking_enable": True} if enabled else None,
             )
-            matrix.append({
-                "reranking_enabled": bool(enabled),
-                "score_threshold": float(threshold),
-                "recall_at_k": metrics.recall_at_k,
-                "hit_rate_at_k": metrics.hit_rate_at_k,
-                "mrr": metrics.mrr,
-                "failed": metrics.failed,
-                "total": metrics.total,
-                "cases": [
-                    {"query": item.query, "recall": item.recall, "error": item.error}
-                    for item in metrics.cases
-                ],
-            })
-    return {"k": k, "thresholds": list(thresholds), "rerank_enabled": list(rerank_enabled), "matrix": matrix}
+            matrix.append(
+                {
+                    "reranking_enabled": bool(enabled),
+                    "score_threshold": float(threshold),
+                    "recall_at_k": metrics.recall_at_k,
+                    "hit_rate_at_k": metrics.hit_rate_at_k,
+                    "mrr": metrics.mrr,
+                    "failed": metrics.failed,
+                    "total": metrics.total,
+                    "cases": [
+                        {"query": item.query, "recall": item.recall, "error": item.error}
+                        for item in metrics.cases
+                    ],
+                }
+            )
+    return {
+        "k": k,
+        "thresholds": list(thresholds),
+        "rerank_enabled": list(rerank_enabled),
+        "matrix": matrix,
+    }
 
 
 __all__ = [
-    "BackgroundSufficiency", "CaseDisposition", "ConsultationCaseV2", "DecisionUnit",
-    "EvidenceItem", "EvidenceLevel", "EvaluationCase", "FactState", "SourceBlock", "SourceCoverage",
-    "SourceExtraction", "build_shadow_manifest", "evaluate_rerank_threshold_matrix",
-    "extract_consultation", "extract_docx", "extract_pdf", "render_case_markdown",
+    "BackgroundSufficiency",
+    "CaseDisposition",
+    "ConsultationCaseV2",
+    "DecisionUnit",
+    "EvidenceItem",
+    "EvidenceLevel",
+    "EvaluationCase",
+    "FactState",
+    "SourceBlock",
+    "SourceCoverage",
+    "SourceExtraction",
+    "build_shadow_manifest",
+    "evaluate_rerank_threshold_matrix",
+    "extract_consultation",
+    "extract_docx",
+    "extract_pdf",
+    "render_case_markdown",
     "prepare_consultation_v2",
-    "scan_privacy", "validate_case_payload", "verify_parent_child_blocks",
+    "scan_privacy",
+    "validate_case_payload",
+    "verify_parent_child_blocks",
 ]

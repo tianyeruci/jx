@@ -8,4 +8,3 @@ BUSINESS_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 def business_today() -> date:
     return datetime.now(BUSINESS_TIMEZONE).date()
-

@@ -36,9 +36,11 @@ _NUMBERED_HEADING_RE = re.compile(
     r"^(?:第[一二三四五六七八九十百]+[章节部分篇]|[一二三四五六七八九十百]+[、.]|\d+(?:\.\d+){0,3}[.)、/／]?)\s*\S+"
 )
 _HEADING_END_RE = re.compile(r"[。！？!?；;：:]$")
-_DATE_ONLY_RE = re.compile(r"^(?:20\d{2}[年./-]\s*\d{1,2}[月./-]\s*\d{1,2}日?|\d{4}[-/]\d{1,2}[-/]\d{1,2})$")
+_DATE_ONLY_RE = re.compile(
+    r"^(?:20\d{2}[年./-]\s*\d{1,2}[月./-]\s*\d{1,2}日?|\d{4}[-/]\d{1,2}[-/]\d{1,2})$"
+)
 _FIELD_LABEL_RE = re.compile(r"^[\u3400-\u9fffA-Za-z0-9 _（）()]{2,18}\s*[：:]\s*\S+")
-_NO_SPACE_BEFORE = set(",.;:!?，。；：！？、)]}》”’\"")
+_NO_SPACE_BEFORE = set(',.;:!?，。；：！？、)]}》”’"')
 _NO_SPACE_AFTER = set("([{《“‘")
 _TOC_NUMBER_TOKEN_RE = (
     r"(?:第\s*(?:\d{1,4}|[一二三四五六七八九十百千万]+)\s*[章节部分篇回]?|"
@@ -220,7 +222,9 @@ def _group_words(words: Iterable[dict[str, Any]]) -> list[TextLine]:
     return result
 
 
-def _extract_table_rows(page: Any) -> tuple[list[tuple[float, float, list[list[str | None]]]], list[str]]:
+def _extract_table_rows(
+    page: Any,
+) -> tuple[list[tuple[float, float, list[list[str | None]]]], list[str]]:
     # Use line/rectangle geometry by default.  pdfplumber's text strategy can
     # turn ordinary two-column prose or bullet lists into false tables; it is
     # intentionally not enabled for this deterministic document workflow.
@@ -256,7 +260,9 @@ def _extract_table_rows(page: Any) -> tuple[list[tuple[float, float, list[list[s
     return tables, warnings
 
 
-def _inside_table(line: TextLine, tables: Sequence[tuple[float, float, list[list[str | None]]]]) -> bool:
+def _inside_table(
+    line: TextLine, tables: Sequence[tuple[float, float, list[list[str | None]]]]
+) -> bool:
     center = (line.top + line.bottom) / 2.0
     return any(top - 2 <= center <= bottom + 2 for top, bottom, _ in tables)
 
@@ -346,7 +352,12 @@ def _build_heading_levels(lines: Sequence[TextLine], body_size: float) -> dict[f
     candidates: list[float] = []
     for line in lines:
         text = _strip_source_heading_marker(line.text)
-        if not text or len(text) > 100 or _HEADING_END_RE.search(text) or _DATE_ONLY_RE.fullmatch(text):
+        if (
+            not text
+            or len(text) > 100
+            or _HEADING_END_RE.search(text)
+            or _DATE_ONLY_RE.fullmatch(text)
+        ):
             continue
         numbered = bool(_NUMBERED_HEADING_RE.match(text))
         # Keep a size gap before allowing a line to participate in the
@@ -444,6 +455,7 @@ def _merge_wrapped_heading_lines(
     if not lines:
         return []
     result: list[TextLine] = []
+
     def heading_signal(line: TextLine) -> bool:
         text = _strip_source_heading_marker(line.text)
         key = _heading_key(text)
@@ -451,8 +463,10 @@ def _merge_wrapped_heading_lines(
             return True
         numbered = bool(_NUMBERED_HEADING_RE.match(text))
         size_signal = body_size > 0 and line.size >= body_size * 1.18
-        return numbered and (_is_bold(line) or size_signal) or (
-            size_signal and len(text) <= 120 and not _HEADING_END_RE.search(text)
+        return (
+            numbered
+            and (_is_bold(line) or size_signal)
+            or (size_signal and len(text) <= 120 and not _HEADING_END_RE.search(text))
         )
 
     index = 0
@@ -466,7 +480,9 @@ def _merge_wrapped_heading_lines(
             same_size = abs(following.size - current.size) <= max(1.5, current.size * 0.12)
             close = gap <= max(current.size * 1.35, 24.0)
             aligned = abs(following.x0 - current.x0) <= max(48.0, current.size * 2.5)
-            next_is_new_item = bool(_NUMBERED_HEADING_RE.match(following_text) or _LIST_RE.match(following_text))
+            next_is_new_item = bool(
+                _NUMBERED_HEADING_RE.match(following_text) or _LIST_RE.match(following_text)
+            )
             if (
                 current_text
                 and following_text
@@ -524,10 +540,7 @@ def _heading_level(
         )
         marker = marker_match.group("marker") if marker_match else ""
         same_size_title = (
-            isolated
-            and bold
-            and len(text) <= 60
-            and marker in {"、", ".", "/", "／", "）", ")"}
+            isolated and bold and len(text) <= 60 and marker in {"、", ".", "/", "／", "）", ")"}
         )
         if (not size_signal and not same_size_title) or sentence_like:
             return None
@@ -580,7 +593,9 @@ def _toc_entry_record(text: str, indent: float = 0.0) -> TocEntry | None:
     )
     if not match:
         return None
-    if re.fullmatch(r"[一二三四五六七八九十百千万]+", match.group("number")) and not match.group("marker"):
+    if re.fullmatch(r"[一二三四五六七八九十百千万]+", match.group("number")) and not match.group(
+        "marker"
+    ):
         return None
     title = _clean_text(match.group("title")).strip(" .·…‧")
     if not title:
@@ -607,7 +622,21 @@ def _sequence_number(number: str) -> int | None:
         return int(number)
     if not re.fullmatch(r"[一二三四五六七八九十百千万]+", number):
         return None
-    values = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10, "百": 100, "千": 1000, "万": 10000}
+    values = {
+        "一": 1,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+        "百": 100,
+        "千": 1000,
+        "万": 10000,
+    }
     total = 0
     section = 0
     digit = 0
@@ -657,7 +686,9 @@ def _toc_entry_records_from_text(text: str, indent: float = 0.0) -> list[TocEntr
         )
         if match:
             title = _clean_text(match.group("title")).strip(" .·…‧")
-            if title and not (_is_bare_chinese_number(match.group("number")) and not match.group("marker")):
+            if title and not (
+                _is_bare_chinese_number(match.group("number")) and not match.group("marker")
+            ):
                 entries.append(
                     TocEntry(
                         number=match.group("number"),
@@ -688,7 +719,9 @@ def _toc_entry_records_from_text(text: str, indent: float = 0.0) -> list[TocEntr
             left = _clean_text(entry.title[: marker.start()])
             right = _clean_text(entry.title[marker.end() :])
             if left and right:
-                repaired.append(TocEntry(entry.number, left, marker.group(1), entry.marker, entry.indent))
+                repaired.append(
+                    TocEntry(entry.number, left, marker.group(1), entry.marker, entry.indent)
+                )
                 repaired.append(TocEntry(str(expected_next), right, entry.page, "", entry.indent))
                 continue
         repaired.append(entry)
@@ -838,13 +871,9 @@ def _paragraph_markdown(
         text = _strip_source_heading_marker(line.text)
         if not text or _is_page_marker(text):
             continue
-        previous_gap = (
-            line.top - lines[line_index - 1].bottom if line_index > 0 else float("inf")
-        )
+        previous_gap = line.top - lines[line_index - 1].bottom if line_index > 0 else float("inf")
         next_gap = (
-            lines[line_index + 1].top - line.bottom
-            if line_index + 1 < len(lines)
-            else float("inf")
+            lines[line_index + 1].top - line.bottom if line_index + 1 < len(lines) else float("inf")
         )
         isolation_gap = max(typical_gap * 1.5, max(6.0, line.size) * 1.2, 8.0)
         isolated_heading = previous_gap >= isolation_gap and next_gap >= isolation_gap
@@ -965,7 +994,9 @@ def _text_pdf_to_markdown(pdf: Any) -> tuple[str, dict[str, Any]]:
 
     repeated = _repeat_edge_lines(page_lines)
     body_size = statistics.median(sizes) if sizes else 0.0
-    heading_levels = _build_heading_levels([line for page in page_lines for line in page], body_size)
+    heading_levels = _build_heading_levels(
+        [line for page in page_lines for line in page], body_size
+    )
     filtered_page_lines: list[list[TextLine]] = []
     for page_index, lines in enumerate(page_lines):
         page_height = page_heights[page_index] if page_index < len(page_heights) else 0.0
@@ -1025,7 +1056,11 @@ def _text_pdf_to_markdown(pdf: Any) -> tuple[str, dict[str, Any]]:
                     table_count += 1
             else:
                 source_line = next(
-                    (line for line in filtered_lines if abs(line.top - block.top) < 0.01 and line.text == block.text),
+                    (
+                        line
+                        for line in filtered_lines
+                        if abs(line.top - block.top) < 0.01 and line.text == block.text
+                    ),
                     None,
                 )
                 if source_line is not None:
@@ -1041,7 +1076,9 @@ def _text_pdf_to_markdown(pdf: Any) -> tuple[str, dict[str, Any]]:
                     heading_floor=heading_floor,
                 )
             )
-    markdown = re.sub(r"\n{3,}", "\n\n", "\n\n".join(item for item in output if item.strip())).strip()
+    markdown = re.sub(
+        r"\n{3,}", "\n\n", "\n\n".join(item for item in output if item.strip())
+    ).strip()
     return markdown + ("\n" if markdown else ""), {
         "table_count": table_count,
         "warnings": sorted(set(warnings)),
@@ -1058,6 +1095,7 @@ def _rapid_fields(result: Any) -> tuple[list[str], list[float], list[Any]]:
             boxes, texts, scores = result[:3]
         elif len(result) == 2:
             texts, scores = result
+
     def as_list(value: Any) -> list[Any]:
         if value is None:
             return []
@@ -1091,11 +1129,15 @@ def _ocr_lines(result: Any) -> tuple[list[TextLine], float | None]:
                 bottom = max(float(point[1]) for point in points)
             except (TypeError, ValueError, IndexError):
                 pass
-        items.append(TextLine(text=text, x0=x0, top=top, bottom=bottom, size=bottom - top, fontname=""))
+        items.append(
+            TextLine(text=text, x0=x0, top=top, bottom=bottom, size=bottom - top, fontname="")
+        )
     items.sort(key=lambda item: (item.top, item.x0))
     if not items:
         return [], None
-    tolerance = max(8.0, statistics.median(max(4.0, item.bottom - item.top) for item in items) * 0.6)
+    tolerance = max(
+        8.0, statistics.median(max(4.0, item.bottom - item.top) for item in items) * 0.6
+    )
     grouped: list[TextLine] = []
     for item in items:
         item_center = (item.top + item.bottom) / 2.0
@@ -1141,7 +1183,9 @@ def _ocr_pdf_to_markdown(path: Path, dpi: int) -> tuple[str, dict[str, Any]]:
             if confidence is not None:
                 confidences.append(confidence)
             page_lines.append(lines)
-            page_heights.append(float(image.shape[0]) if getattr(image, "shape", None) is not None else 0.0)
+            page_heights.append(
+                float(image.shape[0]) if getattr(image, "shape", None) is not None else 0.0
+            )
         finally:
             page.close()
     repeated = _repeat_edge_lines(page_lines)
@@ -1196,7 +1240,9 @@ def _ocr_pdf_to_markdown(path: Path, dpi: int) -> tuple[str, dict[str, Any]]:
         "table_count": 0,
         "warnings": warnings,
         "text_chars": len(markdown),
-        "average_confidence": round(sum(confidences) / len(confidences), 4) if confidences else None,
+        "average_confidence": round(sum(confidences) / len(confidences), 4)
+        if confidences
+        else None,
     }
 
 

@@ -16,9 +16,7 @@ def percentile(values: list[float], ratio: float) -> float | None:
     if not values:
         return None
     ordered = sorted(values)
-    return ordered[
-        min(len(ordered) - 1, max(0, math.ceil(len(ordered) * ratio) - 1))
-    ]
+    return ordered[min(len(ordered) - 1, max(0, math.ceil(len(ordered) * ratio) - 1))]
 
 
 def read_cases(path: Path) -> list[dict[str, Any]]:
@@ -98,12 +96,10 @@ def run_case(
             "course_ids": actual_course_ids == case.get("expected_course_ids", []),
             "route_id": (route or {}).get("route_id") == case.get("expected_route_id"),
             "must_contain": all(
-                value.lower() in answer.lower()
-                for value in case.get("must_contain", [])
+                value.lower() in answer.lower() for value in case.get("must_contain", [])
             ),
             "must_not_contain": all(
-                value.lower() not in answer.lower()
-                for value in case.get("must_not_contain", [])
+                value.lower() not in answer.lower() for value in case.get("must_not_contain", [])
             ),
         }
         return {
@@ -164,15 +160,9 @@ def main() -> int:
             for case in cases
         ]
     first_tokens = [
-        float(item["first_token_ms"])
-        for item in results
-        if item["first_token_ms"] is not None
+        float(item["first_token_ms"]) for item in results if item["first_token_ms"] is not None
     ]
-    totals = [
-        float(item["total_ms"])
-        for item in results
-        if item["total_ms"] is not None
-    ]
+    totals = [float(item["total_ms"]) for item in results if item["total_ms"] is not None]
     report = {
         "total": len(results),
         "passed": sum(bool(item["passed"]) for item in results),

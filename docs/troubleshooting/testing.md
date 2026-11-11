@@ -192,3 +192,15 @@
 - 预防：涉及自然日的夹具必须由业务时区日期派生，不得用 UTC `now() - timedelta(days=1)` 代替“上一业务日”。
 - 证据：[`test_tool_conversations_contract.py`](../../tests/test_tool_conversations_contract.py)。
 - 最后验证：2026-09-11。
+
+## TEST-017：Windows 清洗回归须使用项目 Python、隔离 basetemp 与 JUnit 终态
+
+- 适用：Windows 上的清洗/Worker/PDF/部署契约回归，以及接口索引生成。
+- 触发：默认系统 Python 运行索引脚本时报缺少 PyYAML，或多文件 pytest 因历史临时目录权限/锁定而无终态；中途只见部分进度就无法区分真实失败和 runner 问题。
+- 根因：系统 Python 不等于项目受管环境，且受管临时目录可能含不可枚举的历史目录；测试工具也需要显式、可定位的终态证据。
+- 解决：从仓库根目录用 `uv run python` 运行依赖项目的脚本；pytest 使用每轮唯一的工作区 `--basetemp` 与 JUnit XML，完整结束后再按失败清单统一修复。接口索引必须由生成器 `--write` 后 `--check`，不手改生成区。
+- 非解决：用系统 Python 临时安装依赖、删除系统 Temp、并行复用 SQLite basetemp、看到部分点号就宣称通过，或手工篡改接口索引。
+- 验证：2026-09-12，最终相关回归 `241 passed, 0 skipped, 0 failed`；`uv run python scripts/generate_project_index.py --write/--check` 成功；格式、lint、编译及补丁空白检查通过。随后将三份旧 DSL 契约改为验证当前权威图的任务状态、意图/活动分路、结构化 `activity_plan`、受限检索与结果范围，并由生成器刷新派生 DSL；相关 `14 passed`，完整 `gov.ps1 quality`（格式、lint、编译、两组单元、事件 RAG、Feature 回归）通过。未修改权威 DSL 或 `recent_activity` 清洗逻辑。项目文档契约仍单独报告既有 `AGENTS.md` `9,133 > 8,192` bytes 上限，不能把它误报为清洗/DSL 测试失败。
+- 预防：报告记录解释器、basetemp、JUnit 路径、收集数和退出码；错误先按“业务/测试契约/工具链”分类再统一处理。
+- 证据：`var/reports/W-20260912-041700/pytest-cleaning-review-r2-20260912.xml`、`scripts/generate_project_index.py`、本轮脱敏 `issues.jsonl`。
+- 最后验证：2026-09-12。

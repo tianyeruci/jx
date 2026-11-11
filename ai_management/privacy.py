@@ -19,9 +19,7 @@ _INLINE_AUTHOR = re.compile(
     r"(?:原创)?作者(?P<name>[\u3400-\u9fff·]{2,8}?)"
     r"(?=通过|在|于|说|认为|分享|写|，|,|。|；|;|\s|$)"
 )
-_TITLE_OWNER = re.compile(
-    r"^(?P<name>[\u3400-\u9fff·]{2,8})的"
-)
+_TITLE_OWNER = re.compile(r"^(?P<name>[\u3400-\u9fff·]{2,8})的")
 _BIO_SIGNATURE = re.compile(
     r"(?m)^\s*(?P<name>[\u3400-\u9fff·]{2,8})[，,]\s*"
     r"(?=[^\n]{0,100}(?:毕业|硕士|职业|创业者|作家|创始人|主理人|"
@@ -98,8 +96,7 @@ def discover_author_aliases(
     if owner and owner.group("name") in body:
         identities.update(_identity_variants(owner.group("name")))
     return {
-        identity: "作者"
-        for identity in sorted(identities, key=lambda item: (-len(item), item))
+        identity: "作者" for identity in sorted(identities, key=lambda item: (-len(item), item))
     }
 
 
@@ -134,9 +131,7 @@ def redact_article_identity(
             "identity_aliases": aliases,
             "forbidden_public_names": sorted(aliases),
             "privacy_level": "public_source_deidentified",
-            "contact_redaction_count": (
-                phone_count + email_count + wechat_count
-            ),
+            "contact_redaction_count": (phone_count + email_count + wechat_count),
         },
     )
 
@@ -219,15 +214,9 @@ class PublicRedactionRules:
         if isinstance(value, str):
             return self.sanitize_text(value, remove_urls=remove_urls)
         if isinstance(value, list):
-            return [
-                self.sanitize_value(item, remove_urls=remove_urls)
-                for item in value
-            ]
+            return [self.sanitize_value(item, remove_urls=remove_urls) for item in value]
         if isinstance(value, tuple):
-            return tuple(
-                self.sanitize_value(item, remove_urls=remove_urls)
-                for item in value
-            )
+            return tuple(self.sanitize_value(item, remove_urls=remove_urls) for item in value)
         if isinstance(value, dict):
             return {
                 str(key): self.sanitize_value(
@@ -246,11 +235,7 @@ def load_public_redaction_rules(session: Session) -> PublicRedactionRules:
     rows = session.execute(
         select(CleaningDocument, CleaningFile)
         .join(CleaningFile, CleaningDocument.file_id == CleaningFile.id)
-        .where(
-            CleaningDocument.status.in_(
-                ("succeeded", "review_required", "pending", "staged")
-            )
-        )
+        .where(CleaningDocument.status.in_(("succeeded", "review_required", "pending", "staged")))
     )
     for document, source in rows:
         audit = document.audit_json or {}

@@ -9,13 +9,9 @@ def test_admin_cleaning_strategy_choices_hide_all_course_route_strategies(monkey
     monkeypatch.setattr(knowledge_admin, "_dataset_id", lambda _kb_code: "dataset")
 
     general = {
-        item["code"]
-        for item in knowledge_admin.list_cleaning_strategies("general")["items"]
+        item["code"] for item in knowledge_admin.list_cleaning_strategies("general")["items"]
     }
-    course = {
-        item["code"]
-        for item in knowledge_admin.list_cleaning_strategies("course")["items"]
-    }
+    course = {item["code"] for item in knowledge_admin.list_cleaning_strategies("course")["items"]}
     visible = general | course
 
     required = {

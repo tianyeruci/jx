@@ -4,6 +4,7 @@ The cleaner operates on Markdown text only.  It deliberately has no file or
 logging side effects so every cleaning entry point can use the same parser and
 the caller can aggregate one redacted issue per table.
 """
+
 from __future__ import annotations
 
 import html
@@ -217,7 +218,9 @@ def _linearize_pipe_rows(rows: Iterable[str]) -> list[str]:
             continue
         text = "；".join(cell for cell in cells if cell)
         if text:
-            result.append(text + ("。" if not text.endswith(("。", "！", "？", ".", "!", "?")) else ""))
+            result.append(
+                text + ("。" if not text.endswith(("。", "！", "？", ".", "!", "?")) else "")
+            )
     return result
 
 
@@ -417,7 +420,11 @@ def clean_markdown_tables(markdown: str) -> MarkdownTableCleanResult:
             index = end
             continue
 
-        if _looks_like_pipe_row(line) and index + 1 < len(lines) and _looks_like_pipe_row(lines[index + 1]):
+        if (
+            _looks_like_pipe_row(line)
+            and index + 1 < len(lines)
+            and _looks_like_pipe_row(lines[index + 1])
+        ):
             table_index = tables_seen + 1
             tables_seen += 1
             end = index + 2

@@ -22,11 +22,7 @@ def test_optimization_cases_cover_critical_branches_and_limits() -> None:
     cases = read_cases(CASES)
     branches = {case["expected_branch"] for case in cases}
     categories = {case["category"] for case in cases}
-    layout_profiles = {
-        case["layout_profile"]
-        for case in cases
-        if case.get("layout_profile")
-    }
+    layout_profiles = {case["layout_profile"] for case in cases if case.get("layout_profile")}
 
     assert len(cases) >= 28
     assert branches == {"direct", "general", "course", "mixed"}

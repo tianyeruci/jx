@@ -150,7 +150,10 @@ def _summarize_sync(conversation_id: str) -> bool:
         conversation = session.get(BusinessConversation, conversation_id)
         if conversation is None:
             return False
-        if conversation.summary != old_summary or conversation.summary_through_message_id != old_cursor:
+        if (
+            conversation.summary != old_summary
+            or conversation.summary_through_message_id != old_cursor
+        ):
             return False
         conversation.summary = payload["updated_summary"].strip()
         conversation.summary_through_message_id = target_message_id
@@ -180,9 +183,13 @@ def summarize_conversation(conversation_id: str) -> bool:
     with cache.lock(f"ai:summary-lock:{conversation_id}", ttl=900) as acquired:
         if not acquired:
             record_event(
-                level="INFO", category="task", component="summary_worker",
-                event_code="SUMMARY_SKIPPED_LOCKED", status="skipped",
-                message="会话已有摘要任务执行中", resource_type="conversation",
+                level="INFO",
+                category="task",
+                component="summary_worker",
+                event_code="SUMMARY_SKIPPED_LOCKED",
+                status="skipped",
+                message="会话已有摘要任务执行中",
+                resource_type="conversation",
                 resource_id=conversation_id,
             )
             return False

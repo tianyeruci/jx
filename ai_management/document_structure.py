@@ -33,29 +33,19 @@ def _candidate_toc_entries(
     for index, line in enumerate(lines):
         heading = _HEADING.match(line)
         marker = (
-            _normalized_heading(heading.group("title"))
-            if heading
-            else _normalized_heading(line)
+            _normalized_heading(heading.group("title")) if heading else _normalized_heading(line)
         )
         # PDF text extraction often preserves a plain ``目录`` line but not a
         # Markdown heading.  Treat it as an explicit marker only near the
         # beginning; a later body mention of the word must not authorize a
         # deletion.
-        if (
-            explicit_index is None
-            and marker in {"目录", "contents"}
-            and index < 80
-        ):
+        if explicit_index is None and marker in {"目录", "contents"} and index < 80:
             explicit_index = index
         if match := _TOC_LINE.match(line):
-            all_entries.append(
-                (index, match.group("title").strip(), int(match.group("page")))
-            )
+            all_entries.append((index, match.group("title").strip(), int(match.group("page"))))
     if explicit_index is not None:
         entries = [
-            entry
-            for entry in all_entries
-            if explicit_index < entry[0] <= explicit_index + 2_000
+            entry for entry in all_entries if explicit_index < entry[0] <= explicit_index + 2_000
         ]
         dense: list[tuple[int, str, int]] = []
         last_index = explicit_index
@@ -78,9 +68,7 @@ def _candidate_toc_entries(
             groups.append([entry])
             continue
         previous = groups[-1][-1][0]
-        nonblank_gap = sum(
-            bool(value.strip()) for value in lines[previous + 1 : entry[0]]
-        )
+        nonblank_gap = sum(bool(value.strip()) for value in lines[previous + 1 : entry[0]])
         if nonblank_gap <= 2:
             groups[-1].append(entry)
         else:
@@ -116,11 +104,7 @@ def remove_reliable_toc(markdown: str) -> TocRemovalResult:
     pages = [entry[2] for entry in toc_entries]
     page_monotonic = pages == sorted(pages) and len(set(pages)) >= 2
     body_keys = {_normalized_heading(value) for value in body_headings}
-    matched = [
-        title
-        for _, title, _ in toc_entries
-        if _normalized_heading(title) in body_keys
-    ]
+    matched = [title for _, title, _ in toc_entries if _normalized_heading(title) in body_keys]
     minimum_matches = max(2, math.ceil(len(toc_entries) * 0.6))
     reliable_by_body_headings = len(matched) >= minimum_matches
     # A text-only PDF can have a clearly marked, early and dense TOC while
@@ -134,9 +118,7 @@ def remove_reliable_toc(markdown: str) -> TocRemovalResult:
         and len(toc_entries) >= 6
         and len(body_headings) <= 1
     )
-    reliable = page_monotonic and (
-        reliable_by_body_headings or reliable_by_explicit_dense_toc
-    )
+    reliable = page_monotonic and (reliable_by_body_headings or reliable_by_explicit_dense_toc)
     if not reliable:
         return TocRemovalResult(
             markdown="\n".join(lines).strip(),
@@ -149,9 +131,7 @@ def remove_reliable_toc(markdown: str) -> TocRemovalResult:
     remove_indexes = {index for index, _, _ in toc_entries}
     if toc_heading_index is not None:
         remove_indexes.add(toc_heading_index)
-    cleaned = [
-        line for index, line in enumerate(lines) if index not in remove_indexes
-    ]
+    cleaned = [line for index, line in enumerate(lines) if index not in remove_indexes]
     return TocRemovalResult(
         markdown=re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned)).strip(),
         detected=True,

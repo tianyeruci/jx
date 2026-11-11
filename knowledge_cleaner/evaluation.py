@@ -60,11 +60,7 @@ def _metadata_identifiers(raw: Any) -> set[str]:
                 identifiers.add(str(value))
     elif isinstance(raw, list):
         for item in raw:
-            if (
-                isinstance(item, dict)
-                and item.get("name") in supported_names
-                and item.get("value")
-            ):
+            if isinstance(item, dict) and item.get("name") in supported_names and item.get("value"):
                 identifiers.add(str(item["value"]))
     return identifiers
 

@@ -1,6 +1,177 @@
 # AI 管理服务当前状态与后续测试交接
 
-## 0.85 2026-09-09 三类 AI 顾问消息操作发布与真实验收（当前最新）
+## 1.07 2026-11-10 YS 就绪检查 503 已修复（当前 YS 运行事实）
+
+- 仅 YS `ai-management-ys` 的 API 容器已替换为 `ys-0910ready-c6ad95caabe39de8`，提交 `80db8163d66f92afa85c0bca05303cc69a93681f`。UI 和四个 Worker 的容器 ID、镜像和状态与替换前一致。
+- YS 实际 `/health/ready` 由 HTTP 503 变为 HTTP 200，`status=ready`，database、redis、Dify 应用配置、有效知识库配置和 Dify 连通性均为 true；课程绑定仍未配置。只在 `APP_ENV=test` 调整全局就绪依赖；生产启动校验、非测试就绪要求及历史读取入口各自的绑定检查保持不变。
+- 定向回归 7 项通过，验证了真正依赖缺失时仍返回 503。本轮没有执行迁移、配置凭据、重新启用课程上传、补测模型或发布、操作 JX 或共享服务。1.06 中除已修复的就绪项外，其余验收边界不变。
+- API 的 Compose 标签指向原两份配置叠加新候选的 `ready.compose.json`；实际镜像、模块哈希和响应见 [YS 就绪修复读回](var/reports/0910-review-20261015/ys-ready-20261110/final-readback.json)。
+
+## 1.06 2026-11-10 YS 的 0910 修复版已部署（替换后首轮验收快照）
+
+- 目标为 YS 测试环境的 Compose 项目 `ai-management-ys`。旧版 `ys-0352e996f04bd3c5` 已替换为 `ys-0910review-a416fc715b1bb6f3`，提交 `bb30762d9191ef6b3f50c87406e1c19707b0bd15`，实跑镜像 `sha256:2ac424c2685f6e3f1d06e80b2d8127a16ca1fb445e2efe14290ec35c65127775`。API、UI 与四个 Worker 正常运行且零重启；发布 Worker 和调度器未启动。
+- 现有测试库执行新版必需迁移 `o2p3q4r5s6t7 → p4q5r6s7t8u9`，四张关键业务表记录计数保持一致。2301 条发布队列记录的整体摘要一致；项目卷和非目标容器清单一致。没有备份、恢复演练、旧数据兼容性验收、数据清理、付费 Provider 调用或 JX 操作。
+- 已验收：API live / UI 健康端点均 HTTP 200；实际 HTTP 验证管理鉴权、清洗策略读取、禁用课程上传返回 409；UI 未配置独立密码时拒绝操作且不调用管理 API；四个 Worker 注册预期队列。已安装的关键模块与构建回执哈希一致。
+- 未通过/未测：全局 `/health/ready` 为 HTTP 503，因 YS 原有配置缺少课程知识库绑定；数据库、Redis 和 Dify 连通。UI 独立密码未配置，未执行登录后流程；未执行真实模型/发布链路。两项配置限制未阻止其余无费用验证。
+- 运行配置以容器 Compose 标签为准：原私有配置作为底层文件，叠加候选目录中的 `0910-candidate.local-base.compose.json`。原 `current` 路径仍指向底层配置目录，不能用它单独判断运行版本。范围授权及各阶段回执见 [本轮脱敏读回](var/reports/0910-review-20261015/ys-scoped-20261110/final-readback.json)。
+
+## 1.05 2026-10-15 jx 独立测试环境已退役（当前最新运行事实；备份待用户确认后删除）
+
+- 本次范围：用户明确要求实施独立测试环境 ai-management-cleaning-test 的简单备份与清理，并确认精确命令及本次独立运维确认记录；未修改旧开发任务的 Quality/review/approval 状态，未部署新代码。
+- 已完成：移除六个测试容器、测试数据库及角色 ai_management_cleaning_test、三个测试专用卷、专用网络 ai-management-cleaning-test-network、三个精确 cleaning-test-candidate 镜像标签，以及 /opt/ai-management-cleaning-test。测试端口 18080/18501 已无监听。仅操作测试专用网络，共享 docker_default 保留。
+- 数据清理：132 份已关联 Dify 测试文档已删除；对应 150 条父分段、653 条子分段、810 条元数据绑定、132 个源文件记录及物理源文件均核验无残留。Redis DB 6 最终键数为 0，清理命令实际删除退出后仍存在的五个绑定键；未对其他 Redis DB 执行清理。
+- 正式保护：25 个正式/共享运行容器的 ID、镜像 ID、启动时间、重启次数和配置摘要与基线一致；正式 API ready 与 UI 健康均 HTTP 200。正式通用知识库仍有 1,106 份文档，保护清单内的非目标文档未消失。共享服务、正式配置及共用 Key 未改动。
+- 已保留：空测试 Dataset；历史孤立父分段 7,368 条、子分段 7,809 条、元数据绑定 64 条；三个被正式服务使用的 cleaning-test-base 标签及镜像。历史残留不属于本轮清理目标，来源及根因仍待另案核查。
+- 一次性恢复材料：/opt/cleanup-backups/jx-cleaning-test-20261015-074124，权限 0700；数据库归档、四个文件压缩包、七个 Redis 键快照、132 份 Dify 源文件及必要关联信息已保存并检查可读取性/校验值。按用户选择未做恢复演练，不承诺 Dify 原文档 ID 原样恢复。当前测试运行所需的三个镜像继续保留作为恢复材料。
+- 保留控制：备份与三个测试恢复镜像只在用户后续明确确认后删除，不自动到期、不因本次清理成功自动删除。实施授权已消费，不重复执行清理；旧开发任务、历史暂停/恢复事件及其他环境不因此改变。
+- 证据：本地 var/reports/jx-test-retirement-20261015/approval.json、remote-cleanup-command.txt、verification-redacted.json；远端备份目录中的 cleanup-result-redacted.json、verification-redacted.json。正文、凭据与受保护映射仅存受限恢复材料，不写入本交接或普通报告。
+
+## 1.04 2026-09-13 W-20260912-041700 canonical Quality 终态与合同审计修正（代码治理记录；运行事实见 1.05；未部署）
+
+- 命令终态：本窗口在确认旧会话写入租约为空、无遗留 pytest/Python 测试链后，串行完成此前超时的 canonical Quality。全部 required phase exit 0，当前代码快照指纹 `2ffabe021b6a7b2391135425e1bf6c78bfd9f48cbcc8f4831795d7e6ef07b6c8`。这是代码/测试快照的本地质量证据，不替代本次合同修正后的合法 approval、当前完整差异独立 review、真实样本或 jx 验收。
+- 合同审计范围：已纠正主计划的短 Goal/按需加载、U02 的“已证明失效”与“暂时不可验证”边界、历史 Quality/review 的定位、当前完整差异 review 收敛规则、真实 parity 的远端证据边界；已纠正两个受影响 Feature 的 Batch acceptance、调用总上限、活动 50/200 与咨询忠实改写描述；已纠正部署补充的预检/精确命令授权界线。未声明 U01—U12、四策略 parity、真实咨询内容、Dify/jx、费用或正式健康已完成。
+- 治理：上述合同语义变更需要按合法机制重新同步并重新绑定审批/独立复审；不 capture baseline、不手改指纹、不直接写 review passed。仅动态交接更新时间不应被当作实现缺陷或触发猜测性复审。
+- 远端状态：本窗口未执行 jx、Docker daemon、Dify、Provider、Batch、OCR、上传、Worker、Scheduler 或清理；正式与隔离服务、配置和数据均未修改。累计费用、未结算 reservation、Redis DB 6、测试 DB/role、镜像/卷/Dataset 归属及正式健康对照仍未知。
+
+## 1.03 2026-09-13 W-20260912-041700 精简目标与新窗口恢复就绪（历史；被 1.04 取代）
+
+- 会话切换：旧主窗口已在明确 Quality 终态后结束并释放同一 checkout 的写入权；其记录的超时遗留 PID `7580`、`13936`、`11660` 已再次只读核验为全部自然退出。当前没有因此启动重跑、删除 basetemp 或并发复用 SQLite。
+- Quality/治理：`.codex/state/quality.json` 仍为 `2026-09-13T11:49:22+08:00` 的 failed；前七阶段 exit 0，Feature 组 600.463 秒超时 exit 124，无 fingerprint。此后本次仅更新需求/计划文档，任何历史 Quality/review 均不能绑定当前内容。`implementation_approved=false`、独立 review pending；用户已批准需求、验收意图和最小 Implementation 方案，但仍须用合法治理命令记录，不得 capture baseline、手改指纹或隐藏差异。
+- 新确认范围：正常运行继续默认 Batch 关闭；四策略 `personal_business_consultation`、`wechat_public_account_cognition`、`zsxq_post`、`xiaobot_post` 做本地确定性 Batch/Realtime parity，真实付费对照只做咨询与知识星球，`recent_activity` 保持 realtime-only。Realtime 是不同 digest 时的固定 canonical 候选；任一 transport 不合格或语义不等价时两份都不发布，同 digest 验证 Batch `duplicate_noop`，不同 digest 但语义等价只发布 Realtime并保留 Batch 脱敏证据。
+- 文档入口：主计划第 9 节现为唯一短恢复指令，历史提示不再复制；主计划、部署补充以及 `cleaning-tolerance-methodology`、`qwen-batch-cleaning` 两个受影响 Feature 合同已同步上述边界。动态事实继续只写本交接顶部和 `var/reports/W-20260912-041700/`。
+- 新窗口下一步：先核对当前进程、工作树、Quality/gate 状态和文档检查结果；合法记录 requirements/implementation approval，建立包含 U01—U12、有效 review findings 与 Batch/Realtime 的完整行为反例—根因矩阵，再由 GPT-5.6 Terra 唯一写入负责人统一做最小实现。未通过新 canonical Quality 和当前完整差异独立复审前不得进入 jx。
+- 远端状态：本次交接没有执行 jx、Docker daemon、Dify、Provider、Batch、OCR、上传、Worker、Scheduler 或清理；正式与隔离服务、配置和数据均未修改。累计费用、未结算 reservation、Redis DB 6、测试 DB/role、镜像/卷/Dataset 归属及正式健康对照仍未知。
+
+## 1.02 2026-09-13 W-20260912-041700 canonical Quality 明确超时（当前最新；交接暂停）
+
+- 当前本地事实：本轮唯一 canonical Quality 已由父治理进程明确终态为 **failed**，时间 `2026-09-13T11:49:22+08:00`。format、lint、compile、shell syntax、主 unit（590.279 秒）、补充 unit（256.611 秒）和 event-RAG integration 均 exit 0；Feature 组在 **600.463 秒** 被治理超时（exit 124），因此没有 Quality fingerprint、不得进入当前差异独立复审或 jx。
+- 当前仍运行进程：父 Quality 已退出，但其超时后的精确 Feature pytest 子进程仍存在，PID `7580` (`uv.exe`)、`13936` 和 `11660` (`python.exe`)；命令行均为同一条 Feature 组：`test_consultation_rag_integration.py`、`test_model_cleaning_workflow.py`、`test_cleaning_tolerance_methodology_regression.py`、`test_pdf_ocr_quality.py`、`test_pdf_cleaning_policy.py`、`test_cleaning_release_contract.py`、`test_cleaning_test_deploy_contract.py`、`test_governance_scope_contract.py`、`test_test_ui.py`。本窗口按交接指令不再等待、终止、重跑或另启测试；新窗口先核对这三条精确命令的终态，再按测试排障规范决定是否仅终止已确认的遗留链路。
+- 下一最小动作：不启动新工作。接手者先读取 `.codex/state/quality.json`，复核上述 PID 是否仍存在及最终是否产生可读 JUnit/控制台终态；若确认是超时遗留的同一链路，保留 `tmp/.pytest-tmp/canonical-*` 并仅按精确 PID/命令行处理。之后才可把 Feature 组按独立、唯一 basetemp 分组诊断；不能把任何单项/旧结果写成 canonical Quality 通过。
+- 远端状态：本轮始终未执行 jx、Docker daemon、Dify、Provider、Batch、OCR、上传、Worker、Scheduler 或清理；正式 `ai-management` 的 API、Worker、Scheduler、OCR、Methodology Worker、UI、Nginx、配置和数据均未停止、重启、重建或修改。累计费用、未结算 reservation、Redis DB 6、测试 DB/role、镜像/卷/Dataset 归属及正式前后健康仍未知。
+
+## 1.01 2026-09-13 W-20260912-041700 review10 活动清理回归已定位并通过（当前最新；未部署）
+
+- 当前本地事实：上一条 canonical Quality 的 first unit 失败已由行为反例定位为本轮新增 shared remote-ID 引用保护错误地把 `recent_activity` replacement 保留的历史 `CleaningDocument` 当作共享 live 引用，导致旧活动远端文档的既有精确 outbox 删除被跳过。这违反“`recent_activity` 不改”的已确认边界。最小修复将共享删除保护限定为 post-publication `DifyPublicationShard` 的 live 引用；普通活动 replacement 的旧本地行不再阻止其既有精确删除。未改变活动 DSL 或活动 Python 清洗链路。
+- 本地证据：针对活动 replacement、跨来源最后引用删除、candidate metadata replacement 和已排队删除后重新共享四个反例的 `pytest-review10-activity-cleanup-r1-20260913.xml` 为 **4 passed / 0 failed / 0 errors**；随后串行完整受影响组 `pytest-review10-affected-full-r3-20260913.xml` 为 **202 passed / 0 failed / 0 errors**。均使用 fake Dify/SQLite/JUnit，不能替代真实 Dify、Provider、OCR、六类样本、咨询原文或 jx 验收。
+- 当前门禁：`.codex/state/quality.json` 仍记录 `2026-09-13T10:48:08+08:00` 的 failed Quality，不能因局部/受影响回归自行改写或视为通过；本检查点代码稳定后仅重跑一次 canonical Quality，成功后才冻结当前完整差异重新独立复审。`implementation_approved=false`、`review_status=pending` 仍为独立 fail-closed 阻塞；未 capture baseline、未手改审批/Quality/review 指纹。
+- 远端状态：本轮仍未执行 jx、Docker daemon、Dify、Provider、Batch、OCR、上传、Worker、Scheduler 或清理；正式 `ai-management` 的 API、Worker、Scheduler、OCR、Methodology Worker、UI、Nginx、配置和数据均未停止、重启、重建或修改。累计费用、未结算 reservation、Redis DB 6 队列/键、DB/role、镜像/卷/Dataset 归属及正式前后健康仍未知，不能写为 ¥0 或已核验。
+
+## 1.00 2026-09-13 W-20260912-041700 review10 行为反例已本地回归（当前最新；未部署）
+
+- 当前本地事实：Quality 绑定差异的独立 `review10_frozen_complete_diff` 为 **FAIL**（3 High、2 Medium），未标记 `review=passed`。本轮按反例统一修复五项：跨文件 shard 远端 ID 被标为候选/共享而非当前来源的 replacement 所有权；删除来源、replacement 与延迟 `ExternalDeletionTask` 均按其他 live 本地引用保护远端 ID；同 task 任一 document 的正 `model_attempts` 与缺失 ledger 会阻断同 task 新 reservation，并使日/累计费用保守占满；Dify parent/child 分页的 `total` 首次声明固定且后续冲突或少页失败关闭；咨询核心自由改写要求两个真正独立的非通用锚点（相邻重叠 n-gram 不再冒充两项事实），而方案/方法按单条 advice quote 判断否定方向，仍允许忠实缩写和受控“核验/验证”。
+- 本地证据：`pytest-review10-failure-collection-partial-20260913.xml` 初始收集 4 个失败；`pytest-review10-focused-r5-after-20260913.xml` 为 10 passed（补齐共享 ID、延迟删除、child total 与调用准入反例）；一次完整受影响组因 advice 忠实缩写的重复 anchor 屏障过严而出现 3 个回归，`pytest-review10-regression-r1-20260913.xml` 记录三项修正后通过；最终 `pytest-review10-affected-full-r2-20260913.xml` 为 **182 passed / 0 failed / 0 errors**。均为 fake Dify/SQLite/JUnit，不等同于真实 Dify、Provider、OCR、六类样本、咨询原文或 jx 验收。
+- 当前门禁：索引与 Feature 文档已同步；新的 canonical Quality 于 `2026-09-13T10:48:08+08:00` 在第一条 required unit 阶段以 exit 1 失败（此前 format/lint/compile/shell syntax 通过，未进入后续阶段）。同一 unit 命令的带 JUnit 诊断重跑超过其 600 秒 Quality 上限且无终态，已仅终止确认属于该诊断命令的 3 个 pytest/uv PID，未删除 SQLite/basetemp。原因尚未被定位，故不可重跑 Quality、冻结复审或进入 jx；`implementation_approved=false` 仍是独立 fail-closed 阻塞；未 capture baseline、未手改审批/Quality/review 指纹。
+- 远端状态：本轮未执行 jx、Docker daemon、Dify、Provider、Batch、OCR、上传、Worker、Scheduler 或清理；正式 `ai-management` 的 API、Worker、Scheduler、OCR、Methodology Worker、UI、Nginx、配置和数据均未停止、重启、重建或修改。累计费用、未结算 reservation、Redis DB 6 队列/键、DB/role、镜像/卷/Dataset 归属及正式前后健康仍未知，不能写为 ¥0 或已核验。
+
+## 0.99 2026-09-13 W-20260912-041700 review8 续跑本地回归完成（当前最新；未部署）
+
+- 当前本地事实：Quality 后冻结完整差异独立复审 `review8_frozen_complete_diff` 为 **FAIL**（3 High、2 Medium）。按行为反例收集后完成最小修复：咨询核心字段拒绝通用四字/单个 ASCII 锚点，方案仅允许无新增行动的忠实删减及受控“核验/验证”归一；同批账本拒绝外来 document 关联，reservation 前复核 document 属于 task batch；跨文件同正文 shard 仅携带已知远端 ID/witness 供 Worker 再验证，绝不以本地成功直接复用；`DIFY_DUPLICATE_VERIFICATION_FAILED` 可只重试发布，不回源重跑模型；同源重复活动 ID 仅失败冲突单元，独立活动继续发布，并在 source commit 后重新聚合 file/batch 状态。
+- 本地证据：失败收集 `pytest-review8-new-findings-failure-collection-r2-20260913.xml` 为 6 个预期失败；追加审计又复现“最新无关跨文件 shard 候选遮蔽较早同正文候选”（`pytest-review8-cross-file-candidate-failure-collection-20260913.xml`）和“外来 task reservation 被费用汇总低估”（`pytest-review8-foreign-ledger-failure-collection-20260913.xml`）。修复后聚焦通过，受影响完整回归：咨询/容错 `44 passed`、模型 workflow 最新 r7 `114 passed`、release acceptance `20 passed`、管理 API `46 passed`，均为 fake/SQLite/JUnit 证据。曾误并行启动第二条本地活动 pytest，已精确终止两条临时 pytest 子进程；未影响任何服务、远端或持久业务数据，最终串行结果为准。
+- 当前门禁：索引与受影响 Feature 文档已同步，canonical Quality 于 `2026-09-13T09:40:01+08:00` 通过（8 个 required phase 均为 exit 0，fingerprint `216ed3812b1d6f2c485ceeb68a7193bf1f6c892ea3b1390615068213203e9388`）。这不等于产品、真实样本或隔离验收通过；当前完整差异独立复审仍待重新冻结后执行。`implementation_approved=false` 仍为独立 fail-closed 阻塞；未 capture baseline、未改批准/质量/review 指纹。
+- 远端状态：本轮未执行 jx、Docker daemon、Dify、provider、Batch、OCR、上传、Worker 或清理。正式 ai-management 的 API、Worker、Scheduler、OCR、Methodology Worker、UI、Nginx、配置和数据均未停止、重启、重建或修改。累计费用、未结算 reservation、DB 6/队列/镜像/卷/Dataset 归属和正式环境前后健康仍未知。
+
+## 0.98 2026-09-13 W-20260912-041700 review7-final 统一本地修复已回归（当前最新；未部署）
+
+- 当前本地事实：冻结完整差异的独立复审 `review7_final` 已正式为 **FAIL**（3 High、1 Medium），因此没有标记 `review=passed`，也未进入 jx。按行为反例先收集后统一修复：Dify witness 现在一致读取顶层/嵌套 parent/child `has_more`/`total`，每页在写入前计入全局上限并拒绝重复、空页推进和总数冲突；历史显式正数 `model_attempts` 只有与同 document 完整有效 reservation/call-ID ledger 严格相等才可继续，provider 调用前不一致即 fail-closed；咨询核心/方案锚点拒绝通用短语，丢弃无 evidence 的泄露、窃取等新行动；canonical Ruff/compile 重新覆盖 `ai_management`、`knowledge_cleaner`、`tests`、`Other/event_rag_cleaner`，仅精确排除受限的历史 `.pytest-tmp` scratch。
+- 本地证据：失败收集 `pytest-review8-dify-failure-collection-20260913.xml`（4）、`pytest-review8-model-failure-collection-20260913.xml`（2）、`pytest-review8-consultation-failure-collection-r2-20260913.xml`（2）、`pytest-review8-governance-failure-collection-20260913.xml`（1）；修复后 Dify 完整 `14 passed`、咨询完整 `43 passed`、模型工作流完整 `111 passed`、活动 RAG `45 passed`、governance scope `2 passed`。目录级 Ruff format/check 已通过；`compileall` 对受限 scratch 会打印不可列出提示但退出码为 0，受管 Python 编译未报语法错误。
+- 当前门禁：上述源、测试、Quality 配置和文档改动已使旧 Quality 指纹失效。下一步仅为刷新索引、同步关联 Feature 文档、运行一次 canonical Quality，再冻结当前完整差异并做新的独立只读复审；implementation approval 仍为 fail-closed 独立阻塞，未运行 `capture-preimplementation-baseline`、未手改批准或指纹。
+- 远端状态：本轮没有执行 jx、Docker daemon、Dify、provider、Batch、OCR、上传、Worker 或清理。正式 ai-management 的 API、Worker、Scheduler、OCR、Methodology Worker、UI、Nginx、配置和数据未被停止、重启、重建或修改。累计费用、历史未结算 reservation、DB 6/队列/镜像/卷/Dataset 归属和正式环境前后健康核查仍未知。
+
+## 0.97 2026-09-13 W-20260912-041700 review6 后 witness／shard 合同修复进行中（当前最新；未部署）
+
+- 当前完整差异独立复审仍为 **FAIL**，绝不标记 `review=passed` 或进入 jx。本轮已按 finding 完成最小本地改动：`recent_activity` 不再执行新增的远端正文 witness 读取；Dify witness 分页拒绝重复/不推进页面；已读到的 metadata 不一致允许精确替换，读取不确定保留可重验；`shard_indexing` 不接收后到条目；realtime request audit 通过当前 lease fence 提交；canonical Ruff 覆盖补入 `knowledge_cleaner/dify.py` 与其测试；历史 qwen 共享合同显式服从当前 Batch=false、活动 50/200、无 review/fallback 和保留测试数据的边界。
+- 本轮本地证据：`pytest-review7-worker-dify-r3-20260913.xml` 为 `119 passed / 0 failed / 0 error`；`pytest-review7-indexing-r3-20260913.xml` 为并发规划反例 `1 passed`；`pytest-review7-doc-contract-r2-20260913.xml` 为 `13 passed`。索引生成器已刷新并通过 `--check`。这些只覆盖 fake client/SQLite/文档契约，不证明真实 Dify、模型、OCR、六类样本或 jx。
+- 当前 Quality/review：本轮源、测试、治理配置、合同和索引变更已使先前 Quality 指纹失效；待受影响完整回归稳定后运行一次新的 canonical Quality，再冻结完整差异独立复审。implementation approval 仍是 fail-closed 独立阻塞；未运行 `capture-preimplementation-baseline`、未手改批准或指纹。
+- 远端状态：本轮未执行 jx、Docker daemon、Dify、provider、Batch、上传、Worker 或清理；正式 ai-management 的 API、Worker、Scheduler、OCR、Methodology Worker、UI、Nginx、配置和数据未被停止、重启、重建或修改。累计费用和未结算 reservation 仍未知。
+
+## 0.96 2026-09-13 W-20260912-041700 最新独立复审 FAIL 后 realtime／shard 最小修复已本地回归（当前最新；未部署）
+
+- 冻结当前完整差异的独立复审仍为 **FAIL**，因此未标记 `review=passed`、未进入 jx。已按本轮 3 个行为反例完成局部统一修复：旧 realtime Worker 在 usage／修复／兜底／失败路径丢失 token 时直接退出而不写失败或清除新 lease；当前 Worker 在每个条目及限流完成后续租，再在费用预留后的短窗口调用 provider；post shard 只在精确远端 ID 为 completed/enabled、受控 metadata 与 v2 parent/child witness 同时一致时复用，读取异常保留可重试且不盲建，新分片发布后保存 witness。
+- 本轮证据：`pytest-review6-failure-collection-20260913.xml` 为 3 个预期失败；`pytest-review6-focused-r2-20260913.xml` 为 3 passed；`pytest-review6-shard-reuse-20260913.xml` 证明有效远端 shard 不调用 `create_document`；完整 `pytest-review6-worker-full-r2-20260913.xml` 为 107 passed / 0 failed / 0 error。均使用 fake client/SQLite，不证明真实 Dify 1.13.3、真实模型、OCR、六类样本或 jx。
+- 当前 Quality：此前指纹 `4762f5745fd9d85e032fa376c8cb249075e6a9c0c62bae24fe89bb5b08676a4a` 的 canonical Quality 已被本轮源、测试和合同变更置为 stale；下一步先运行受影响组并同步 Feature 文档，再只运行一次新的 canonical Quality 和完整差异独立复审。implementation approval 仍是 fail-closed 的独立治理阻塞，绝不 capture baseline、手改 fingerprint 或伪造批准。
+- 远端状态：本轮仍未执行 jx、Docker daemon、Dify、provider、Batch、上传、Worker 或清理；正式 ai-management 的 API、Worker、Scheduler、OCR、Methodology Worker、UI、Nginx、配置和数据未被停止、重启、重建或修改。累计费用及未结算 reservation 仍未知。
+
+## 0.95 2026-09-13 W-20260912-041700 第二次复审 findings 的本地修复已回归（当前最新；Quality/review 待重跑）
+
+- 按行为反例完成本轮最小修复：咨询 `primary_problem`/背景/表现按 case 内 evidence 职责锚定，且补齐“从而/进而/以便/借此”行动连接词；Dify 正文 witness 升级为父/子块的稳定标识、正文和可检索状态快照；post shard planner 不再把本地 succeeded/pending/indexing 状态作为终态 `duplicate_noop`；realtime Worker 在 reservation、写入和完成前验证当前 lease token，terminal/精确 retry 释放旧 lease，delivery attempts 不再吞掉仍合法的第二次 provider 调用额度。
+- 证据：`pytest-review5-failure-collection-20260913.xml` 收集 7 个预期失败；修复后 `pytest-review5-focused-pass-20260913.xml` 为 7 passed、`pytest-review5-worker-regression-20260913.xml` 为 7 passed，完整受影响本地组 `pytest-review5-affected-full-r3-20260913.xml` 为 153 passed / 0 failed / 0 error。该组仅使用 fake client/SQLite；Dify 1.13.3 真实 child shape、真实模型、OCR、六类样本和 jx 均未验收。
+- 当前 Feature 合同已同步相关语义；requirements approval 因 SPEC 更新需重新记录，implementation approval 仍不得用 capture baseline 或手改 fingerprint 绕过。此次源/测试变化令历史 Quality 与 review 失效；下一步仅运行一次当前 canonical Quality，随后冻结完整差异做新的独立复审。
+- 远端状态：本轮未执行 jx、Docker daemon、Dify、provider、Batch、上传、Worker 或清理；正式 ai-management 的 API、Worker、Scheduler、OCR、Methodology Worker、UI、Nginx、配置和数据未被停止、重启、重建或修改。累计费用及未结算 reservation 仍未知。
+
+## 0.94 2026-09-13 W-20260912-041700 Quality PASS 后当前完整差异复审仍 FAIL（当前最新；未部署）
+
+- 当前 canonical Quality 已于 `2026-09-13 04:59:36 +08:00` 完整通过，8 个 required phase 均为 exit 0，指纹 `991ecc4a99165cf37b58f859683edaccf6228e3d44b84ba6d0d21b98ab16905d`。这只证明当前本地质量命令通过，不代表产品、真实样本、jx 或费用验收。
+- 随后的冻结完整差异独立复审仍为 **FAIL**：分片 publication planner 仍可把本地 shard 状态直接变成 `duplicate_noop`；realtime Worker terminal/retry 未释放/轮换 lease 且没有 token fencing；咨询 case 的核心问题/背景未按 evidence kind 锚定；行动屏障漏掉“从而/进而/以便/借此”等连接词；正文 witness 未覆盖 hierarchical child chunk 的可检索状态；动态交接与 issue ledger 尚需按本节归并。不得 `mark-review passed`、不得进入 jx。
+- 已由该 review 核验、但不扩大为完成：权威商业顾问 YAML SHA-256 仍为 `AD770AEF7309E2E1E73DF3EBF35FBBA881BFBE1612FB8C22165410597F233017`；`recent_activity` 的活动 Python 清洗链未改；U04 历史 case remote-live gate、U05/U10 选择性 OCR、U07 ledger、U08 isolation binding、U11 scope 无新的静态 finding。真实 Dify 1.13.3 child-chunk、真实 Chatflow、六类样本、咨询原文、OCR 实机、jx、费用与正式环境前后核查仍未执行。
+- 治理：requirements 已依当前用户确认重新批准；implementation approval 仍因任务启动后已有源差异而按设计 fail-closed 拒绝，未运行 `capture-preimplementation-baseline` 或修改 fingerprint。下一步为新 findings 写反例、收集同组失败、统一修复，之后才重新同步文档、跑 Quality 和独立 review。
+
+## 0.93 2026-09-13 W-20260912-041700 当前完整差异复审 FAIL 后的局部统一修复（历史；未部署）
+
+- 本轮独立只读复审对冻结完整差异裁定为 **FAIL**；绝不标记 `review=passed` 或进入 jx。复审确认 `recent_activity` 被共享去重/metadata 路径改变、远端正文只由 metadata 自报摘要见证、咨询共同短语可带入新行动、历史 succeeded case 未核远端、warning-only OCR 事实冲突漏硬门禁、中文输入预算低估、镜像未和当前 worktree/wheel 同源、以及 lease 耗尽重试会永久 queued 等反例。
+- 已完成且有本地定向证据的最小修复：活动排除 publication digest 与远端历史去重路径；Dify 新发布记录实际分块正文 witness，历史复用需 metadata 和正文 witness 同时一致；咨询对每个衔接行动子句要求 advice 锚点；warning-only 事实冲突归一为 `OCR_KEY_FACT_CONFLICT`；预算预留改为 UTF-8 byte 上界和消息封套；exact retry 在 Worker lease attempts 已耗尽时明确拒绝；manifest 新增并比对当前 review-scope worktree 指纹、wheel SHA-256、API/UI/OCR image label 与 image ID；治理临时目录改为 `tmp/.pytest-tmp`，不再将 `tmp/pytest-plugin` 之类合法源码前缀整体排除。
+- 本轮局部测试：review 反例组 `53 passed`（`pytest-review-findings-after2-20260913.xml`），隔离部署合同 `33 passed`（`pytest-u08-worktree-witness-r7-20260913.xml`），U05/U06/U07/U03/U02 局部语义组 `8 passed`（`pytest-review-semantic-targets-20260913.xml`）。这些均为 fake client/SQLite/静态 Docker 合同；不是 Dify 真正文读取、真实模型、OCR 实机、六类样本或 jx 运行态验收。
+- 仍未完成：完整受影响回归、canonical Quality、对新完整差异重新独立复审、合法 implementation reapproval、以及费用/queue/image/DB6 只读预检和全部真实样本验收。累计费用及未结算 reservation 仍未知。自本工作开始未发起 jx、Docker daemon、Dify、provider、Batch、上传或 Worker 操作；正式环境未受本轮动作影响。
+
+## 0.92 2026-09-13 W-20260912-041700 追加行为反例修复（历史；未部署）
+
+- 最新本地反例确认并修复两项：U03 不允许同案例 advice 将明确主体“创始人”无依据改写为“销售人员”；U08 启动 manifest 现在除可变 tag/Git provenance 外还要求 API、UI、OCR 的不可变 Docker image ID，并在 `compose up` 前重新比对。二者均只丢弃不安全派生字段或阻断隔离启动，未增加模型调用、状态、表或远端负载。
+- 复验：新增 actor-swap、有效 image-ID 与 retagged-image 反例通过；`tests/test_cleaning_tolerance_methodology_regression.py`、`tests/test_cleaning_test_deploy_contract.py`、`tests/test_governance_scope_contract.py` 完整相关组为 `58 passed`，JUnit：`var/reports/W-20260912-041700/pytest-u03-u08-boundary-full-after-20260913.xml`。`tmp/pytest-*` 仅排仓库既定的 pytest basetemp 输出，不把这项已验证约定再扩展为新的治理范围。
+- 当前质量/复审状态：此前 canonical quality 已因本次源码、脚本、测试和文档变更失效；旧独立 review 不能视为当前 diff 结论，仍不得标记 `review=passed`。下一步先同步 Feature 文档，再重跑一次 canonical quality，并以冻结后的完整 diff 发起新的独立只读复审。
+- 当前远端状态与边界：本轮未执行 jx、Docker、Dify、真实模型、Batch、上传或清理；正式 `ai-management` 的 API、Worker、Scheduler、OCR、Methodology Worker、UI、Nginx、配置和数据未被停止、重启、重建或修改。累计费用、历史预留、DB 6/队列/镜像归属及六类真实样本均仍未知/未验收。
+
+## 0.91 2026-09-13 W-20260912-041700 本地反例复验与 U03 最小修复（历史）
+
+- 冻结差异的旧独立 review 仍是 **FAIL/pending**，不能标记 `review=passed` 或进入 jx 运行态。本轮逐项复验后，U02 的 live/404/禁用/metadata 或正文见证不符/超时、U04 的同源 `staged` case 与 `case_scoped` methodology、U07 的逐调用结算与损坏 ledger fail-closed、U08 的短时效环境/费用 manifest、U09 的耗尽次数人工源重试补投、U11 的 `tmp` 源码指纹均通过当前入口级反例；不再按旧 review 的已过时定位重复改动。
+- 本轮确认并修复 U03：仅以短 advice n-gram 重叠会错误允许“先验证真实需求”后追加“收取额外服务费”。当前实现对同案例 advice 未出现的服务费/费用/佣金/订金/定金/支付/购买/续费等新付费条件丢弃方案/方法字段，保留可回溯案例，不额外调用模型。`pytest-u03-paid-condition-before-20260913.xml` 记录失败；修复后咨询组为 `37 passed`，隔离/治理合同为 `31 passed`，U02/U04/U07/U09 定向组为 `11 passed`。
+- 这仍只是本地行为证据：未执行当前真实模型生成、两份咨询原文对照、六类真实样本、Dify 索引/metadata/检索、jx DB/Redis/队列/镜像/费用只读预检或隔离 Compose。累计费用与历史未结算 reservation 未知；正式 `ai-management` 的 API、Worker、Scheduler、OCR、Methodology Worker、UI、Nginx、配置和数据本轮没有被停止、重启、重建或修改。
+- 下一检查点：先同步当前实施与动态交接文档，再只运行一次当前 canonical quality；质量通过后重新发起覆盖当前完整差异的独立复审。实施再批准仍是独立治理阻塞，绝不捕获新 baseline、手改 fingerprint 或虚构批准。
+
+## 0.90 2026-09-13 W-20260912-041700 复审 FAIL 后的第三轮局部修复进行中（当前最新；未部署）
+
+- 当前独立复审已明确为 FAIL，不能标记 review passed 或进入 jx 运行态。已完成本地修复：根级 `tmp/` 不再整体逃逸治理指纹；同一源事务已验证并 `staged` 的咨询 case 可发布其 `case_scoped` methodology；新咨询 Prompt 只给出 `consultation-rag-v1`，旧结构只留解析兼容；缺失/未知辅助 evidence `kind` 在 quote 和 source block 合法时降级；清洗入口不再仅按本地历史成功把新条目 `duplicate_noop`；隔离 manifest 改为严格、短时效、主机/项目/DB/Redis/数据集/端口/镜像/源码/队列/费用/正式健康/资源归属绑定，并拒绝未知或重复字段。
+- 本轮新增本地证据：`pytest-model-workflow-round6-20260913.xml` 为 `101 passed`，`pytest-dify-activity-round3-20260913.xml` 为 `9 passed`，Feature 聚焦组 `pytest-feature-round7-20260913.xml` 为 `233 passed`。账本为每个新 realtime 调用保存 call ID、文档、transport 和定价快照；返回 usage 只结算匹配 reservation，usage 缺失保留保守预留，历史不完整账本 fail-closed。活动 DSL 只增加 Code 路径反例，权威 YAML SHA-256 保持 `AD770AEF7309E2E1E73DF3EBF35FBBA881BFBE1612FB8C22165410597F233017`。这些均不是 canonical quality、当前完整差异复审通过、真实样本、真实模型/Dify 或 jx 验收。
+- 尚未修复/验证的复审项包括：U02 远端正文关联的真实 Dify 回读、U03 自由改写的真实内容对照、U07 Batch/历史账本和远端实际费用核对、U09 commit 后 enqueue 前崩溃补投、U01 真实 Chatflow/LLM 自然语言路由、U12 Docker Compose runtime 语义、合法实施再批准路径及文档一致性。持续禁止 jx、Docker、Worker、上传、Dify 写入、真实模型、Batch 和清理；累计费用仍未知。
+- 正式 `ai-management` API、Worker、Scheduler、OCR、Methodology Worker、UI、Nginx、配置和数据未被本轮停止、重启、重建或修改。
+
+### 0.90 本轮补充（canonical pytest 隔离临时目录）
+
+- canonical quality 的 format、lint、编译与 Bash 语法检查通过，但默认 Windows 临时目录下的全库 unit 两次以 exit 1 结束且治理 wrapper 未保存失败用例；相同选择器在独立 `--basetemp` 下为 `574 passed, 0 failures, 0 errors`。
+- 已将两条 canonical unit 命令分别固定为 `tmp/pytest-canonical-unit` 与 `tmp/pytest-canonical-unit-supplement`，不改变测试范围、排除、断言或业务行为。第一条更新后的精确命令已通过；完整 canonical quality 正待重跑。
+- 这只修复本地 Windows runner 的 TEST-012/U12 门禁，尚不构成当前 quality、独立 review、真实样本、jx、Dify 或费用验收通过。
+
+## 0.89 2026-09-13 W-20260912-041700 本地质量已通过，复审和隔离验收未完成（历史）
+
+- 本轮只修正了 U06 的过期本地测试合同：明确表示“新建、从未调用”的 realtime 文档写入 `model_attempts=0`，历史缺失、损坏、超限或账本冲突仍 fail-closed；业务结果计数断言与必须保留的 provider reservation ledger 分离核验。聚焦回归 `14 passed`，完整 `tests/test_model_cleaning_workflow.py` 为 `98 passed`。
+- 当前 canonical quality 已通过，最终指纹为 `677fa963fb36056b5356e726e2e5e0f699976d9e8af06ae010898dffe4e4bb5a`：format、lint、完整编译、全库 unit、补充 unit、事件 RAG integration 和 Feature 验证均退出 0。U11 另修复了根级 `var/reports/` 和本动态交接文件污染 quality/review 指纹的问题，保留其他 `var` 源码；首次本轮 quality 的 format 失败与一次已存在 quality 父进程识别不准确均保留为过程证据，后续只有一条 pytest 链实际执行，未并发 SQLite。
+- 治理状态仍不能收口：用户本轮已明确确认的需求已通过 `approve-requirements --confirmed-by-user` 重新记录；但 `approve-implementation` 正确拒绝把任务启动后已有的源改动重当作实施前基线。未运行 `capture-preimplementation-baseline`、未手改指纹或 review 状态。该局部治理再批准缺口和新的完整差异独立复审仍待处理。
+- 尚未进行 jx 只读预检、Compose start、上传、Dify 写入、模型调用、Batch 或数据清理；历史累计费用、预留、DB 6/队列/镜像归属、六类真实样本、两份咨询原文内容对照、Dify 索引/检索和正式环境影响仍未核验。正式 `ai-management` 的 API、Worker、Scheduler、OCR、Methodology Worker、UI、Nginx、配置和数据均未被本轮停止、重启、重建或修改。
+
+## 0.88 2026-09-12 W-20260912-041700 第二轮本地统一修复进行中（当前最新；未部署）
+
+- 独立 current-diff 只读复审结论为 **FAIL**，识别 U01—U12 的实质行为缺口；该结论已作为本轮修复输入，未执行 `mark-review passed`。复审未运行测试、未访问远端、未修改文件。
+- 已完成并通过本地聚焦回归的修复包括：严格的治理临时路径过滤与 Ruff 覆盖；咨询方案/方法的确定性 advice 锚点筛查（无锚点、否定反转、无依据承诺剥离但保留独立 case）；OCR 重试按空白/事实冲突优先逐页择优并记录真实次数；Dify 历史成果的确定性 name/metadata 不符释放重传、技术读取异常仍失败关闭；case-scoped methodology 使用对应 case topic，且只有关联 case 本次 succeeded 才发布；源重试 broker 异常恢复原状态；模型调用次数缺失/损坏/冲突失败关闭，新任务显式初始化为 0，统计更新保留 provider reservation ledger；隔离启动脚本拒绝 Redis query DB 且要求外部只读独占 manifest。
+- 本窗口新增验证：U03/U05/U10/U11 聚焦 `35 passed`；U04/U06/U07/U09 聚焦 `12 passed`；U02/U04 去重与方法回归 `23 passed`；U08 隔离部署合同 `17 passed`；本轮修改路径的 Ruff format/check 通过。日志均位于 `var/reports/W-20260912-041700/`。此前 canonical quality 指纹已被本轮代码/文档更新失效，尚未重跑完整质量门禁。
+- U01 已只更新过期 `recent-activity` SPEC/IMPLEMENTATION，使其反映只读权威 DSL 的 `task_state_json`、三模型节点、受控补查与 `ACTIVITY_MAX_RESULTS` 默认 50/最高 200；未修改权威 YAML、活动 Python 链路或 DSL 运行行为。该语义文档更新需要在全部本地修复稳定后按治理合法重新绑定，不能手写指纹。
+- 未进行 jx 预检、Compose start、上传、Dify 写入、模型调用或数据清理；累计费用、预留、DB 6/队列/镜像归属、六类真实样本、两份咨询原文内容对照、Dify 索引/检索和正式环境影响仍未核验。正式环境没有被停止、重启、重建或改动。
+
+## 0.87 2026-09-12 W-20260912-041700 本地 U02/U05/U10/U11/U12 修复进行中（当前最新；未部署）
+
+- 本窗口延续 `W-20260912-041700`，没有回退或修改用户指定的 `dify/商业顾问（当前使用版本）.yml`；其本轮只读 SHA-256 为 `ad770aef7309e2e1e73df3ebf35fbba881bfbe1612fb8c22165410597f233017`。`recent_activity` DSL/Python 运行行为未改。
+- 已用本地 fake client/临时 SQLite 修复并回归：去重在发布前只读核验精确远端文档的 ID、完成状态、启用状态和受控 metadata；404 仅释放精确关联，超时不复用或盲写。上传预检只拦截活跃同源并发，历史终态留给远端核验。
+- PDF 咨询含图改为仅 OCR 图片/低可靠页并保留可靠无图 native 页；二次 OCR 只重跑低质量页，并逐页择优。新增治理 scope 回归，合法 `pytest-` 命名源码不再被指纹排除；canonical quality 的 format/lint/compile 覆盖补入咨询、PDF/OCR、隔离契约及新增回归路径。
+- 本轮本地证据：DSL/活动合同 `14 passed`，咨询/方法候选历史基线 `20 passed`，PDF/OCR/隔离合同历史基线 `39 passed`，模型工作流 `89 passed`；新增 U02/U11 聚焦 `24 passed`、U05/U10 `23 passed`。这些不构成真实模型、样本内容、Dify 或 jx 验收。
+- 当前 canonical quality 已完整通过，指纹为 `f2e846423be2133bdb02676f6ec7b26654495e1170de6a844578f1ff5963c016`；但这不替代 U01—U12 current-diff 独立复审或批准链核验。尚未完成：U03 方案/方法自由改写的确定性证据边界、真实六类样本内容对照、隔离运行态/Redis 归属/队列/费用只读预检。未启动或停止 jx 服务、Worker、Docker；未新增模型费用、Dify 写入或清理。远端预算仍按累计 ¥5、日 ¥4 且当前未知处理。
+
+## 0.86 2026-09-12 文档清洗统一修复计划与新窗口交接（当前最新；非部署完成）
+
+- 用户确认：保留 `dify/商业顾问（当前使用版本）.yml` 为只读权威行为基线；本任务不改变当前 DSL 运行行为和 `recent_activity` Python 清洗链路，允许校正过期合同与测试。用户要求本窗口先沉淀计划，再在新窗口修复；本次只更新计划、导航和交接，没有开始新一轮产品代码修复或远端/模型操作。
+- 继续工作 `W-20260912-041700` / `cleaning-tolerance-methodology`。入口为 [最小修复计划](docs/执行计划合集/文档清洗、咨询解决方案与方法论的最小修复计划.md) 第 6—8 节；第 9 节提供新窗口提示词。[测试部署补充](docs/执行计划合集/执行计划的测试部署补充.md) 保持独立，第十节补齐恢复、费用和真实验收。
+- 2026-09-12 20:42:36 的历史 quality 记录为 passed（指纹 `8f3fc7c5bc6b35237689adbd2fd1c152b04a93c1959405b66c83c7365b22d498`），但随后独立代码复审不通过。去重远端核验、方法证据、多案例 topic、咨询 OCR native 保留、历史调用次数、预算 ledger、Redis 独占、入队恢复、OCR 择优、治理指纹/质量覆盖存在待反例验证和修复的问题，统一见 U01—U12。旧 PASS/RESOLVED、APPROVED 字样和模块 verified 不足以覆盖这些缺口。
+- 当前需求/实施批准指纹与文档内容不符；下一窗口先按已确认计划合法同步与记录批准，不手写指纹、不盲目重置实现前基线。未完成反例修复、当前 Quality/Review 与真实内容验收前，不能标记整个任务完成。
+- 远端事实须核查：用户历史交接附件记载过隔离 Core/OCR 部署和未核清的累计模型费用。此前“本地续跑未新增操作/费用”仅限对应续跑，不能推断整个任务从未部署或累计 ¥0。现有容器、镜像、队列、费用与未结算预留需要精确回读；不盲目重建、不清理已有测试数据、不启动会消耗未知积压的 Worker。
+- 固定边界仍为：隔离 project `ai-management-cleaning-test`、专用 DB/role `ai_management_cleaning_test`、现有 Redis DB 6、API/UI loopback `18080/18501`、指定测试 Dataset、general-only、Batch=false、累计 ¥5/日 ¥4。正式 `ai-management` 全部服务及 Nginx/Methodology Worker 均不得因测试停止、重启、重建或改配置。0.85 及更早章节仅是其注明日期的历史线上证据，不是本次实时核验。
+
+## 0.85 2026-09-09 三类 AI 顾问消息操作发布与真实验收（历史线上记录）
 
 - 已完成商业顾问“重新生成”，以及朋友圈顾问、日常写作的“重新生成、消息反馈、消息停止”和对应 `/internal/v1` 增量接口。商业顾问保持 Dify Memory 关闭并在同一本地助手消息上严格替换；朋友圈/写作继续使用同一 Dify conversation、远端 opaque message ID 和 Memory 窗口 6，不在本地持久化工具正文。
 - 本地最终 `gov quality` 完整通过，指纹为 `3245a9970f6bd254e35ad4c9008abcb60c7438e4764bb6092520febf6275e35b`；独立代码审查和发布脚本审查均 PASS。测试中发现的 Dify 顶层 query 回读、商业 progress-only stop、Streamlit 流式错误读取/整页终态刷新、工具 token 数据库写放大和发布成功路径 OCR 恢复等根因均已修复并写入对应排障文档。
@@ -2529,3 +2700,256 @@ D:\work\projectc\jx-now\docs\README.md
 - 修改原因：依据项目级 `AGENTS.md`，在代码、完整质量门、独立审查、jx 发布、真实 Dify/API/SSE/Streamlit 验收及精确清理全部结束后更新当前运行事实。
 - 修改前：滚动交接尚未记录商业严格重新生成、工具消息反馈/重新生成/停止的最终发布状态，也未记录本次回滚备份、线上验收和 Methodology Worker 未中断证据。
 - 修改后：顶部新增 0.85，记录 release `advisor-actions-fix-20260909-131919`、备份、wheel SHA、唯一迁移 head、同源服务、OCR timer、Methodology Worker 原状态、58/0 API 验收、三入口页面复验、精确零残留清理和小程序调用方外部接入阻塞；未修改主工作区 DSL，未写入敏感数据。
+
+### 文档修改记录（2026-09-12 文档清洗容错、咨询方案方法与隔离测试本地修复）
+
+- 修改原因：已确认的正常内容被辅助字段、旧整份 OCR 路由、过期远端去重、内容模型 fallback 和不充分的测试隔离边界阻挡；需要以最小改动完成本地实现和可复核回归。
+- 修改前：帖子要求全来源覆盖，咨询可只留下问题或因字段格式失败；内容模型边缘路径仍可能进入 `review_required`/原文 fallback；混合 PDF 的 OCR 失败会丢弃可靠文字页；过期删除记录与非成功文档可能阻止重传；隔离 Compose 对数据库/Redis 误配的保护不足。
+- 修改后：模型结果按独立核心知识单元容错，辅助字段降级；咨询 case 保留有证据的方案并投影 case-scoped 候选方法（不冒充跨来源规律）；内容模型只在调用异常或零核心内容时完整重试一次，随后 `failed`，不发布原文 fallback、不新增 `review_required`；混合 PDF 选择性 OCR、咨询图片全页 OCR 但失败保留可靠 native 页并维持阻断；去重只复用有效远端 `succeeded` 成果；新增 general-only 隔离 Compose/脚本的数据库、Redis、端口和 Dataset fail-closed 校验，Batch 持续关闭。
+- 验证：本地回归 `231 passed, 1 skipped, 0 failed`，涵盖咨询、帖子、模型 Worker、PDF/OCR、去重、部署契约、发布契约、测试页及 recent_activity Python 回归；Ruff format/check、compileall、`git diff --check` 和接口索引生成/检查通过。测试报告为 `var/reports/W-20260912-041700/`，只含脱敏指纹/状态。未运行 Docker、jx、Dify 写入、真实模型或 Batch；因独立审查代理未在限定时间返回可用结论，尚未进入治理 release/deploy gate。
+
+### 文档修改记录（2026-09-12 清洗修复 canonical quality 复跑）
+
+- 修改原因：本地相关回归通过后，需要以仓库规定的完整 quality 命令核实是否仍有未发现的全库回归，再决定能否进入隔离 jx 发布门禁。
+- 修改前：仅有本特性相关回归、静态检查和索引生成证据；完整 quality 的既有 Dify DSL 失配尚未在本轮最终工作树重新核验。
+- 修改后：canonical quality 的 format、lint、typecheck 通过；unit 完整运行确认只有 16 项失败，均为 `tests/test_business_advisor_optimized_dsl.py`、`tests/test_business_advisor_unified_dsl.py` 和 `tests/test_dify_activity_contract.py` 对用户已修改当前商业顾问 DSL 的旧结构断言。未修改该 DSL、recent_activity 或任意 Dify 资产。
+- 验证：失败断言分别期待旧 retrieval 聚合、旧温度/Start 输入/单 LLM 图和旧活动节点/函数签名；当前 YAML 已是不同结构。清洗相关回归仍为 `231 passed, 1 skipped, 0 failed`。完整 quality 因这 16 项任务外 DSL 契约失败而未通过，feature review/release/deploy gate 保持未进入；未执行 jx、Docker、Dify 写入、真实模型或 Batch。
+
+### 文档修改记录（2026-09-12 清洗修复复审闭环与隔离边界校正）
+
+- 修改原因：当前 diff 的独立复审识别出历史 OCR/source 重试、Batch 小批量 realtime repair 价格预留和 Redis URL 有效 DB 三处 fail-closed 缺口；同时旧部署补充仍含接管正式测试 UI/Nginx 的过时文字，和已确认的不影响正式 ai-management 红线冲突。
+- 修改前：历史 `retryable=true` 错误可能直接投递 publication；realtime repair 可按 Batch 折扣预留；Redis `/6?db=5` 可通过显示路径检查；部署文字仍描述停止/恢复正式测试页。相关回归为 231 项，独立复审尚未闭环。
+- 修改后：普通发布重试改为明确的 post-source allowlist，source/OCR 历史失败只回源或 410，模型错误不走普通重试；reservation 记录真实 transport，小批量 repair 按 realtime 计价；general-only 拒绝 Redis `db` query。隔离 UI 固定 loopback `18501`，不接管正式 UI、Nginx、端口或别名。更新后的 241 项相关回归和当前 diff 独立复审均通过。
+- 验证：`tmp/pytest-cleaning-review-r2-20260912.xml` 为 `241 passed, 0 failed, 0 errors, 0 skipped`；目标范围 compile、Ruff、format、`git diff --check`、接口索引 write/check 通过；独立复审 PASS。`gov.ps1 quality` 的 format/lint/typecheck 通过，unit 仍只剩 16 个当前权威商业顾问 DSL 与旧 DSL/activity 契约的任务外失配；未修改权威 DSL 或 `recent_activity`。
+- 当前远端状态：本记录只覆盖本地代码、文档和验证收口；未在本次记录中启动/停止/修改 jx 正式 ai-management，也未新增模型费用、Batch、Dify 写入或清理。隔离运行态验证仍需在 release gate 与精确远端命令确认后进行。
+
+### 文档修改记录（2026-09-12 当前商业顾问 DSL 契约基线与完整质量门禁）
+
+- 修改原因：用户指定 `dify/商业顾问（当前使用版本）.yml` 为唯一权威 DSL；完整质量门禁暴露三份测试仍硬编码旧的 Start 输入、单模型图、活动节点和函数签名。
+- 修改前：旧 DSL 契约测试有 16 项失败，派生的统一候选 DSL 未从当前权威 DSL 重新生成；该失败曾阻挡完整质量门禁，但不能通过回退权威 DSL、删除活动分支或修改 `recent_activity` 清洗策略解决。
+- 修改后：测试改为验证当前 DSL 的任务状态输入、意图/产品/活动路由、结构化活动计划、三种检索范围、一次受控补查、独立活动结果范围和无隐藏模型重试；派生 `商业顾问_统一修复版_Dify-1.13.3.yml` 由生成器刷新。权威 DSL 内容和 `recent_activity` Python 逻辑均未改动。
+- 验证：相关 DSL 契约 `14 passed`；完整 `gov.ps1 quality` 的 format、lint、compile、两组 unit、事件 RAG integration 与 Feature 回归均通过，记录指纹为 `486d1ff491843f8d6afdca4a02a419228c9000acf0d5f184aa747e8d19b0424f`。项目文档契约仍有独立既有 `AGENTS.md` 大小上限失败，未为了清洗任务删除项目规则。
+- 当前远端状态：本轮仍未执行 jx、Docker、Dify 写入、真实模型或 Batch；隔离运行态测试需在 release 文档同步、独立复审和精确远端命令确认后进行，正式 ai-management 不得受影响。
+
+### 文档修改记录（2026-09-12 统一修复计划确认与新窗口交接）
+
+- 修改原因：用户确认按当前权威 DSL 边界统一修复，但要求先沉淀任务、验收、注意事项和新窗口提示词，减少长会话漂移。
+- 修改前：顶部最新状态停留在 0.85；文末历史 PASS 容易被当作当前全部完成；两份执行计划缺少后续复审的统一反例清单，部署补充还残留正式 UI 临停/路径接管文字，累计费用与历史隔离部署线索未集中。
+- 修改后：增加顶部 0.86；原修复计划加入 U01—U12、当前用户裁决、合法批准边界、分组统一修复顺序和可复制提示词；部署补充去除正式 UI 临停/接管表述，固定 DB 6、累计预算、已有测试恢复及保留数据规则；导航指向两份独立计划。历史证据原样保留，最新结论为尚待统一修复和验收。
+- 验证范围：本次为文档计划交接，不修改产品源码、测试、权威 DSL、治理工具、审批指纹或运行环境；不运行模型、Docker 或 jx。`uv run python -m pytest -q tests/test_project_documentation_contract.py`、`uv run python scripts/generate_project_index.py --check`、`rtk git diff --check` 均退出 0；两份计划无失效相对链接、U01—U12 齐全。原代码 reviewer 对两份计划进行有界只读一致性审查，结论“可交接”；此结论仅覆盖计划，不是产品代码或真实验收 PASS。本轮未重跑完整产品质量门禁。
+
+### 文档修改记录（2026-09-12 W-20260912-041700 本地反例修复续跑）
+
+- 修改原因：按当前主计划的 U01—U12 顺序重新以行为反例核验，发现远端去重、咨询图片 PDF OCR、OCR 二次择优、治理 scope 和 quality 覆盖仍有可本地复现缺口。
+- 修改前：历史 local `succeeded`/`remote_deleted_at` 被当作远端有效依据；咨询任一图片页会触发整份 OCR；二次 OCR 会重跑所有目标页；任意路径组件含 `pytest-` 的源码可能被治理指纹排除；quality 未覆盖关键 `knowledge_cleaner` 模块。
+- 修改后：仅经当前远端文档读取、状态和 metadata 核验的成果可复用；咨询图片改为定向 OCR，可靠无图 native 页保留；低质量 OCR 单页重试并择优；scope 仅排除根级 pytest 临时生成物；quality 目标补齐。新增脱敏 JUnit 证据位于 `var/reports/W-20260912-041700/`。
+- 验证与边界：新增和受影响聚焦测试均通过；尚未运行当前完整 quality 或独立 current-diff review，未核清历史隔离环境/累计费用，未执行 jx、Docker、Dify、真实模型或 Batch 操作。正式 ai-management 未受本轮影响。
+
+### 文档修改记录（2026-09-12 本轮 canonical quality）
+
+- 修改原因：U02/U05/U10/U11/U12 修复及其聚焦回归稳定后，按主计划运行当前 canonical quality，不使用历史通过记录替代。
+- 修改前：仅有聚焦回归、索引和静态检查；完整 quality 尚未针对本轮变更给出终态。
+- 修改后：format、lint、`ai_management` 与完整 `knowledge_cleaner` compile、两组 unit、integration 和 feature 回归均通过，质量指纹为 `f2e846423be2133bdb02676f6ec7b26654495e1170de6a844578f1ff5963c016`。
+- 保留边界：当前完整差异的独立复审、U03 语义边界、批准链、真实样本/Dify/jx 隔离验收与费用核对仍未完成；未执行远端操作。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 U06 夹具、canonical quality 与治理门禁）
+
+- 修改原因：完整质量首次运行发现 6 个既有 realtime 测试夹具未显式表示“新任务、零模型调用”，同时测试断言未适配必须保留的 provider reservation ledger；需要记录修复后的本地质量事实和实施再批准的合法拒绝。
+- 修改前：0.88 仍写完整 quality 待重跑；U06 夹具把新建文档伪装成历史调用次数未知，当前质量记录为失败；实施合同仍写旧执行者 Luna。
+- 修改后：夹具仅在可证明的新建任务写入 `model_attempts=0`，历史未知状态仍拒绝调用；实施合同执行者校正为 Terra；canonical quality 完整通过（指纹 `af76024b5aad4455700cb9d7510efefb18d24d88223d7045c862f218857a2408`）。用户确认的需求批准已用治理命令记录，实施批准仍因任务启动后源改动的基线保护被拒绝，未采用重捕获基线或手改指纹。
+- 验证：`var/reports/W-20260912-041700/pytest-u06-fixture-r3-20260913.xml` 为 `14 passed`；`var/reports/W-20260912-041700/pytest-model-workflow-r3-20260913.xml` 为 `98 passed`；`.codex/state/quality.json` 记录本次七个 canonical phase 全部 0 退出码。
+- 当前远端状态：没有 jx、Docker、Dify、真实模型、Batch、上传或清理操作；累计费用、预留、隔离归属、真实样本和正式服务影响仍待只读核验，不能写成已完成。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 U11 动态证据指纹隔离与最终本地质量）
+
+- 修改原因：第一次质量通过后，追加 AGENTS.md 要求的脱敏 `var/reports/` 证据和根目录滚动交接会错误改变 quality 指纹，阻碍“记录证据后再复审”的正常闭环。
+- 修改前：治理只严格排除了 pytest/tmp 与部分生成物；`var/reports/.../issues.jsonl`、`AI管理服务当前状态与后续测试交接.md` 仍进入 quality/review 指纹，迫使无产品代码变更的重复 quality。
+- 修改后：仅排除根级 `var/reports/` 与这一指定动态交接文件，保留 `var/application/source.py` 等业务源文件；`.codex/governance/govlib.py` 进入 canonical format/lint/compile 清单。新增 scope 行为断言通过，最终 canonical quality 指纹为 `677fa963fb36056b5356e726e2e5e0f699976d9e8af06ae010898dffe4e4bb5a`。
+- 验证：`var/reports/W-20260912-041700/pytest-u11-report-scope-20260913.xml`、`pytest-u11-dynamic-scope-20260913.xml` 各为 `1 passed`；`.codex/state/quality.json` 的 7 个 required command 均为 exit code 0。
+- 当前远端状态：仍未执行 jx、Docker、Dify、真实模型、Batch、上传或清理；本地质量通过不替代独立复审、合法实施再批准、真实样本、隔离运行态、费用和正式环境影响核验。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 复审 FAIL 后第三轮局部修复）
+
+- 修改原因：冻结差异的独立复审确认 U02/U03/U04/U08/U11 等仍有行为或部署门禁缺口，原 0.89 把“quality 已通过”置于最新状态，容易掩盖 review FAIL 和后续本地修复未收口的事实。
+- 修改前：本地入口仍可按历史 `succeeded` 直接终态去重；同源 staged case 会阻断其方法候选；新 Prompt 仍含旧 schema；manifest 仅做固定文本 grep；根级 `tmp/` 整体被治理排除。
+- 修改后：已完成上述局部代码、测试、脚本和合同修复，并保留第三轮仍待处理的 U01/U02/U03/U07/U09/U12/再批准缺口。顶部最新状态明确为 review FAIL 后进行中，不把局部通过写成产品完成。
+- 验证：`pytest-unified-review-round3e-20260913.xml` 为 64 passed；受影响路径 Ruff format/check 通过。未重跑 canonical quality，未重新发起独立 review。
+- 当前远端状态：没有执行 jx、Docker、Dify、真实模型、Batch、上传或清理；正式 ai-management 服务、配置和数据未改动，累计费用仍未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 U01/U07 行为回归补充）
+
+- 修改原因：第三轮复审后，U07 缺少逐调用 reservation/actual usage 结算，U01 缺少非活动负向路由和受控补查的 Code 节点行为反例；需要在不改权威 DSL、不开启 Batch 或远端服务的前提下补齐本地证据。
+- 修改前：provider 账本只有任务级预留和聚合 usage，第二次调用的显式 ledger 更新还能被旧快照覆盖；活动测试未明确断言已给定 analysis/case 意图不会生成活动检索 query。
+- 修改后：每个新 provider reservation 记录 call ID、文档、transport 和定价快照；realtime usage 仅结算匹配调用，未知 usage 保留 reservation，历史不完整账本 fail-closed。活动 Code 路径覆盖 analysis/case 意图的空活动 query、列表最多一次补查和详情/关闭开关零补查；当前商业顾问 DSL 未修改。
+- 验证：`pytest-model-workflow-round6-20260913.xml` 为 `101 passed`；`pytest-dify-activity-round3-20260913.xml` 为 `9 passed`；Feature 聚焦 `pytest-feature-round7-20260913.xml` 为 `233 passed`。它们不证明远端 Dify metadata/retrieval、真实 LLM 路由、Batch usage、六类真实样本或累计费用。
+- 当前远端状态：本次没有执行 jx、Docker、Dify、真实模型、Batch、上传或清理；正式 ai-management 服务、配置和数据未改动，累计费用仍未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 U03 付费条件反例与当前复验）
+
+- 修改原因：旧 review 对部分已修路径的定位已被当前代码取代，但 U03 仍可复现“短锚点 + 新付费条件”被接受；需要将失败、最小修复和仍未完成的真实验收与质量门禁分开记录。
+- 修改前：顶部 0.90 只列第三轮局部修复及旧 review 的待验证项，未记录本轮 U03 具体失败；实施合同仍可能把历史批准文字误读为当前可放行状态。
+- 修改后：新增 0.91，明确 U02/U04/U07/U08/U09/U11 的当前行为复验、U03 新付费条件丢弃规则与通过证据；实施合同指向 feature record 的当前 reapproval 状态。没有把局部测试、计划或历史 review 写成产品、远端或治理通过。
+- 验证：`pytest-u03-paid-condition-before-20260913.xml` 为 1 个预期失败；`pytest-u03-consultation-after-20260913.xml` 为 `37 passed`；`pytest-u08-u11-after-20260913.xml` 为 `31 passed`；`pytest-u02-u04-u07-u09-after-20260913.xml` 为 `11 passed`。
+- 当前远端状态：没有执行 jx、Docker、Dify、真实模型、Batch、上传或清理；正式 ai-management 服务、配置和数据未改动，累计费用和历史未结算 reservation 仍未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 U03 主体置换与 U08 不可变镜像绑定）
+
+- 修改原因：当前工作树行为反例仍可使 advice 将“创始人”置换为“销售人员”；隔离 manifest 虽已具备时效/费用/归属边界，却只绑定可变 tag 与 Git HEAD，不能识别同 tag 的镜像内容变化。
+- 修改前：确定性 advice 屏障覆盖付款、承诺、否定等但未覆盖明确角色；manifest 不要求或比对 Docker image ID。
+- 修改后：新增小型角色词表的无依据置换过滤；manifest 记录并在启动前比对 API/UI/OCR image ID。现有 tag、Git provenance、Redis/预算/队列/正式健康门禁保持不变。
+- 验证：失败收集证据为 `pytest-u03-u08-u11-boundary-before-20260913.xml`（3 failures）；修复后 `pytest-u03-u08-boundary-full-after-20260913.xml` 为 `58 passed`。未执行 Docker daemon、jx、Dify、provider、真实模型、Batch、上传或清理。
+- 当前边界：本地质量、当前完整差异复审、合法实施再批准、真实两份咨询原文对照、六类样本、jx 隔离只读预检/运行态、累计费用和正式环境前后核查仍未完成，不能写为产品或整体任务完成。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 当前完整差异复审 FAIL 后统一局部修复）
+
+- 修改原因：新的冻结差异独立复审发现先前 local Quality 未覆盖的正文 witness、活动边界、咨询新行动、OCR warning、预算、lease 和镜像同源反例；顶部动态状态需要准确反映 review FAIL 与真实验收仍未开始。
+- 修改前：顶部 0.92 将 actor-swap 和 image-ID 的局部反例写为最新，未说明当前 review FAIL 后的剩余缺口；Feature 合同未写入 worktree/wheel 绑定和实际正文 witness。
+- 修改后：新增 0.93，记录本地最小修复、定向测试、未完成门禁和远端零动作事实；Feature 规范/实施合同补充正文 witness、行动子句锚定和 worktree/wheel/image label 同源约束。
+- 验证：`pytest-review-findings-after2-20260913.xml` 为 `53 passed`、`pytest-u08-worktree-witness-r7-20260913.xml` 为 `33 passed`、`pytest-review-semantic-targets-20260913.xml` 为 `8 passed`；尚未运行本轮 canonical Quality 或新的独立 review。
+- 当前远端状态：未执行 jx、Docker daemon、Dify、provider、Batch、上传、Worker 或清理；正式服务、配置和数据未改动，累计费用及未结算 reservation 未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 Quality PASS 后独立复审 FAIL）
+
+- 修改原因：canonical Quality 完成后，当前完整冻结差异的独立只读复审发现仍有未覆盖的 shard 远端复用、realtime Worker lease/fencing、咨询核心字段 evidence-kind 绑定、自然连接词行动门禁和 hierarchical child-chunk witness 行为缺口；顶部最新状态需要与实际门禁一致。
+- 修改前：顶部最新节仍是 0.93，只记录本地局部修复和聚焦回归，未明确随后已完成的 Quality 及其后 review FAIL；相应历史 issue 条目也没有以最后事件表达该最新状态。
+- 修改后：新增 0.94，准确记录 `2026-09-13 04:59:36 +08:00` Quality 的八个 required phase 通过及指纹 `991ecc4a99165cf37b58f859683edaccf6228e3d44b84ba6d0d21b98ab16905d`，同时记录 review FAIL、implementation reapproval fail-closed、下一轮行为反例修复和禁止进入 jx 的状态；未把 Quality 或计划通过写成产品、真实验收或部署通过。
+- 验证：`.codex/state/quality.json` 可回读上述 Quality；`var/reports/W-20260912-041700/issues.jsonl` 已 append `U01-U12-REVIEW4-20260913`，其状态为 open；本次仅补动态审计记录，不运行测试、不改变产品代码。
+- 当前远端状态：本轮未执行 jx、Docker daemon、Dify、provider、Batch、上传、Worker 或清理；正式 ai-management 的服务、Nginx、配置和数据未被停止、重启、重建或修改。累计费用和未结算 reservation 仍未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 第二次复审 findings 本地回归）
+
+- 修改原因：0.94 记录 Quality 后 review FAIL，但尚未记录后续已完成的行为反例收集、统一最小修复及受影响完整本地回归，容易使下一协作者重复旧失败收集或误将旧 review 定位当作当前代码事实。
+- 修改前：当前最新节只列第二次 review 的 open findings；issue ledger 的最后事件未区分“本地修复已验证”与“canonical Quality/独立 review 尚待执行”。
+- 修改后：新增 0.95，记录 evidence-kind、Dify parent/child retrievable witness、post shard local-state 去重和 realtime lease fencing 的本地修复；同时明确 Quality/review 与全部真实验收仍未完成。相关 Feature 合同已按受影响共享模块同步，recent_activity 仅做无语义变化核对。
+- 验证：`pytest-review5-failure-collection-20260913.xml` 为 7 个预期失败，`pytest-review5-focused-pass-20260913.xml` 与 `pytest-review5-worker-regression-20260913.xml` 各为 7 passed，`pytest-review5-affected-full-r3-20260913.xml` 为 153 passed / 0 failed / 0 error；未在此记录阶段运行 canonical Quality。
+- 当前远端状态：未执行 jx、Docker daemon、Dify、provider、Batch、上传、Worker 或清理；正式 ai-management 服务、Nginx、配置和数据未改动。累计费用及未结算 reservation 仍未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 review6 后 witness/shard 合同修复）
+
+- 修改原因：0.96 的 Quality pending 表述已被其后实际通过的 Quality 和新的 full-diff review FAIL 取代；本轮新增 witness、shard、lease audit、质量覆盖和共享合同修复需要有准确的动态检查点，避免下一协作者复用失效 Quality 或误入 jx。
+- 修改前：顶部 0.96 仅记录 lease/shard 的前一轮本地回归，未记录随后 review 的 7 项 finding、当前行为反例、索引刷新和当前 Quality 已失效的事实。
+- 修改后：新增 0.97，记录本轮本地范围、`119/0/0` worker/Dify 回归、文档契约 `13 passed`、review/approval 状态与远端零动作；不把本地测试写成真实样本、Dify、费用或隔离运行态验收。
+- 验证：`pytest-review7-worker-dify-r3-20260913.xml`、`pytest-review7-indexing-r3-20260913.xml`、`pytest-review7-doc-contract-r2-20260913.xml` 与 `uv run python scripts/generate_project_index.py --check`；canonical Quality 与新独立 review 尚未运行。
+- 当前远端状态：未执行 jx、Docker daemon、Dify、provider、Batch、上传、Worker 或清理；正式服务、Nginx、配置和数据未改动。累计费用及未结算 reservation 仍未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 最新复审 realtime/shard 修复）
+
+- 修改原因：固定完整差异的最新独立复审确认旧 Worker lease 丢失可被内层异常吞掉、限流后可能以失效 token 发起请求、以及 post shard 没有复用已验证远端成果；此前顶部 0.95 也未反映其后的 canonical Quality 和本次 review FAIL。
+- 修改前：realtime 只在若干副作用前检查 token，且 30 分钟 lease 不续租；post shard 为避免本地误判而一律重新发布；顶部仍写 Quality/review 待重跑，issue ledger 没有本次 review 后继事件。
+- 修改后：当前 owner 在条目和限流等待后续租，`_ModelLeaseLost` 透传出修复/兜底/失败路径；有效 shard 回读 metadata 与 v2 witness 后复用，读取不确定不新建，新发布保存 witness。顶部 0.96 记录本轮预期失败、回归、Quality 已 stale、review 仍 FAIL 和远端零动作。
+- 验证：`pytest-review6-failure-collection-20260913.xml` 为 3 个预期失败，`pytest-review6-focused-r2-20260913.xml` 为 3 passed，`pytest-review6-shard-reuse-20260913.xml` 为 1 passed，`pytest-review6-worker-full-r2-20260913.xml` 为 107 passed / 0 failed / 0 error；尚未运行本轮新的 canonical Quality 或独立复审。
+- 当前远端状态：未执行 jx、Docker daemon、Dify、provider、Batch、上传、Worker 或清理；正式 ai-management 服务、Nginx、配置和数据未改动。累计费用及未结算 reservation 仍未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 review7-final 统一本地修复）
+
+- 修改原因：0.97 仍将 review7 前的局部 witness/shard 回归作为最新事实，不能表达后续独立复审确认的嵌套分页、历史费用账本、通用 evidence 锚点与 Quality 范围缺口。
+- 修改前：最新状态仅说明上一轮 119 项局部回归和 Quality/review 待执行，未记录 review7 的 3 High/1 Medium、失败收集、统一修复与由目录级 Ruff 暴露的历史活动测试格式债务。
+- 修改后：新增 0.98，记录精确本地修复、9 个预期失败、Dify/咨询/模型/活动/governance 完整回归、旧 Quality 已失效、再次 Quality/review 与全部远端验收仍待执行；不把本地证据写为真实样本、隔离运行或费用结论。
+- 验证：`var/reports/W-20260912-041700/pytest-review8-*-20260913.xml`、目录 Ruff format/check 与 `compileall` 可回读；canonical Quality 和新独立 review 尚未执行。
+- 当前远端状态：没有执行 jx、Docker daemon、Dify、provider、Batch、OCR、上传、Worker 或清理；正式 ai-management 服务、Nginx、配置和数据未改动，累计费用和未结算 reservation 仍未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 review8 新 findings 本地修复）
+
+- 修改原因：review7 后的 current Quality 仍须独立复审；review8 在冻结完整差异中确认通用四字/ASCII 锚点、跨文件 shard、外来 ledger、重复核验重试和活动单元隔离五项缺口，原交接未区分这些新失败与 review7 已修复项。
+- 修改前：顶部 0.98 只记录 review7 的四项本地修复与当时 Quality 通过，未记录 review8 的 6 个失败反例、附带 file/batch 状态修复或当前 Quality/review 已再次失效。
+- 修改后：新增 0.99，记录最小实现边界、六项失败收集、串行完整本地回归、一次误并行本地 pytest 的精确终止及无远端影响；明确 canonical Quality、新独立 review、合法 implementation approval 和真实验收仍未完成。
+- 验证：`pytest-review8-new-findings-failure-collection-r2-20260913.xml`、`pytest-review8-new-findings-focused-r7-after-20260913.xml`、咨询 `44 passed`、模型 `111 passed`、release `20 passed`、管理 API `46 passed` JUnit 工件；canonical Quality 与新 review 尚未运行。
+- 当前远端状态：未执行 jx、Docker daemon、Dify、provider、Batch、OCR、上传、Worker 或清理；正式 ai-management 服务、Nginx、配置和数据未改动，累计费用和未结算 reservation 仍未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 canonical Quality 动态结果）
+
+- 修改原因：本轮 canonical Quality 已在 0.99 写入时之后实际完成，若继续显示“待运行”会使后续执行者重复全量门禁或把旧失败状态误作当前事实。
+- 修改前：0.99 将索引、文档同步、canonical Quality 和独立 review 一并列为待办。
+- 修改后：0.99 区分已通过的 8 阶段 canonical Quality（含当前 fingerprint）与仍未完成的冻结完整差异独立 review、implementation approval 和真实/隔离验收；不把 Quality 写成 review、产品或远端完成。
+- 验证：`.codex/state/quality.json` 当前记录 `passed`、`2026-09-13T09:40:01+08:00`、`216ed3812b1d6f2c485ceeb68a7193bf1f6c892ea3b1390615068213203e9388`；文档变更后需重新绑定 Quality/review，未手改任何状态指纹。
+- 当前远端状态：未执行 jx、Docker daemon、Dify、provider、Batch、OCR、上传、Worker 或清理；正式 ai-management 服务、Nginx、配置和数据未改动，累计费用和未结算 reservation 仍未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 review8 候选选择与费用汇总续跑）
+
+- 修改原因：0.99 的“模型 workflow 111 passed”是更早的本地检查点，未涵盖随后发现的跨文件候选选择和日/累计费用汇总两个 fail-closed 边界。
+- 修改前：跨文件候选只读取最新 shard，外来 reservation 仅在调用准入而非汇总中按 task batch 归属核验；顶部没有对应失败/复验工件。
+- 修改后：planner 按新旧次序选择第一个 digest、remote ID、witness 均合法的跨文件候选；费用汇总与调用准入同样以 task batch 完整 document 集合拒绝外来 ledger。顶部 0.99 记录两项失败反例及最新 `114 passed` 串行模型回归。
+- 验证：`pytest-review8-cross-file-candidate-failure-collection-20260913.xml`、`pytest-review8-cross-file-candidate-after-r2-20260913.xml`、`pytest-review8-foreign-ledger-failure-collection-20260913.xml` 与 `pytest-review8-model-full-r7-after-20260913.xml`；canonical Quality、当前完整差异独立 review 与 implementation approval 仍未完成。
+- 当前远端状态：未执行 jx、Docker daemon、Dify、provider、Batch、OCR、上传、Worker 或清理；正式 ai-management 服务、Nginx、配置和数据未改动，累计费用和未结算 reservation 仍未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 review10 行为反例本地回归）
+
+- 修改原因：0.99 仍把 review8 后的旧 Quality 和 review 待办作为最新起点，未记录 review10 的共享远端 ID、task-wide ledger、分页 total、advice 否定范围和独立证据锚点反例，可能导致重复全量测试或错误进入 jx。
+- 修改前：顶部未区分 review10 FAIL、旧 Quality 已因新代码失效，以及远端费用/资源归属仍未知。
+- 修改后：新增 1.00，记录五项最小本地修复、初始失败/聚焦/完整回归工件、三项忠实 advice 缩写回归及其修正；明确新 canonical Quality、当前完整差异独立复审、合法 implementation approval 和真实隔离验收仍未完成。
+- 验证：`pytest-review10-failure-collection-partial-20260913.xml`、`pytest-review10-focused-r5-after-20260913.xml`、`pytest-review10-regression-r1-20260913.xml` 与 `pytest-review10-affected-full-r2-20260913.xml`（182 passed / 0 failed / 0 errors）；未在本记录阶段运行 canonical Quality。
+- 当前远端状态：未执行 jx、Docker daemon、Dify、provider、Batch、OCR、上传、Worker、Scheduler 或清理；正式 ai-management 服务、Nginx、配置和数据未改动，累计费用、未结算 reservation 和测试资源归属仍未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 canonical Quality 单元阶段阻塞）
+
+- 修改原因：review10 修复后的新 canonical Quality 不是通过状态：第一条 unit 阶段退出 1，且无可读失败日志；若仍沿用“下一步复审/jx”会绕过当前质量证据缺口。
+- 修改前：1.00 记录旧 Quality 已失效，并将新 canonical Quality 列为下一步，但未含这次实际失败和超时诊断事实。
+- 修改后：1.00 明确记录 `2026-09-13T10:48:08+08:00` Quality failed、已通过的前四阶段、未执行的后续阶段，以及同一 unit 命令超过 600 秒且无 JUnit 后只终止 3 个精确诊断 PID；不把此终止写成测试通过或业务失败结论。
+- 验证：`.codex/state/quality.json` 为 `failed`、unit exit 1；诊断命令为 `pytest-quality-unit-diagnose-review10-20260913.xml` 对应的 exact pytest，未生成 XML 终态。保留 `tmp/.pytest-tmp/canonical-unit*`，未清理 SQLite 或系统临时目录。
+- 当前远端状态：未执行 jx、Docker daemon、Dify、provider、Batch、OCR、上传、Worker、Scheduler 或清理；正式 ai-management 服务、Nginx、配置和数据未改动，累计费用、未结算 reservation 和测试资源归属仍未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 review10 活动清理回归）
+
+- 修改原因：1.00 将 canonical unit 失败写为“原因尚未定位”，但已由精确活动 replacement 行为反例定位并完成局部修复；继续保留旧表述会误导后续执行者重复诊断或错误扩大 `recent_activity` 改动范围。
+- 修改前：顶部只有 review10 的 182 项受影响回归和 Quality first-unit failure/无终态诊断，未记录共享引用保护与活动 outbox 清理合同的冲突及其当前复验。
+- 修改后：新增 1.01，明确 guard 仅看 post-publication shard live 引用，活动 historical replacement 行保留既有精确 cleanup 语义；记录 4 项定向反例和 202 项串行完整受影响回归均通过，同时保留 canonical Quality failed、独立 review/approval/真实验收未完成的事实。
+- 验证：`pytest-review10-activity-cleanup-r1-20260913.xml`（4 passed）和 `pytest-review10-affected-full-r3-20260913.xml`（202 passed / 0 failed / 0 errors）。本次只更新本地文档与报告，未触发任何远端动作。
+- 当前远端状态：未执行 jx、Docker daemon、Dify、provider、Batch、OCR、上传、Worker、Scheduler 或清理；正式 ai-management 服务、Nginx、配置和数据未改动，累计费用、未结算 reservation 和测试资源归属仍未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 canonical Quality 超时交接）
+
+- 修改原因：本轮唯一 canonical Quality 已实际结束为 Feature 阶段超时，且父治理进程退出后保留了同一 Feature pytest 子进程；若继续沿用 1.01 的“待运行 Quality”会触发重复测试或误将已完成阶段写为整体通过。
+- 修改前：1.01 仅记录活动 cleanup 修复后的 202 项受影响回归，并将 canonical Quality 列为下一步；未包含本次 8 个 required phase 的终态、超时与残留子进程。
+- 修改后：新增 1.02，记录 Quality 的准确时间、各阶段 exit 状态、Feature 组 exit 124、无 fingerprint、三个精确仍运行 PID/命令行及新窗口的最小安全核对动作；未终止、重跑、清理或启动任何进程。
+- 验证：`.codex/state/quality.json`（`failed`，`2026-09-13T11:49:22+08:00`，Feature phase `timed out after 600s`）与本窗口 `Get-CimInstance Win32_Process` 的精确命令行快照；没有进行后续测试或远端操作。
+- 当前远端状态：未执行 jx、Docker daemon、Dify、provider、Batch、OCR、上传、Worker、Scheduler 或清理；正式 ai-management 服务、Nginx、配置和数据未改动，累计费用、未结算 reservation 和测试资源归属仍未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 精简目标与新窗口恢复）
+
+- 修改原因：用户要求把超长主会话交接到新窗口，不复制整个会话；同时已确认四策略本地 parity、两策略真实付费 parity 和 Realtime canonical 规则。原两份计划仍含“Batch 未授权”，主计划第 9 节还堆积多轮过期提示。
+- 修改前：顶部 1.02 记录 Quality 超时及三个仍运行 PID；计划和 `qwen-batch-cleaning` 合同仍可能把 Batch、`review_required`、源文兜底或旧数据清理历史条款误当当前授权。
+- 修改后：新增 1.03，记录三个遗留 PID 已自然退出、Quality/治理当前状态、Batch/Realtime 最新范围和唯一短恢复入口；主计划、部署补充及两个受影响 Feature 合同同步当前规则，主计划历史恢复提示改由本交接和脱敏报告承载。
+- 验证：只读核验 PID `7580`、`13936`、`11660` 均 exited；`uv run python scripts/generate_project_index.py --check` 与 `git diff --check` 均 exit 0；冲突条款搜索只命中“不得新增 `review_required`/源文兜底”的否定性当前规则。`gov gate-status` 准确返回 requirements/implementation/Quality/review 均 blocked 或 stale，未伪造成通过。未运行 pytest、canonical Quality、独立 review 或任何远端命令。
+- 当前远端状态：未执行 jx、Docker daemon、Dify、provider、Batch、OCR、上传、Worker、Scheduler 或清理；正式与隔离服务、Nginx、配置和数据均未改动，累计费用、未结算 reservation 和测试资源归属仍未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 当前完整差异独立复审 FAIL）
+
+- 修改原因：canonical Quality 的代码快照通过后，当前完整相关差异独立复审发现仍有实质行为与隔离安全缺口，不能进入 jx 或标记 review passed。
+- 修改前：交接仅记录合同审计和 Quality 快照，尚无覆盖当前相关实现差异的完整独立复审结论。
+- 修改后：复审固定 base `c3b3ec709715816f2b05061f0f24fbcf853211c7`，结论为 FAIL（11 High、2 Medium）。核心根因是 provider-origin/跨 transport 两次账本、候选 pair 的 Realtime canonical 发布裁决，以及 isolation 的 Batch worker、Compose 最终值、鉴权/预算/OCR/资源/健康验证不完整；U09/U10/U11/U12 本轮未见新增 material finding。脱敏详情已写 `var/reports/W-20260912-041700/issues.jsonl`。
+- 验证：独立 reviewer 对当前 tracked 与相关 untracked 差异只读核对；未运行 pytest、Quality、Docker/jx/Dify/Provider/付费或破坏性动作。Implementation Gate 仍拒绝任务启动后已有源码差异，未 capture baseline、未手改批准或指纹。
+- 当前远端状态：未执行 jx、Docker daemon、Dify、provider、Batch、OCR、上传、Worker、Scheduler 或清理；正式与隔离服务、Nginx、配置和数据均未改动，累计费用、未结算 reservation 和测试资源归属仍未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 合同审计修正）
+
+- 修改原因：交接审计发现顶部“合同已同步”的概括超出实际核验范围，且主计划/Feature 合同仍存在 U02 暂时不可验证、咨询忠实改写、跨 transport 调用上限、50/200 活动上限及单份 canonical 远端证据等冲突。
+- 修改前：1.03 将两份计划和两个受影响 Feature 笼统表述为已同步；历史 Quality/review、短恢复与部署授权边界仍可能被误读为当前结论或重复确认。
+- 修改后：新增 1.04，明确 canonical Quality 的代码快照终态但不冒充文档审批/review；只列实际已纠正的合同范围，并保留 U01—U12、真实样本、Dify/jx、费用和正式健康为未完成。主计划、两个 Feature 与部署补充统一区分已证明失效和暂时不可验证、正常 Batch 关闭与隔离例外、非逐字忠实改写的证据边界、同源两次调用上限、50/200、Realtime 单份远端发布和精确 release approval。
+- 验证：`uv run python scripts/generate_project_index.py --check`、`git diff --check` 与针对上述关键术语的文档检索；机器生成的 approval 块、feature record、基线和指纹均未手改。后续须按合法治理机制重新同步审批并以当前完整差异重新 review。
+- 当前远端状态：未执行 jx、Docker daemon、Dify、provider、Batch、OCR、上传、Worker、Scheduler 或清理；正式与隔离服务、Nginx、配置和数据均未改动，累计费用、未结算 reservation 和测试资源归属仍未知。
+
+### 文档修改记录（2026-09-13 W-20260912-041700 复审记录位置校正）
+
+- 修改原因：当前完整差异复审 FAIL 的原始记录被插入历史修改记录之前，不符合本交接“每次修改在文末追加”的审计顺序。
+- 修改前：复审结论已存在但未位于文末，后续合同审计记录排在其后。
+- 修改后：在文末追加同一复审结论的审计锚点；权威动态结论仍只看顶部 1.04，详细脱敏证据仍为 `var/reports/W-20260912-041700/issues.jsonl`。
+- 验证：无业务/远端改动；`git diff --check` 通过。复审结论仍为 FAIL（11 High、2 Medium），Implementation Gate 仍 fail-closed。
+
+### 文档修改记录（2026-10-15 jx 独立测试退役）
+
+- 修改原因：本会话用户确认实施简单备份和精确测试清理，需记录已验证的运行事实及备份保留控制，避免后续重复启动或重复清理。
+- 修改前：顶部 1.04 仅记录旧开发任务的本地 Quality/合同状态，远端测试资源及正式保护情况未核实，未记录本次退役。
+- 修改后：新增 1.05，记录独立测试服务和清单内数据已清理、正式/共享服务核验正常、历史孤立数据与两类保留镜像保持不动；备份及三个测试恢复镜像待用户后续明确确认才删除。
+- 验证：精确清理命令 exit 0；主 Agent 与只读子 Agent 分别核验正式容器身份和健康；Dify 目标对象、源文件、测试端口及备份校验通过。未运行产品代码测试，未修改旧开发治理门禁，未声称历史残留已清空。
+
+### 文档修改记录（2026-11-10 YS 修复版替换与验收）
+
+- 修改原因：记录 YS 实际运行版本、范围执行回执和分项验收结果，避免把旧构建准备状态或 `current` 路径当作现场版本。
+- 修改前：顶部 1.05 记录 JX 独立测试退役，未记录此 YS 候选已部署或已运行的证据。
+- 修改后：新增顶部 1.06，单列 YS 的运行事实、数据保留验证、已通过项和配置限制；JX 记录保持为历史事实。
+
+### 文档修改记录（2026-11-10 YS 就绪检查定向修复）
+
+- 修改原因：将首轮验收中全局就绪 503 的单项修复结果与其他待测项区分。
+- 修改前：1.06 记录 API 就绪 503，API 运行版本为 `bb30762`。
+- 修改后：1.07 记录仅 API 已更新至 `80db816`，YS 就绪实测 200；其余服务和未验收事项维持原状。

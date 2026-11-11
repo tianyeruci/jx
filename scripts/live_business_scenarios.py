@@ -12,7 +12,10 @@ def stream(client: httpx.Client, query: str, conversation_id: str = "") -> tuple
     with client.stream(
         "POST",
         "http://127.0.0.1:8000/internal/v1/business/chat",
-        headers={"X-Internal-Token": os.environ["INTERNAL_API_TOKEN"], "X-User-Id": "live-test-20260723"},
+        headers={
+            "X-Internal-Token": os.environ["INTERNAL_API_TOKEN"],
+            "X-User-Id": "live-test-20260723",
+        },
         json={"query": query, "conversation_id": conversation_id},
         timeout=180,
     ) as response:
@@ -37,13 +40,25 @@ def stream(client: httpx.Client, query: str, conversation_id: str = "") -> tuple
                 event = line[6:].strip()
             elif line.startswith("data:"):
                 data.append(line[5:].strip())
-    actual = next((str(item.get("conversation_id")) for item in reversed(events) if item.get("conversation_id")), conversation_id)
+    actual = next(
+        (
+            str(item.get("conversation_id"))
+            for item in reversed(events)
+            if item.get("conversation_id")
+        ),
+        conversation_id,
+    )
     return events, actual
 
 
 def cleanup(client: httpx.Client) -> int:
-    headers = {"X-Internal-Token": os.environ["INTERNAL_API_TOKEN"], "X-User-Id": "live-test-20260723"}
-    payload = client.get("http://127.0.0.1:8000/internal/v1/business/conversations", headers=headers).json()
+    headers = {
+        "X-Internal-Token": os.environ["INTERNAL_API_TOKEN"],
+        "X-User-Id": "live-test-20260723",
+    }
+    payload = client.get(
+        "http://127.0.0.1:8000/internal/v1/business/conversations", headers=headers
+    ).json()
     rows = payload.get("items") if isinstance(payload, dict) else payload
     rows = rows or []
     for row in rows:
@@ -72,29 +87,47 @@ def main() -> None:
             "请推荐旧版 AI 速成课程 course_ai_legacy",
         ):
             events, conversation_id = stream(client, query, conversation_id)
-            results.append({
-                "query": query,
-                "events": [item.get("event") for item in events],
-                "course_cards": next(
-                    ((item.get("items") or item.get("data") or []) for item in events if item.get("event") == "course_cards"),
-                    [],
-                ),
-                "learning_route": next(
-                    (
-                        item.get("data")
-                        if "data" in item
-                        else {key: value for key, value in item.items() if key != "event"}
-                        for item in events
-                        if item.get("event") == "learning_route"
+            results.append(
+                {
+                    "query": query,
+                    "events": [item.get("event") for item in events],
+                    "course_cards": next(
+                        (
+                            (item.get("items") or item.get("data") or [])
+                            for item in events
+                            if item.get("event") == "course_cards"
+                        ),
+                        [],
                     ),
-                    None,
-                ),
-                "answer": "".join(str(item.get("delta", item.get("answer", item.get("data", "")))) for item in events if item.get("event") == "answer_delta"),
-                "sample_payloads": [item for item in events if item.get("event") in {"status", "message_end", "course_cards", "learning_route"}][:4],
-            })
+                    "learning_route": next(
+                        (
+                            item.get("data")
+                            if "data" in item
+                            else {key: value for key, value in item.items() if key != "event"}
+                            for item in events
+                            if item.get("event") == "learning_route"
+                        ),
+                        None,
+                    ),
+                    "answer": "".join(
+                        str(item.get("delta", item.get("answer", item.get("data", ""))))
+                        for item in events
+                        if item.get("event") == "answer_delta"
+                    ),
+                    "sample_payloads": [
+                        item
+                        for item in events
+                        if item.get("event")
+                        in {"status", "message_end", "course_cards", "learning_route"}
+                    ][:4],
+                }
+            )
         conversations = client.get(
             "http://127.0.0.1:8000/internal/v1/business/conversations",
-            headers={"X-Internal-Token": os.environ["INTERNAL_API_TOKEN"], "X-User-Id": "live-test-20260723"},
+            headers={
+                "X-Internal-Token": os.environ["INTERNAL_API_TOKEN"],
+                "X-User-Id": "live-test-20260723",
+            },
         )
         conversations.raise_for_status()
         payload = conversations.json()

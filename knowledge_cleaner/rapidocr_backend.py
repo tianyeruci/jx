@@ -107,11 +107,22 @@ class RapidOCRBackend:
         texts = [] if texts is None else list(texts)
         scores = [] if scores is None else [float(value) for value in scores]
         boxes = [] if boxes is None else list(boxes)
-        normalized = [_layout_core._clean_text(value) for value in texts]
-        normalized = [value for value in normalized if value]
-        if len(scores) < len(normalized):
-            scores.extend([0.0] * (len(normalized) - len(scores)))
-        return normalized, scores[: len(normalized)], boxes[: len(normalized)]
+        # Keep the three OCR fields aligned.  Filtering empty text after
+        # independently slicing score/box arrays used to attach the blank
+        # row's confidence and geometry to the next visible line.
+        aligned: list[tuple[str, float, Any]] = []
+        for index, raw_text in enumerate(texts):
+            cleaned = _layout_core._clean_text(raw_text)
+            if not cleaned:
+                continue
+            score = scores[index] if index < len(scores) else 0.0
+            box = boxes[index] if index < len(boxes) else None
+            aligned.append((cleaned, score, box))
+        return (
+            [text for text, _, _ in aligned],
+            [score for _, score, _ in aligned],
+            [box for _, _, box in aligned],
+        )
 
     @staticmethod
     def _to_markdown(result: Any) -> tuple[str, float | None]:
@@ -145,7 +156,13 @@ class RapidOCRBackend:
         confidence = sum(flat_scores) / len(flat_scores) if flat_scores else None
         return markdown, confidence
 
-    def extract(self, path: Path, *, dpi: int = 200) -> list[PDFPageResult]:
+    def extract(
+        self,
+        path: Path,
+        *,
+        dpi: int = 200,
+        page_numbers: set[int] | None = None,
+    ) -> list[PDFPageResult]:
         try:
             pdfium = importlib.import_module("pypdfium2")
             import numpy as np
@@ -161,6 +178,8 @@ class RapidOCRBackend:
         pages: list[PDFPageResult] = []
         try:
             for index in range(len(document)):
+                if page_numbers is not None and index + 1 not in page_numbers:
+                    continue
                 page = document[index]
                 bitmap = page.render(scale=float(dpi) / 72.0)
                 image = np.asarray(bitmap.to_pil())

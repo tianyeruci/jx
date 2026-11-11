@@ -158,9 +158,7 @@ def _parse_json(value: Any, fallback: Any) -> Any:
 def inspect_execution(raw: dict[str, Any]) -> dict[str, Any]:
     events = raw["events"]
     answer = "".join(
-        str(event.get("answer") or "")
-        for event in events
-        if event.get("event") == "message"
+        str(event.get("answer") or "") for event in events if event.get("event") == "message"
     )
     node_runs: list[dict[str, Any]] = []
     direct_type: str | None = None
@@ -195,16 +193,11 @@ def inspect_execution(raw: dict[str, Any]) -> dict[str, Any]:
 
     node_ids = [item["node_id"] for item in node_runs]
     observed_branch = next(
-        (
-            branch
-            for node_id, branch in BRANCH_NODE_IDS.items()
-            if node_id in node_ids
-        ),
+        (branch for node_id, branch in BRANCH_NODE_IDS.items() if node_id in node_ids),
         None,
     )
     llm_calls = sum(
-        item["node_type"] == "llm" or item["node_id"] in LLM_NODE_IDS
-        for item in node_runs
+        item["node_type"] == "llm" or item["node_id"] in LLM_NODE_IDS for item in node_runs
     )
     course_ids = decision.get("candidate_course_ids", [])
     if not isinstance(course_ids, list):
@@ -231,9 +224,7 @@ def evaluate_checks(case: dict[str, Any], execution: dict[str, Any]) -> dict[str
     must_all = [str(value).lower() for value in case.get("must_contain_all", [])]
     must_any = [str(value).lower() for value in case.get("must_contain_any", [])]
     must_not = [str(value).lower() for value in case.get("must_not_contain", [])]
-    required_labels = [
-        str(value) for value in case.get("required_labels_all", [])
-    ]
+    required_labels = [str(value) for value in case.get("required_labels_all", [])]
     min_blank_lines = int(case.get("min_blank_lines", 0))
     max_answer_chars = case.get("max_answer_chars")
     expected_direct_type = case.get("expected_direct_type")
@@ -257,9 +248,7 @@ def evaluate_checks(case: dict[str, Any], execution: dict[str, Any]) -> dict[str
         "layout_labels": all(label in answer for label in required_labels),
         "layout_blank_lines": answer.count("\n\n") >= min_blank_lines,
         "answer_length": (
-            len(answer) <= int(max_answer_chars)
-            if max_answer_chars is not None
-            else True
+            len(answer) <= int(max_answer_chars) if max_answer_chars is not None else True
         ),
     }
 
@@ -317,24 +306,16 @@ async def run_case(
 
 def summarize_results(label: str, results: list[dict[str, Any]]) -> dict[str, Any]:
     first_tokens = [
-        float(item["first_token_ms"])
-        for item in results
-        if item["first_token_ms"] is not None
+        float(item["first_token_ms"]) for item in results if item["first_token_ms"] is not None
     ]
-    totals = [
-        float(item["total_ms"])
-        for item in results
-        if item["total_ms"] is not None
-    ]
+    totals = [float(item["total_ms"]) for item in results if item["total_ms"] is not None]
     passed = sum(bool(item["passed"]) for item in results)
     return {
         "label": label,
         "total": len(results),
         "passed": passed,
         "pass_rate": passed / len(results) if results else 0.0,
-        "first_token_p50_ms": statistics.median(first_tokens)
-        if first_tokens
-        else None,
+        "first_token_p50_ms": statistics.median(first_tokens) if first_tokens else None,
         "first_token_p95_ms": percentile(first_tokens, 0.95),
         "total_p50_ms": statistics.median(totals) if totals else None,
         "total_p95_ms": percentile(totals, 0.95),
@@ -376,8 +357,7 @@ async def evaluate_accuracy(
             ),
             "total_p95_delta_ms": (
                 candidate["total_p95_ms"] - baseline["total_p95_ms"]
-                if candidate["total_p95_ms"] is not None
-                and baseline["total_p95_ms"] is not None
+                if candidate["total_p95_ms"] is not None and baseline["total_p95_ms"] is not None
                 else None
             ),
         }
@@ -438,8 +418,7 @@ async def evaluate_load(
                 if conversation_id:
                     conversation_ids.add(conversation_id)
                 history = (
-                    f"{history}\n用户：{case['query']}\n助手："
-                    f"{execution['answer'][-1200:]}"
+                    f"{history}\n用户：{case['query']}\n助手：{execution['answer'][-1200:]}"
                 )[-8000:]
                 results.append(
                     {
@@ -478,15 +457,9 @@ async def evaluate_load(
 
     elapsed = time.perf_counter() - started
     successes = [item for item in results if item["ok"]]
-    totals = [
-        float(item["total_ms"])
-        for item in successes
-        if item["total_ms"] is not None
-    ]
+    totals = [float(item["total_ms"]) for item in successes if item["total_ms"] is not None]
     first_tokens = [
-        float(item["first_token_ms"])
-        for item in successes
-        if item["first_token_ms"] is not None
+        float(item["first_token_ms"]) for item in successes if item["first_token_ms"] is not None
     ]
     acceptance_shape = concurrency >= 20 and duration_seconds >= 600
     success_rate = len(successes) / len(results) if results else 0.0
@@ -501,9 +474,7 @@ async def evaluate_load(
         "successful_requests": len(successes),
         "success_rate": success_rate,
         "requests_per_second": len(results) / elapsed if elapsed else 0.0,
-        "first_token_p50_ms": statistics.median(first_tokens)
-        if first_tokens
-        else None,
+        "first_token_p50_ms": statistics.median(first_tokens) if first_tokens else None,
         "first_token_p95_ms": percentile(first_tokens, 0.95),
         "total_p50_ms": statistics.median(totals) if totals else None,
         "total_p95_ms": percentile(totals, 0.95),

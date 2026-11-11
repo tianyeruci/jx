@@ -1,0 +1,258 @@
+app:
+  description: 内部异步任务：更新会话摘要并提取商业画像与路线进度候选。
+  icon: 🗂️
+  icon_background: '#FEF3C7'
+  icon_type: emoji
+  mode: workflow
+  name: 摘要画像
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/tongyi:0.2.19@cbcbc332b69c40dd6fa69993cfeb5b09c13d22ddc787de96c9bf16e02fa51536
+    version: null
+kind: app
+version: 0.6.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions:
+      - .JPG
+      - .JPEG
+      - .PNG
+      - .GIF
+      - .WEBP
+      - .SVG
+      allowed_file_types:
+      - image
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        attachment_image_file_size_limit: 2
+        audio_file_size_limit: 50
+        batch_count_limit: 2
+        file_size_limit: 128
+        file_upload_limit: 20
+        image_file_batch_limit: 10
+        image_file_size_limit: 10
+        single_chunk_attachment_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        sourceType: start
+        targetType: llm
+      id: start-llm
+      source: start
+      sourceHandle: source
+      target: llm
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: llm
+        targetType: code
+      id: llm-end
+      source: llm
+      sourceHandle: source
+      target: summary_normalize
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: code
+        targetType: end
+      id: summary-normalize-end
+      source: summary_normalize
+      sourceHandle: source
+      target: end
+      targetHandle: target
+      type: custom
+    nodes:
+    - data:
+        title: 开始
+        type: start
+        variables:
+        - label: 旧摘要
+          max_length: 24000
+          required: false
+          type: paragraph
+          variable: old_summary
+        - label: 新消息JSON
+          max_length: 60000
+          required: true
+          type: paragraph
+          variable: messages_json
+        - label: 摘要截止消息ID
+          max_length: 100
+          required: true
+          type: text-input
+          variable: target_message_id
+      height: 160
+      id: start
+      position:
+        x: 0
+        y: 0
+      positionAbsolute:
+        x: 0
+        y: 0
+      type: custom
+      width: 242
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        model:
+          completion_params:
+            temperature: 0.1
+          mode: chat
+          name: qwen-plus
+          provider: langgenius/tongyi/tongyi
+        prompt_template:
+        - role: system
+          text: '你是内部数据整理器，不回答最终用户。只输出一个JSON对象，不使用Markdown代码围栏：
+
+            {"updated_summary":"","confirmed_profile_updates":[],"candidate_profile_updates":[],"route_progress_candidates":[],"target_message_id":""}
+
+            摘要保留目标、约束、重要决定、未解决问题和关键结论，不扩写事实。
+
+            confirmed_profile_updates每项包含field、value、evidence_quote、source_message_id，只使用用户直接明确表达的稳定事实；助手建议和模型推断不能成为确认事实。
+
+            允许键仅有business_goal、focus_directions、experience_stage、learning_status、time_constraints、budget_constraints、confirmed_routes。
+
+            弱线索、推断和冲突信息放入candidate_profile_updates，并提供field、value、evidence_quote、source_message_id。
+
+            路线进度只生成候选，不直接确认。target_message_id必须原样返回。'
+        - role: user
+          text: '旧摘要：
+
+            {{#start.old_summary#}}
+
+            新消息：
+
+            {{#start.messages_json#}}
+
+            目标消息ID：
+
+            {{#start.target_message_id#}}'
+        title: 更新摘要和画像候选
+        type: llm
+      height: 87
+      id: llm
+      position:
+        x: 320
+        y: 0
+      positionAbsolute:
+        x: 320
+        y: 0
+      type: custom
+      width: 242
+    - data:
+        code: "import json\n\ndef _extract_json(raw_result: str) -> dict:\n    text\
+          \ = (raw_result or \"\").strip()\n    if text.startswith(\"```\"):\n   \
+          \     lines = text.splitlines()\n        if len(lines) >= 3:\n         \
+          \   text = \"\\n\".join(lines[1:-1]).strip()\n            if text.lower().startswith(\"\
+          json\"):\n                text = text[4:].lstrip()\n    try:\n        parsed\
+          \ = json.loads(text)\n        return parsed if isinstance(parsed, dict)\
+          \ else {}\n    except Exception:\n        start = text.find(\"{\")\n   \
+          \     end = text.rfind(\"}\")\n        if start >= 0 and end > start:\n\
+          \            try:\n                parsed = json.loads(text[start : end\
+          \ + 1])\n                return parsed if isinstance(parsed, dict) else\
+          \ {}\n            except Exception:\n                return {}\n    return\
+          \ {}\n\ndef _as_string(value) -> str:\n    if value is None:\n        return\
+          \ \"\"\n    if isinstance(value, str):\n        return value.strip()\n \
+          \   return str(value).strip()\n\ndef _as_list_of_dicts(value) -> list:\n\
+          \    if isinstance(value, dict):\n        value = [{\"field\": field, \"\
+          value\": item} for field, item in value.items()]\n    if not isinstance(value,\
+          \ list):\n        return []\n    result = []\n    for item in value:\n \
+          \       if not isinstance(item, dict):\n            continue\n        normalized\
+          \ = dict(item)\n        if \"field\" in normalized:\n            normalized[\"\
+          field\"] = _as_string(normalized.get(\"field\"))\n        if \"evidence_quote\"\
+          \ in normalized:\n            normalized[\"evidence_quote\"] = _as_string(normalized.get(\"\
+          evidence_quote\"))\n        if \"source_message_id\" in normalized:\n  \
+          \          normalized[\"source_message_id\"] = _as_string(normalized.get(\"\
+          source_message_id\"))\n        result.append(normalized)\n    return result\n\
+          \ndef main(raw_result: str, target_message_id: str) -> dict:\n    parsed\
+          \ = _extract_json(raw_result)\n    updated_summary = _as_string(parsed.get(\"\
+          updated_summary\"))\n    if not updated_summary:\n        updated_summary\
+          \ = _as_string(raw_result)\n    normalized = {\n        \"updated_summary\"\
+          : updated_summary,\n        \"confirmed_profile_updates\": _as_list_of_dicts(parsed.get(\"\
+          confirmed_profile_updates\")),\n        \"candidate_profile_updates\": _as_list_of_dicts(parsed.get(\"\
+          candidate_profile_updates\")),\n        \"route_progress_candidates\": _as_list_of_dicts(parsed.get(\"\
+          route_progress_candidates\")),\n        \"target_message_id\": _as_string(target_message_id),\n\
+          \    }\n    return {\"result\": json.dumps(normalized, ensure_ascii=False)}"
+        code_language: python3
+        desc: 兼容 fenced JSON、前后多余文本和缺省字段，保证 Worker 收到稳定 JSON。
+        outputs:
+          result:
+            children: null
+            type: string
+        title: 归一化摘要画像JSON
+        type: code
+        variables:
+        - value_selector:
+          - llm
+          - text
+          variable: raw_result
+        - value_selector:
+          - start
+          - target_message_id
+          variable: target_message_id
+      height: 111
+      id: summary_normalize
+      position:
+        x: 640
+        y: 0
+      positionAbsolute:
+        x: 640
+        y: 0
+      type: custom
+      width: 242
+    - data:
+        outputs:
+        - value_selector:
+          - summary_normalize
+          - result
+          variable: result
+        title: 结束
+        type: end
+      height: 88
+      id: end
+      position:
+        x: 960
+        y: 0
+      positionAbsolute:
+        x: 960
+        y: 0
+      type: custom
+      width: 242
+    viewport:
+      x: 0
+      y: 0
+      zoom: 1
+  rag_pipeline_variables: []

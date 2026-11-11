@@ -39,7 +39,7 @@ BRANCH_LAYOUT_CONTRACTS = {
 }
 
 
-QUICK_INTENT_CODE = r'''import re
+QUICK_INTENT_CODE = r"""import re
 
 def main(query: str, wechat_id: str = "", wechat_display_name: str = "", wechat_work_hours: str = "", wechat_qr_url: str = "") -> dict:
     raw = str(query or "").strip()
@@ -151,10 +151,10 @@ def main(query: str, wechat_id: str = "", wechat_display_name: str = "", wechat_
         "direct_response": response,
         "human_response": human_response,
         "normalized_query": normalized,
-    }'''
+    }"""
 
 
-EVIDENCE_COMPACT_CODE = r'''import json
+EVIDENCE_COMPACT_CODE = r"""import json
 
 ALLOWED_METADATA_KEYS = {
     "course_id", "route_id", "stage_id", "course_ids", "stage_ids",
@@ -239,10 +239,10 @@ def main(results) -> dict:
         "evidence_text": "\n".join(output),
         "has_evidence": "true" if output else "false",
         "evidence_count": str(len(output)),
-    }'''
+    }"""
 
 
-MIXED_EVIDENCE_CODE = r'''import json
+MIXED_EVIDENCE_CODE = r"""import json
 
 ALLOWED_METADATA_KEYS = {
     "course_id", "route_id", "stage_id", "course_ids", "stage_ids",
@@ -334,7 +334,7 @@ def main(general_results, course_results) -> dict:
         "has_course": "true" if course_count else "false",
         "general_count": str(general_count),
         "course_count": str(course_count),
-    }'''
+    }"""
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -342,10 +342,7 @@ def _load(path: Path) -> dict[str, Any]:
 
 
 def _nodes(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {
-        str(node["id"]): node["data"]
-        for node in document["workflow"]["graph"]["nodes"]
-    }
+    return {str(node["id"]): node["data"] for node in document["workflow"]["graph"]["nodes"]}
 
 
 def _start_signature(document: dict[str, Any]) -> list[dict[str, Any]]:
@@ -367,9 +364,7 @@ def _dataset_bindings(document: dict[str, Any]) -> dict[str, list[str]]:
 
 def _append_answer_layout_contract(node: dict[str, Any], branch: str) -> None:
     prompt_template = node.get("prompt_template") or []
-    system_prompts = [
-        item for item in prompt_template if str(item.get("role") or "") == "system"
-    ]
+    system_prompts = [item for item in prompt_template if str(item.get("role") or "") == "system"]
     if len(system_prompts) != 1:
         raise ValueError("answer node must contain exactly one system prompt")
     system_prompt = system_prompts[0]
@@ -438,13 +433,15 @@ def validate(source: dict[str, Any], generated: dict[str, Any]) -> None:
         raise ValueError("DSL schema version changed")
     if _start_signature(generated) != _start_signature(source):
         raise ValueError("Start input contract changed")
-    if generated["workflow"]["environment_variables"] != source["workflow"][
-        "environment_variables"
-    ]:
+    if (
+        generated["workflow"]["environment_variables"]
+        != source["workflow"]["environment_variables"]
+    ):
         raise ValueError("environment variable contract changed")
-    if generated["workflow"]["conversation_variables"] != source["workflow"][
-        "conversation_variables"
-    ]:
+    if (
+        generated["workflow"]["conversation_variables"]
+        != source["workflow"]["conversation_variables"]
+    ):
         raise ValueError("conversation variable contract changed")
     if _dataset_bindings(generated) != _dataset_bindings(source):
         raise ValueError("knowledge base bindings changed")

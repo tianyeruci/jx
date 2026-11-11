@@ -107,7 +107,7 @@ class PostKnowledgeUnit(BaseModel):
     applicable_conditions: list[str] = Field(default_factory=list, max_length=10)
     actions: list[str] = Field(default_factory=list, max_length=10)
     risks_or_limits: list[str] = Field(default_factory=list, max_length=10)
-    source_block_ids: list[str] = Field(min_length=1, max_length=50)
+    source_block_ids: list[str] = Field(min_length=1)
 
 
 class PostSemanticResponse(BaseModel):
@@ -265,52 +265,21 @@ _CONSULTATION_SYSTEM_PROMPT = """你是商业咨询案例 RAG 清洗器。请输
 领域建议仍保留在同一个 case；只有独立背景/目标才拆分。主契约 JSON 只能包含：
 {"schema_version":"consultation-rag-v1","cases":[{"primary_problem":"...",
 "problem_category":"...","case_stage":"...","relevant_background":[],
-"problem_signals":[],"retrieval_queries":[],"reference_advice":[],"evidence":[]}]}。
-problem_category 只能使用：流量与引流、私域与转化、产品设计与产品梯度、定位与方向、
+"problem_signals":[],"retrieval_queries":[],"reference_advice":[],
+"advice_summary":"","methodology_judgment":"","methodology_steps":[],
+"methodology_limits":[],"evidence":[{"kind":"background|problem|advice","quote":"...","fact_state":"client_statement|advisor_judgment|decision|plan|actual_result","source_block_ids":["b001"]}]}]}。
+ problem_category 是辅助分类，缺失或不规范时使用“其他商业问题”。可用值包括：流量与引流、私域与转化、产品设计与产品梯度、定位与方向、
 定价与销售、交付与用户筛选、内容与表达、社群与留存、执行与增长节奏、其他商业问题。
 case_stage 只能使用：从0到1探索、已有基础未闭环、初步验证待优化、已验证待放大、
 放大后的交付或效率优化、不明确。evidence 的 kind 只能是 background、problem、advice，
-quote 必须能在输入来源块中逐字回溯；每个案例至少有 background 和 problem 证据。
+ quote 必须能在输入来源块中逐字回溯，source_block_ids 必须只列该 quote 所在的输入 block ID。kind 是辅助分类；缺失或不规范的分类、阶段、检索问法和细粒度 evidence 不得单独阻塞有可回溯核心内容的案例。
 relevant_background/problem_signals 只能写已发生事实，不能把建议、计划或预计结果当事实。
-retrieval_queries 必须是 3~6 条简体中文用户自然问法，不得输出英文或新增输入不存在的事实。
-模型失败、契约失败或证据校验失败由服务端走整份脱敏源文档兜底；隐私、空正文和明确排除不得自动兜底。
-
-以下字段与旧版 ConsultationCaseV2/sections 仅为历史回放兼容说明；除非任务明确要求旧版，
-不要混用旧结构与 consultation-rag-v1，也不要返回额外字段。
-
-你是商业咨询案例结构化助手。请输出严格 JSON。
-输入已经匿名化。文件名不可见。所有结论必须绑定来源块 ID，保持数字、日期、否定、
-人物归属和“陈述/判断/决定/计划/实际结果”的事实状态；不得补写结果或承诺。
-
-历史回放任务可输出 schema_version=consulting_case_v2 的证据优先结构；不要只返回
-schema_version，必须返回下方模板中的全部顶层字段（case_group_id 可为 null，数组可为空）：
-{"schema_version":"consulting_case_v2","case_id":"case_xxxx","case_group_id":null,
-"disposition":"keep_as_case|review_required|exclude","title":"...","source_date":"",
-"shared_context":[],"objectives":[],"decision_units":[],"overall_evidence_level":"E0|E1|E2|E3",
-"background_sufficiency":"high|medium|low","time_sensitive":false,"time_sensitive_items":[],
-"source_coverage":{"kept":[],"dropped":[],"unresolved":[]},"warnings":[]}
-
-EvidenceItem 必须是 {"text":"来源事实或明确判断","status":"customer_fact|consultant_judgment|decision|planned_action|observed_result|derived_condition","source_block_ids":["输入中已有block ID"],"priority":null}；
-priority 仅 actions 可用，值只能是 primary 或 secondary，其余位置必须省略或为 null。
-DecisionUnit 必须包含 unit_id、topic、local_context、problem、mechanism_or_diagnosis、actions、
-observed_outcomes、result_status（unverified|partially_verified|verified|not_applicable）、
-stated_conditions、derived_conditions、risks_or_limits、evidence_level（E0|E1|E2|E3）、
- retrieval_summary；每个 EvidenceItem 的 status 必须符合所在数组语义。非 E0 必须有 actions。
- risks_or_limits 只能使用 status=consultant_judgment 或 derived_condition；
- mechanism_or_diagnosis 只能使用 consultant_judgment，observed_outcomes 只能使用
- observed_result，derived_conditions 只能使用 derived_condition。E2/E3 必须有
- observed_outcomes，E3 必须 result_status=verified。keep_as_case 必须有
-shared_context 和 decision_units；background_sufficiency=low 不得 keep_as_case；time_sensitive=true
-必须有 time_sensitive_items，false 时必须为空。source_coverage 的 kept、dropped、unresolved
-必须把输入 blocks 的每个 key 恰好覆盖一次，reason 必须是非空字符串。
-DecisionUnit 中上述所有上下文字段必须是 EvidenceItem 对象数组，不能用一段字符串替代；例如
-local_context=[{"text":"来源中的一句话","status":"customer_fact","source_block_ids":["b001"]}]。
-
-若背景不足、隐私风险或证据无法闭合，使用 disposition=review_required；明确不适合时使用
-disposition=exclude。不得增加输入来源没有的事实。旧 sections 结构仍被接受用于兼容历史任务：
-若选择旧结构，JSON 必须且只能包含 sections；每个 section 必须包含 heading、text、source_block_ids、
-fact_state，heading 只能是背景与目标、关键问题、顾问判断、已确认决定、行动计划、实际结果，
-fact_state 只能是 client_statement、advisor_judgment、decision、plan、actual_result。不得混用两种结构。"""
+ retrieval_queries 是可选的简体中文用户自然问法，不得输出英文或新增输入不存在的事实；不能生成时返回空数组。
+ 如果来源块中明确出现顾问建议、解决方案、采取的做法或处理步骤，必须尽量完整保留：用 kind=advice 的 evidence 逐字引用，reference_advice 只放对应的原文建议引文，advice_summary 对这些引文做忠实整理或改写，不要求逐字等于引文。
+ methodology_judgment、methodology_steps、methodology_limits 是基于本案例 advice evidence 自动提炼的候选方法，分别填写判断依据、执行步骤和限制；不要等待人工另行提炼，也不要把单案例候选包装成跨案例验证的通用规律。没有可回溯 advice evidence 时，这四个字段必须为空，不能编造方案或方法。
+ advice 的 fact_state 必须区分顾问判断、已确认决定、行动计划和实际结果；计划、判断或建议绝不能写成实际结果。解决方案可能分散在会议的不同来源块中：只把与当前问题、背景/目标和处理策略直接对应的 advice 放入同一个 case，不能仅因主题相似把另一问题的方案错配过来。
+ 同一背景、目标且共享处理策略的关联问题可放在一个 case；即使背景相同，只要问题和方案不同也必须拆成不同 case。共享背景只保留理解该问题和方案所必需的事实。
+ 模型/调用失败或全部核心单元不可用时服务端最多完整重跑一次；不得产生新的人工复核状态或原文兜底发布。"""
 
 _COURSE_SYSTEM_PROMPT = """你是课程目录语义补全助手。请输出严格 JSON。
 只可提出方向候选、内容/问题、适用人群、课程重点、学习目标和路线目标。
@@ -394,7 +363,10 @@ def choose_call_mode(
 
 
 def build_model_request_body(
-    messages: list[dict[str, str]], *, model: str = "qwen-plus"
+    messages: list[dict[str, str]],
+    *,
+    model: str = "qwen-plus",
+    max_tokens: int = 8192,
 ) -> dict[str, Any]:
     """Build the single canonical Qwen request used by realtime and Batch.
 
@@ -405,9 +377,12 @@ def build_model_request_body(
     advertise the stricter schema variant.
     """
 
+    if not 1 <= max_tokens <= 32768:
+        raise ValueError("max_tokens 必须在 1-32768 之间")
     return {
         "model": model,
         "messages": messages,
+        "max_tokens": max_tokens,
         "temperature": 0.01,
         "seed": 1234,
         "enable_thinking": False,
@@ -516,15 +491,18 @@ def validate_semantic_response(
 ) -> PostSemanticResponse:
     if strategy_code not in POST_STRATEGIES:
         raise ValueError("该校验器只适用于帖子/文章策略")
-    result = PostSemanticResponse.model_validate(_normalize_post_semantic_payload(payload))
+    normalized = _normalize_post_semantic_payload(payload)
+    raw_units = normalized.get("knowledge_units")
+    normalized["knowledge_units"] = []
+    result = PostSemanticResponse.model_validate(normalized)
     referenced = result.keep_block_ids + result.drop_block_ids
     if len(referenced) != len(set(referenced)):
         raise ValueError("来源块不能重复归类")
     unknown = set(referenced) - available_block_ids
     if unknown:
         raise ValueError(f"模型返回未知来源块：{sorted(unknown)}")
-    if set(referenced) != available_block_ids:
-        raise ValueError("keep_block_ids 与 drop_block_ids 必须完整覆盖来源块")
+    if result.disposition == "keep" and not result.keep_block_ids:
+        raise ValueError("保留内容必须至少包含一个来源块")
     kept_ids = set(result.keep_block_ids)
     unit_ids: set[str] = set()
     evidence = "\n".join(
@@ -532,15 +510,20 @@ def validate_semantic_response(
         for block_id in result.keep_block_ids
         if source_blocks and block_id in source_blocks
     )
-    for unit in result.knowledge_units:
+    valid_units: list[PostKnowledgeUnit] = []
+    for raw_unit in raw_units if isinstance(raw_units, list) else []:
+        try:
+            unit = PostKnowledgeUnit.model_validate(raw_unit)
+        except Exception:
+            continue
         if unit.unit_id in unit_ids:
-            raise ValueError("knowledge_unit unit_id不能重复")
+            continue
         unit_ids.add(unit.unit_id)
         unknown_unit_blocks = set(unit.source_block_ids) - available_block_ids
         if unknown_unit_blocks:
-            raise ValueError(f"knowledge_unit引用未知来源块：{sorted(unknown_unit_blocks)}")
+            continue
         if not set(unit.source_block_ids) <= kept_ids:
-            raise ValueError("knowledge_unit只能引用keep来源块")
+            continue
         if source_blocks is not None:
             unit_text = "\n".join(
                 [
@@ -558,7 +541,9 @@ def validate_semantic_response(
             )
             unit_evidence = "\n".join(source_blocks[block_id] for block_id in unit.source_block_ids)
             if any(token not in unit_evidence for token in numeric_tokens):
-                raise ValueError("knowledge_unit包含来源未支持的数字或日期")
+                continue
+        valid_units.append(unit)
+    result.knowledge_units = valid_units
     if (
         source_blocks is not None
         and result.disposition in {"keep", "review"}
@@ -566,7 +551,12 @@ def validate_semantic_response(
         and not result.knowledge_units
     ):
         raise ValueError("模型未返回可检索的知识单元")
-    if result.disposition == "keep" and result.knowledge_units and not evidence:
+    if (
+        source_blocks is not None
+        and result.disposition == "keep"
+        and result.knowledge_units
+        and not evidence
+    ):
         raise ValueError("knowledge_unit缺少来源证据")
     return result
 
@@ -718,12 +708,13 @@ class BailianClient:
         messages: list[dict[str, str]],
         *,
         model: str = "qwen-plus",
+        max_tokens: int = 8192,
     ) -> tuple[dict[str, Any], dict[str, int]]:
         try:
             response = self._request(
                 "POST",
                 "chat/completions",
-                json=build_model_request_body(messages, model=model),
+                json=build_model_request_body(messages, model=model, max_tokens=max_tokens),
             )
         except Exception as exc:
             raise ModelNoResponseError("模型服务未返回可用响应") from exc
@@ -826,13 +817,16 @@ def batch_request_line(
     prompt_version: str,
     model: str = "qwen-plus",
     repair_hint: str = "",
+    max_tokens: int = 8192,
 ) -> bytes:
     line = {
         "custom_id": build_custom_id(request, prompt_version),
         "method": "POST",
         "url": "/v1/chat/completions",
         "body": build_model_request_body(
-            build_prompt_messages(request, repair_hint=repair_hint), model=model
+            build_prompt_messages(request, repair_hint=repair_hint),
+            model=model,
+            max_tokens=max_tokens,
         ),
     }
     return (json.dumps(line, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")

@@ -1,0 +1,651 @@
+app:
+  description: 单对话框连续写作：代码节点仅零模型拦截上下文无关的固定消息；polish/expand 各用一次 qwen-plus 并启用会话记忆。当前消息优先、历史只补缺；必要信息不足才询问；明确数量按当前交付范围严格执行。
+  icon: ✍️
+  icon_background: '#FCE7F3'
+  icon_type: emoji
+  mode: advanced-chat
+  name: 日常写作
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/tongyi:0.0.27@4bb3f3eb6149b01f92aa6038a6bb074cc4224b8c015f54c888e5c5a30fc1ab50
+    version: null
+kind: app
+version: 0.6.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions:
+      - .JPG
+      - .JPEG
+      - .PNG
+      - .GIF
+      - .WEBP
+      - .SVG
+      allowed_file_types:
+      - image
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        attachment_image_file_size_limit: 2
+        audio_file_size_limit: 50
+        batch_count_limit: 2
+        file_size_limit: 128
+        file_upload_limit: 20
+        image_file_batch_limit: 10
+        image_file_size_limit: 10
+        single_chunk_attachment_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        sourceType: start
+        targetType: code
+      id: start-fixed-filter
+      source: start
+      sourceHandle: source
+      target: fixed_message_filter
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: code
+        targetType: if-else
+      id: fixed-filter-route
+      source: fixed_message_filter
+      sourceHandle: source
+      target: type_route
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: if-else
+        targetType: answer
+      id: route-direct
+      source: type_route
+      sourceHandle: direct
+      target: direct_message_answer
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: if-else
+        targetType: llm
+      id: route-polish
+      source: type_route
+      sourceHandle: polish
+      target: polish_llm
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: if-else
+        targetType: llm
+      id: route-expand
+      source: type_route
+      sourceHandle: expand
+      target: expand_llm
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: if-else
+        targetType: answer
+      id: route-invalid
+      source: type_route
+      sourceHandle: 'false'
+      target: invalid_type_answer
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: llm
+        targetType: answer
+      id: polish-llm-answer
+      source: polish_llm
+      sourceHandle: source
+      target: polish_answer
+      targetHandle: target
+      type: custom
+    - data:
+        sourceType: llm
+        targetType: answer
+      id: expand-llm-answer
+      source: expand_llm
+      sourceHandle: source
+      target: expand_answer
+      targetHandle: target
+      type: custom
+    nodes:
+    - data:
+        desc: 用户只有一个自然语言输入框；小程序通常传 type，管理员输出风格由后端传入。type 不在开始节点硬校验：纯固定消息即使未传 type
+          也能直接回复；非固定消息仍会严格校验 type。
+        selected: false
+        title: 开始
+        type: start
+        variables:
+        - label: 写作类型
+          max_length: 32
+          required: false
+          type: text-input
+          variable: type
+        - label: 管理员输出风格
+          max_length: 4000
+          required: false
+          type: paragraph
+          variable: admin_output_style
+      height: 226
+      id: start
+      position:
+        x: 0
+        y: 132
+      positionAbsolute:
+        x: 0
+        y: 132
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import re\n\n\ndef main(query: str, writing_type: str) -> dict:\n \
+          \   raw = str(query or \"\").strip()\n    normalized = re.sub(\n       \
+          \ r\"[^0-9a-zA-Z\\u4e00-\\u9fff]\",\n        \"\",\n        raw.lower()\n\
+          \    )\n\n    def direct(response: str) -> dict:\n        return {\n   \
+          \         \"route\": \"direct\",\n            \"direct_response\": response\n\
+          \        }\n\n    # 空输入，或只有标点/表情/空白：不进入模型。\n    if not raw or not normalized:\n\
+          \        return direct(\"请直接告诉我你想表达什么，或者把需要润色、扩充的内容发给我。\")\n\n    # 只做整句标准化后的精确匹配，避免“你好，帮我改一下……”被误拦截。\n\
+          \    greetings = {\n        \"你好\", \"您好\", \"hi\", \"hello\", \"嗨\", \"\
+          哈喽\", \"在吗\", \"在不在\",\n        \"早\", \"早安\", \"早上好\", \"午安\", \"下午好\"\
+          , \"晚上好\",\n        \"你好在吗\", \"您好在吗\", \"嗨在吗\"\n    }\n\n    capabilities\
+          \ = {\n        \"你是谁\", \"你是什么\", \"你能做什么\", \"你会什么\", \"能做什么\",\n     \
+          \   \"会做什么\", \"可以做什么\", \"怎么用\", \"如何使用\", \"这是干嘛的\",\n        \"这是做什么的\"\
+          , \"help\", \"whatareyou\", \"whatcanyoudo\", \"howtouse\"\n    }\n\n  \
+          \  thanks = {\n        \"谢谢\", \"谢谢你\", \"感谢\", \"感谢你\", \"多谢\", \"谢了\"\
+          , \"非常感谢\",\n        \"thankyou\", \"thanks\", \"thx\"\n    }\n\n    goodbyes\
+          \ = {\n        \"再见\", \"拜拜\", \"bye\", \"goodbye\", \"下次见\", \"回头见\",\n\
+          \        \"先这样\", \"先这样吧\", \"好的先这样\", \"好先这样\", \"晚安\"\n    }\n    if normalized\
+          \ in greetings:\n        return direct(\"你好，把你想表达的内容、想法或原文直接发给我就可以。我可以帮你润色或扩充成稿。\"\
+          )\n\n    if normalized in capabilities:\n        return direct(\"我可以根据你的想法或原文进行润色、扩充，也能结合当前对话继续修改。你直接告诉我想表达什么即可。\"\
+          )\n\n    if normalized in thanks:\n        return direct(\"不客气，需要继续调整的话直接告诉我就行。\"\
+          )\n\n    if normalized in goodbyes:\n        return direct(\"好的，需要继续写或修改时随时告诉我。\"\
+          )\n\n    # “好的 / 可以 / 行 / ok / 嗯 / 收到”等确认短句不在代码层拦截。\n    # 它们可能是在回答上一轮 LLM\
+          \ 的必要信息确认（例如“是否分批输出”）；\n    # 代码节点看不到会话上下文，若直接回复会吞掉有效答案，因此交给后续 LLM 结合 Memory\
+          \ 判断。\n\n    # 固定消息未命中后，再按程序参数严格路由；不对 type 做容错猜测。\n    writing_type = str(writing_type\
+          \ or \"\")\n    if writing_type == \"polish\":\n        return {\"route\"\
+          : \"polish\", \"direct_response\": \"\"}\n    if writing_type == \"expand\"\
+          :\n        return {\"route\": \"expand\", \"direct_response\": \"\"}\n\n\
+          \    return {\"route\": \"invalid\", \"direct_response\": \"\"}\n"
+        code_language: python3
+        desc: 仅拦截上下文无关且高确定性的空输入、纯问候、能力询问、纯感谢和纯告别；确认/同意类短句可能是上一轮 ASK 的有效回答，必须进入 LLM
+          结合会话历史判断。
+        outputs:
+          direct_response:
+            children: null
+            type: string
+          route:
+            children: null
+            type: string
+        selected: false
+        title: 固定消息过滤
+        type: code
+        variables:
+        - value_selector:
+          - sys
+          - query
+          value_type: string
+          variable: query
+        - value_selector:
+          - start
+          - type
+          value_type: string
+          variable: writing_type
+      height: 143
+      id: fixed_message_filter
+      position:
+        x: 342
+        y: 173
+      positionAbsolute:
+        x: 342
+        y: 173
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+    - data:
+        cases:
+        - case_id: direct
+          conditions:
+          - comparison_operator: is
+            id: route-is-direct
+            value: direct
+            varType: string
+            variable_selector:
+            - fixed_message_filter
+            - route
+          id: direct
+          logical_operator: and
+        - case_id: polish
+          conditions:
+          - comparison_operator: is
+            id: route-is-polish
+            value: polish
+            varType: string
+            variable_selector:
+            - fixed_message_filter
+            - route
+          id: polish
+          logical_operator: and
+        - case_id: expand
+          conditions:
+          - comparison_operator: is
+            id: route-is-expand
+            value: expand
+            varType: string
+            variable_selector:
+            - fixed_message_filter
+            - route
+          id: expand
+          logical_operator: and
+        desc: 固定过滤节点已经产出唯一 route：direct / polish / expand / invalid。本节点只按该值路由，避免“固定回复=true
+          且 type=polish”这类多条件同时成立的歧义。
+        selected: false
+        title: 固定回复 / 写作类型路由
+        type: if-else
+      height: 335
+      id: type_route
+      position:
+        x: 683
+        y: 77
+      positionAbsolute:
+        x: 683
+        y: 77
+      selected: true
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+    - data:
+        answer: '{{#fixed_message_filter.direct_response#}}'
+        desc: 固定消息命中后直接返回，不调用 qwen-plus。
+        selected: false
+        title: 固定消息回复
+        type: answer
+        variables: []
+      height: 146
+      id: direct_message_answer
+      position:
+        x: 1044
+        y: 0
+      positionAbsolute:
+        x: 1044
+        y: 0
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: 单模型完成信息抽取、必要性判断与润色/轻创作；当前消息优先，历史只补缺；仅在真正阻塞时一次性追问。
+        memory:
+          query_prompt_template: '本轮用户消息（唯一自然语言输入；优先级高于历史）：
+
+            {{#sys.query#}}
+
+
+            请先完整理解本轮消息，再用会话历史补足本轮未说明的信息。历史只能补缺，不能覆盖本轮的新信息或新要求。'
+          role_prefix:
+            assistant: ''
+            user: ''
+          window:
+            enabled: true
+            size: 6
+        model:
+          completion_params:
+            max_tokens: 8192
+            temperature: 0.25
+          mode: chat
+          name: qwen-plus
+          provider: langgenius/tongyi/tongyi
+        prompt_template:
+        - id: polish-system
+          role: system
+          text: '你是“日常写作—polish 润色/轻创作”专用模型。用户只有一个对话框；除 type 与管理员输出风格外，原文/原始素材、本次要求、受众、语气、格式、字数和限制都要从本轮用户消息与同一会话历史中理解。目标：少打扰用户，能写就直接交付；只有真正阻塞任务的信息缺失时才追问。
+
+
+            【每轮先做一次内部判断，不输出过程】
+
+            1. 先完整解析“本轮用户消息”：识别本轮是新任务还是延续任务，并提取其中全部有效信息，包括正文/素材、修改要求、目标、受众、语气、格式、篇幅、限制，以及对上一轮问题的回答。当前消息中的新信息一律优先。
+
+            2. 再读取历史：只有当前轮未说明且仍属于同一任务的信息才能继承。历史要求、旧受众、旧语气、旧格式等不得覆盖当前轮。主题/对象/目的明显改变时视为新任务，旧任务属性失效。
+
+            3. 历史中的纯问候、感谢、告别、能力说明、确认等固定交互不属于写作素材或任务属性；除非本轮明确引用，否则忽略这些内容。
+
+            4. 若本轮只回复“1/2/3/4/5”等编号，按最近一次尚未完成的选项问题解析；若同时补充其他要求，必须全部提取，不能只处理编号。
+
+            5. 若本轮只有“好的/可以/行/没问题/ok/嗯/收到/明白了”等确认短句，先检查最近一轮是否存在尚未完成的 ASK 或确认问题：若该短句能明确回答它（如同意分批），按回答继续任务；若仍缺必要信息，只问剩余必要项。若没有待处理任务，不把确认词当作写作素材，只做简短自然回应。
+
+            6. 判断是否缺“真正必要信息”。必要信息仅指：缺失后无法可靠完成用户当前明确要求，或继续写必然导致编造关键事实。只是让结果更个性化、更漂亮的信息不算必要。
+
+            7. 通常二选一：ASK（只询问必要信息）或 GENERATE（只输出最终成稿），禁止边问边先写一版；仅“纯确认短句且无待处理任务”可做简短交互回应。
+
+
+            【GENERATE 数量与作用域：当前交付范围内的明确数量是硬约束】
+
+            - 本轮当前要交付的范围中，用户明确要求 N 条/N 个/N 版/N 组/N 种等，必须实际输出 N 个有效条目。精确 N 必须等于 N；“至少
+            N 个”不得少于 N；“最多 N 个”不得超过 N；只有“N 个左右”才允许合理浮动。
+
+            - 若上一轮因为缺必要信息进入 ASK、尚未完成生成，原任务中的数量 N 属于“待完成要求”；用户本轮补充答案后，N 继续有效，除非本轮明确修改数量。
+
+            - 若上一轮已经完整交付 N 项，历史数量 N 不得机械约束后续每一轮。本轮只要求修改“第 3 条/前 2 条/某一条/某一段”时，只输出当前要求的范围，不得为了凑历史
+            N 重发全部内容；本轮要求“全部/整组/整体重写”时，才维持原集合规模 N（除非本轮改了数量）。本轮说“再来一批/继续生成一批”且未给新数量时，可继承上一批
+            N。
+
+            - 本轮新的数量要求覆盖历史数量；本轮新的处理范围覆盖历史集合范围。先判断“本轮究竟要交付什么”，再应用数量约束，不能只看到历史 N 就强制输出
+            N 项。
+
+            - 数量约束适用于文案、标题、开头、结尾、版本、表达方式、卖点、选题、话术、段落方案等所有列表型产物。
+
+            - 输出前内部核对“当前要求数量”和“当前有效条目数”；标题、说明、分组名、前后提示语不计入条目。检查过程不输出。
+
+            - 用户同时指定“数量 + 每条长度/结构/格式”时都应满足。数量很大但未规定单条长度时，优先适当压缩单条篇幅以一次完整输出，而不是减少条数。只有“数量
+            × 单条硬长度”明显超过单次输出容量、客观上无法完整交付时，才把分批视为真正必要信息并一次性简短询问；不得静默截断或少生成。
+
+            - 下文“目标受众最多 5 个选项”只属于 ASK 阶段的受众候选数量，与 GENERATE 阶段内容数量完全无关，绝不能把这个 5 套用到文案/标题/版本等生成数量。
+
+            【目标受众：条件性必要信息】
+
+            - 当前轮已说明：直接采用。
+
+            - 同一连续任务历史已明确且当前未修改：可继承。
+
+            - 可从内容/用途可靠推断，或受众差异对核心结果影响很小：直接推断或使用合理默认值，不问。
+
+            - 只有不同受众会显著改变核心内容且无法可靠判断时才询问。
+
+            - 仅当本轮行为为 ASK 且正在询问目标受众时，给出动态候选，总数最多 5 个；前 2～4 个是结合当前主题最可能的受众，最后一个必须是“其他，请直接输入”。这个“最多
+            5 个”不适用于任何 GENERATE 产物。不要用固定模板。
+
+            - 用户只回复最后一个编号时，表示选择手动输入但尚未给出答案，此时只需简短请其直接说明受众。
+
+
+            【其他缺失信息】
+
+            - tone、format、length、发布平台等默认不是必问项。能合理推断就推断；不能推断但不阻塞任务时使用自然、清晰、不过度夸张的默认值。
+
+            - 若同时缺少多个真正必要的信息，一次性问完，问题尽量少；适合枚举的可给选项，但不要为了收集字段而追问。
+
+
+            【polish 处理策略】
+
+            A. 当前或历史中有明确待处理正文：忠实润色。保持事实、观点、意图、信息边界和作者声音，优化病句、措辞、结构、衔接、节奏、重复、标点和可读性。无明确篇幅要求时通常控制在原文约
+            80%～120%，不要把润色变成大幅扩写。
+
+            B. 只有想法/主题/目的/零散素材：进入轻创作。只要已能识别“想表达什么”，就补足必要结构和连接，整理成自然、完整、可直接使用的成稿，不要求用户先提供形式上的“原文”；若用户明确要求多条/多版，严格按其数量生成，不因“轻创作”而减少条目。
+
+            C. 连续修改：本轮出现“继续、再自然一点、按刚才那版”等指代时，可使用最近一版相关成稿；若本轮开启新主题，则以新主题为准。
+
+
+            【事实边界】
+
+            - 不编造产品功能、按钮路径、操作步骤、价格、版本、数字、研究、反馈、收益、效果、官方结论、真实案例、个人经历、姓名、时间、地点、引用或确定性因果。
+
+            - 对“我想售卖某产品的使用技巧”这类表达意图，可直接围绕商业表达成稿；只有用户明确要求具体功能/步骤，而上下文没有可靠资料且无法用中性表达完成时，才询问其提供产品资料、已有素材或希望覆盖的功能点。
+
+            - 能用概括、中性或明确假设的方式安全完成时，优先直接完成。
+
+
+            【输出与优先级】
+
+            真实性/不虚构/当前任务边界 > 本轮明确的数量/篇幅/格式等硬性要求 > 管理员输出风格 > 本轮其他最新明确要求 > 同任务历史有效信息
+            > 合理默认值。管理员输出风格只调整表达与呈现风格，不得改变用户明确要求的条目数量、篇幅或任务范围，也不得迫使你编造事实。
+
+            GENERATE 时只输出最终成稿，不加“好的/以下是润色版”等前缀，不输出分析、提纲、评分或内部过程。ASK 时只输出必要问题，不生成正文。
+
+
+            管理员输出风格：
+
+            {{#start.admin_output_style#}}'
+        selected: false
+        title: 文章润色
+        type: llm
+        vision:
+          enabled: false
+      height: 147
+      id: polish_llm
+      position:
+        x: 1044
+        y: 226
+      positionAbsolute:
+        x: 1044
+        y: 226
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: 单模型完成信息抽取、必要性判断与扩充/深度成稿；当前消息优先，历史只补缺；仅在真正阻塞时一次性追问。
+        memory:
+          query_prompt_template: '本轮用户消息（唯一自然语言输入；优先级高于历史）：
+
+            {{#sys.query#}}
+
+
+            请先完整理解本轮消息，再用会话历史补足本轮未说明的信息。历史只能补缺，不能覆盖本轮的新信息或新要求。'
+          role_prefix:
+            assistant: ''
+            user: ''
+          window:
+            enabled: true
+            size: 6
+        model:
+          completion_params:
+            max_tokens: 8192
+            temperature: 0.55
+          mode: chat
+          name: qwen-plus
+          provider: langgenius/tongyi/tongyi
+        prompt_template:
+        - id: expand-system
+          role: system
+          text: '你是“日常写作—expand 扩充/深度成稿”专用模型。用户只有一个对话框；除 type 与管理员输出风格外，原文/原始素材、本次要求、受众、语气、格式、字数和限制都要从本轮用户消息与同一会话历史中理解。目标：少打扰用户，能写就直接交付；只有真正阻塞任务的信息缺失时才追问。
+
+
+            【每轮先做一次内部判断，不输出过程】
+
+            1. 先完整解析“本轮用户消息”：识别本轮是新任务还是延续任务，并提取其中全部有效信息，包括正文/素材、扩充要求、目标、受众、语气、格式、篇幅、限制，以及对上一轮问题的回答。当前消息中的新信息一律优先。
+
+            2. 再读取历史：只有当前轮未说明且仍属于同一任务的信息才能继承。历史要求、旧受众、旧语气、旧格式等不得覆盖当前轮。主题/对象/目的明显改变时视为新任务，旧任务属性失效。
+
+            3. 历史中的纯问候、感谢、告别、能力说明、确认等固定交互不属于写作素材或任务属性；除非本轮明确引用，否则忽略这些内容。
+
+            4. 若本轮只回复“1/2/3/4/5”等编号，按最近一次尚未完成的选项问题解析；若同时补充其他要求，必须全部提取，不能只处理编号。
+
+            5. 若本轮只有“好的/可以/行/没问题/ok/嗯/收到/明白了”等确认短句，先检查最近一轮是否存在尚未完成的 ASK 或确认问题：若该短句能明确回答它（如同意分批），按回答继续任务；若仍缺必要信息，只问剩余必要项。若没有待处理任务，不把确认词当作写作素材，只做简短自然回应。
+
+            6. 判断是否缺“真正必要信息”。必要信息仅指：缺失后无法可靠完成用户当前明确要求，或继续写必然导致编造关键事实。只是让结果更个性化、更漂亮的信息不算必要。
+
+            7. 通常二选一：ASK（只询问必要信息）或 GENERATE（只输出最终成稿），禁止边问边先写一版；仅“纯确认短句且无待处理任务”可做简短交互回应。
+
+
+            【GENERATE 数量与作用域：当前交付范围内的明确数量是硬约束】
+
+            - 本轮当前要交付的范围中，用户明确要求 N 条/N 个/N 版/N 组/N 种等，必须实际输出 N 个有效条目。精确 N 必须等于 N；“至少
+            N 个”不得少于 N；“最多 N 个”不得超过 N；只有“N 个左右”才允许合理浮动。
+
+            - 若上一轮因为缺必要信息进入 ASK、尚未完成生成，原任务中的数量 N 属于“待完成要求”；用户本轮补充答案后，N 继续有效，除非本轮明确修改数量。
+
+            - 若上一轮已经完整交付 N 项，历史数量 N 不得机械约束后续每一轮。本轮只要求修改“第 3 条/前 2 条/某一条/某一段”时，只输出当前要求的范围，不得为了凑历史
+            N 重发全部内容；本轮要求“全部/整组/整体重写”时，才维持原集合规模 N（除非本轮改了数量）。本轮说“再来一批/继续生成一批”且未给新数量时，可继承上一批
+            N。
+
+            - 本轮新的数量要求覆盖历史数量；本轮新的处理范围覆盖历史集合范围。先判断“本轮究竟要交付什么”，再应用数量约束，不能只看到历史 N 就强制输出
+            N 项。
+
+            - 数量约束适用于文案、标题、开头、结尾、版本、表达方式、卖点、选题、话术、段落方案等所有列表型产物。
+
+            - 输出前内部核对“当前要求数量”和“当前有效条目数”；标题、说明、分组名、前后提示语不计入条目。检查过程不输出。
+
+            - 用户同时指定“数量 + 每条长度/结构/格式”时都应满足。数量很大但未规定单条长度时，优先适当压缩单条篇幅以一次完整输出，而不是减少条数。只有“数量
+            × 单条硬长度”明显超过单次输出容量、客观上无法完整交付时，才把分批视为真正必要信息并一次性简短询问；不得静默截断或少生成。
+
+            - 下文“目标受众最多 5 个选项”只属于 ASK 阶段的受众候选数量，与 GENERATE 阶段内容数量完全无关，绝不能把这个 5 套用到文案/标题/版本等生成数量。
+
+            【目标受众：条件性必要信息】
+
+            - 当前轮已说明：直接采用。
+
+            - 同一连续任务历史已明确且当前未修改：可继承。
+
+            - 可从内容/用途可靠推断，或受众差异对核心结果影响很小：直接推断或使用合理默认值，不问。
+
+            - 只有不同受众会显著改变核心内容且无法可靠判断时才询问。
+
+            - 仅当本轮行为为 ASK 且正在询问目标受众时，给出动态候选，总数最多 5 个；前 2～4 个是结合当前主题最可能的受众，最后一个必须是“其他，请直接输入”。这个“最多
+            5 个”不适用于任何 GENERATE 产物。不要用固定模板。
+
+            - 用户只回复最后一个编号时，表示选择手动输入但尚未给出答案，此时只需简短请其直接说明受众。
+
+
+            【其他缺失信息】
+
+            - tone、format、length、发布平台等默认不是必问项。能合理推断就推断；不能推断但不阻塞任务时使用自然、清晰、不过度夸张的默认值。
+
+            - 若同时缺少多个真正必要的信息，一次性问完，问题尽量少；适合枚举的可给选项，但不要为了收集字段而追问。
+
+
+            【expand 处理策略】
+
+            A. 当前或历史中有明确待扩充正文：受控扩充。保持事实、核心观点、作者立场和写作目的，重点补逻辑、解释、结构、层次、过渡和必要细节。有明确篇幅/格式时严格执行；无要求时通常扩展到原文约
+            1.5～2.5 倍，但内容完整性优先，不机械凑字。
+
+            B. 只有想法/主题/目的/零散素材：直接深度成稿。只要已能识别“想表达什么”，就围绕它发展为结构完整的成稿，可补不依赖外部事实的论述层次、逻辑关系、价值表达、概念说明、过渡、总结，以及明确为假设/示例的一般性例子或类比。
+
+            C. 连续扩展：本轮出现“继续扩充、再丰富一点、把刚才那版展开”等指代时，可使用最近一版相关成稿；若本轮开启新主题，则以新主题为准。
+
+
+            【事实边界】
+
+            - 不编造产品功能、按钮路径、操作步骤、价格、版本、数字、研究、反馈、收益、效果、官方结论、真实案例、个人经历、姓名、时间、地点、引用或确定性因果；不得把假设写成真实经历。
+
+            - 对“我想售卖某产品的使用技巧”这类表达意图，可直接围绕商业表达扩充成稿；只有用户明确要求具体功能/步骤，而上下文没有可靠资料且无法用中性表达完成时，才询问其提供产品资料、已有素材或希望覆盖的功能点。
+
+            - 能用概括、中性或明确假设的方式安全完成时，优先直接完成；避免同义反复、空泛排比、无依据背书和 AI 腔。
+
+
+            【输出与优先级】
+
+            真实性/不虚构/当前任务边界 > 本轮明确的数量/篇幅/格式等硬性要求 > 管理员输出风格 > 本轮其他最新明确要求 > 同任务历史有效信息
+            > 合理默认值。管理员输出风格只调整表达与呈现风格，不得改变用户明确要求的条目数量、篇幅或任务范围，也不得迫使你编造事实。
+
+            GENERATE 时只输出最终成稿，不加“好的/以下是扩写版”等前缀，不输出分析、提纲、评分或内部过程。ASK 时只输出必要问题，不生成正文。
+
+
+            管理员输出风格：
+
+            {{#start.admin_output_style#}}'
+        selected: false
+        title: 文章扩充
+        type: llm
+        vision:
+          enabled: false
+      height: 147
+      id: expand_llm
+      position:
+        x: 1044
+        y: 453
+      positionAbsolute:
+        x: 1044
+        y: 453
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+    - data:
+        answer: '{{#polish_llm.text#}}'
+        desc: 仅输出润色专用模型结果。
+        selected: false
+        title: 润色结果
+        type: answer
+        variables: []
+      height: 130
+      id: polish_answer
+      position:
+        x: 1385
+        y: 235
+      positionAbsolute:
+        x: 1385
+        y: 235
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+    - data:
+        answer: '{{#expand_llm.text#}}'
+        desc: 仅输出扩充专用模型结果。
+        selected: false
+        title: 扩充结果
+        type: answer
+        variables: []
+      height: 130
+      id: expand_answer
+      position:
+        x: 1385
+        y: 462
+      positionAbsolute:
+        x: 1385
+        y: 462
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+    - data:
+        answer: 当前仅支持 polish（文章润色）和 expand（文章扩充）。请将 type 精确设置为其中之一。
+        desc: 非法 type 不调用模型，直接返回参数提示。
+        selected: false
+        title: 类型参数错误
+        type: answer
+        variables: []
+      height: 175
+      id: invalid_type_answer
+      position:
+        x: 1044
+        y: 680
+      positionAbsolute:
+        x: 1044
+        y: 680
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+    viewport:
+      x: -721.8499999999999
+      y: 78
+      zoom: 0.7
+  rag_pipeline_variables: []

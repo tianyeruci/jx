@@ -109,10 +109,7 @@ def _scalar(value: Any) -> Any:
 
 
 def _row_dict(row: Any) -> dict[str, Any]:
-    return {
-        column.name: _scalar(getattr(row, column.name))
-        for column in row.__table__.columns
-    }
+    return {column.name: _scalar(getattr(row, column.name)) for column in row.__table__.columns}
 
 
 def _remote_metadata(document: dict[str, Any]) -> dict[str, str]:
@@ -183,9 +180,11 @@ def _redis_exclusivity_guard() -> dict[str, Any]:
     dify_db = os.getenv("DIFY_REDIS_DB", "")
     if dify_url:
         parsed_dify = urlsplit(dify_url)
-        if parsed_dify.hostname == redis_url.hostname and (
-            parsed_dify.port or 6379
-        ) == (redis_url.port or 6379) and (parsed_dify.path.lstrip("/") or "0") == redis_db:
+        if (
+            parsed_dify.hostname == redis_url.hostname
+            and (parsed_dify.port or 6379) == (redis_url.port or 6379)
+            and (parsed_dify.path.lstrip("/") or "0") == redis_db
+        ):
             raise RuntimeError("Redis DB 5 is not exclusive: DIFY_REDIS_URL points to it")
     if dify_db == redis_db:
         raise RuntimeError("Redis DB 5 is not exclusive: DIFY_REDIS_DB points to it")
@@ -238,9 +237,7 @@ def _identifier_summary(values: Any) -> dict[str, Any]:
 def _dify_id_sets() -> dict[str, set[str]]:
     return {
         code: {
-            str(document.get("id") or "")
-            for document in entries
-            if str(document.get("id") or "")
+            str(document.get("id") or "") for document in entries if str(document.get("id") or "")
         }
         for code, entries in _dify_documents().items()
     }
@@ -294,8 +291,7 @@ def snapshot(output: Path) -> dict[str, Any]:
             "catalog": _catalog_summary(session),
         }
     payload["dify"] = {
-        code: _identifier_summary(values)
-        for code, values in _dify_id_sets().items()
+        code: _identifier_summary(values) for code, values in _dify_id_sets().items()
     }
     redis_client = _redis_client()
     try:
@@ -320,8 +316,7 @@ def _formal_guard(session) -> None:
         )
     if route_ids != FORMAL_ROUTE_IDS:
         raise RuntimeError(
-            f"正式路线集合不符合预期：count={len(route_ids)} "
-            f"fingerprint={_fingerprint(route_ids)}"
+            f"正式路线集合不符合预期：count={len(route_ids)} fingerprint={_fingerprint(route_ids)}"
         )
 
 
@@ -384,12 +379,8 @@ def _manifest_cleanup_targets(manifest: Path | None) -> dict[str, list[str]]:
         values = raw.get(key) or []
         if not isinstance(values, list):
             raise ValueError(f"manifest.cleanup_targets.{key} must be a list")
-        result[key] = sorted(
-            {str(item) for item in values if str(item).strip()}
-        )
-    if any(
-        not key.startswith("ai:") for key in result["redis_keys"]
-    ):
+        result[key] = sorted({str(item) for item in values if str(item).strip()})
+    if any(not key.startswith("ai:") for key in result["redis_keys"]):
         raise ValueError("manifest redis_keys may contain only exact ai: keys")
     if set(result["course_ids"]) & FORMAL_COURSE_IDS:
         raise ValueError("manifest contains protected formal course IDs")
@@ -504,9 +495,7 @@ def _legacy_plan_clean_disabled(output: Path, manifest: Path | None = None) -> d
     documents = _dify_documents()
     manifest_ids = _manifest_document_ids(manifest)
     cleanup_targets = _manifest_cleanup_targets(manifest)
-    candidates, reasons, preserved_unknown = _planned_document_candidates(
-        documents, manifest_ids
-    )
+    candidates, reasons, preserved_unknown = _planned_document_candidates(documents, manifest_ids)
     basis = _plan_basis(configuration, counts, documents)
     plan = {
         "plan_version": 2,
@@ -526,10 +515,7 @@ def _legacy_plan_clean_disabled(output: Path, manifest: Path | None = None) -> d
         "preserved_unknown_document_ids": preserved_unknown,
         "manifest_fingerprint": _fingerprint(
             {
-                "dify": {
-                    code: sorted(values)
-                    for code, values in manifest_ids.items()
-                },
+                "dify": {code: sorted(values) for code, values in manifest_ids.items()},
                 "cleanup_targets": cleanup_targets,
             }
         ),
@@ -542,7 +528,9 @@ def _legacy_plan_clean_disabled(output: Path, manifest: Path | None = None) -> d
     return plan
 
 
-def _legacy_verified_clean_plan_disabled(plan_path: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, list[dict[str, Any]]]]:
+def _legacy_verified_clean_plan_disabled(
+    plan_path: Path,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     if plan.get("plan_version") != 2 or not plan.get("plan_fingerprint"):
         raise RuntimeError("clean requires a versioned plan-clean output")
@@ -597,9 +585,7 @@ def _legacy_clean_disabled(output: Path, plan_path: Path) -> dict[str, Any]:
         current_batch_ids = (
             set(
                 validation_session.scalars(
-                    select(CleaningBatch.id).where(
-                        CleaningBatch.id.in_(batch_ids)
-                    )
+                    select(CleaningBatch.id).where(CleaningBatch.id.in_(batch_ids))
                 )
             )
             if batch_ids
@@ -608,9 +594,7 @@ def _legacy_clean_disabled(output: Path, plan_path: Path) -> dict[str, Any]:
         current_course_ids = (
             set(
                 validation_session.scalars(
-                    select(Course.course_id).where(
-                        Course.course_id.in_(extra_course_ids)
-                    )
+                    select(Course.course_id).where(Course.course_id.in_(extra_course_ids))
                 )
             )
             if extra_course_ids
@@ -630,9 +614,7 @@ def _legacy_clean_disabled(output: Path, plan_path: Path) -> dict[str, Any]:
         current_direction_codes = (
             set(
                 validation_session.scalars(
-                    select(CourseDirection.code).where(
-                        CourseDirection.code.in_(direction_codes)
-                    )
+                    select(CourseDirection.code).where(CourseDirection.code.in_(direction_codes))
                 )
             )
             if direction_codes
@@ -653,31 +635,17 @@ def _legacy_clean_disabled(output: Path, plan_path: Path) -> dict[str, Any]:
         before_counts = basis["counts"]
         if extra_route_ids:
             session.execute(
-                delete(LearningRoute).where(
-                    LearningRoute.route_id.in_(extra_route_ids)
-                )
+                delete(LearningRoute).where(LearningRoute.route_id.in_(extra_route_ids))
             )
         if extra_course_ids:
-            session.execute(
-                delete(Course).where(Course.course_id.in_(extra_course_ids))
-            )
+            session.execute(delete(Course).where(Course.course_id.in_(extra_course_ids)))
         if direction_codes:
             session.execute(
-                delete(CourseDirection).where(
-                    CourseDirection.code.in_(direction_codes)
-                )
+                delete(CourseDirection).where(CourseDirection.code.in_(direction_codes))
             )
         if batch_ids:
-            session.execute(
-                delete(SystemEventLog).where(
-                    SystemEventLog.resource_id.in_(batch_ids)
-                )
-            )
-            session.execute(
-                delete(CleaningBatch).where(
-                    CleaningBatch.id.in_(batch_ids)
-                )
-            )
+            session.execute(delete(SystemEventLog).where(SystemEventLog.resource_id.in_(batch_ids)))
+            session.execute(delete(CleaningBatch).where(CleaningBatch.id.in_(batch_ids)))
         session.commit()
         _formal_guard(session)
         after_counts = _counts(session)
@@ -685,9 +653,7 @@ def _legacy_clean_disabled(output: Path, plan_path: Path) -> dict[str, Any]:
     redis_client = _redis_client()
     try:
         redis_inventory_before = _redis_key_inventory(redis_client)
-        redis_deleted = (
-            int(redis_client.delete(*redis_keys)) if redis_keys else 0
-        )
+        redis_deleted = int(redis_client.delete(*redis_keys)) if redis_keys else 0
     finally:
         redis_client.close()
 
@@ -709,14 +675,10 @@ def _legacy_clean_disabled(output: Path, plan_path: Path) -> dict[str, Any]:
         "cleaned_at": datetime.now(timezone.utc).isoformat(),
         "before_counts": before_counts,
         "after_counts": after_counts,
-        "dify_counts_before": {
-            code: len(items) for code, items in before_documents.items()
-        },
+        "dify_counts_before": {code: len(items) for code, items in before_documents.items()},
         "dify_candidate_ids": candidates,
         "dify_deleted_ids": deleted_documents,
-        "dify_counts_after": {
-            code: len(items) for code, items in after_documents.items()
-        },
+        "dify_counts_after": {code: len(items) for code, items in after_documents.items()},
         "redis_inventory_before": redis_inventory_before,
         "redis_inventory_after": redis_inventory_after,
         "redis_db": _redis_db(),
@@ -760,12 +722,9 @@ def _legacy_safe_summary_disabled(payload: dict[str, Any]) -> dict[str, Any]:
             "extra_course_ids": sorted(course_ids - FORMAL_COURSE_IDS),
             "extra_route_ids": sorted(route_ids - FORMAL_ROUTE_IDS),
             "dify_counts": {
-                code: len(items)
-                for code, items in payload.get("dify_documents", {}).items()
+                code: len(items) for code, items in payload.get("dify_documents", {}).items()
             },
-            "redis_key_count": int(
-                (payload.get("redis_inventory") or {}).get("count", 0)
-            ),
+            "redis_key_count": int((payload.get("redis_inventory") or {}).get("count", 0)),
             "output_fingerprint": _fingerprint(payload),
         }
     return payload
@@ -886,22 +845,15 @@ def _load_v3_manifest(path: Path) -> dict[str, Any]:
     if set(dify_documents["general"]) & set(dify_documents["course"]):
         raise RuntimeError("cleanup manifest maps one Dify ID to both datasets")
     raw_targets = payload.get("targets") or {}
-    targets = {
-        key: _unique_strings(raw_targets.get(key, []), field=key)
-        for key in _TARGET_KEYS
-    }
+    targets = {key: _unique_strings(raw_targets.get(key, []), field=key) for key in _TARGET_KEYS}
     for batch_id in targets["cleaning_batch_ids"]:
         try:
             uuid.UUID(batch_id)
         except ValueError as error:
             raise RuntimeError("cleanup manifest has an invalid batch ID") from error
     allowed_redis_keys = {
-        f"ai:cleaning:batch:{batch_id}"
-        for batch_id in targets["cleaning_batch_ids"]
-    } | {
-        f"ai:cleaning:batch:{batch_id}:files"
-        for batch_id in targets["cleaning_batch_ids"]
-    }
+        f"ai:cleaning:batch:{batch_id}" for batch_id in targets["cleaning_batch_ids"]
+    } | {f"ai:cleaning:batch:{batch_id}:files" for batch_id in targets["cleaning_batch_ids"]}
     if set(targets["redis_keys"]) - allowed_redis_keys:
         raise RuntimeError("cleanup manifest redis keys are not exact batch keys")
     if any(
@@ -946,7 +898,9 @@ def _capture_test_ui_catalog_baseline(*, output: Path, run_id: str) -> dict[str,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "build_version": get_settings().build_version,
             "course_ids": sorted(str(value) for value in session.scalars(select(Course.course_id))),
-            "route_ids": sorted(str(value) for value in session.scalars(select(LearningRoute.route_id))),
+            "route_ids": sorted(
+                str(value) for value in session.scalars(select(LearningRoute.route_id))
+            ),
             "direction_codes": (
                 sorted(str(value) for value in session.scalars(select(CourseDirection.code)))
                 if CourseDirection is not None
@@ -1066,9 +1020,7 @@ def _capture_test_ui_manifest(
         )
         file_ids = [str(row.id) for row in files]
         documents = list(
-            session.scalars(
-                select(CleaningDocument).where(CleaningDocument.file_id.in_(file_ids))
-            )
+            session.scalars(select(CleaningDocument).where(CleaningDocument.file_id.in_(file_ids)))
             if file_ids
             else []
         )
@@ -1195,9 +1147,7 @@ def _capture_incident_manifest(
         )
         file_ids = [str(row.id) for row in files]
         documents = list(
-            session.scalars(
-                select(CleaningDocument).where(CleaningDocument.file_id.in_(file_ids))
-            )
+            session.scalars(select(CleaningDocument).where(CleaningDocument.file_id.in_(file_ids)))
             if file_ids
             else []
         )
@@ -1216,9 +1166,7 @@ def _capture_incident_manifest(
                     "incident cleanup refuses a catalog that is not fully owned by the exact batches"
                 )
         if current_catalog["direction_codes"] - catalog_targets["direction_codes"]:
-            raise RuntimeError(
-                "incident cleanup refuses directions not owned by the exact batches"
-            )
+            raise RuntimeError("incident cleanup refuses directions not owned by the exact batches")
         # Cleaning-document `direction` is a catalog field, while the optional
         # CourseDirection table uses a separate code namespace.  Delete only
         # rows that actually exist in that table after proving none are outside
@@ -1329,10 +1277,7 @@ def _preflight_v3(manifest: dict[str, Any], *, allow_journalled: bool) -> dict[s
     return {
         "counts": counts,
         "non_target_catalog": non_target_catalog,
-        "dify": {
-            code: _identifier_summary(document_ids[code])
-            for code in ("general", "course")
-        },
+        "dify": {code: _identifier_summary(document_ids[code]) for code in ("general", "course")},
     }
 
 
@@ -1358,8 +1303,7 @@ def plan_clean_v3(output: Path, manifest_path: Path) -> dict[str, Any]:
         "manifest_fingerprint": plan["manifest_fingerprint"],
         "target_counts": {
             "dify": {
-                code: len(plan["targets"]["dify_documents"][code])
-                for code in ("general", "course")
+                code: len(plan["targets"]["dify_documents"][code]) for code in ("general", "course")
             },
             **{key: len(plan["targets"][key]) for key in _TARGET_KEYS},
         },
@@ -1395,8 +1339,7 @@ def _load_journalled_ids(run_id: str) -> dict[str, set[str]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     completed = payload.get("deleted_dify_documents") or {}
     return {
-        code: {str(value) for value in completed.get(code) or []}
-        for code in ("general", "course")
+        code: {str(value) for value in completed.get(code) or []} for code in ("general", "course")
     }
 
 
@@ -1406,9 +1349,7 @@ def _record_journal(run_id: str, deleted: dict[str, set[str]]) -> None:
         {
             "schema_version": 1,
             "run_id": run_id,
-            "deleted_dify_documents": {
-                code: sorted(values) for code, values in deleted.items()
-            },
+            "deleted_dify_documents": {code: sorted(values) for code, values in deleted.items()},
         },
     )
 
@@ -1448,7 +1389,10 @@ def _delete_exact_chat_users(user_ids: list[str]) -> int:
     client = httpx.Client(
         base_url="http://api:8000",
         timeout=httpx.Timeout(30.0, connect=10.0),
-        headers={"X-Internal-Token": settings.internal_api_token, "X-Admin-Token": settings.admin_api_token},
+        headers={
+            "X-Internal-Token": settings.internal_api_token,
+            "X-Admin-Token": settings.admin_api_token,
+        },
     )
     try:
         for user_id in user_ids:
@@ -1474,11 +1418,15 @@ def clean_v3(output: Path, plan_path: Path, private_result: Path) -> dict[str, A
     targets = manifest["targets"]
     with SessionLocal() as session:
         if targets["route_ids"]:
-            session.execute(delete(LearningRoute).where(LearningRoute.route_id.in_(targets["route_ids"])))
+            session.execute(
+                delete(LearningRoute).where(LearningRoute.route_id.in_(targets["route_ids"]))
+            )
         if targets["course_ids"]:
             session.execute(delete(Course).where(Course.course_id.in_(targets["course_ids"])))
         if targets["direction_codes"] and CourseDirection is not None:
-            session.execute(delete(CourseDirection).where(CourseDirection.code.in_(targets["direction_codes"])))
+            session.execute(
+                delete(CourseDirection).where(CourseDirection.code.in_(targets["direction_codes"]))
+            )
         if targets["cleaning_batch_ids"]:
             # PDF conversion events are scoped to the exact CleaningFile ID,
             # while batch-level events use the CleaningBatch ID.  Capture the
@@ -1494,11 +1442,11 @@ def clean_v3(output: Path, plan_path: Path, private_result: Path) -> dict[str, A
             ]
             event_resource_ids = [*targets["cleaning_batch_ids"], *file_ids]
             session.execute(
-                delete(SystemEventLog).where(
-                    SystemEventLog.resource_id.in_(event_resource_ids)
-                )
+                delete(SystemEventLog).where(SystemEventLog.resource_id.in_(event_resource_ids))
             )
-            session.execute(delete(CleaningBatch).where(CleaningBatch.id.in_(targets["cleaning_batch_ids"])))
+            session.execute(
+                delete(CleaningBatch).where(CleaningBatch.id.in_(targets["cleaning_batch_ids"]))
+            )
         non_target_after = _catalog_summary(
             session,
             excluded_course_ids=set(targets["course_ids"]),
@@ -1512,7 +1460,9 @@ def clean_v3(output: Path, plan_path: Path, private_result: Path) -> dict[str, A
         rebuild_snapshot(session)
     redis_client = _redis_client()
     try:
-        deleted_redis = int(redis_client.delete(*targets["redis_keys"])) if targets["redis_keys"] else 0
+        deleted_redis = (
+            int(redis_client.delete(*targets["redis_keys"])) if targets["redis_keys"] else 0
+        )
     finally:
         redis_client.close()
     deleted_chat_users = _delete_exact_chat_users(targets["chat_user_ids"])
@@ -1539,7 +1489,9 @@ def clean_v3(output: Path, plan_path: Path, private_result: Path) -> dict[str, A
         "non_target_catalog": preflight["non_target_catalog"],
     }
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    output.write_text(
+        json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+    )
     return result
 
 

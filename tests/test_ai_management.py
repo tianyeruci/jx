@@ -881,7 +881,7 @@ def test_cleaning_batch_upload_reports_each_file(
     }
 
 
-def test_preflight_duplicate_has_an_explicit_excluded_cleaning_item(service_db):
+def test_preflight_duplicate_has_an_explicit_excluded_cleaning_item_for_active_source(service_db):
     from ai_management import cleaning as cleaning_module
 
     with service_db() as session:
@@ -902,8 +902,8 @@ def test_preflight_duplicate_has_an_explicit_excluded_cleaning_item(service_db):
                 extension=".docx",
                 source_sha256="a" * 64,
                 size_bytes=1,
-                status="succeeded",
-                stage="completed",
+                status="processing",
+                stage="cleaning",
             )
         )
         batch = CleaningBatch(
@@ -946,7 +946,7 @@ def test_preflight_duplicate_has_an_explicit_excluded_cleaning_item(service_db):
         assert item.metadata_json["cleaning_spec_revision"] == "commercial-cleaning-v3"
 
 
-def test_preflight_duplicate_blocks_an_older_cleaning_spec_revision(service_db):
+def test_preflight_duplicate_blocks_active_source_across_cleaning_revisions(service_db):
     from ai_management import cleaning as cleaning_module
 
     with service_db() as session:
@@ -966,8 +966,8 @@ def test_preflight_duplicate_blocks_an_older_cleaning_spec_revision(service_db):
                 extension=".docx",
                 source_sha256="b" * 64,
                 size_bytes=1,
-                status="succeeded",
-                stage="completed",
+                status="processing",
+                stage="cleaning",
             )
         )
         batch = CleaningBatch(
@@ -998,6 +998,61 @@ def test_preflight_duplicate_blocks_an_older_cleaning_spec_revision(service_db):
 
         assert row.status == "excluded"
         assert len(row.documents) == 1
+
+
+def test_preflight_historical_success_does_not_claim_remote_is_still_live(service_db):
+    from ai_management import cleaning as cleaning_module
+
+    with service_db() as session:
+        existing_batch = CleaningBatch(
+            strategy_code="personal_business_consultation",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            spec_revision="commercial-cleaning-v3",
+        )
+        session.add(existing_batch)
+        session.flush()
+        session.add(
+            CleaningFile(
+                batch_id=existing_batch.id,
+                original_filename="historical.docx",
+                storage_filename="historical.docx",
+                extension=".docx",
+                source_sha256="c" * 64,
+                size_bytes=1,
+                status="succeeded",
+                stage="completed",
+            )
+        )
+        batch = CleaningBatch(
+            strategy_code="personal_business_consultation",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            spec_revision="commercial-cleaning-v3",
+        )
+        session.add(batch)
+        session.flush()
+        row = CleaningFile(
+            batch_id=batch.id,
+            original_filename="historical.docx",
+            storage_filename="reupload.docx",
+            extension=".docx",
+            source_sha256="c" * 64,
+            size_bytes=1,
+            status="pending",
+            stage="upload",
+        )
+        session.add(row)
+        session.flush()
+
+        cleaning_module._preflight_local_duplicates(
+            session=session,
+            knowledge_base_code="general",
+            rows=[row],
+        )
+
+        assert row.status == "pending"
+        assert row.documents == []
 
 
 def test_admin_knowledge_batch_status_and_retry_handle_datetime_cache(
@@ -1036,7 +1091,7 @@ def test_admin_knowledge_batch_status_and_retry_handle_datetime_cache(
             size_bytes=8,
             status="failed",
             stage="cleaning",
-            error_code="CLEANING_FAILED",
+            error_code="DIFY_PUBLICATION_FAILED",
             error_message="boom",
         )
         session.add(row)
@@ -1413,7 +1468,7 @@ def test_admin_knowledge_item_endpoints(service_db, monkeypatch):
             document_key="doc-key-1",
             status="failed",
             stage="failed",
-            error_code="CLEANING_FAILED",
+            error_code="DIFY_PUBLICATION_FAILED",
             error_message="boom",
             retryable=True,
             cleaned_markdown="# 如何做定位\n\n正文",
@@ -1591,6 +1646,151 @@ def test_failed_item_export_is_paged_and_keeps_failure_reason(service_db):
     assert filtered.json()["total"] == 1
     assert "MODEL_CONTRACT_INVALID" in exported.text
     assert "批量帖子.md" in exported.text
+
+
+def test_source_stage_failure_cannot_retry_item_publication_but_file_replays_from_source(
+    service_db, tmp_path, monkeypatch
+):
+    from ai_management import cleaning
+    from ai_management.errors import ServiceError
+
+    class TestSettings:
+        upload_root = tmp_path
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="book",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="completed",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = CleaningFile(
+            batch_id=batch.id,
+            original_filename="scan.pdf",
+            storage_filename="scan.pdf",
+            extension=".pdf",
+            source_sha256="7" * 64,
+            size_bytes=100,
+            status="failed",
+            outcome="failed",
+            stage="failed",
+        )
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="OCR 失败条目",
+            dify_document_name="scan.md",
+            document_key="scan-1",
+            status="failed",
+            stage="failed",
+            error_code="OCR_EXECUTION_FAILED",
+            error_message="OCR failed",
+            # Historical rows used retryable=True for source/OCR failure.  A
+            # normal retry must still fail closed and replay from source.
+            retryable=True,
+            cleaned_markdown="# 不能直接发布的残留正文",
+            metadata_json={"record_type": "book"},
+            chunking_json={},
+            audit_json={},
+        )
+        session.add(document)
+        session.commit()
+        batch_id, file_id, item_id = batch.id, file_row.id, document.id
+
+        with pytest.raises(ServiceError) as exc_info:
+            cleaning.retry_cleaning_item(batch_id, file_id, item_id, session)
+        assert exc_info.value.status_code == 409
+
+    source_path = tmp_path / batch_id / "scan.pdf"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_bytes(b"%PDF-test")
+    source_queue: list[tuple[str, str]] = []
+    publication_queue: list[tuple[str, str]] = []
+    monkeypatch.setattr(cleaning, "get_settings", lambda: TestSettings())
+    monkeypatch.setattr(
+        cleaning,
+        "_enqueue_cleaning_file",
+        lambda queued_file_id, filename: source_queue.append((queued_file_id, filename)),
+    )
+    monkeypatch.setattr(
+        cleaning,
+        "_enqueue_cleaning_document",
+        lambda queued_item_id, filename: publication_queue.append((queued_item_id, filename)),
+    )
+    with service_db() as session:
+        assert cleaning.retry_cleaning_file(batch_id, file_id, session) == {
+            "file_id": file_id,
+            "status": "pending",
+        }
+
+    assert source_queue == [(file_id, "scan.pdf")]
+    assert publication_queue == []
+
+
+@pytest.mark.parametrize("error_code", ["OCR_BACKEND_UNAVAILABLE", "OCR_PAGE_COVERAGE_MISMATCH"])
+def test_historical_source_failure_retry_requires_source_file(
+    service_db, tmp_path, monkeypatch, error_code
+):
+    from ai_management import cleaning
+    from ai_management.errors import ServiceError
+
+    class TestSettings:
+        upload_root = tmp_path
+
+    with service_db() as session:
+        batch = CleaningBatch(
+            strategy_code="book",
+            knowledge_base_code="general",
+            upload_mode="cleaned",
+            status="completed",
+        )
+        session.add(batch)
+        session.flush()
+        file_row = CleaningFile(
+            batch_id=batch.id,
+            original_filename="history.pdf",
+            storage_filename="history.pdf",
+            extension=".pdf",
+            source_sha256="8" * 64,
+            size_bytes=100,
+            status="failed",
+            outcome="failed",
+            stage="failed",
+        )
+        session.add(file_row)
+        session.flush()
+        document = CleaningDocument(
+            file_id=file_row.id,
+            sequence=1,
+            title="历史源阶段失败",
+            dify_document_name="history.md",
+            document_key="history-1",
+            status="failed",
+            stage="failed",
+            error_code=error_code,
+            error_message="OCR failed",
+            retryable=True,
+            cleaned_markdown="# 不能直接发布的历史残留正文",
+            metadata_json={"record_type": "book"},
+            chunking_json={},
+            audit_json={},
+        )
+        session.add(document)
+        session.commit()
+        batch_id, file_id, item_id = batch.id, file_row.id, document.id
+
+        with pytest.raises(ServiceError, match="不能直接发布") as exc_info:
+            cleaning.retry_cleaning_item(batch_id, file_id, item_id, session)
+        assert exc_info.value.status_code == 409
+
+        monkeypatch.setattr(cleaning, "get_settings", lambda: TestSettings())
+        with pytest.raises(ServiceError) as exc_info:
+            cleaning.retry_cleaning_file(batch_id, file_id, session)
+        assert exc_info.value.status_code == 410
 
 
 def test_review_required_file_retry_is_rejected(service_db):
@@ -2169,3 +2369,17 @@ def test_test_page_exposes_all_documented_management_entry_points():
         "/internal/v1/admin/pdf-conversion-issues",
     )
     assert all(fragment in source for fragment in required_path_fragments)
+
+
+def test_duplicate_verification_failure_is_a_publication_only_retry():
+    from types import SimpleNamespace
+
+    from ai_management.cleaning import _is_publication_retryable
+
+    assert _is_publication_retryable(
+        SimpleNamespace(
+            status="failed",
+            retryable=True,
+            error_code="DIFY_DUPLICATE_VERIFICATION_FAILED",
+        )
+    )

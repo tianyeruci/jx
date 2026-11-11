@@ -33,7 +33,9 @@ def main() -> None:
         )
         messages.raise_for_status()
         message_payload = messages.json()
-        message_items = message_payload.get("items") if isinstance(message_payload, dict) else message_payload
+        message_items = (
+            message_payload.get("items") if isinstance(message_payload, dict) else message_payload
+        )
         message_items = message_items or []
         like = client.post(
             f"{base_url}/internal/v1/business/messages/{message_id}/feedback",
@@ -77,7 +79,11 @@ def main() -> None:
         )
         remaining.raise_for_status()
         remaining_payload = remaining.json()
-        remaining_items = remaining_payload.get("items") if isinstance(remaining_payload, dict) else remaining_payload
+        remaining_items = (
+            remaining_payload.get("items")
+            if isinstance(remaining_payload, dict)
+            else remaining_payload
+        )
         remaining_items = remaining_items or []
         print(
             json.dumps(
@@ -90,13 +96,11 @@ def main() -> None:
                     "redirect_status": redirect.status_code,
                     "redirect_location": redirect.headers.get("location"),
                     "course_ai_001_click_stat_present": any(
-                        row.get("course_id") == "course_ai_001"
-                        for row in click_items
+                        row.get("course_id") == "course_ai_001" for row in click_items
                     ),
                     "deleted": deleted.json().get("deleted"),
                     "conversation_absent_after_delete": all(
-                        row.get("conversation_id") != conversation_id
-                        for row in remaining_items
+                        row.get("conversation_id") != conversation_id for row in remaining_items
                     ),
                 },
                 ensure_ascii=False,

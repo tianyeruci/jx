@@ -29,9 +29,7 @@ ALLOWED_COLUMNS = frozenset(
         "前置条件",
     }
 )
-_TRACKING_QUERY_KEYS = frozenset(
-    {"spm", "from", "source", "ref", "share", "share_id"}
-)
+_TRACKING_QUERY_KEYS = frozenset({"spm", "from", "source", "ref", "share", "share_id"})
 _ORDER_PREFIX_RE = re.compile(r"^\s*([1-9]\d*)\s*[/／]\s*")
 # A row such as “【某合集】1讲（2小时）” is a collection label copied into
 # the link column, not a better course title.  Keep this deliberately narrow:
@@ -57,8 +55,7 @@ def normalize_course_url(value: str) -> str:
     query = [
         (key, item)
         for key, item in parse_qsl(parsed.query, keep_blank_values=True)
-        if not key.lower().startswith("utm_")
-        and key.lower() not in _TRACKING_QUERY_KEYS
+        if not key.lower().startswith("utm_") and key.lower() not in _TRACKING_QUERY_KEYS
     ]
     path = re.sub(r"/{2,}", "/", parsed.path or "/")
     if path != "/":
@@ -141,14 +138,10 @@ def _auto_resolve_name_conflict(
     if len(name_candidates) <= 1:
         return name_candidates[0] if name_candidates else "", series_candidates, False
     specific = [
-        candidate
-        for candidate in name_candidates
-        if not _COLLECTION_TITLE_RE.fullmatch(candidate)
+        candidate for candidate in name_candidates if not _COLLECTION_TITLE_RE.fullmatch(candidate)
     ]
     collections = [
-        candidate
-        for candidate in name_candidates
-        if _COLLECTION_TITLE_RE.fullmatch(candidate)
+        candidate for candidate in name_candidates if _COLLECTION_TITLE_RE.fullmatch(candidate)
     ]
     if len(specific) != 1 or not collections:
         return name_candidates[0], series_candidates, False
@@ -271,17 +264,11 @@ def _nonempty_sheets(path: Path) -> list[tuple[str, list[list[Any]]]]:
             has_values = False
             for row_number, row in enumerate(sheet.iter_rows(values_only=True), start=1):
                 if row_number > MAX_CATALOG_ROWS + 1:
-                    raise ValueError(
-                        f"课程目录数据行超过上限：{MAX_CATALOG_ROWS}"
-                    )
+                    raise ValueError(f"课程目录数据行超过上限：{MAX_CATALOG_ROWS}")
                 values = list(row)
                 if len(values) > MAX_CATALOG_COLUMNS:
-                    raise ValueError(
-                        f"课程目录列数超过上限：{MAX_CATALOG_COLUMNS}"
-                    )
-                has_values = has_values or any(
-                    value not in (None, "") for value in values
-                )
+                    raise ValueError(f"课程目录列数超过上限：{MAX_CATALOG_COLUMNS}")
+                has_values = has_values or any(value not in (None, "") for value in values)
                 # Keep the worksheet's bounded row extent for audit counts;
                 # the parser itself still ignores completely empty records.
                 rows.append(values)
@@ -411,11 +398,7 @@ def _legacy_parse_course_route_catalog(
         course_by_url[normalized_url] = course
 
         for field_name in ("课程名称", "阶段", "系列名称", "课程方向"):
-            distinct = {
-                _value(row, field_name)
-                for _, row in members
-                if _value(row, field_name)
-            }
+            distinct = {_value(row, field_name) for _, row in members if _value(row, field_name)}
             if len(distinct) > 1:
                 warnings.append(
                     {
@@ -442,9 +425,7 @@ def _legacy_parse_course_route_catalog(
             route_name = _value(row, "学习路线")
             if not route_name:
                 continue
-            route_members.setdefault(route_name, []).append(
-                (course, row_number, row)
-            )
+            route_members.setdefault(route_name, []).append((course, row_number, row))
             route_order[route_name] = min(
                 route_order.get(
                     route_name,
@@ -457,9 +438,7 @@ def _legacy_parse_course_route_catalog(
                 seen_route_names.add(route_name)
     for course in courses:
         memberships = course_routes.get(course.course_id) or []
-        course.route_name = "；".join(
-            sorted(memberships, key=lambda item: route_order[item])
-        )
+        course.route_name = "；".join(sorted(memberships, key=lambda item: route_order[item]))
 
     routes: list[RouteDraft] = []
     for route_name in sorted(
@@ -512,9 +491,7 @@ def _legacy_parse_course_route_catalog(
             )
             stages.append(
                 {
-                    "stage_id": _stable_id(
-                        "stage", f"{route_name}|{stage_name}|{position}"
-                    ),
+                    "stage_id": _stable_id("stage", f"{route_name}|{stage_name}|{position}"),
                     "name": stage_name,
                     "order": position,
                     "course_ids": [item[0].course_id for item in stage_courses],
@@ -531,11 +508,7 @@ def _legacy_parse_course_route_catalog(
             "",
         )
         direction = next(
-            (
-                _value(row, "课程方向")
-                for _, _, row in members
-                if _value(row, "课程方向")
-            ),
+            (_value(row, "课程方向") for _, _, row in members if _value(row, "课程方向")),
             "",
         )
         routes.append(
@@ -624,15 +597,9 @@ def parse_course_route_catalog(
             current_group = next_group
             group_names[current_group] = name
             parsed_header = _collection_header(name)
-            group_clean_names[current_group] = (
-                parsed_header[0] if parsed_header else name
-            )
-            group_declared_lessons[current_group] = (
-                parsed_header[1] if parsed_header else None
-            )
-            group_total_minutes[current_group] = (
-                parsed_header[2] if parsed_header else None
-            )
+            group_clean_names[current_group] = parsed_header[0] if parsed_header else name
+            group_declared_lessons[current_group] = parsed_header[1] if parsed_header else None
+            group_total_minutes[current_group] = parsed_header[2] if parsed_header else None
             group_routes[current_group] = _value(record, "学习路线")
             group_stages[current_group] = _value(record, "阶段")
             group_header_rows[current_group] = row_number
@@ -774,8 +741,8 @@ def parse_course_route_catalog(
                 ]
             )
         )
-        preferred_name, series_candidates, name_conflict_resolved = (
-            _auto_resolve_name_conflict(name_candidates, series_candidates)
+        preferred_name, series_candidates, name_conflict_resolved = _auto_resolve_name_conflict(
+            name_candidates, series_candidates
         )
         conflicts: list[dict[str, Any]] = []
         if len(name_candidates) > 1 and not name_conflict_resolved:
@@ -828,7 +795,11 @@ def parse_course_route_catalog(
             route_name="",
             series_name=series_candidates[0] if series_candidates else "",
             direction_candidate=next(
-                (_value(item["row"], "课程方向") for item in members if _value(item["row"], "课程方向")),
+                (
+                    _value(item["row"], "课程方向")
+                    for item in members
+                    if _value(item["row"], "课程方向")
+                ),
                 "",
             ),
             description_candidate=next(
@@ -840,15 +811,27 @@ def parse_course_route_catalog(
                 "",
             ),
             audience_candidate=next(
-                (_value(item["row"], "适用人群") for item in members if _value(item["row"], "适用人群")),
+                (
+                    _value(item["row"], "适用人群")
+                    for item in members
+                    if _value(item["row"], "适用人群")
+                ),
                 "",
             ),
             highlights_candidate=next(
-                (_value(item["row"], "课程亮点") for item in members if _value(item["row"], "课程亮点")),
+                (
+                    _value(item["row"], "课程亮点")
+                    for item in members
+                    if _value(item["row"], "课程亮点")
+                ),
                 "",
             ),
             learning_outcomes_candidate=next(
-                (_value(item["row"], "学习目标") for item in members if _value(item["row"], "学习目标")),
+                (
+                    _value(item["row"], "学习目标")
+                    for item in members
+                    if _value(item["row"], "学习目标")
+                ),
                 "",
             ),
             source_rows=[item["row_number"] for item in members],
@@ -899,7 +882,11 @@ def parse_course_route_catalog(
         # inherit another route's collection members; repeated same-scope
         # blocks receive a collision suffix below.
         scope_route = group_routes.get(group_id, "") or next(
-            (_value(item["row"], "学习路线") for item in member_source if _value(item["row"], "学习路线")),
+            (
+                _value(item["row"], "学习路线")
+                for item in member_source
+                if _value(item["row"], "学习路线")
+            ),
             "",
         )
         scope_stage = group_stages.get(group_id, "") or next(
@@ -965,7 +952,10 @@ def parse_course_route_catalog(
             course = course_by_url.get(member["normalized_url"])
             if course is None:
                 continue
-            if course.course_id in collection_by_course and collection_by_course[course.course_id] != collection_id:
+            if (
+                course.course_id in collection_by_course
+                and collection_by_course[course.course_id] != collection_id
+            ):
                 warning = f"课程 {course.course_id} 同时归属多个合集"
                 draft.warnings.append(warning)
                 warnings.append(
@@ -1010,7 +1000,9 @@ def parse_course_route_catalog(
         route_member["course"] = course
         route_members.setdefault(route_name, []).append(route_member)
         route_order[route_name] = min(
-            route_order.get(route_name, _order_value(member["row"], "路线序号", member["order_rank"])),
+            route_order.get(
+                route_name, _order_value(member["row"], "路线序号", member["order_rank"])
+            ),
             _order_value(member["row"], "路线序号", member["order_rank"]),
         )
         course_routes.setdefault(course.course_id, [])
@@ -1076,7 +1068,11 @@ def parse_course_route_catalog(
             "",
         )
         direction = next(
-            (_value(member["row"], "课程方向") for member in members if _value(member["row"], "课程方向")),
+            (
+                _value(member["row"], "课程方向")
+                for member in members
+                if _value(member["row"], "课程方向")
+            ),
             "",
         )
         routes.append(
@@ -1111,15 +1107,10 @@ def parse_course_route_catalog(
             effective_groups=sum(
                 bool(items)
                 for group_id, items in members_by_group.items()
-                if not any(
-                    member.get("collection_entry")
-                    for member in items
-                )
+                if not any(member.get("collection_entry") for member in items)
             ),
             invalid_rows=sum(
-                1
-                for warning in warnings
-                if str(warning.get("code", "")).startswith("invalid_")
+                1 for warning in warnings if str(warning.get("code", "")).startswith("invalid_")
             ),
             warnings=warnings,
         ),

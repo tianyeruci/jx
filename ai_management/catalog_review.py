@@ -47,11 +47,7 @@ def _review_values(document: CleaningDocument) -> list[Any]:
     draft = audit.get("catalog_draft") or {}
     ai = audit.get("ai_candidate") or {}
     kind = str(audit.get("catalog_kind") or "")
-    description = (
-        ai.get("description")
-        if kind == "course"
-        else ai.get("route_target")
-    ) or (
+    description = (ai.get("description") if kind == "course" else ai.get("route_target")) or (
         draft.get("description") if kind == "course" else draft.get("target")
     )
     return [
@@ -68,9 +64,7 @@ def _review_values(document: CleaningDocument) -> list[Any]:
             ensure_ascii=False,
         ),
         json.dumps(
-            ai.get("learning_outcomes")
-            or draft.get("learning_outcomes")
-            or [],
+            ai.get("learning_outcomes") or draft.get("learning_outcomes") or [],
             ensure_ascii=False,
         ),
         json.dumps(draft.get("stages") or [], ensure_ascii=False),
@@ -83,16 +77,24 @@ def _structure_values(document: CleaningDocument) -> list[Any]:
     conflicts = audit.get("structure_conflicts") or []
     candidates = draft.get("name_candidates") or [draft.get("name") or document.title]
     series_candidates = draft.get("series_candidates") or []
-    final_name = "" if any(
-        str(item.get("code")) == "duplicate_link_name_conflict"
-        for item in conflicts
-        if isinstance(item, dict)
-    ) else (draft.get("name") or document.title)
-    final_series = "" if any(
-        str(item.get("code")) == "duplicate_link_series_conflict"
-        for item in conflicts
-        if isinstance(item, dict)
-    ) else (draft.get("series_name") or "")
+    final_name = (
+        ""
+        if any(
+            str(item.get("code")) == "duplicate_link_name_conflict"
+            for item in conflicts
+            if isinstance(item, dict)
+        )
+        else (draft.get("name") or document.title)
+    )
+    final_series = (
+        ""
+        if any(
+            str(item.get("code")) == "duplicate_link_series_conflict"
+            for item in conflicts
+            if isinstance(item, dict)
+        )
+        else (draft.get("series_name") or "")
+    )
     return [
         document.id,
         document.review_revision,
@@ -110,7 +112,8 @@ def _structure_values(document: CleaningDocument) -> list[Any]:
 def _structure_phase(file_row: CleaningFile, documents: list[CleaningDocument]) -> bool:
     return file_row.stage == "catalog_structure_review" or any(
         item.stage == "catalog_structure_review"
-        or item.error_code in {
+        or item.error_code
+        in {
             "CATALOG_STRUCTURE_REVIEW_REQUIRED",
             "CATALOG_STRUCTURE_REVIEW_BLOCKED",
         }
@@ -157,9 +160,7 @@ def export_catalog_review(session, *, batch_id: str, file_id: str) -> bytes:
     sheet.title = "审核"
     sheet.append(headers)
     for document in documents:
-        sheet.append(
-            _structure_values(document) if structure_phase else _review_values(document)
-        )
+        sheet.append(_structure_values(document) if structure_phase else _review_values(document))
     sheet.freeze_panes = "A2"
     last_column = "J" if structure_phase else "K"
     sheet.auto_filter.ref = f"A1:{last_column}{max(2, len(documents) + 1)}"
@@ -199,9 +200,7 @@ def _approved_direction(session, value: str) -> str:
     for direction in directions:
         if normalized == direction.name or normalized in (direction.aliases or []):
             return direction.name
-    code = "direction_" + hashlib.sha256(
-        normalized.casefold().encode("utf-8")
-    ).hexdigest()[:12]
+    code = "direction_" + hashlib.sha256(normalized.casefold().encode("utf-8")).hexdigest()[:12]
     existing = session.get(CourseDirection, code)
     if existing is not None and existing.name != normalized:
         raise ValueError("方向规范名称发生哈希冲突")
@@ -255,9 +254,7 @@ def _import_semantic_review(
             raise ValueError(f"第{row_number}行item_id无效或重复")
         seen.add(item_id)
         draft_before = (document.audit_json or {}).get("catalog_draft") or {}
-        if str(values[3] or "").strip() != str(
-            draft_before.get("name") or document.title
-        ).strip():
+        if str(values[3] or "").strip() != str(draft_before.get("name") or document.title).strip():
             raise ValueError("课程名称必须在结构审核阶段确定，不能在语义审核阶段修改")
         expected_revision = int(values[1] or 0)
         if document.review_revision != expected_revision:

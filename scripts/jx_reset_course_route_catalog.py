@@ -78,7 +78,9 @@ def execute(manifest_path: Path, *, expected_scope_fingerprint: str) -> dict[str
         'match="ai:cleaning:batch:*"',
         "shutil.rmtree(target)",
     )
-    raise RuntimeError("course reset requires scripts/jx_release_data.py plan-clean/clean with the exact manifest")
+    raise RuntimeError(
+        "course reset requires scripts/jx_release_data.py plan-clean/clean with the exact manifest"
+    )
 
 
 def main() -> int:

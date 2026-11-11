@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import uuid
 from contextlib import ExitStack
 from dataclasses import asdict
@@ -10,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
@@ -18,6 +20,7 @@ from knowledge_cleaner.dify import DifyKnowledgeClient
 from ...activity_cleaning import EVENT_METADATA_FIELDS, ActivityCleaningError
 from ...cache import cache
 from ...cleaning import (
+    CONTENT_MODEL_STRATEGIES,
     DISABLED_COURSE_STRATEGIES,
     STRATEGY_REGISTRY,
     ChunkingConfig,
@@ -61,6 +64,10 @@ class DuplicateActivityEventError(ValueError):
     """Raised when one source contains more than one revision of an event."""
 
 
+class RemoteDuplicateVerificationError(RuntimeError):
+    """A historical Dify document could not be safely verified for reuse."""
+
+
 def _duplicate_activity_event_ids(metadata_rows: list[dict[str, Any]]) -> list[str]:
     event_ids = [str((metadata or {}).get("event_id") or "") for metadata in metadata_rows]
     return sorted(
@@ -68,15 +75,195 @@ def _duplicate_activity_event_ids(metadata_rows: list[dict[str, Any]]) -> list[s
     )
 
 
+def _mark_duplicate_activity_units(documents: list[Any]) -> list[Any]:
+    """Fail only colliding activity units and leave independent units runnable."""
+
+    duplicate_event_ids = set(
+        _duplicate_activity_event_ids(
+            [
+                (
+                    document.metadata_json
+                    if hasattr(document, "metadata_json")
+                    else document.metadata
+                )
+                or {}
+                for document in documents
+            ]
+        )
+    )
+    if not duplicate_event_ids:
+        return documents
+    message = "同一源文件包含重复活动 event_id，未发布冲突活动：" + ",".join(
+        sorted(duplicate_event_ids)
+    )
+    remaining: list[Any] = []
+    for document in documents:
+        metadata = (
+            document.metadata_json if hasattr(document, "metadata_json") else document.metadata
+        ) or {}
+        if str(metadata.get("event_id") or "") not in duplicate_event_ids:
+            remaining.append(document)
+            continue
+        if hasattr(document, "disposition"):
+            document.disposition = "failed"
+        else:
+            document.status = "failed"
+            document.stage = "failed"
+            document.retryable = False
+        document.error_code = "DUPLICATE_ACTIVITY_EVENT_ID"
+        document.error_message = message
+    return remaining
+
+
+def _remote_metadata_value(remote: dict[str, Any], key: str) -> str:
+    """Read one Dify metadata value from either supported response shape."""
+
+    raw_metadata = remote.get("doc_metadata") or remote.get("metadata") or {}
+    if isinstance(raw_metadata, dict):
+        return str(raw_metadata.get(key) or "").strip()
+    if isinstance(raw_metadata, list):
+        for item in raw_metadata:
+            if isinstance(item, dict) and str(item.get("name") or item.get("key") or "") == key:
+                return str(item.get("value") or "").strip()
+    return ""
+
+
+def _remote_duplicate_is_live(
+    session,
+    *,
+    client: DifyKnowledgeClient,
+    candidate: CleaningDocument,
+) -> bool:
+    """Return true only for a currently readable and indexed Dify document.
+
+    Local ``succeeded`` is provenance, not proof that a remote replica still
+    exists. A confirmed 404 releases only this exact local association. A
+    timeout or malformed response remains retryable and must never become a
+    permanent duplicate decision or a blind replacement write.
+    """
+
+    document_id = str(candidate.dify_document_id or "").strip()
+    if not document_id:
+        return False
+    try:
+        remote = client.get_document(document_id)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            candidate.remote_deleted_at = utcnow()
+            audit = dict(candidate.audit_json or {})
+            audit["remote_duplicate_verification"] = "missing"
+            candidate.audit_json = audit
+            session.flush()
+            return False
+        raise RemoteDuplicateVerificationError("Dify重复成果读取失败") from exc
+    except Exception as exc:
+        raise RemoteDuplicateVerificationError("Dify重复成果读取未确认") from exc
+
+    if not isinstance(remote, dict):
+        raise RemoteDuplicateVerificationError("Dify重复成果响应格式无效")
+    remote_id = str(remote.get("id") or remote.get("document_id") or "").strip()
+    if remote_id and remote_id != document_id:
+        return False
+    expected_digest = str(
+        (candidate.metadata_json or {}).get("publication_content_sha256") or ""
+    ).strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+        # Legacy rows predate the non-sensitive remote content witness.  Their
+        # local body cannot prove what is still indexed under this remote ID.
+        audit = dict(candidate.audit_json or {})
+        audit["remote_duplicate_verification"] = "content_witness_missing"
+        candidate.audit_json = audit
+        session.flush()
+        return False
+    if _remote_metadata_value(remote, "publication_content_sha256") != expected_digest:
+        audit = dict(candidate.audit_json or {})
+        audit["remote_duplicate_verification"] = "content_mismatch"
+        candidate.audit_json = audit
+        session.flush()
+        return False
+    # The metadata digest is an association check, not proof of the content
+    # currently exposed by Dify: an operator could replace a document body
+    # without changing its metadata.  A successful publish records a digest
+    # over Dify's actual indexed segments; reuse requires that witness to be
+    # readable and unchanged as well.
+    expected_remote_witness = str(
+        (candidate.audit_json or {}).get("remote_content_witness_sha256") or ""
+    ).strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_remote_witness):
+        audit = dict(candidate.audit_json or {})
+        audit["remote_duplicate_verification"] = "remote_content_witness_missing"
+        candidate.audit_json = audit
+        session.flush()
+        return False
+    try:
+        actual_remote_witness = str(client.document_content_witness(document_id)).strip()
+    except AttributeError as exc:
+        raise RemoteDuplicateVerificationError("Dify重复成果正文见证未确认") from exc
+    except Exception as exc:
+        raise RemoteDuplicateVerificationError("Dify重复成果正文见证未确认") from exc
+    if actual_remote_witness != expected_remote_witness:
+        audit = dict(candidate.audit_json or {})
+        audit["remote_duplicate_verification"] = "remote_content_mismatch"
+        candidate.audit_json = audit
+        session.flush()
+        return False
+    # Dify persists the upload name alongside the indexed content.  When the
+    # API returns it, it is a bounded content-association check: generated
+    # names include the normalized publication digest, so a replacement under
+    # the same remote id cannot be reused merely because its status is live.
+    remote_name = str(
+        remote.get("name") or remote.get("document_name") or remote.get("display_name") or ""
+    ).strip()
+    if remote_name and remote_name != str(candidate.dify_document_name or "").strip():
+        audit = dict(candidate.audit_json or {})
+        audit["remote_duplicate_verification"] = "content_mismatch"
+        candidate.audit_json = audit
+        session.flush()
+        return False
+    indexing_status = str(remote.get("indexing_status") or "").strip().lower()
+    if indexing_status != "completed":
+        return False
+    if remote.get("enabled") is False or remote.get("is_enabled") is False:
+        return False
+    try:
+        client.verify_document_metadata(
+            document_id,
+            _project_dify_metadata(
+                candidate.metadata_json or {},
+                strategy=STRATEGY_REGISTRY.get(candidate.file.batch.strategy_code),
+            ),
+        )
+    except RuntimeError as exc:
+        # ``verify_document_metadata`` uses this exact, deterministic failure
+        # for a completed read whose metadata differs.  It is not a transport
+        # uncertainty, so holding the local duplicate forever would be wrong.
+        if str(exc).startswith("Dify metadata 回读不一致："):
+            audit = dict(candidate.audit_json or {})
+            audit["remote_duplicate_verification"] = "metadata_mismatch"
+            candidate.audit_json = audit
+            session.flush()
+            return False
+        raise RemoteDuplicateVerificationError("Dify重复成果元数据未确认") from exc
+    except Exception as exc:
+        raise RemoteDuplicateVerificationError("Dify重复成果元数据未确认") from exc
+    audit = dict(candidate.audit_json or {})
+    audit["remote_duplicate_verification"] = "live"
+    candidate.audit_json = audit
+    session.flush()
+    return True
+
+
 # Dify is a retrieval replica, not the protected provenance store.  These
 # fields describe the cleaning semantics and are safe for Dify-side filtering
-# and audits; file identities, hashes, upload IDs, build IDs and UI cleanup
-# markers remain in PostgreSQL only.
+# and audits. The publication digest is a non-reversible witness of the final
+# indexed body; file identities, upload IDs, build IDs and UI cleanup markers
+# remain in PostgreSQL only.
 REMOTE_PROVENANCE_FIELDS = frozenset(
     {
         "cleaning_strategy",
         "cleaning_spec_revision",
         "content_format",
+        "publication_content_sha256",
     }
 )
 REMOTE_FORBIDDEN_METADATA_FIELDS = frozenset(
@@ -280,6 +467,14 @@ def _project_dify_metadata(
         if key in allowed_business_fields and key not in REMOTE_FORBIDDEN_METADATA_FIELDS
     }
     for field in REMOTE_PROVENANCE_FIELDS:
+        # ``recent_activity`` has a separately approved metadata contract.
+        # This task must not add a hash field or remote-read dedupe dependency
+        # to its established publication behavior.
+        if (
+            field == "publication_content_sha256"
+            and getattr(strategy, "code", "") == "recent_activity"
+        ):
+            continue
         value = metadata.get(field)
         if value not in (None, "", [], {}):
             remote_metadata[field] = value
@@ -606,6 +801,11 @@ def _publish_document(
             if not publication_markdown.strip():
                 raise ValueError("知识库发布正文为空，无法生成咨询案例子块")
         publication_digest = normalized_publication_content_sha256(publication_markdown)
+        if batch.strategy_code != "recent_activity":
+            row.metadata_json = {
+                **(row.metadata_json or {}),
+                "publication_content_sha256": publication_digest,
+            }
         candidates = session.scalars(
             select(CleaningDocument)
             .join(CleaningFile, CleaningDocument.file_id == CleaningFile.id)
@@ -615,21 +815,26 @@ def _publish_document(
                 CleaningBatch.strategy_code == batch.strategy_code,
                 CleaningBatch.spec_revision == batch.spec_revision,
                 CleaningDocument.status == "succeeded",
+                CleaningDocument.dify_document_id.is_not(None),
+                CleaningDocument.remote_deleted_at.is_(None),
                 CleaningDocument.id != row.id,
             )
             .options(selectinload(CleaningDocument.file).selectinload(CleaningFile.batch))
         ).all()
-        duplicate = next(
-            (
-                candidate
-                for candidate in candidates
-                if normalized_publication_content_sha256(
+        duplicate = None
+        for candidate in candidates if batch.strategy_code != "recent_activity" else ():
+            if not str(candidate.dify_document_id or "").strip():
+                continue
+            if (
+                normalized_publication_content_sha256(
                     _publication_markdown_for_document(candidate, candidate.file.batch)
                 )
-                == publication_digest
-            ),
-            None,
-        )
+                != publication_digest
+            ):
+                continue
+            if _remote_duplicate_is_live(session, client=client, candidate=candidate):
+                duplicate = candidate
+                break
         if duplicate is not None:
             row.status = "excluded"
             row.stage = "duplicate_noop"
@@ -695,6 +900,21 @@ def _publish_document(
         )
         row.remote_parent_count = int(structure["parent_count"])
         row.remote_child_count = int(structure["child_count"])
+        # Dify's segment read is the only available observation of the
+        # completed remote body.  Persist its opaque digest locally; it is
+        # compared before a future duplicate_noop and never exposed as source
+        # content or a remote metadata substitute.
+        # ``recent_activity`` deliberately retains its established publication
+        # contract. It does not consume the new content-witness protocol, so
+        # an extra segment read must not turn a successful activity upload into
+        # a compensating publication failure.
+        witness_reader = getattr(client, "document_content_witness", None)
+        if batch.strategy_code != "recent_activity" and callable(witness_reader):
+            remote_witness = str(witness_reader(document_id)).strip()
+            if not re.fullmatch(r"[0-9a-f]{64}", remote_witness):
+                raise RuntimeError("Dify已索引正文见证无效")
+            audit["remote_content_witness_sha256"] = remote_witness
+            row.audit_json = audit
         row.stage = "metadata"
         session.commit()
 
@@ -788,7 +1008,11 @@ def _publish_document(
         retry = row.attempts < 2
         row.status = "pending" if retry else "failed"
         row.stage = "retrying" if retry else "failed"
-        row.error_code = "CLEANING_FAILED"
+        row.error_code = (
+            "DIFY_DUPLICATE_VERIFICATION_FAILED"
+            if isinstance(exc, RemoteDuplicateVerificationError)
+            else "DIFY_PUBLICATION_FAILED"
+        )
         row.error_message = safe_exception_message(exc, limit=2000)
         row.retryable = not retry
         session.commit()
@@ -1067,18 +1291,66 @@ def _publish_source_file_unlocked(
                 item.sequence,
             ),
         )
+    all_file_documents = list(
+        session.scalars(select(CleaningDocument).where(CleaningDocument.file_id == file_row.id))
+    )
+    case_documents = {
+        str((item.metadata_json or {}).get("case_id") or ""): item
+        for item in all_file_documents
+        if (item.metadata_json or {}).get("record_type") == "consulting_case"
+    }
     try:
         if batch.strategy_code == "recent_activity":
-            duplicate_event_ids = _duplicate_activity_event_ids(
-                [document.metadata_json or {} for document in documents]
-            )
-            if duplicate_event_ids:
-                raise DuplicateActivityEventError(
-                    "同一源文件包含重复活动 event_id，禁止同时发布多个版本："
-                    + ",".join(duplicate_event_ids)
-                )
+            documents = _mark_duplicate_activity_units(documents)
+            if not documents:
+                _refresh_file_state(session, file_row.id, commit=False)
+                _finish_batch(session, batch.id)
+                session.commit()
+                return True
         publishable_documents: list[CleaningDocument] = []
         for document in documents:
+            metadata = document.metadata_json or {}
+            if metadata.get("record_type") == "methodology":
+                source_case = case_documents.get(str(metadata.get("candidate_for_case_id") or ""))
+                # A methodology is meaningful only when this invocation has
+                # actually published its referenced case.  ``duplicate_noop``
+                # is not a local case publication and may point at a distinct
+                # historical remote id, so it must not leave a dangling
+                # candidate_for_case_id in the knowledge base.
+                # Within this source-level transaction a verified case is
+                # deliberately ``staged`` until every sibling has passed its
+                # own remote validation.  It is therefore a valid source for
+                # its case-scoped method, unlike an historical duplicate or
+                # any pending/failed case.
+                if source_case is None or (
+                    source_case.status != "succeeded"
+                    and not (
+                        source_case.status == "staged" and source_case.stage == "source_commit"
+                    )
+                ):
+                    document.status = "failed"
+                    document.stage = "failed"
+                    document.error_code = "METHODOLOGY_SOURCE_CASE_FAILED"
+                    document.error_message = "关联咨询案例不可发布，方法候选未发布"
+                    document.retryable = False
+                    continue
+                if source_case.status == "succeeded":
+                    source_client = _knowledge_client(batch)
+                    try:
+                        source_live = _remote_duplicate_is_live(
+                            session,
+                            client=source_client,
+                            candidate=source_case,
+                        )
+                    finally:
+                        source_client.close()
+                    if not source_live:
+                        document.status = "failed"
+                        document.stage = "failed"
+                        document.error_code = "METHODOLOGY_SOURCE_CASE_UNAVAILABLE"
+                        document.error_message = "关联咨询案例的远端成果不可验证，方法候选未发布"
+                        document.retryable = False
+                        continue
             published = _publish_document(
                 session,
                 document,
@@ -1101,6 +1373,9 @@ def _publish_source_file_unlocked(
             batch=batch,
             documents=publishable_documents,
         )
+        _refresh_file_state(session, file_row.id, commit=False)
+        _finish_batch(session, batch.id)
+        session.commit()
         return True
     except Exception as exc:
         logger.exception(
@@ -1275,22 +1550,7 @@ def process_cleaning_file(self, file_id: str) -> bool:
                 session.commit()
                 return True
             if batch.strategy_code == "recent_activity":
-                duplicate_event_ids = _duplicate_activity_event_ids(
-                    [document.metadata or {} for document in cleaned_documents]
-                )
-                if duplicate_event_ids:
-                    row.status = "failed"
-                    row.outcome = "failed"
-                    row.stage = "failed"
-                    row.error_code = "DUPLICATE_ACTIVITY_EVENT_ID"
-                    row.error_message = (
-                        "同一源文件包含重复活动 event_id，禁止同时发布多个版本："
-                        + ",".join(duplicate_event_ids)
-                    )
-                    _refresh_file_state(session, row.id, commit=False)
-                    _finish_batch(session, row.batch_id)
-                    session.commit()
-                    return True
+                _mark_duplicate_activity_units(cleaned_documents)
             if Path(row.original_filename).suffix.lower() == ".pdf":
                 _record_pdf_conversion_events(
                     session,
@@ -1390,7 +1650,11 @@ def process_cleaning_file(self, file_id: str) -> bool:
                         metadata,
                     )
                     if short_reason:
-                        document.disposition = "review_required"
+                        document.disposition = (
+                            "failed"
+                            if batch.strategy_code in CONTENT_MODEL_STRATEGIES
+                            else "review_required"
+                        )
                         document.error_code, document.error_message = short_reason
                 chunking = document.chunking or ChunkingConfig()
                 validate_chunking_boundaries(document.markdown, chunking)
@@ -1441,7 +1705,12 @@ def process_cleaning_file(self, file_id: str) -> bool:
                     audit_json=document.audit or {},
                     warnings_json=document.warnings or [],
                     cleaned_markdown=document.markdown,
-                    retryable=status == "failed",
+                    # Initial conversion/quality/model-admission failures may
+                    # retain diagnostic Markdown, but that body is never a
+                    # publication retry payload.  They must be retried from
+                    # the source file so OCR, anonymisation and the model
+                    # gate run again.
+                    retryable=False,
                 )
                 item.content_sha256 = _content_sha(
                     item.cleaned_markdown, item.metadata_json, item.chunking_json
@@ -1460,23 +1729,12 @@ def process_cleaning_file(self, file_id: str) -> bool:
                             ),
                             source_filename=row.original_filename,
                         )
-                duplicate = session.scalar(
-                    select(CleaningDocument)
-                    .where(
-                        CleaningDocument.content_sha256 == item.content_sha256,
-                        CleaningDocument.status.not_in(("failed", "review_required", "excluded")),
-                    )
-                    .limit(1)
-                )
-                if duplicate is not None:
-                    item.status = "excluded"
-                    item.stage = "duplicate_noop"
-                    item.error_code = "EXACT_CONTENT_DUPLICATE"
-                    item.error_message = "相同清洗内容已存在，未重复处理"
-                    item.audit_json = {
-                        **(item.audit_json or {}),
-                        "duplicate_of_item_id": duplicate.id,
-                    }
+                # A local historical success is provenance only.  Do not
+                # terminally deduplicate while creating the source item:
+                # publication owns the bounded remote live/content check and
+                # can release a deleted, disabled or mismatched association.
+                # This point may only create a pending item; same-run
+                # serialization is handled by the publication lock.
                 session.add(item)
                 session.flush()
             session.commit()

@@ -148,12 +148,15 @@ def _write_text_atomic(path: Path, content: str) -> None:
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
-    rendered = json.dumps(
-        payload,
-        ensure_ascii=False,
-        indent=2,
-        sort_keys=True,
-    ) + "\n"
+    rendered = (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
     _write_text_atomic(path, rendered)
 
 
@@ -166,15 +169,8 @@ def _sha256_text(content: str) -> str:
 
 
 def _source_blocks(text: str) -> dict[str, str]:
-    paragraphs = [
-        value.strip()
-        for value in re.split(r"\n\s*\n+", text)
-        if value.strip()
-    ]
-    return {
-        f"b{index:04d}": paragraph
-        for index, paragraph in enumerate(paragraphs, start=1)
-    }
+    paragraphs = [value.strip() for value in re.split(r"\n\s*\n+", text) if value.strip()]
+    return {f"b{index:04d}": paragraph for index, paragraph in enumerate(paragraphs, start=1)}
 
 
 def _safe_log_values(values: Mapping[str, Any]) -> dict[str, Any]:
@@ -270,9 +266,7 @@ def _estimated_cost_yuan(
 ) -> float:
     input_tokens = _estimated_tokens(request)
     input_cost = input_tokens / 1_000_000 * input_price_per_million
-    output_cost = (
-        DEFAULT_MAX_OUTPUT_TOKENS / 1_000_000 * output_price_per_million
-    )
+    output_cost = DEFAULT_MAX_OUTPUT_TOKENS / 1_000_000 * output_price_per_million
     return input_cost + output_cost
 
 
@@ -291,12 +285,7 @@ def _validate_boundaries(markdown: str) -> None:
 
 def _privacy_categories(markdown: str) -> list[str]:
     findings = scan_residual_pii(markdown)
-    return sorted(
-        {
-            str(getattr(item, "category", "unknown"))
-            for item in findings
-        }
-    )
+    return sorted({str(getattr(item, "category", "unknown")) for item in findings})
 
 
 def _case_title(source_sha256: str) -> str:
@@ -385,10 +374,7 @@ def _render_legacy_payload(
         available_block_ids=set(request.blocks),
         source_blocks=request.blocks,
     )
-    parts = [
-        f"## {section.heading}\n\n{section.text}"
-        for section in result.sections
-    ]
+    parts = [f"## {section.heading}\n\n{section.text}" for section in result.sections]
     return f"# {request.title}\n\n" + "\n\n".join(parts)
 
 
@@ -646,7 +632,9 @@ def _process_item(
         item.audit["model_result"] = model_audit
     except ModelReviewRequired as exc:
         reason = str(exc) or "MODEL_REVIEW_SKIPPED"
-        reason_code = "CONSULTATION_EXCLUDED" if reason == "CONSULTATION_EXCLUDED" else "MODEL_REVIEW_SKIPPED"
+        reason_code = (
+            "CONSULTATION_EXCLUDED" if reason == "CONSULTATION_EXCLUDED" else "MODEL_REVIEW_SKIPPED"
+        )
         trace.emit(
             item=item,
             phase="semantic_validation",
@@ -834,10 +822,7 @@ def _prepare_run_dir(output_root: Path, run_id: str) -> Path:
             marker_payload = json.loads(marker.read_text(encoding="utf-8"))
         except Exception as exc:
             raise RunInputError("已有运行目录的 RUN_MARKER.json 无法读取") from exc
-        if (
-            marker_payload.get("kind") != RUN_KIND
-            or marker_payload.get("run_id") != run_id
-        ):
+        if marker_payload.get("kind") != RUN_KIND or marker_payload.get("run_id") != run_id:
             raise RunInputError("已有运行目录标记不匹配，拒绝覆盖")
         for child in run_dir.iterdir():
             if child.is_symlink():

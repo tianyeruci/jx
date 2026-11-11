@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import json
 from pathlib import Path
 
 import yaml
@@ -5,407 +8,337 @@ import yaml
 DSL = Path("dify/商业顾问（当前使用版本）.yml")
 
 
-def test_chatflow_has_activity_branch_and_closed_edges():
+def _nodes() -> dict[str, dict]:
     data = yaml.safe_load(DSL.read_text(encoding="utf-8"))
-    graph = data["workflow"]["graph"]
-    nodes = {node["id"]: node for node in graph["nodes"]}
-    edges = graph["edges"]
-    edge_pairs = {(edge["source"], edge["target"]) for edge in edges}
+    return {str(node["id"]): node["data"] for node in data["workflow"]["graph"]["nodes"]}
 
-    assert "activity_intent" in nodes
-    assert "activity_window" in nodes
-    assert "activity_status_route" in nodes
-    assert "activity_knowledge" in nodes
-    assert "activity_status_knowledge" in nodes
-    assert "activity_results" in nodes
-    assert "activity_answer" in nodes
-    assert ("activity_intent", "activity_route") in edge_pairs
-    assert ("activity_route", "activity_window") in edge_pairs
-    assert ("activity_window", "activity_status_route") in edge_pairs
-    assert ("activity_status_route", "activity_knowledge") in edge_pairs
-    assert ("activity_status_route", "activity_status_knowledge") in edge_pairs
-    assert ("activity_route", "case_route") in edge_pairs
-    assert ("activity_knowledge", "activity_retrieval_aggregate") in edge_pairs
-    assert ("activity_status_knowledge", "activity_retrieval_aggregate") in edge_pairs
-    assert ("activity_retrieval_aggregate", "activity_results") in edge_pairs
-    assert ("activity_results", "activity_answer") in edge_pairs
-    aggregate = nodes["activity_retrieval_aggregate"]["data"]
-    assert aggregate["variables"] == [
+
+def _edges() -> set[tuple[str, str]]:
+    data = yaml.safe_load(DSL.read_text(encoding="utf-8"))
+    return {
+        (str(edge["source"]), str(edge["target"])) for edge in data["workflow"]["graph"]["edges"]
+    }
+
+
+def _main(node_id: str):
+    scope: dict[str, object] = {}
+    exec(_nodes()[node_id]["code"], scope)
+    return scope["main"]
+
+
+def _activity_plan(**overrides: object) -> str:
+    plan: dict[str, object] = {
+        "mode": "recent_list",
+        "signup_rule": "none",
+        "name": "",
+        "start_ts": 4076000000,
+        "end_ts": 4077000000,
+        "now_ts": 4076000000,
+        "limit": 50,
+        "city": "",
+        "delivery_mode": "",
+        "keywords": [],
+        "need_links": False,
+        "request_text": "最近有哪些活动？",
+        "requested_all": False,
+        "time_target": "event_start",
+        "statuses": ["normal", "postponed"],
+        "upper_exclusive": True,
+        "retrieval_top_k": 50,
+    }
+    plan.update(overrides)
+    return json.dumps(plan, ensure_ascii=False)
+
+
+def _event(event_id: str, title: str, status: str, start: int, **metadata: object) -> dict:
+    return {
+        "title": title,
+        "metadata": {
+            "doc_metadata": {
+                "record_type": "event",
+                "event_id": event_id,
+                "event_status": status,
+                "event_start_ts": start,
+                "event_end_ts": start + 3600,
+                "source_title": title,
+                **metadata,
+            }
+        },
+    }
+
+
+def test_chatflow_has_closed_activity_branch_and_aggregates_each_route() -> None:
+    nodes = _nodes()
+    edges = _edges()
+    required = {
+        "intent_understanding",
+        "intent_parse",
+        "activity_route",
+        "activity_filter_route",
+        "activity_knowledge",
+        "activity_knowledge_time",
+        "activity_knowledge_unbounded",
+        "activity_retrieval_aggregate",
+        "activity_retry_gate",
+        "activity_retry_route",
+        "activity_knowledge_retry",
+        "activity_supplement_aggregate",
+        "activity_results",
+        "activity_answer",
+    }
+    assert required <= set(nodes)
+    assert {
+        ("activity_route", "activity_filter_route"),
+        ("activity_route", "activity_retry_gate"),
+        ("activity_knowledge", "activity_retrieval_aggregate"),
+        ("activity_knowledge_time", "activity_retrieval_aggregate"),
+        ("activity_knowledge_unbounded", "activity_retrieval_aggregate"),
+        ("activity_knowledge_retry", "activity_supplement_aggregate"),
+        ("activity_retrieval_aggregate", "activity_results"),
+        ("activity_supplement_aggregate", "activity_results"),
+        ("activity_results", "activity_answer"),
+    } <= edges
+    assert nodes["activity_retrieval_aggregate"]["variables"] == [
         ["activity_knowledge", "result"],
-        ["activity_status_knowledge", "result"],
+        ["activity_knowledge_time", "result"],
+        ["activity_knowledge_unbounded", "result"],
+    ]
+    assert nodes["activity_supplement_aggregate"]["variables"] == [
+        ["activity_knowledge_retry", "result"],
+        ["activity_supplement_skip", "result"],
     ]
 
 
-def test_chatflow_activity_contract_contains_dynamic_window_and_safe_sorting():
-    data = yaml.safe_load(DSL.read_text(encoding="utf-8"))
-    nodes = {node["id"]: node["data"] for node in data["workflow"]["graph"]["nodes"]}
+def test_chatflow_compiles_activity_filters_from_structured_plan() -> None:
+    nodes = _nodes()
     text = DSL.read_text(encoding="utf-8")
     for marker in ("event", "event_status", "event_start_ts", "doc_metadata", "registration_url"):
         assert marker in text
-    conditions = nodes["activity_knowledge"]["metadata_filtering_conditions"]["conditions"]
-    assert {item["name"] for item in conditions} == {
+    assert [
+        condition["name"]
+        for condition in nodes["activity_knowledge"]["metadata_filtering_conditions"]["conditions"]
+    ] == [
         "record_type",
-        "event_status",
         "event_start_ts",
-        "event_end_ts",
-    }
-    assert "{{#activity_window.start_ts#}}" in text
-    assert "{{#activity_window.end_ts#}}" in text
-    assert (
-        "event_status"
-        in nodes["activity_status_knowledge"]["metadata_filtering_conditions"]["conditions"][1][
-            "name"
+        "event_start_ts",
+        "event_status",
+    ]
+    assert [
+        condition["name"]
+        for condition in nodes["activity_knowledge_time"]["metadata_filtering_conditions"][
+            "conditions"
         ]
-    )
-    assert "BAILIAN_API_KEY" not in text
-    assert "sort" in text
-    assert "activity_max_results" in text
-    assert "[:limit]" in text
+    ] == [
+        "record_type",
+        "event_start_ts",
+        "event_start_ts",
+    ]
+    assert nodes["activity_knowledge_unbounded"]["metadata_filtering_conditions"]["conditions"] == [
+        {"comparison_operator": "is", "name": "record_type", "value": "event"}
+    ]
+    assert nodes["activity_knowledge"]["query_variable_selector"] == [
+        "intent_parse",
+        "activity_retrieval_query",
+    ]
     assert "ACTIVITY_MAX_RESULTS" in text
-    assert "- env" in text
+    assert "BAILIAN_API_KEY" not in text
     assert "DASHSCOPE_API_KEY" not in text
 
 
-def test_activity_intent_does_not_hijack_business_questions():
-    data = yaml.safe_load(DSL.read_text(encoding="utf-8"))
-    code = next(
-        node["data"]["code"]
-        for node in data["workflow"]["graph"]["nodes"]
-        if node["id"] == "quick_intent"
-    )
-    scope = {}
-    exec(code, scope)
-    for query in (
+def test_activity_plan_is_parsed_after_intent_understanding_without_quick_hijack() -> None:
+    quick_intent = _main("quick_intent")
+    assert quick_intent("你好")["should_direct"] == "true"
+    assert quick_intent("如何提高活动报名转化率？")["should_direct"] == "false"
+
+    intent_parse = _main("intent_parse")
+    model_contract = {
+        "primary_intent": "activity",
+        "interaction": "generate",
+        "task_relation": "none",
+        "task_kind": "factual",
+        "task_brief": "列出近期活动",
+        "retrieval_query": "近期活动",
+        "needs": [],
+        "activity": {
+            "mode": "recent_list",
+            "signup_rule": "none",
+            "time": {},
+            "time_target": "event_start",
+            "name": "",
+            "city": "",
+            "delivery_mode": "",
+            "keywords": [],
+        },
+    }
+    result = intent_parse(
+        json.dumps(model_contract, ensure_ascii=False),
         "最近有哪些活动？",
-        "最新活动有哪些？",
-        "最近活动有哪些？",
-        "活动有哪些？",
-        "活动",
-        "所有活动",
-        "最新所有活动",
-        "这个活动的详情",
-        "这个活动怎么报名",
-        "第一个的详情",
-        "Workbuddy无痛日更写作实战营详情",
-        "近期有什么线下沙龙",
-        "近期有哪些聚会",
-        "最近有什么日程",
-        "近期有什么安排",
-        "本月排期",
-        "近期有哪些联谊",
-        "活动安排",
-        "活动日程",
-        "活动排期",
+        4076000000,
+    )
+    plan = json.loads(result["activity_plan"])
+    assert result["parse_status"] == "ok"
+    assert result["primary_intent"] == "activity"
+    assert result["activity_filter_kind"] == "active"
+    assert plan["statuses"] == ["normal", "postponed"]
+    assert plan["time_target"] == "event_start"
+    assert result["activity_retrieval_query"]
+
+
+def test_activity_intent_parse_recovers_from_invalid_task_state_and_clamps_configured_limit() -> (
+    None
+):
+    intent_parse = _main("intent_parse")
+    model_contract = {
+        "primary_intent": "activity",
+        "interaction": "generate",
+        "task_relation": "none",
+        "task_kind": "factual",
+        "task_brief": "列出近期活动",
+        "retrieval_query": "近期活动",
+        "needs": [],
+        "activity": {"mode": "recent_list", "signup_rule": "none", "time": {}},
+    }
+
+    result = intent_parse(
+        json.dumps(model_contract, ensure_ascii=False),
+        "最近有哪些活动？",
+        4076000000,
+        configured_activity_max_results="999",
+        state_json="{not-json",
+    )
+    plan = json.loads(result["activity_plan"])
+    assert result["parse_status"] == "ok"
+    assert plan["limit"] == 200
+
+    fallback = intent_parse(
+        json.dumps(model_contract, ensure_ascii=False),
+        "最近有哪些活动？",
+        4076000000,
+        configured_activity_max_results="not-an-integer",
+        state_json="[]",
+    )
+    assert json.loads(fallback["activity_plan"])["limit"] == 50
+
+
+def test_activity_code_path_keeps_case_and_analysis_requests_out_of_activity_retrieval() -> None:
+    """A supplied LLM contract is routed conservatively; it is not LLM proof."""
+
+    quick_intent = _main("quick_intent")
+    assert quick_intent("如何提高活动报名转化率？")["should_direct"] == "false"
+    assert quick_intent("案例中的活动安排是否有风险？")["should_direct"] == "false"
+
+    intent_parse = _main("intent_parse")
+    for primary_intent, question in (
+        ("general", "如何提高活动报名转化率？"),
+        ("case", "案例中的活动安排是否有风险？"),
     ):
-        assert scope["main"](query)["is_activity_request"] == "true"
-    assert scope["main"]("最近有哪些面向客户的活动？")["is_activity_request"] == "true"
-    assert scope["main"]("有哪些延期活动？")["is_activity_request"] == "true"
-    assert scope["main"]("如何提高活动报名转化率？")["is_activity_request"] == "false"
-    assert scope["main"]("活动取消后如何挽回客户？")["is_activity_request"] == "false"
-    assert scope["main"]("会议延期后的沟通策略")["is_activity_request"] == "false"
-    assert scope["main"]("如何取消订单？")["is_activity_request"] == "false"
-    assert scope["main"]("AI增长营详情")["is_activity_request"] == "true"
-    assert scope["main"]("觉醒大会详情")["is_activity_request"] == "true"
-    for query in ("最近有哪些会议真实案例？", "近期活动案例参考"):
-        result = scope["main"](query)
-        assert result["is_activity_request"] == "false"
-        assert result["is_case_request"] == "true"
-
-
-def test_activity_window_defaults_to_ten_and_supports_all_status_language():
-    data = yaml.safe_load(DSL.read_text(encoding="utf-8"))
-    code = next(
-        node["data"]["code"]
-        for node in data["workflow"]["graph"]["nodes"]
-        if node["id"] == "activity_window"
-    )
-    scope = {}
-    exec(code, scope)
-    result = scope["main"]("最新所有活动有哪些？")
-    assert result["activity_max_results"] == 10
-    assert result["requested_status"] == "all"
-    assert scope["main"]("最近活动", "3")["activity_max_results"] == 3
-    assert scope["main"]("最近活动", "99")["activity_max_results"] == 20
-    assert scope["main"]("最近活动", "not-a-number")["activity_max_results"] == 10
-    assert scope["main"]("最近活动")["requested_status"] == "normal"
-    assert scope["main"]("旧活动详情")["requested_status"] == "detail"
-    assert scope["main"]("最新活动详情")["requested_status"] == "normal"
-    assert scope["main"]("最近的AI增长工作坊详情")["requested_status"] == "detail"
-    assert scope["main"]("第六个活动详情")["requested_status"] == "detail"
-    for query in ("活动报名详情", "最近活动报名详情", "有哪些活动报名详情"):
-        assert scope["main"](query)["requested_status"] == "normal"
-    for query, expected in (
-        ("延期活动详情", "postponed"),
-        ("取消活动详情", "cancelled"),
-        ("已结束活动详情", "completed"),
-        ("所有延期活动详情", "postponed"),
-        ("最近延期活动详情", "postponed"),
-        ("最新活动具体有哪些", "normal"),
-        ("最新训练活动详情", "normal"),
-    ):
-        assert scope["main"](query)["requested_status"] == expected
-    assert scope["main"]("已结束活动")["requested_status"] == "completed"
-
-
-def test_activity_results_formats_multiple_activities_on_separate_lines():
-    data = yaml.safe_load(DSL.read_text(encoding="utf-8"))
-    code = next(
-        node["data"]["code"]
-        for node in data["workflow"]["graph"]["nodes"]
-        if node["id"] == "activity_results"
-    )
-    scope = {}
-    exec(code, scope)
-    results = [
-        {
-            "title": "活动一",
-            "metadata": {
-                "doc_metadata": {
-                    "record_type": "event",
-                    "event_id": "a",
-                    "event_status": "normal",
-                    "event_start_ts": 4076150400,
-                    "event_end_ts": 4076236799,
-                    "source_title": "活动一",
-                }
-            },
-        },
-        {
-            "title": "活动二",
-            "metadata": {
-                "doc_metadata": {
-                    "record_type": "event",
-                    "event_id": "b",
-                    "event_status": "normal",
-                    "event_start_ts": 4076323200,
-                    "event_end_ts": 4076409599,
-                    "source_title": "活动二",
-                }
-            },
-        },
-    ]
-
-    output = scope["main"](results, "最近有哪些活动？", 4076000000, 4077000000, "normal")
-
-    assert output["activity_text"].count("\n") == 1
-    assert "活动一" in output["activity_text"]
-    assert "活动二" in output["activity_text"]
-
-
-def test_activity_list_is_compact_but_named_activity_returns_detail():
-    data = yaml.safe_load(DSL.read_text(encoding="utf-8"))
-    code = next(
-        node["data"]["code"]
-        for node in data["workflow"]["graph"]["nodes"]
-        if node["id"] == "activity_results"
-    )
-    scope = {}
-    exec(code, scope)
-    results = [
-        {
-            "title": "AI增长工作坊",
-            "metadata": {
-                "doc_metadata": {
-                    "record_type": "event",
-                    "event_id": "a",
-                    "event_status": "normal",
-                    "event_start_ts": 4076150400,
-                    "event_end_ts": 4076236799,
-                    "source_title": "AI增长工作坊",
-                    "activity_summary": "活动详情摘要",
-                    "delivery_mode": "线上",
-                    "city": "上海",
-                    "registration_url": "https://example.com/register",
-                }
-            },
+        model_contract = {
+            "primary_intent": primary_intent,
+            "interaction": "generate",
+            "task_relation": "none",
+            "task_kind": "factual",
+            "task_brief": question,
+            "retrieval_query": question,
+            "needs": [],
+            "activity": {"mode": "recent_list", "signup_rule": "none", "time": {}},
         }
+        result = intent_parse(json.dumps(model_contract, ensure_ascii=False), question, 4076000000)
+        assert result["primary_intent"] == primary_intent
+        assert result["activity_retrieval_query"] == ""
+
+
+def test_activity_supplement_is_limited_to_one_enabled_list_query() -> None:
+    retry_gate = _main("activity_retry_gate")
+
+    listed = retry_gate(_activity_plan(mode="recent_list"), "近期活动", "true")
+    listed_diagnostics = json.loads(listed["diagnostics"])
+    assert listed["should_retry"] == "true"
+    assert listed["query"]
+    assert listed_diagnostics["retrieval_calls"] == 2
+    assert listed_diagnostics["policy"].endswith("original_conditions_postvalidated")
+
+    for plan, enabled, reason in (
+        (_activity_plan(mode="detail"), "true", "detail_single_query"),
+        (_activity_plan(mode="recent_list"), "false", "disabled"),
+    ):
+        result = retry_gate(plan, "近期活动", enabled)
+        assert result["should_retry"] == "false"
+        assert result["query"] == ""
+        assert json.loads(result["diagnostics"])["reason"] == reason
+
+
+def test_activity_results_keep_independent_events_and_bounded_diagnostics() -> None:
+    result = _main("activity_results")(
+        [
+            _event("a", "活动一", "normal", 4076150400),
+            _event("b", "活动二", "normal", 4076323200),
+        ],
+        _activity_plan(),
+    )
+    assert "活动一" in result["activity_text"]
+    assert "活动二" in result["activity_text"]
+    diagnostics = json.loads(result["diagnostics"])
+    assert diagnostics["displayed"] == 2
+    assert diagnostics["coverage_status"] == "bounded_retrieval_not_full_enumeration"
+    assert diagnostics["primary_retrieved"] == 2
+    assert diagnostics["supplement_retrieved"] == 0
+
+
+def test_activity_results_default_to_fifty_and_clamp_requested_limit_to_two_hundred() -> None:
+    activity_results = _main("activity_results")
+    events = [
+        _event(f"event-{index}", f"活动{index}", "normal", 4076150400 + index)
+        for index in range(205)
     ]
-    listing = scope["main"](results, "最近活动有哪些？", 4076000000, 4077000000, "recent")
-    assert listing["activity_text"] == "AI增长工作坊｜2099年3月3日｜正常"
-    assert "活动详情摘要" not in listing["activity_text"]
-    detail = scope["main"](results, "AI增长工作坊详情", 4076000000, 4077000000, "recent")
+
+    default = json.loads(activity_results(events, _activity_plan())["diagnostics"])
+    assert default["displayed"] == 50
+
+    clamped = json.loads(activity_results(events, _activity_plan(limit=999))["diagnostics"])
+    assert clamped["displayed"] == 200
+
+    malformed = json.loads(
+        activity_results(events, _activity_plan(limit="not-an-integer"))["diagnostics"]
+    )
+    assert malformed["displayed"] == 50
+
+
+def test_activity_detail_and_status_filter_keep_the_requested_scope() -> None:
+    detail = _main("activity_results")(
+        [
+            _event(
+                "a",
+                "AI增长工作坊",
+                "normal",
+                4076150400,
+                activity_summary="活动详情摘要",
+                delivery_mode="online",
+                city="上海",
+                registration_url="https://example.com/register",
+            ),
+            _event("b", "商业增长峰会", "normal", 4076323200, activity_summary="另一场活动详情"),
+        ],
+        _activity_plan(
+            mode="detail",
+            name="AI增长工作坊",
+            start_ts=None,
+            end_ts=None,
+            need_links=True,
+            request_text="AI增长工作坊详情",
+            statuses=[],
+        ),
+    )
+    assert "AI增长工作坊" in detail["activity_text"]
     assert "活动详情摘要" in detail["activity_text"]
-    assert "报名链接：https://example.com/register" in detail["activity_text"]
+    assert "商业增长峰会" not in detail["activity_text"]
+    assert "https://example.com/register" in detail["activity_text"]
 
-
-def test_named_activity_detail_does_not_dump_other_candidates():
-    data = yaml.safe_load(DSL.read_text(encoding="utf-8"))
-    code = next(
-        node["data"]["code"]
-        for node in data["workflow"]["graph"]["nodes"]
-        if node["id"] == "activity_results"
+    postponed = _main("activity_results")(
+        [
+            _event("a", "取消活动", "cancelled", 4076150400),
+            _event("b", "延期活动", "postponed", 4076323200),
+        ],
+        _activity_plan(mode="postponed", statuses=["postponed"], request_text="延期活动"),
     )
-    scope = {}
-    exec(code, scope)
-    results = []
-    for event_id, title in (("a", "AI增长工作坊"), ("b", "商业增长峰会")):
-        results.append(
-            {
-                "title": title,
-                "metadata": {
-                    "doc_metadata": {
-                        "record_type": "event",
-                        "event_id": event_id,
-                        "event_status": "normal",
-                        "event_start_ts": 4076150400,
-                        "event_end_ts": 4076236799,
-                        "source_title": title,
-                        "activity_summary": f"{title}详情",
-                    }
-                },
-            }
-        )
-    detail = scope["main"](results, "AI增长工作坊详情", 4076000000, 4077000000, "normal")
-    assert "AI增长工作坊详情" in detail["activity_text"]
-    assert "商业增长峰会详情" not in detail["activity_text"]
-
-
-def test_detail_query_bypasses_recent_window_and_supports_second_ordinal():
-    data = yaml.safe_load(DSL.read_text(encoding="utf-8"))
-    code = next(
-        node["data"]["code"]
-        for node in data["workflow"]["graph"]["nodes"]
-        if node["id"] == "activity_results"
-    )
-    scope = {}
-    exec(code, scope)
-    results = []
-    for event_id, title, start in (
-        ("old", "旧活动", 1000),
-        ("new", "新活动", 4076150400),
-    ):
-        results.append(
-            {
-                "title": title,
-                "metadata": {
-                    "doc_metadata": {
-                        "record_type": "event",
-                        "event_id": event_id,
-                        "event_status": "normal",
-                        "event_start_ts": start,
-                        "event_end_ts": start + 3600,
-                        "source_title": title,
-                        "activity_summary": f"{title}详情",
-                    }
-                },
-            }
-        )
-    detail = scope["main"](
-        results,
-        "旧活动详情",
-        4076000000,
-        4077000000,
-        "detail",
-    )
-    assert "旧活动详情" in detail["activity_text"]
-    assert "新活动详情" not in detail["activity_text"]
-
-    ordinal = scope["main"](
-        results,
-        "第二个活动详情",
-        0,
-        4077000000,
-        "detail",
-    )
-    assert "新活动详情" in ordinal["activity_text"]
-    assert "旧活动详情" not in ordinal["activity_text"]
-
-    out_of_range = scope["main"](
-        results,
-        "第六个活动详情",
-        0,
-        4077000000,
-        "detail",
-    )
-    assert out_of_range["activity_text"] == "当前没有符合条件的活动。"
-
-    empty = scope["main"]([], "旧活动详情", 4076000000, 4077000000, "detail")
-    assert empty["activity_text"] == "当前没有符合条件的活动。"
-
-
-def test_recent_specific_activity_detail_does_not_fall_back_to_listing():
-    data = yaml.safe_load(DSL.read_text(encoding="utf-8"))
-    code = next(
-        node["data"]["code"]
-        for node in data["workflow"]["graph"]["nodes"]
-        if node["id"] == "activity_results"
-    )
-    scope = {}
-    exec(code, scope)
-    results = []
-    for event_id, title in (("a", "AI增长工作坊"), ("b", "商业增长峰会")):
-        results.append(
-            {
-                "title": title,
-                "metadata": {
-                    "doc_metadata": {
-                        "record_type": "event",
-                        "event_id": event_id,
-                        "event_status": "normal",
-                        "event_start_ts": 4076150400,
-                        "event_end_ts": 4076236799,
-                        "source_title": title,
-                        "activity_summary": f"{title}详情",
-                    }
-                },
-            }
-        )
-    detail = scope["main"](
-        results,
-        "最近的AI增长工作坊详情",
-        4076000000,
-        4077000000,
-        "detail",
-    )
-    assert "AI增长工作坊详情" in detail["activity_text"]
-    assert "商业增长峰会详情" not in detail["activity_text"]
-
-
-def test_all_status_activity_listing_keeps_requested_status_filter():
-    data = yaml.safe_load(DSL.read_text(encoding="utf-8"))
-    code = next(
-        node["data"]["code"]
-        for node in data["workflow"]["graph"]["nodes"]
-        if node["id"] == "activity_results"
-    )
-    scope = {}
-    exec(code, scope)
-    results = []
-    for event_id, title, status in (
-        ("cancelled", "取消活动", "cancelled"),
-        ("postponed", "延期活动", "postponed"),
-        ("normal", "正常活动", "normal"),
-    ):
-        results.append(
-            {
-                "title": title,
-                "metadata": {
-                    "doc_metadata": {
-                        "record_type": "event",
-                        "event_id": event_id,
-                        "event_status": status,
-                        "event_start_ts": 4076150400,
-                        "event_end_ts": 4076236799,
-                        "source_title": title,
-                    }
-                },
-            }
-        )
-    output = scope["main"](
-        results,
-        "所有延期活动详情",
-        4076000000,
-        4077000000,
-        "postponed",
-    )
-    assert "延期活动" in output["activity_text"]
-    assert "取消活动" not in output["activity_text"]
-    assert "正常活动" not in output["activity_text"]
-    empty = scope["main"](
-        [],
-        "所有延期活动详情",
-        4076000000,
-        4077000000,
-        "postponed",
-    )
-    assert empty["activity_text"] == "当前没有符合条件的延期活动。"
+    assert "延期活动" in postponed["activity_text"]
+    assert "取消活动" not in postponed["activity_text"]

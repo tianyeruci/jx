@@ -87,7 +87,9 @@ def split_document(document: SourceDocument) -> list[SourceUnit]:
     repeated = repeated_noise_lines(document.pages)
     if document.requires_ocr:
         public_title = (
-            f"匿名商业咨询案例 {document.checksum[:8]}" if doc_type == "case" else document.path.stem
+            f"匿名商业咨询案例 {document.checksum[:8]}"
+            if doc_type == "case"
+            else document.path.stem
         )
         return [
             SourceUnit(
@@ -216,7 +218,9 @@ class CleaningPipeline:
         return [
             path
             for path in candidates
-            if any(pattern.lower() in path.name.lower() for pattern in self.options.include_patterns)
+            if any(
+                pattern.lower() in path.name.lower() for pattern in self.options.include_patterns
+            )
         ]
 
     def run(self) -> PipelineResult:
@@ -272,7 +276,9 @@ class CleaningPipeline:
                 folder = unit.disposition.value
                 markdown_path = ""
                 if unit.disposition in {Disposition.KEEP, Disposition.REVIEW}:
-                    public_source = str(unit.extra.get("public_source_filename") or unit.source_path.name)
+                    public_source = str(
+                        unit.extra.get("public_source_filename") or unit.source_path.name
+                    )
                     base_name = safe_filename(f"{Path(public_source).stem}__{unit.title}")
                     key = (folder, base_name)
                     name_counts[key] = name_counts.get(key, 0) + 1
@@ -291,8 +297,12 @@ class CleaningPipeline:
 
         output.mkdir(parents=True, exist_ok=True)
         _write_jsonl(manifest_path, records)
-        _write_jsonl(output / "排除记录.jsonl", (item for item in records if item["disposition"] == "排除"))
-        _write_jsonl(output / "复核记录.jsonl", (item for item in records if item["disposition"] == "复核"))
+        _write_jsonl(
+            output / "排除记录.jsonl", (item for item in records if item["disposition"] == "排除")
+        )
+        _write_jsonl(
+            output / "复核记录.jsonl", (item for item in records if item["disposition"] == "复核")
+        )
         manifest_totals = {
             "sources": len({str(item.get("source_path", "")) for item in records}),
             "records": len(records),
@@ -301,5 +311,7 @@ class CleaningPipeline:
             "review": sum(item.get("disposition") == "复核" for item in records),
         }
         summary = {"this_run": asdict(result), "manifest_totals": manifest_totals}
-        write_text_atomic(output / "运行摘要.json", json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
+        write_text_atomic(
+            output / "运行摘要.json", json.dumps(summary, ensure_ascii=False, indent=2) + "\n"
+        )
         return result
